@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 import tempfile
 import zipfile
+import zlib
 
 import numpy as np
 import shapely
@@ -383,12 +384,39 @@ def _provenance(meta, index):
     return result
 
 
-def _write(archive, path, data):
-    # Stable member timestamps make the same sources produce the same archive.
+def _deflate(data, level=9):
+    """Raw deflate of one zip member. Same compressor zipfile uses at this level, so a block
+    compressed in a worker is byte-for-byte the member writestr used to write on one thread."""
+    compressor = zlib.compressobj(level, zlib.DEFLATED, -15)
+    blob = compressor.compress(data) + compressor.flush()
+    return zlib.crc32(data) & 0xffffffff, len(data), blob
+
+
+def _write_deflated(archive, path, crc, size, blob):
+    """Append a member that is already deflated. ZipFile.writestr compresses on the calling
+    thread; a country is hundreds of thousands of blocks, and that one thread was the export."""
     info = zipfile.ZipInfo(path, date_time=(2020, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_DEFLATED
     info.compress_level = 9
-    archive.writestr(info, data)
+    info.CRC = crc
+    info.file_size = size
+    info.compress_size = len(blob)
+    info.external_attr = 0o600 << 16
+    archive._writecheck(info)
+    archive._didModify = True
+    if archive._seekable:
+        archive.fp.seek(archive.start_dir)
+    info.header_offset = archive.fp.tell()
+    archive.fp.write(info.FileHeader(False))
+    archive.fp.write(blob)
+    archive.filelist.append(info)
+    archive.NameToInfo[info.filename] = info
+    archive.start_dir = archive.fp.tell()
+
+
+def _write(archive, path, data):
+    # Stable member timestamps make the same sources produce the same archive.
+    _write_deflated(archive, path, *_deflate(data))
 
 
 def _write_json(archive, path, value):
@@ -412,6 +440,17 @@ def compile_block(store, cells, include=None):
     return payloads, roads
 
 
+def _finish_block(store, cells, include):
+    """A block ready for the zip: deflated bytes and the presence mask, or None when every
+    cell lacked elevation. Deflate runs here so each worker compresses its own blocks."""
+    payloads, counts = compile_block(store, cells, include)
+    if not payloads:
+        return None, counts
+    data, mask = binary.encode_block(payloads)
+    crc, size, blob = _deflate(data)
+    return (crc, size, blob, mask), counts
+
+
 _WORKER = {}
 
 
@@ -431,7 +470,7 @@ def _worker_open(directory, landcover=(), include=None):
 
 def _worker_block(task):
     key, cells = task
-    return key, compile_block(_WORKER['store'], cells, _WORKER.get('include'))
+    return key, _finish_block(_WORKER['store'], cells, _WORKER.get('include'))
 
 
 def _region_spec(region):
@@ -484,8 +523,12 @@ def _landing(present, roads, frame, core):
     return best and best[1]
 
 
+def _stopped(cancel):
+    return cancel is not None and cancel.is_set()
+
+
 def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=(), cover_meta=None, vegetation=None,
-                   include=None, look=None):
+                   include=None, look=None, cancel=None):
     directory, core, region_id = _region_spec(region)
     meta = _source_meta(directory)
     region_id = region_id or meta['id'].replace('_', '-')
@@ -517,6 +560,8 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
             raise ValueError(f'{region_id}: export contains no fully covered source cells')
         total = sum(len(v) for v in blocks.values())
         emit(f'export {region_id}: {total} cells in {len(blocks)} blocks')
+        if _stopped(cancel):
+            raise InterruptedError('build stopped')
         tasks = sorted(blocks.items())
         pool = None
         if jobs > 1 and len(tasks) > 1:
@@ -525,16 +570,21 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
                 min(jobs, len(tasks)), _worker_open, (str(directory), landcover, include))
             results = pool.imap(_worker_block, tasks)
         else:
-            results = ((key, compile_block(store, cells, include)) for key, cells in tasks)
+            results = ((key, _finish_block(store, cells, include)) for key, cells in tasks)
         manifest_blocks, present, roads, done = {}, set(), {}, 0
+        stopped = False
+        finished = False
         try:
-            for (bi, bj), (payloads, counts) in results:
+            for (bi, bj), (packed, counts) in results:
                 done += len(blocks[(bi, bj)])
-                if not payloads:
+                if _stopped(cancel):
+                    stopped = True
+                    break
+                if not packed:
                     continue
-                data, mask = binary.encode_block(payloads)
+                crc, size, blob, mask = packed
                 path = f'{base}/blocks/{bi}_{bj}.bin'
-                _write(archive, path, data)
+                _write_deflated(archive, path, crc, size, blob)
                 manifest_blocks[f'{bi}_{bj}'] = {'path': '/' + path, 'mask': mask}
                 for slot, n in counts.items():
                     cell = (bi*binary.BLOCK + slot % binary.BLOCK, bj*binary.BLOCK + slot // binary.BLOCK)
@@ -542,10 +592,19 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
                     roads[cell] = n
                 if done == total or len(manifest_blocks) % 50 == 0:
                     emit(f'export {region_id}: {done}/{total} cells')
+            else:
+                finished = True
         finally:
             if pool is not None:
-                pool.close()
+                # close() waits for every queued block. Stop, or a worker error, leaves
+                # unread results; on Windows that fills the queue and join never returns.
+                if finished:
+                    pool.close()
+                else:
+                    pool.terminate()
                 pool.join()
+        if stopped:
+            raise InterruptedError('build stopped')
         coverage = []
         if not present:
             raise ValueError(f'{region_id}: no cell exported (no_dem under every source cell)')
@@ -595,7 +654,7 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
 
 
 def build_country(country_id, title, version, regions, out, bbox=None, emit=print, jobs=1, landing=None, landcover=(), vegetation=None,
-                  look=None, include=None):
+                  look=None, include=None, cancel=None):
     """Stream source blocks to ZIP64 and atomically replace the completed archive."""
     _identifier(country_id, 'country id')
     if not isinstance(title, str) or not title.strip() or not isinstance(version, str) or not version.strip():
@@ -631,8 +690,10 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
         with zipfile.ZipFile(temporary, 'w', allowZip64=True) as archive:
             entries = []
             for region in regions:
+                if _stopped(cancel):
+                    raise InterruptedError('build stopped')
                 try:
-                    entries.append(_export_region(archive, country_id, region, bbox, emit, jobs, landcover, cover_meta, vegetation, include, look))
+                    entries.append(_export_region(archive, country_id, region, bbox, emit, jobs, landcover, cover_meta, vegetation, include, look, cancel))
                 except ValueError as exc:
                     # A grid box of open sea or a border sliver: the rest of the country stays.
                     if len(regions) == 1 or not isinstance(region, dict) or 'no ' not in str(exc):
@@ -667,13 +728,15 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
     return target
 
 
-def grid_regions(source, dem, work, step=None, emit=print):
+def grid_regions(source, dem, work, step=None, emit=print, cancel=None):
     """Cover a whole OSM package: one source index per grid box of step degrees, with its own
     frame at the box centre, so the car stays within ~80 km of its origin. A package small
     enough to index whole stays one region."""
     step = step or GRID_STEP
     index = json.loads((Path(source) / 'index.json').read_bytes())
     name = re.sub(r'[^a-z0-9-]+', '-', Path(source).name.lower()).strip('-')
+    if _stopped(cancel):
+        raise InterruptedError('build stopped')
     if len(index['tiles']) <= sources.WINDOW_TILES:
         directory, _ = sources.prepare(source, Path(work) / 'fast-index', dem, emit=emit)
         return [{'dir': directory, 'core': index['package_box'], 'id': name}]
@@ -688,6 +751,8 @@ def grid_regions(source, dem, work, step=None, emit=print):
                 boxes.add((bx, by))
     regions = []
     for n, (bx, by) in enumerate(sorted(boxes)):
+        if _stopped(cancel):
+            raise InterruptedError('build stopped')
         core = [round(bx*dx, 6), round(by*dy, 6), round((bx+1)*dx, 6), round((by+1)*dy, 6)]
         window = [core[0]-PAD[0], core[1]-PAD[1], core[2]+PAD[0], core[3]+PAD[1]]
         emit(f'index {n+1}/{len(boxes)}: {core}')

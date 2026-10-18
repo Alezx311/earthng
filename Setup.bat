@@ -15,4 +15,4 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo EarthNG country builder is ready.
+echo EarthNG Map Builder is ready.

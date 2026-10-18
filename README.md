@@ -27,8 +27,9 @@ terrain detail and performance vary between places.
 
 Install **Python 3.13** from python.org, including the Python launcher and Tcl/Tk.
 Download or clone this repository, extract it to a writable folder, then open
-**Country.bat**. On first use it runs **Setup.bat** to create `.venv` and install
-the required packages. An internet connection is required for setup and new data.
+**MapBuilder.bat** (Country.bat still starts the same window). On first use it runs
+**Setup.bat** to create `.venv` and install the required packages. An internet
+connection is required for setup and new data.
 
 In the country window:
 
@@ -45,8 +46,9 @@ existing planet ZIP; it does not create the base assets.
 For a small test, choose Liechtenstein. Large countries can require many GB of
 source data, temporary files and hours of processing. A custom bounding box limits
 the exported area, but still downloads the selected region's complete PBF.
-The Stop button cancels downloads/tile cutting; later steps finish the current
-stage, then stop before installation. Keep the window open until the worker stops.
+The Stop button cancels the build before the pack is installed. Tile cutting stops
+at once. A download, the region index and the export stop at the next chunk, region
+or block. Keep the window open until the worker stops.
 
 Console equivalent (also useful for Linux/macOS with a local Python environment):
 

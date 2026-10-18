@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 import zipfile
@@ -114,6 +115,27 @@ class CountryTests(unittest.TestCase):
             self.assertEqual(cell['terrain']['rect'], [1000, 0, 2000, 1000])
             self.assertEqual(cell['roads'][0]['nodes'][0], '9007199254740993')
         self.store.db.close.assert_called_once()
+
+    def test_deflated_block_reads_back(self):
+        data = b'terrain-grid' * 80
+        target = self.root / 'one.zip'
+        with zipfile.ZipFile(target, 'w', allowZip64=True) as archive:
+            country._write(archive, 'earthng/countries/ua/regions/r/blocks/0_0.bin', data)
+        with zipfile.ZipFile(target) as archive:
+            info = archive.getinfo('earthng/countries/ua/regions/r/blocks/0_0.bin')
+            self.assertEqual(info.compress_type, zipfile.ZIP_DEFLATED)
+            self.assertEqual(info.date_time, (2020, 1, 1, 0, 0, 0))
+            self.assertLess(info.compress_size, len(data))
+            self.assertEqual(archive.read(info), data)
+
+    def test_cancel_stops_before_a_pack_is_published(self):
+        cancel = threading.Event()
+        cancel.set()
+        with patch.object(sources, 'Store', return_value=self.store):
+            with self.assertRaisesRegex(InterruptedError, 'build stopped'):
+                country.build_country('ua', 'Title', '1', [self.region], self.root / 'mods',
+                                      (-1000, 0, 2000, 1000), emit=lambda _line: None, cancel=cancel)
+        self.assertEqual(list((self.root / 'mods').glob('earthng_ua.zip')), [])
 
     def test_binary_cell_round_trip_keeps_centimetres_and_shared_seams(self):
         a = country.compile_cell(self.store, [0, 0, 1000, 1000])

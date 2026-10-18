@@ -206,10 +206,21 @@ def fetch_dem(index, dem, emit=print, cancel=None):
                 if attempt == 5:
                     raise
                 time.sleep(2 + attempt * 2)
-    if missing:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(8) as pool:
-            list(pool.map(one, missing))
+    if not missing:
+        return
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    with ThreadPoolExecutor(8) as pool:
+        pending = {pool.submit(one, path) for path in missing}
+        try:
+            while pending:
+                if cancel is not None and cancel.is_set():
+                    raise InterruptedError('build stopped')
+                done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+                for future in done:
+                    future.result()
+        finally:
+            for future in pending:
+                future.cancel()
 
 
 def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=None,
@@ -250,12 +261,12 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
         raise InterruptedError('build stopped')
     work = Path(root) / 'out' / 'world'
     emit('region index')
-    regions = build_country.grid_regions(tiles, dem, work, emit=emit)
+    regions = build_country.grid_regions(tiles, dem, work, emit=emit, cancel=cancel)
     out = Path(root) / 'out' / 'country-setup'
     emit(f"building earthng_{slug_id}.zip, block {look['block']}")
     archive = build_country.build_country(
         slug_id, place['name'], '0.4.0', regions, out, emit=emit, jobs=jobs,
-        landing=landing, look=look, include=include)
+        landing=landing, look=look, include=include, cancel=cancel)
     if cancel is not None and cancel.is_set():
         raise InterruptedError('build stopped; completed ZIP retained, not installed')
     installed = install_zip(archive, mods, slug_id)
@@ -264,7 +275,7 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
 
 
 def run_step(command, emit=print, cancel=None):
-    """Capture worker output even when Country.bat uses pythonw; cancel its process tree."""
+    """Capture worker output even when MapBuilder.bat uses pythonw; cancel its process tree."""
     import threading
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
     with subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

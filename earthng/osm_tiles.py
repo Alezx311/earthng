@@ -166,10 +166,9 @@ def cut(pbf, out, package_box=None):
             m = tiles.get(obj.id, 0)
             if not m:
                 continue
-            for k in keys:
-                if m & bit[k]:
-                    getattr(writers[k], method)(obj)
-                    counts[k][label] += 1
+            for k in _mask_keys(m, keys):
+                getattr(writers[k], method)(obj)
+                counts[k][label] += 1
     finally:
         for w in writers.values():
             w.close()
@@ -193,14 +192,43 @@ def cut(pbf, out, package_box=None):
     return index
 
 
+def _mask_keys(mask, order):
+    """Keys whose bit is set. ``order[i]`` was stored as bit ``1 << i``."""
+    while mask:
+        bit = mask & -mask
+        yield order[bit.bit_length() - 1]
+        mask -= bit
+
+
 def tile_for(index, bbox):
-    """The tile whose coverage contains the whole bbox (west, south, east, north), or None."""
+    """The tile whose coverage contains the whole bbox (west, south, east, north), or None.
+
+    A tile key is the grid cell, so only the cells under the bbox can match. Coverages
+    overlap by the buffer; the lexicographically first key is the one a scan of the
+    sorted index used to return.
+    """
     w, s, e, n = bbox
-    for key, t in index['tiles'].items():
-        cw, cs, ce, cn = t['coverage']
-        if cw <= w and cs <= s and e <= ce and n <= cn:
-            return key, t
-    return None
+    cell = index.get('cell', CELL)
+    buffer = index.get('buffer', BUFFER)
+    tiles = index['tiles']
+
+    def span(lo, hi):
+        # ix*cell - buffer <= lo and (ix+1)*cell + buffer >= hi, plus one cell of rounding.
+        start = math.floor((hi - buffer) / cell - 1) - 1
+        stop = math.floor((lo + buffer) / cell) + 1
+        return range(start, stop + 1)
+
+    found = None
+    for ix in span(w, e):
+        for iy in span(s, n):
+            key = f'{ix}_{iy}'
+            tile = tiles.get(key)
+            if tile is None:
+                continue
+            cw, cs, ce, cn = tile['coverage']
+            if cw <= w and cs <= s and e <= ce and n <= cn and (found is None or key < found[0]):
+                found = (key, tile)
+    return found
 
 
 def main():

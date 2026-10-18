@@ -1,6 +1,6 @@
-"""Window: download a ready country pack, or build one with its own layers and assets.
+"""Window: download a ready map pack, or build one with its own layers and assets.
 
-    Country.bat
+    MapBuilder.bat
     pythonw earthng/country_ui.py
 """
 from __future__ import annotations
@@ -50,7 +50,7 @@ class Setup:
         self.lines = queue.Queue()
         self.cancel = None
         self.worker = None
-        root.title('EarthNG — country pack')
+        root.title('EarthNG — Map Builder')
         root.geometry('980x740')
         root.minsize(860, 640)
         self.mods = tk.StringVar(value=self.settings['mods'])
