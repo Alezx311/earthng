@@ -783,10 +783,18 @@ local function focus()
       S.camDist = dist
       S.heldCar = nil
       if okPos and cam and dist and dist > CAM_HANDOFF_M and not (okName and DRIVE_CAM[name]) then
-        -- the car stays where it was parked: updateTiles keeps the ground under it
+        -- the car stays where it was parked: updateTiles keeps the ground under it. The camera's
+        -- own motion is the velocity, so a flight gets its tiles ahead like a driven car.
         S.heldCar = {p.x, p.y}
-        return vec3(cam.x, cam.y, cam.z), vec3(0, 0, 0)
+        if S.camFrame ~= S.now then      -- focus() runs several times a frame
+          local prev, vx, vy = S.camPrev, 0, 0
+          if prev and (S.dt or 0) > 0 then vx, vy = (cam.x - prev[1]) / S.dt, (cam.y - prev[2]) / S.dt end
+          if vx * vx + vy * vy > 250 ^ 2 then vx, vy = 0, 0 end   -- a jump, not a flight
+          S.camPrev, S.camFrame, S.camVel = {cam.x, cam.y}, S.now, {vx, vy}
+        end
+        return vec3(cam.x, cam.y, cam.z), vec3(S.camVel[1], S.camVel[2], 0)
       end
+      S.camPrev = nil
       return p, v
     end
   end
@@ -1292,7 +1300,8 @@ end
 local function stepQueue()
   local frame = hptimer()
   -- Retires queued by updateTiles this frame start before new crowns are added.
-  local budget = math.max(.5, BUDGET_MS - (S.nativeMs or 0))
+  -- test.genBudget (showcase stills): frame time does not matter, the place must finish loading
+  local budget = test and test.genBudget or math.max(.5, BUDGET_MS - (S.nativeMs or 0))
   local function over() return frame:stop() >= budget end
   local function pause() if over() then coroutine.yield() end end
   if S.co and S.job and S.job.tile.dropped then S.co, S.job = nil, nil end
@@ -1493,7 +1502,8 @@ local function showLights(cfg)
   dropLights()
   if not cfg then return end
   S.lightCfg, S.lightPool = cfg, {}
-  for k = 1, cfg.count or 24 do
+  -- test.lights (stills): a bigger pool over a wider reach; a frame seen from above lit 1-2 lamps
+  for k = 1, (test and test.lights) or cfg.count or 24 do
     local c = cfg.colors[(k - 1) % #cfg.colors + 1]
     local l = createObject('PointLight')
     l:setField('radius', 0, tostring(cfg.radius or 20))
@@ -1519,7 +1529,7 @@ local function lightsStep()
   local near = {}
   for key, p in pairs(S.lamps) do
     local d = (p[1] - cam.x) ^ 2 + (p[2] - cam.y) ^ 2
-    if d < 400 * 400 then near[#near + 1] = {d, p} elseif d > 2000 * 2000 then S.lamps[key] = nil end
+    if d < (test and test.lights and 900 or 400) ^ 2 then near[#near + 1] = {d, p} elseif d > 2000 * 2000 then S.lamps[key] = nil end
   end
   table.sort(near, function(a, b) return a[1] < b[1] end)
   result.lampsNear, result.lightsPlaced = #near, math.min(#near, #pool)
@@ -3078,6 +3088,7 @@ local function drawTune()
 end
 
 local function drawWindow()
+  if test and test.clean then return end   -- a clean screen for recorded video
   pushTheme()
   if S.widgetHidden then
     im.Begin('EarthNG##restore', nil, im.WindowFlags_AlwaysAutoResize)
@@ -3239,6 +3250,28 @@ end
 local function runTest()
   -- automation: pick, land, drive (straight, or the route with the autopilot), screenshots
   local t = S.now - (S.phaseAt or 0)
+  -- showcase waits (gallery views, flight start): what still loads round the focus. Near and
+  -- far tiles not built, horizon blocks not built, items not spawned; returns busy and a
+  -- signature that changes while anything still arrives (the horizon may trail).
+  S.settleProbe = S.settleProbe or function()
+    local loaded, loading = countTiles()
+    local st = S.status and S.status.stream or {}
+    local near, far, horizon = 0, 0, 0
+    for key, priority in pairs(st.wanted or {}) do
+      if key:sub(1, 1) == 'h' then
+        if not (st.horizon and st.horizon[key]) then horizon = horizon + 1 end
+      elseif priority < 1e6 then
+        if not (st.ready and st.ready[key]) then near = near + 1 end
+      elseif not ((st.far and st.far[key]) or (st.ready and st.ready[key])) then
+        far = far + 1
+      end
+    end
+    -- busy by the generator's own queue: it leaves out failed tiles and those evicted this epoch
+    -- (the far ring at OASIS outgrows the tile cache), which never become ready
+    local queued, building = st.queued or 0, st.building or 0
+    local busy = queued > 0 or building > 0 or loading > 0 or #S.queue > 0 or (S.reloadQueue and #S.reloadQueue > 0) or false
+    return busy, string.format('%d/%d/%d/%d/%d/q%d', loaded, near, far, horizon, #S.queue, queued)
+  end
   if test.quality and not S.testQuality and S.state == 'pick' then
     S.testQuality = true
     S.tune = quality.preset(test.quality)
@@ -3385,7 +3418,21 @@ local function runTest()
       local okR2, env2 = pcall(function() return core_environment.getState() end)
       if okR2 and env2 then result.envRain = {numOfDrops = env2.numOfDrops, cloudCover = env2.cloudCover} end
     end
+    -- showcase shots: the hour of the light (the game's 0..1, 0 noon), after the pack's own
+    if test.tod then pcall(function() core_environment.setTimeOfDay({time = test.tod}) end) end
+    if test.fog then
+      pcall(function()
+        local info = scenetree.findObject('theLevelInfo')
+        info:setField('fogDensity', 0, tostring(test.fog))
+        info:postApply()
+      end)
+    end
     if test.traffic then setTraffic(test.traffic) end
+    if test.recordDrive then
+      -- the drive itself is the clip: no game HUD, the driver records until 'stop'
+      pcall(function() extensions.ui_visibility.setCef(false) end)
+      jsonWriteFile('e2r-rec.json', {rec = 'start', clip = 'drive'}, false)
+    end
     S.testDriving, S.frames = S.now, {}
     if test.route then
       local ok, route = pcall(jsonReadFile, test.route)
@@ -3464,7 +3511,7 @@ local function runTest()
       S.traceZ = p.z
       saveResult()
     end
-    if AP and AP.travelled / 1000 >= S.nextShotKm then
+    if AP and not test.recordDrive and AP.travelled / 1000 >= S.nextShotKm then   -- a shot stalls a recorded frame
       shot(string.format('6-route-%02dkm', S.nextShotKm))
       S.nextShotKm = S.nextShotKm + 2
     end
@@ -3475,6 +3522,7 @@ local function runTest()
       result.driveFrames = accStats(S.driveAcc)
       result.travelledM = AP and AP.travelled or S.travelled or 0
       if AP then result.routeDone = AP.done or false end
+      if test.recordDrive then jsonWriteFile('e2r-rec.json', {rec = 'stop', clip = 'drive'}, false) end
       shot('5-driving')
       -- 'passed' only when every gate holds; finishing the timer alone is not a result
       local f = {}
@@ -3538,7 +3586,7 @@ local function runTest()
       local f = vec3(d.x, d.y, 0):normalized()
       local r = vec3(f.y, -f.x, 0)
       local function at(back, side, up) return vec3(p.x - f.x * back + r.x * side, p.y - f.y * back + r.y * side, p.z + up) end
-      S.gallery = {
+      S.gallery = test.onlyViews and {} or {
         {'g1-street', at(7, 0, 1.9), at(-45, 0, 1.2)},
         {'g2-left', at(0, -1.5, 1.7), at(-18, -30, 7)},
         {'g3-right', at(0, 1.5, 1.7), at(-18, 30, 7)},
@@ -3546,21 +3594,63 @@ local function runTest()
         {'g5-high', at(220, 30, 140), at(-180, 0, 0)},
       }
       for _, v in ipairs(test.views or {}) do
-        table.insert(S.gallery, {'v-' .. v.name, vec3(v.cam[1], v.cam[2], v.cam[3]), vec3(v.at[1], v.at[2], v.at[3])})
+        local cam, look = v.cam, v.at
+        -- a view by lat/lon (camGeo/atGeo: lat, lon, z in the game's frame) goes through the region's projection
+        if v.camGeo and v.atGeo and NATIVE then
+          local cx, cy = native.localPoint(v.camGeo[1], v.camGeo[2])
+          local tx, ty = native.localPoint(v.atGeo[1], v.atGeo[2])
+          cam, look = cx and {cx, cy, v.camGeo[3]}, tx and {tx, ty, v.atGeo[3]}
+        end
+        if cam and look then
+          table.insert(S.gallery, {'v-' .. v.name, vec3(cam[1], cam[2], cam[3]), vec3(look[1], look[2], look[3]), v.camAgl, v.atAgl})
+        end
       end
       S.galleryIdx, S.galleryAt, S.galleryPrefix = 0, S.now - 10, ''
-      -- test.packGallery: the same views once per pack
+      -- test.packGallery: each view in every pack before the camera moves on. A far view
+      -- reloads the place round the camera (minutes at OASIS); a pack switch reloads only
+      -- materials, so the packs are the inner loop.
       S.galleryPacks = {}
-      for _, name in ipairs(test.packGallery or {}) do table.insert(S.galleryPacks, name) end
-      if #S.galleryPacks > 0 then
-        local name = table.remove(S.galleryPacks, 1)
-        applyPack(name)
-        S.galleryPrefix, S.galleryAt = name .. '-', S.now + 3
+      if test.packGallery and #test.packGallery > 0 then
+        local views = S.gallery
+        S.gallery = {}
+        for _, v in ipairs(views) do
+          for _, name in ipairs(test.packGallery) do table.insert(S.gallery, {v[1], pack = name, view = v}) end
+        end
       end
       -- the game's HUD (dashboard, camera help) off for the pictures
       pcall(function() extensions.ui_visibility.setCef(false) end)
     end
-    if S.galleryPending and S.now - S.galleryAt > 1.6 then
+    -- test.viewSettle: a far view moves the streaming focus to the camera, so the shot waits
+    -- until nothing has loaded for 3 s (at most viewSettle s)
+    local ready = S.galleryPending and S.now - S.galleryAt > 1.6
+    if ready and test.viewSettle then
+      local busy, sig = S.settleProbe()
+      if busy or sig ~= S.settleSig or S.settleFor ~= S.galleryPending then
+        S.settleSig, S.settleAt, S.settleFor = sig, S.now, S.galleryPending
+      end
+      local waited = S.now - S.galleryAt
+      ready = (waited > 4 and S.now - S.settleAt > 3) or waited > test.viewSettle
+      -- heights over the game's own surface (camAgl/atAgl): known only once the ground is built
+      local v = S.galleryView
+      if ready and v and (v[4] or v[5]) and not v.fixed then
+        local function surface(p)
+          local okHit, hit = pcall(Engine.castRay, vec3(p.x, p.y, p.z + 3000), vec3(p.x, p.y, p.z - 3000), true, true)
+          return okHit and hit and hit.pt and hit.pt.z
+        end
+        local zc, zt = v[4] and surface(v[2]), v[5] and surface(v[3])
+        if zc then v[2] = vec3(v[2].x, v[2].y, zc + v[4]) end
+        if zt then v[3] = vec3(v[3].x, v[3].y, zt + v[5]) end
+        v.fixed = true
+        local q = quatFromDir(v[3] - v[2], vec3(0, 0, 1))
+        core_camera.setPosRot(0, v[2].x, v[2].y, v[2].z, q.x, q.y, q.z, q.w)
+        S.galleryAt, S.settleAt, ready = S.now - 2.5, S.now - 2, false
+      end
+      if ready then
+        result.settle = result.settle or {}
+        result.settle[S.galleryPending] = {math.floor(waited * 10) / 10, busy, sig}
+      end
+    end
+    if ready then
       shot(S.galleryPending)
       S.galleryPending = nil
       S.galleryAt = S.now
@@ -3576,14 +3666,90 @@ local function runTest()
         pcall(function() extensions.ui_visibility.setCef(true) end)
         S.overviewTaken = S.now - 2
       else
-        local q = quatFromDir(v[3] - v[2], vec3(0, 0, 1))
+        -- the view itself (its heights corrected once, kept for the next packs)
+        local view, switched = v.view or v, false
+        if v.pack and S.pack ~= v.pack then applyPack(v.pack); switched = true end
+        local q = quatFromDir(view[3] - view[2], vec3(0, 0, 1))
         commands.setFreeCamera()
-        core_camera.setPosRot(0, v[2].x, v[2].y, v[2].z, q.x, q.y, q.z, q.w)
-        S.galleryPending, S.galleryAt = S.galleryPrefix .. v[1], S.now
+        core_camera.setPosRot(0, view[2].x, view[2].y, view[2].z, q.x, q.y, q.z, q.w)
+        S.galleryPending = (v.pack and v.pack .. '-' or S.galleryPrefix) .. v[1]
+        S.galleryAt, S.galleryView = S.now + (switched and 2.5 or 0), view
       end
     end
+  elseif test.flight and S.overviewTaken and not S.flightDone and (not test.gallery or S.galleryDone)
+      and not (S.packQueue and #S.packQueue > 0) and not S.packShot then
+    -- test.flight: a camera flight through keys (lat, lon, z in the game's frame) on a Catmull-Rom
+    -- curve at test.flight.speed m/s, eased at both ends. It waits at the first key until the
+    -- place has loaded; e2r-rec.json tells the driver when to record.
+    local F = S.flight
+    if not F then
+      local pts, looks = {}, {}
+      for _, k in ipairs(test.flight.keys or {}) do
+        local cx, cy = native.localPoint(k.cam[1], k.cam[2])
+        local tx, ty = native.localPoint(k.at[1], k.at[2])
+        if cx and tx then pts[#pts + 1], looks[#looks + 1] = vec3(cx, cy, k.cam[3]), vec3(tx, ty, k.at[3]) end
+      end
+      local n, samples, length = #pts, {}, 0
+      local function cr(t, i, u)
+        local p0, p1, p2, p3 = t[math.max(1, i - 1)], t[i], t[math.min(n, i + 1)], t[math.min(n, i + 2)]
+        return (p1 * 2 + (p2 - p0) * u + (p0 * 2 - p1 * 5 + p2 * 4 - p3) * (u * u) + (p3 - p0 + (p1 - p2) * 3) * (u * u * u)) * 0.5
+      end
+      for i = 1, n - 1 do
+        for k = 0, (i == n - 1) and 40 or 39 do
+          local pos = cr(pts, i, k / 40)
+          if #samples > 0 then length = length + (pos - samples[#samples][1]):length() end
+          samples[#samples + 1] = {pos, cr(looks, i, k / 40), length}
+        end
+      end
+      F = {samples = samples, length = length, s = 0, idx = 1, at = S.now, phase = n >= 2 and 'settle' or 'done'}
+      S.flight = F
+      result.flight = {keys = n, length = math.floor(length)}
+      commands.setFreeCamera()
+      pcall(function() extensions.ui_visibility.setCef(false) end)
+    end
+    local function place(sample)
+      local q = quatFromDir(sample[2] - sample[1], vec3(0, 0, 1))
+      core_camera.setPosRot(0, sample[1].x, sample[1].y, sample[1].z, q.x, q.y, q.z, q.w)
+    end
+    if F.phase == 'settle' then
+      place(F.samples[1])
+      local busy, sig = S.settleProbe()
+      if busy or sig ~= F.sig then F.sig, F.quietAt = sig, S.now end
+      if (S.now - F.at > 5 and S.now - F.quietAt > 3) or S.now - F.at > (test.flight.settle or 90) then
+        result.flight.settleSeconds, result.flight.settled = math.floor(S.now - F.at), sig
+        -- test.flight.warmup: one pass at triple speed, unrecorded, so the take flies through cached tiles
+        F.rate = (test.flight.warmup and not F.warmed) and 3 or 1
+        F.phase, F.at = 'fly', S.now
+        if F.rate == 1 then jsonWriteFile('e2r-rec.json', {rec = 'start', clip = test.flight.clip or 'flight'}, false) end
+      end
+    elseif F.phase == 'fly' then
+      -- 2 s of record lead-in and lead-out, then speed eased over the first and last 15 % of the length
+      local t, ease = S.now - F.at, math.max(1, F.length * 0.15)
+      if t > 2 or F.rate ~= 1 then
+        local f = math.max(0.12, math.min(1, F.s / ease, (F.length - F.s) / ease))
+        F.s = math.min(F.length, F.s + (test.flight.speed or 30) * F.rate * f * (S.dt or 0))
+      end
+      local smp = F.samples
+      while F.idx < #smp - 1 and smp[F.idx + 1][3] <= F.s do F.idx = F.idx + 1 end
+      local a, b = smp[F.idx], smp[F.idx + 1] or smp[F.idx]
+      local u = b[3] > a[3] and (F.s - a[3]) / (b[3] - a[3]) or 0
+      place({a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u})
+      if F.s >= F.length then F.endAt = F.endAt or S.now end
+      if F.endAt and F.rate ~= 1 then
+        result.flight.warmSeconds = math.floor(S.now - F.at)
+        F.warmed, F.s, F.idx, F.endAt, F.phase, F.at = true, 0, 1, nil, 'settle', S.now
+      elseif F.endAt and S.now - F.endAt > 2 then
+        jsonWriteFile('e2r-rec.json', {rec = 'stop', clip = test.flight.clip or 'flight'}, false)
+        result.flight.seconds = math.floor(S.now - F.at)
+        F.phase = 'done'
+      end
+    else
+      S.flightDone = true
+      pcall(function() extensions.ui_visibility.setCef(true) end)
+      S.overviewTaken = S.now - 2
+    end
   elseif S.overviewTaken and not (S.packQueue and #S.packQueue > 0) and not S.packShot and S.now - S.overviewTaken > 1
-      and (not test.gallery or S.galleryDone) then
+      and (not test.gallery or S.galleryDone) and (not test.flight or S.flightDone) then
     result.status = #result.failures == 0 and 'passed' or 'failed'
     saveResult()
     shutdown(0)
@@ -3729,7 +3895,7 @@ function M.tick(dt)
         if kb >= S.profKb then P.kbUp = P.kbUp + kb - S.profKb else P.collections = P.collections + 1 end
       end
     end
-    native.update(dt, BUDGET_MS)
+    native.update(dt, test and test.genBudget or BUDGET_MS, test and test.genBudget)
     S.nativeMs = t:stop()
     profAdd('native', S.nativeMs, collectgarbage('count') - kb)
     S.profKb = collectgarbage('count')

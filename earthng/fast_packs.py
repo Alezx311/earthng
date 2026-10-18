@@ -321,6 +321,11 @@ def autumn_leaves(rel):
 
 # --- the packs --------------------------------------------------------------------------------------
 GROUND_KINDS = ('ground', 'park', 'forest')
+# the cover classes added after the packs (nature.py); winter snows them over with the ground's
+# sheet and rain darkens them like the ground. Before this they stayed summer-green in the snow.
+COVER_KINDS = ('meadow', 'farmland', 'orchard', 'vineyard', 'scrub', 'heath', 'wetland', 'bare_ground',
+               'bare_rock', 'scree')
+UNPAVED_ROADS = ('road_gravel', 'road_dirt', 'road_track')
 GLOW = {'night': '1.8 1.8 1.8', 'cyber': '2.2 2.2 2.2', 'rain': '1.4 1.4 1.4'}      # emissive gain of lit windows
 # Only luminous objects emit. Ambient visibility belongs to the sky/exposure, not
 # to an albedo-as-emission workaround that makes the entire city glow.
@@ -424,11 +429,19 @@ def fields(pack, base, real):
             for w in walls:
                 put('wall_' + w, baseColorFactor='0.68 0.68 0.7 1')
             put('water', baseColorFactor=_colour((.1, .14, .16)), roughnessFactor=.05)
-            for kind in GROUND_KINDS:
+            for kind in GROUND_KINDS + COVER_KINDS:
                 put(kind, baseColorFactor='0.62 0.66 0.6 1')
     if pack == 'winter':
         for kind in GROUND_KINDS + ('paved',):
             put(kind, baseColorMap=f'{art}/ground_{kind}.color.png', normalMap=f'{art}/ground_{kind}.normal.png',
+                roughnessMap='', ambientOcclusionMap='', baseColorFactor='1 1 1 1')
+        for kind in COVER_KINDS:
+            # rock and scree keep a grey cast under the snow
+            put(kind, baseColorMap=f'{art}/ground_ground.color.png', normalMap=f'{art}/ground_ground.normal.png',
+                roughnessMap='', ambientOcclusionMap='',
+                baseColorFactor='0.82 0.84 0.88 1' if kind in ('bare_rock', 'scree') else '1 1 1 1')
+        for kind in UNPAVED_ROADS:
+            put(kind, baseColorMap=f'{art}/trodden.color.png', normalMap=f'{art}/trodden.normal.png',
                 roughnessMap='', ambientOcclusionMap='', baseColorFactor='1 1 1 1')
         for kind in ('roof', 'roof_tile', 'roof_metal'):
             put(kind, baseColorMap=f'{art}/roof.color.png', normalMap=f'{art}/roof.normal.png', roughnessMap='',
@@ -441,7 +454,8 @@ def fields(pack, base, real):
             put(k, roughnessMap=f'{art}/slush.data.png', baseColorFactor='0.95 0.96 1 1')
         put('curb', baseColorFactor=_colour((.93, .95, 1)))
         put('parapet', baseColorFactor=_colour((.88, .9, .95)))
-        put('water', baseColorFactor=_colour((.72, .8, .86)), roughnessFactor=.12)
+        # cold open water: as pale ice it merged with the snow and rivers vanished (the Inn)
+        put('water', baseColorFactor=_colour((.3, .38, .45)), roughnessFactor=.12)
         for w in walls:
             put('wall_' + w, baseColorFactor='0.92 0.94 1 1')
     if pack == 'autumn':

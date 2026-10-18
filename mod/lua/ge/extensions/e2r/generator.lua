@@ -2115,7 +2115,7 @@ local function build(cells, i, j, options)
       for _, p in ipairs(exterior) do low, cx, cy = math.min(low, ground(p[1], p[2])), cx + p[1], cy + p[2] end
       local base = sourceCount > 0 and sourceSum / sourceCount or ground(cx / #exterior, cy / #exterior)
       if sourceCount > 0 then low = sourceLow end
-      local height = math.max(2.5, math.min(250, building.height or number(tags.height, number(tags['building:levels'], 3) * 3)))
+      local height = math.max(2.5, math.min(850, building.height or number(tags.height, number(tags['building:levels'], 3) * 3)))
       local bottom = (building.minHeight or number(tags.min_height, 0)) > 0 and base + (building.minHeight or number(tags.min_height, 0)) or low - .3
       local top, kind = base + height, wallMaterial(building, look)
       for _, raw in ipairs(rings) do

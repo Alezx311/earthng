@@ -45,6 +45,21 @@ def fetch(path):
             time.sleep(1)
 
 
+def height(lat,lon,cache):
+    """Raw Terrarium height in metres at a point (bilinear in the z12 tile), fetched if missing.
+    For placing cameras; the exporter samples its own despiked grid."""
+    from PIL import Image
+    fx=(lon+180)/360*4096*256-.5; fy=(1-math.asinh(math.tan(math.radians(lat)))/math.pi)/2*4096*256-.5
+    x0,y0=math.floor(fx),math.floor(fy); u,v=fx-x0,fy-y0
+    def at(px,py):
+        path=Path(cache)/'terrain/12'/str(px//256)/f'{py//256}.png'
+        fetch(path)
+        with Image.open(path) as image:
+            r,g,b=image.convert('RGB').getpixel((px%256,py%256))
+        return r*256+g+b/256-32768
+    return ((at(x0,y0)*(1-u)+at(x0+1,y0)*u)*(1-v)+(at(x0,y0+1)*(1-u)+at(x0+1,y0+1)*u)*v)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--sources',required=True); p.add_argument('--cache',required=True)

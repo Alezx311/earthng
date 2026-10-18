@@ -280,6 +280,39 @@ class CountryTests(unittest.TestCase):
         self.assertEqual(a[40::41], b[0::41])
         self.assertEqual((a[20 * 41 + 40], a[20 * 41 + 20]), (240., 140.))  # spike and pit gone
 
+    def test_coastline_sinks_the_blurred_sea_and_keeps_its_land_dry_with_equal_seams(self):
+        # the coast runs east along y = 500, land (north) on its left; the DEM is a 3 m shelf
+        coast = (-9, 'coastline', {'tags': {'natural': 'coastline'}}, LineString([(-3000, 500), (5000, 500)]))
+        flat = Mock(sample=lambda xy: np.full(len(xy), sources.LIFT + 3.0))
+        scenery = self.store.scenery
+        self.store.scenery = lambda rect: scenery(rect) + [coast]
+        self.store.terrain = flat
+        cell = country.compile_cell(self.store, [0, 0, 1000, 1000])
+        heights = np.array(cell['terrain']['heights']).reshape(41, 41)
+        self.assertTrue((heights[:20] < sources.LIFT - 1).all())        # sea under the plane
+        self.assertTrue((heights[21:] == sources.LIFT + 3.0).all())     # land keeps its DEM
+        self.assertLess(heights[0, 0], heights[19, 0])                   # deeper away from shore
+        self.assertNotIn('coastline', {f['kind'] for f in cell['lines']})
+        right = country.compile_cell(self.store, [1000, 0, 2000, 1000])['terrain']['heights']
+        self.assertEqual(cell['terrain']['heights'][40::41], right[0::41])
+        # low land beside the coast stays above the sea plane; a polder farther in keeps its DEM
+        self.store.terrain = Mock(sample=lambda xy: np.full(len(xy), sources.LIFT - 2.0))
+        low = np.array(country.compile_cell(self.store, [0, 0, 1000, 1000])['terrain']['heights']).reshape(41, 41)
+        self.assertTrue((low[21:33] >= sources.LIFT + 0.6).all())
+        self.assertTrue((low[33:] == sources.LIFT - 2.0).all())
+
+    def test_coastline_nearest_shore_decides_beside_a_narrow_cape(self):
+        # a cape 200 m wide pointing north (land inside, counter-clockwise outline): the sea 300 m
+        # east of it is still sea although the cape's far shore is within the band
+        cape = LineString([(600, -3000), (600, 900), (500, 1000), (400, 900), (400, -3000)])
+        coast = (-9, 'coastline', {'tags': {'natural': 'coastline'}}, cape)
+        self.store.scenery = lambda rect: [coast]
+        self.store.terrain = Mock(sample=lambda xy: np.full(len(xy), sources.LIFT + 3.0))
+        heights = np.array(country.compile_cell(self.store, [0, 0, 1000, 1000])['terrain']['heights']).reshape(41, 41)
+        self.assertLess(heights[10, 36], sources.LIFT - 1)               # x = 900: sea east of the cape
+        self.assertLess(heights[10, 4], sources.LIFT - 1)                # x = 100: sea west of it
+        self.assertEqual(heights[10, 20], sources.LIFT + 3.0)            # x = 500: the cape itself
+
     def test_nonfinite_geometry_and_terrain_are_rejected(self):
         data = copy.deepcopy(ROAD)
         data['prof'][1][0] = float('nan')

@@ -210,7 +210,7 @@ def compile_cell(store, rect, include=None):
     seen.clear()
     pending, points = [], []
     for fid, kind, data, geometry in _scenery(store, padded):
-        if (kind, fid) in seen or not looks.keep_scenery(kind, include):
+        if kind == 'coastline' or (kind, fid) in seen or not looks.keep_scenery(kind, include):
             continue
         seen.add((kind, fid))
         tags = data.get('tags', {})
@@ -222,7 +222,7 @@ def compile_cell(store, rect, include=None):
         for n, part in enumerate(_parts(geometry, 'Polygon')):
             feature = {'id': f'{fid}:{n}', 'kind': kind, 'rings': _rings(store, part, None, pending), 'tags': tags}
             if kind == 'building':
-                height = max(2.5, min(250., sources.number(tags.get('height'),
+                height = max(2.5, min(850., sources.number(tags.get('height'),
                              sources.number(tags.get('building:levels'), 3) * 3)))
                 feature.update(height=height, minHeight=max(0., sources.number(tags.get('min_height'), 0.)))
                 cell['buildings'].append(feature)
@@ -264,8 +264,88 @@ def compile_cell(store, rect, include=None):
         heights = np.asarray(store.terrain.sample(np.array([(x, y) for y in ys for x in xs])), dtype=float)
     if not np.isfinite(heights).all():
         raise ValueError('non-finite terrain grid')
+    heights = _coast(store, rect, xs, ys, heights)
     cell['terrain'] = {'rect': list(rect), 'nx': len(xs), 'ny': len(ys), 'heights': heights.tolist()}
     return cell
+
+
+def _coastlines(store, box):
+    """natural=coastline ways (local frame) under box. A source store reads them once per OSM tile:
+    a full scenery read of the window cost a dense Manhattan cell ~80 s. Other stores (tests)
+    give them through scenery."""
+    tiles = getattr(store, 'source_index', {}).get('tiles')
+    if not tiles or not hasattr(store, 'meta'):
+        return [geometry for _fid, kind, _data, geometry in _scenery(store, box) if kind == 'coastline']
+    import osmium
+    cache = store.__dict__.setdefault('_coast_tiles', {})
+    w, s, e, n = store.frame.geo_bbox(box)
+    ways = {}
+    for key, entry in tiles.items():
+        cw, cs, ce, cn = entry['coverage']
+        if ce < w or cw > e or cn < s or cs > n:
+            continue
+        if key not in cache:
+            found = {}
+            for obj in osmium.FileProcessor(str(Path(store.meta['source']) / entry['file'])).with_locations()                     .with_filter(osmium.filter.EntityFilter(osmium.osm.WAY)).with_filter(osmium.filter.TagFilter(('natural', 'coastline'))):
+                try:
+                    coords = [(nd.lon, nd.lat) for nd in obj.nodes]
+                except osmium.InvalidLocationError:
+                    continue
+                if len(coords) >= 2:
+                    found[obj.id] = coords
+            cache[key] = found
+        ways.update(cache[key])
+    if not ways:
+        return []
+    lines = [shapely.LineString(ways[k]) for k in sorted(ways)]
+    return list(shapely.transform(lines, store.frame.local, interleaved=False))
+
+
+COAST_BAND = 1500.  # metres from an OSM coastline within which its side overrides the DEM's sea
+COAST_DRY = 300.    # land this close to the coastline stays above the sea plane
+
+
+def _coast(store, rect, xs, ys, heights):
+    """Terrarium blurs the shore over several hundred metres: off Copacabana the sea was +3 m
+    ground 650 m out, so the sea plane stopped short and a forest grew on the water. An OSM
+    coastline has the land on its left. The nearest coastline within COAST_BAND decides each
+    grid point: on its right the ground sinks under the sea plane (deeper with distance), on its
+    left within COAST_DRY it stays above it. The nearest shore, not a band per shore, so the sea
+    beside a narrow cape is still sea. Depends on the world point and the coastline alone (all
+    of it within reach is read), so cell seams stay identical."""
+    if float(np.min(heights)) > sources.LIFT + 60:
+        return heights      # no sea in reach of this cell's DEM: the shore fix cannot apply
+    # the nearest coastline point of any grid point within the band lies in this window
+    reach = COAST_BAND + 50
+    wide = [rect[0] - reach, rect[1] - reach, rect[2] + reach, rect[3] + reach]
+    pieces = [part for line in _coastlines(store, wide)
+              for part in _parts(shapely.clip_by_rect(line, *wide), 'LineString') if part.length > 0]
+    if not pieces:
+        return heights
+    lines = list(_parts(shapely.line_merge(shapely.MultiLineString(pieces), directed=True), 'LineString'))
+    gx, gy = np.meshgrid(xs, ys)
+    px, py = gx.ravel(), gy.ravel()
+    points = shapely.points(px, py)
+    distances = np.stack([shapely.distance(line, points) for line in lines])
+    nearest, distance = distances.argmin(axis=0), distances.min(axis=0)
+    side = np.zeros(len(px))
+    for k, line in enumerate(lines):
+        mask = (nearest == k) & (distance <= COAST_BAND)
+        if not mask.any():
+            continue
+        # the side of the coastline's local direction at the nearest point (1 m either way)
+        along = shapely.line_locate_point(line, points[mask])
+        a = shapely.line_interpolate_point(line, np.maximum(along - 1, 0))
+        b = shapely.line_interpolate_point(line, np.minimum(along + 1, line.length))
+        ax, ay, bx, by = shapely.get_x(a), shapely.get_y(a), shapely.get_x(b), shapely.get_y(b)
+        side[mask] = np.sign((bx - ax) * (py[mask] - ay) - (by - ay) * (px[mask] - ax))
+    level = sources.LIFT
+    out = np.asarray(heights, dtype=float).copy()
+    wet = side < 0
+    dry = (side > 0) & (distance <= COAST_DRY)
+    out[wet] = np.minimum(out[wet], level - 1.0 - 0.01 * np.minimum(distance[wet], 600))
+    out[dry] = np.maximum(out[dry], level + 0.6)
+    return out
 
 
 def _source_meta(directory):

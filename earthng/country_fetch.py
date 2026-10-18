@@ -188,11 +188,34 @@ def _python():
         'need a Python with osmium in this repository .venv (requirements-fast.txt)') from None
 
 
+def fetch_dem(index, dem, emit=print, cancel=None):
+    """Terrarium heights under every tile of a cut index, eight downloads at a time."""
+    import fast_dem
+
+    missing = [path for path in fast_dem.audit(index, dem) if not path.exists()]
+    emit(f'DEM: {len(missing)} tiles')
+
+    def one(path):
+        if cancel is not None and cancel.is_set():
+            return
+        for attempt in range(6):
+            try:
+                fast_dem.fetch(path)
+                return
+            except Exception:
+                if attempt == 5:
+                    raise
+                time.sleep(2 + attempt * 2)
+    if missing:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(8) as pool:
+            list(pool.map(one, missing))
+
+
 def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=None,
                 landing=None, by_id=None, emit=print, cancel=None):
     """Download sources if needed and write the country zip, then copy it into mods."""
     import build_country
-    import fast_dem
 
     slug_id = places.slug(place['id'])
     known = dict(by_id or {})
@@ -222,24 +245,7 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
         run_step(command, emit, cancel)
     index = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))
     dem = Path(root) / 'out' / 'world' / 'cache'
-    missing = [path for path in fast_dem.audit(index, dem) if not path.exists()]
-    emit(f'DEM: {len(missing)} tiles')
-
-    def one(path):
-        if cancel is not None and cancel.is_set():
-            return
-        for attempt in range(6):
-            try:
-                fast_dem.fetch(path)
-                return
-            except Exception:
-                if attempt == 5:
-                    raise
-                time.sleep(2 + attempt * 2)
-    if missing:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(8) as pool:
-            list(pool.map(one, missing))
+    fetch_dem(index, dem, emit, cancel)
     if cancel is not None and cancel.is_set():
         raise InterruptedError('build stopped')
     work = Path(root) / 'out' / 'world'

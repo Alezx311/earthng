@@ -18,6 +18,51 @@ from game_bench import game_exe, log_metrics, memory
 import build_mod  # noqa: E402
 
 
+def geo_point(point):
+    """'lat,lon,agl' or [lat, lon, agl] -> [lat, lon, z]: z in the game's frame (DEM height + the world's lift)."""
+    import fast_dem
+    from fast_sources import LIFT
+    lat, lon, agl = (float(c) for c in (point.split(',') if isinstance(point, str) else point))
+    ground = fast_dem.height(lat, lon, HERE.parent / 'out' / 'world' / 'cache')
+    return [lat, lon, round(ground + agl + LIFT, 2)]
+
+
+class Recorder:
+    """The primary monitor to an H.264 file while the game's e2r-rec.json says 'start'
+    (Desktop Duplication + NVENC, so the game keeps the CPU)."""
+
+    def __init__(self, out, fps):
+        self.out, self.fps, self.state, self.proc, self.clips = out, fps, None, None, []
+
+    def poll(self, marker):
+        try:
+            rec = json.loads(marker.read_text(encoding='utf8')) if marker.exists() else {}
+        except (OSError, ValueError):
+            return
+        state = rec.get('rec')
+        if state == self.state:
+            return
+        self.state = state
+        if state == 'start' and self.proc is None:
+            clip = self.out / f"{rec.get('clip') or 'clip'}-{len(self.clips) + 1:02d}.mp4"
+            self.clips.append(clip.name)
+            self.proc = subprocess.Popen(
+                [shutil.which('ffmpeg') or 'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
+                 '-i', f'ddagrab=output_idx=0:framerate={self.fps}:draw_mouse=0',
+                 '-c:v', 'h264_nvenc', '-preset', 'p5', '-rc', 'vbr', '-cq', '18', '-b:v', '0', str(clip)],
+                stdin=subprocess.PIPE)
+        elif state == 'stop':
+            self.stop()
+
+    def stop(self):
+        if self.proc is not None:
+            try:
+                self.proc.communicate(b'q', timeout=30)
+            except (subprocess.TimeoutExpired, OSError):
+                self.proc.kill()
+            self.proc = None
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('--out', type=Path, required=True)
@@ -33,6 +78,22 @@ def main():
     p.add_argument('--pack-gallery', help='comma list of packs: the gallery once in each (implies --gallery)')
     p.add_argument('--gallery-wait', type=float, default=1, help='seconds before the gallery (far tiles keep loading)')
     p.add_argument('--view', action='append', default=[], help='extra gallery view name:x,y,z:tx,ty,tz (world metres)')
+    p.add_argument('--geo-view', action='append', default=[], metavar='NAME:LAT,LON,AGL:LAT,LON,AGL',
+                   help='extra gallery view by coordinates, heights in metres above the ground')
+    p.add_argument('--only-views', action='store_true', help='the gallery is only --view/--geo-view, not the views round the car')
+    p.add_argument('--view-settle', type=float, help='each view waits until loading stops, at most this many seconds')
+    p.add_argument('--tod', type=float, help="time of day after landing (the game's 0..1, 0 noon, 0.25 dusk)")
+    p.add_argument('--clean', action='store_true', help='no EarthNG window on screen (recorded video)')
+    p.add_argument('--fog', type=float, help='fog density after landing (the level: 0.00015)')
+    p.add_argument('--gen-budget', type=float, help='ms a frame for generation and spawning (stills; the game uses 4)')
+    p.add_argument('--lights', type=int, help='street lights of night packs (stills; the game uses 24 within 400 m)')
+    p.add_argument('--flight', type=Path, help='camera flight after the drive: {"speed", "keys": [{"cam": [lat, lon, agl], "at": [...]}]}')
+    p.add_argument('--record', action='store_true', help='record the flight (and the drive with --record-drive) to MP4 in --out')
+    p.add_argument('--record-drive', action='store_true', help='with --record: the drive is a clip too')
+    p.add_argument('--record-fps', type=int, default=60)
+    p.add_argument('--resolution', default='1280x720', help='game window, WxH')
+    p.add_argument('--graphics', default='Normal', help="the game's preset: Lowest, Low, Normal, High, Ultra")
+    p.add_argument('--display', default='Window', choices=('Window', 'Borderless', 'Fullscreen'))
     p.add_argument('--manual', action='store_true', help='land, then hand the car to the player; runs until the game is closed')
     p.add_argument('--probe', action='store_true', help='add the e2rprobe mod (earthng/probe.py runs Lua in the game)')
     p.add_argument('--min-distance', type=float, default=20, help='physics test fails below this, m')
@@ -78,8 +139,10 @@ def main():
         except OSError:
             shutil.copy2(extra, profile / 'mods' / extra.name)
     (profile / 'settings').mkdir()
+    width, height = (int(v) for v in a.resolution.lower().split('x'))
     (profile / 'settings/settings.json').write_text(json.dumps({
-        'GraphicDisplayResolutions': '1280 720', 'GraphicFullscreen': False, 'GraphicOverallQuality': 'Normal',
+        'GraphicDisplayResolutions': f'{width} {height}', 'GraphicDisplayModes': a.display,
+        'GraphicFullscreen': a.display == 'Fullscreen', 'GraphicOverallQuality': a.graphics,
         'AudioMasterVol': 0, 'fpsLimitBackgroundEnabled': False, 'onlineFeatures': 'disable', 'telemetry': 'disable', 'PostFXMotionBlurEnabled': False,
         # the first-run "Input Changes" page pauses the simulation (fast-game-02 never moved under it)
         'showedInputLayoutPopupV37': True}), encoding='utf8')
@@ -109,14 +172,43 @@ def main():
         test['packs'] = True
     if a.pack:
         test['pack'] = a.pack
-    if a.pack_gallery:
+    if a.pack_gallery or a.geo_view:
         a.gallery = True
+    if a.pack_gallery:
         test['packGallery'] = [s for s in a.pack_gallery.split(',') if s]
     if a.gallery:
         test['gallery'] = True
         test['galleryWait'] = a.gallery_wait
         test['views'] = [{'name': v.split(':')[0], 'cam': [float(c) for c in v.split(':')[1].split(',')],
                           'at': [float(c) for c in v.split(':')[2].split(',')]} for v in a.view]
+        for v in a.geo_view:
+            # the DEM height places the camera while the place loads; the game corrects it to
+            # its own surface (camAgl/atAgl) before the shot
+            name, cam, look = v.split(':')
+            test['views'].append({'name': name, 'camGeo': geo_point(cam), 'atGeo': geo_point(look),
+                                  'camAgl': float(cam.split(',')[2]), 'atAgl': float(look.split(',')[2])})
+        if a.only_views:
+            test['onlyViews'] = True
+        if a.view_settle:
+            test['viewSettle'] = a.view_settle
+    if a.tod is not None:
+        test['tod'] = a.tod
+    if a.clean:
+        test['clean'] = True
+    if a.fog is not None:
+        test['fog'] = a.fog
+    if a.gen_budget:
+        test['genBudget'] = a.gen_budget
+    if a.lights:
+        test['lights'] = a.lights
+    if a.flight:
+        plan = json.loads(a.flight.read_text(encoding='utf8'))
+        test['flight'] = {'keys': [{'cam': geo_point(k['cam']), 'at': geo_point(k['at'])} for k in plan['keys']],
+                          'speed': plan.get('speed', 30), 'settle': plan.get('settle', 90),
+                          'warmup': plan.get('warmup', True),
+                          'clip': plan.get('clip', a.flight.stem)}
+    if a.record_drive:
+        test['recordDrive'] = True
     if a.traffic:
         test['traffic'] = a.traffic
     if a.rain:
@@ -135,6 +227,7 @@ def main():
     started = time.perf_counter()
     game = subprocess.Popen([str(EXE), '-userpath', str(user), '-level', build_mod.LEVEL, '-nosteam'], cwd=str(EXE.parent))
     peak = 0
+    recorder = Recorder(out, a.record_fps) if a.record else None
     try:
         test_file = profile / 'e2r-world-test.json'
         res_path = profile / 'e2r-world-result.json'
@@ -160,10 +253,14 @@ def main():
             m = memory(game.pid)
             if m:
                 peak = max(peak, m[0])
-            time.sleep(0.5)
+            if recorder:
+                recorder.poll(profile / 'e2r-rec.json')
+            time.sleep(0.2 if recorder else 0.5)
         if game.poll() is None:
             game.kill()
     finally:
+        if recorder:
+            recorder.stop()
         if game.poll() is None:
             game.kill()
         game.wait(timeout=30)
@@ -175,6 +272,7 @@ def main():
         shutil.copy2(profile / 'beamng.log', out / 'beamng.log')
     report = {'status': result.get('status'), 'exit_code': game.returncode,
               'native': a.native, 'physics_test': not a.replay and not a.picker_only,
+              'clips': recorder.clips if recorder else [],
               'total_s': round(time.perf_counter() - started, 1), 'peak_private_mb': round(peak / 2**20),
               'game': result, 'log': log_metrics(out / 'beamng.log')}
     if 'failures' in result:

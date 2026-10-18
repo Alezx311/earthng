@@ -83,14 +83,15 @@ class NativeTests(unittest.TestCase):
           end
           jsonWriteFile=function() error('native provider must not write files') end
           hptimer=function() local elapsed=0; return {stop=function() elapsed=elapsed+0.7; return elapsed end} end
-          buildCalls=0; fakeTriangles=0
+          buildCalls=0; fakeTriangles=0; fakeFarTriangles=0
           stubGenerator={build=function(cells,i,j,options)
             buildCalls=buildCalls+1
             for n=1,5 do options.pause() end
             local t=options.tileSize
             local road={items=fakeTriangles>0 and {{triangles=fakeTriangles,meshes={}}} or {},mats={'earthng_ground'},drivable=true,
               spawn={pos={(i+0.5)*t,(j+0.5)*t,5},dir={0,1,0}}}
-            return road,{items={},mats={}},options.far and {items={},mats={}} or nil,{segments={{'segment'}}}
+            local far=options.far and {items=fakeFarTriangles>0 and {{triangles=fakeFarTriangles,meshes={}}} or {},mats={}} or nil
+            return road,{items={},mats={}},far,{segments={{'segment'}}}
           end}
         ''')
         if real_generator:
@@ -290,6 +291,77 @@ class NativeTests(unittest.TestCase):
             mod.update(.016, 2)
         self.assertEqual(stream.built, built)
         self.assertLess(built, 150)
+
+    def test_tile_cache_holds_the_whole_oasis_ring(self):
+        # 1.4 km near and 4 km far want ~230 tiles: over the old fixed 160 the far ring evicted
+        # itself, and a parked camera kept the holes (a ridge floating over Innsbruck)
+        lua, mod, cv = self.make(fixture(20))
+        lua.globals().fakeTriangles = 10
+        tune = dict(mod.setTune(cv({})))
+        tune.update(nearM=1400, farM=4000)
+        mod.setTune(cv(tune))
+        lat, lon = geographic(10000, 10000)
+        mod.land(cv(dict(seq=7, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        mod.pose(cv(dict(x=10000, y=10000, vx=0, vy=0, state='driving')))
+        for _ in range(4000):
+            mod.update(.016, 8)
+        stream = mod.status().stream
+        tiles = [k for k in stream.wanted.keys() if not str(k).startswith('h')]
+        self.assertGreater(len(tiles), 160)
+        self.assertGreaterEqual(stream.cacheLimits.tiles, len(tiles))
+        self.assertEqual(stream.queued, 0)
+
+    def test_far_layers_left_behind_do_not_hold_the_new_ring(self):
+        # far builds wait while far geometry the renderer has not taken fills half the budget;
+        # layers a camera jump left behind are never taken and must not count (Bergisel view)
+        lua, mod, cv = self.make(fixture(24))
+        lua.globals().fakeFarTriangles = 15000
+        lat, lon = geographic(5000, 5000)
+        mod.land(cv(dict(seq=8, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        mod.pose(cv(dict(x=5000, y=5000, vx=0, vy=0, state='driving')))
+        for _ in range(500):
+            mod.update(.016, 8)          # nobody takes these far layers
+        self.assertGreater(len(list(mod.status().stream.far.keys())), 0)
+        mod.pose(cv(dict(x=17000, y=17000, vx=0, vy=0, state='driving')))
+        for _ in range(3000):
+            mod.update(.016, 8)
+            for key in list(mod.status().stream.far.keys()):
+                i, j = (int(v) for v in str(key).split('_'))
+                # the renderer takes the far layers of its ring (world.lua farLoadR), not those behind
+                if ((i + .5) * 500 - 17000) ** 2 + ((j + .5) * 500 - 17000) ** 2 <= 4500 ** 2:
+                    mod.manifest(key, 'far')
+        self.assertEqual(mod.status().stream.queued, 0)
+
+    def test_geometry_budget_keeps_delivered_far_layers(self):
+        # the far ring is built, taken and released; then near tiles are rebuilt with geometry
+        # nobody takes yet, over the budget. Evicting the delivered far layers freed nothing and
+        # dropped the ring's bookkeeping (rebuilt at the next epoch while still on screen).
+        lua, mod, cv = self.make(fixture(20))
+        lat, lon = geographic(10000, 10000)
+        mod.land(cv(dict(seq=9, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        mod.pose(cv(dict(x=10000, y=10000, vx=0, vy=0, state='driving')))
+
+        def run(frames):
+            for _ in range(frames):
+                mod.update(.016, 8)
+                for key in list(mod.status().stream.far.keys()):
+                    if mod.manifest(key, 'far') is not None:
+                        mod.release(key, 'far')
+        run(1500)
+        stream = mod.status().stream
+        far_wanted = [k for k, p in stream.wanted.items() if not str(k).startswith('h') and p >= 1e6]
+        self.assertGreater(len(far_wanted), 40)
+        self.assertGreaterEqual(len(list(stream.far.keys())), len(far_wanted))
+        lua.globals().fakeTriangles = 30000
+        for key in [k for k, p in stream.wanted.items() if not str(k).startswith('h') and p < 1e6]:
+            mod.unload(key)
+        run(1500)
+        stream = mod.status().stream
+        self.assertLessEqual(stream.cachedTriangles, 80000)
+        self.assertGreaterEqual(len(list(stream.far.keys())), len(far_wanted))
 
     def test_gpu_release_drops_arrays_and_unload_regenerates(self):
         lua, mod, cv = self.make()

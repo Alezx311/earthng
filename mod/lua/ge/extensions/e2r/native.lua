@@ -578,7 +578,15 @@ local function priorities()
     end
   end
   st.wanted = {}
-  for key, wanted in pairs(out) do st.wanted[key] = wanted.priority end
+  local tiles = 0
+  for key, wanted in pairs(out) do
+    st.wanted[key] = wanted.priority
+    if not wanted.horizon then tiles = tiles + 1 end
+  end
+  -- The cache holds the whole wanted set. At OASIS (1.4 km near, 4 km far) that is ~230 tiles,
+  -- over TILE_LIMIT: the far ring evicted itself, and a parked camera kept the holes for good
+  -- (Innsbruck's Nordkette floated over the town as a ribbon of horizon).
+  a.tileLimit = math.max(TILE_LIMIT, tiles + 16)
   a.desired = out
   a.prioritiesDirty = false
   return out
@@ -621,13 +629,19 @@ local function trimTiles()
   for _, entry in pairs(a.tiles) do
     count, triangles, vertices = count + 1, triangles + entry.triangles, vertices + entry.vertices
   end
-  while count > TILE_LIMIT or triangles > TRIANGLE_LIMIT or vertices > VERTEX_LIMIT do
+  local limit = a.tileLimit or TILE_LIMIT
+  while count > limit or triangles > TRIANGLE_LIMIT or vertices > VERTEX_LIMIT do
+    -- Over the geometry budget only an entry that holds geometry helps. Delivered layers weigh
+    -- nothing: evicting them freed no triangles, dropped the whole far ring's bookkeeping and
+    -- rebuilt it at the next epoch while its meshes were still on screen.
+    local anyEntry = count > limit
     local worst, worstPriority, oldest
     for key, entry in pairs(a.tiles) do
       local required = a.landing and a.startupPinned and a.landing.required[key]
       local selected = a.startupPinned and a.landing and a.landing.selected == key
       local priority = a.desired[key] and a.desired[key].priority or 1e20
-      if not required and not selected and not inRenderer(entry) and (not worst or priority > worstPriority or (priority == worstPriority and entry.used < oldest)) then
+      local helps = anyEntry or entry.triangles > 0 or entry.vertices > 0
+      if helps and not required and not selected and not inRenderer(entry) and (not worst or priority > worstPriority or (priority == worstPriority and entry.used < oldest)) then
         worst, worstPriority, oldest = key, priority, entry.used
       end
     end
@@ -643,8 +657,8 @@ local function trimTiles()
   for _, entry in pairs(a.tiles) do if entry.road then readyCount = readyCount + 1 end end
   st.readyCount, st.cachedTiles, st.cachedCells = readyCount, count, cellCount
   st.cachedTriangles, st.cachedVertices = triangles, vertices
-  st.cacheLimits = {tiles = TILE_LIMIT, cells = CELL_LIMIT, triangles = TRIANGLE_LIMIT, vertices = VERTEX_LIMIT}
-  st.cacheOverBudget = count > TILE_LIMIT or triangles > TRIANGLE_LIMIT or vertices > VERTEX_LIMIT
+  st.cacheLimits = {tiles = limit, cells = CELL_LIMIT, triangles = TRIANGLE_LIMIT, vertices = VERTEX_LIMIT}
+  st.cacheOverBudget = count > limit or triangles > TRIANGLE_LIMIT or vertices > VERTEX_LIMIT
 end
 
 local function trimHorizon()
@@ -780,17 +794,19 @@ local function nearPending(wanted)
   return false
 end
 
-local function update(dt, budgetMs)
+local function update(dt, budgetMs, farBudgetMs)
   ensure()
   if not active then return end
   local dirty = active.prioritiesDirty
   local wanted, best, bestKey = dirty and priorities() or active.desired, nil, nil
   local timer = hptimer()
-  budgetMs = finite(budgetMs) and math.max(0.1, math.min(8, budgetMs)) or 2
+  -- farBudgetMs: the far ring's own budget instead of FAR_BUDGET_MS (showcase stills; the
+  -- game passes none), and then the frame may take up to 50 ms
+  budgetMs = finite(budgetMs) and math.max(0.1, math.min(farBudgetMs and 50 or 8, budgetMs)) or 2
   if dirty or active.nearKnownAt ~= state.stream.built then
     active.nearWaiting, active.nearKnownAt = nearPending(wanted), state.stream.built
   end
-  if not active.startupPinned and not active.nearWaiting then budgetMs = math.min(budgetMs, FAR_BUDGET_MS) end
+  if not active.startupPinned and not active.nearWaiting then budgetMs = math.min(budgetMs, farBudgetMs or FAR_BUDGET_MS) end
   state.stream.budgetMs = budgetMs
   active.timer, active.budget = timer, budgetMs
   local steps = 0
@@ -798,6 +814,22 @@ local function update(dt, budgetMs)
     if not active.work then
       best, bestKey = nil, nil
       local queued = 0
+      -- Far tiles wait while far geometry the renderer has not taken fills half the budget:
+      -- a generator ahead of the renderer (a stills budget, a fast drive) built them only to
+      -- evict them, and an evicted tile stays a hole until the next epoch. Near tiles and the
+      -- startup set always build.
+      -- Only tiles wanted as far now count: a far layer left behind by a camera jump, or one under
+      -- a near tile, is never taken and would hold the ring still (eviction removes it later).
+      local farTriangles, farVertices = 0, 0
+      if not active.startupPinned then
+        for key, e in pairs(active.tiles) do
+          local want = wanted[key]
+          if e.far and not e.farTaken and want and want.far and not want.horizon then
+            farTriangles, farVertices = farTriangles + e.triangles, farVertices + e.vertices
+          end
+        end
+      end
+      local full = farTriangles > TRIANGLE_LIMIT * .5 or farVertices > VERTEX_LIMIT * .5
       for key, entry in pairs(wanted) do
         local cached = entry.horizon and active.horizon[key] or active.tiles[key]
         local ready
@@ -807,7 +839,7 @@ local function update(dt, budgetMs)
         local layerKey = key .. (entry.horizon and ':horizon' or (entry.far and ':far' or ':road'))
         if not ready and not active.failed[key] and active.evicted[layerKey] ~= active.epoch then
           queued = queued + 1
-          if not best or entry.priority < best.priority or (entry.priority == best.priority and key < bestKey) then best, bestKey = entry, key end
+          if not (full and entry.far) and (not best or entry.priority < best.priority or (entry.priority == best.priority and key < bestKey)) then best, bestKey = entry, key end
         end
       end
       state.stream.queued = queued
