@@ -8,4 +8,5 @@ country_setup.json
 .venv-linux/
 python/
 graphify-out/
+research_notes/
 %LOCALAPPDATA%/
