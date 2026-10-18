@@ -1,13 +1,9 @@
 """Regression checks for the map widget. Lua checks require lupa (or out/test-tools)."""
 import sys
-import threading
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'out/test-tools'))
 from lupa.luajit21 import LuaRuntime
-from world_server import Server
 
 
 UK_LABELS = {'pick': 'Обрати інше місце', 'back': 'Повернутися до їзди', 'hide': 'Приховати', 'show': 'Показати мапу'}
@@ -260,34 +256,6 @@ class WidgetTests(unittest.TestCase):
           assert(maptileRequests>asked)  -- shown again: asks again (retry after MAP_RETRY)
         ''')
 
-    def test_slow_map_is_nonblocking_and_coalesced(self):
-        server = Server.__new__(Server)
-        server.view_future = server.pending_view = None
-        started, release = threading.Event(), threading.Event()
-        seen = []
-
-        def render(req):
-            seen.append(req['seq'])
-            started.set()
-            self.assertTrue(release.wait(3))
-
-        server.render_view = render
-        with ThreadPoolExecutor(1) as server.view_worker:
-            try:
-                server.queue_view({'seq': 1})
-                server.pump_view()
-                self.assertTrue(started.wait(1))
-                server.queue_view({'seq': 2})
-                server.queue_view({'seq': 3})
-                server.pump_view()  # must return while the map is still blocked
-                self.assertFalse(server.view_future.done())
-                self.assertEqual(server.pending_view['seq'], 3)
-            finally:
-                release.set()
-            server.view_future.result(timeout=2)
-            server.pump_view()
-            server.view_future.result(timeout=2)
-        self.assertEqual(seen, [1, 3])
 
 
 if __name__ == '__main__':

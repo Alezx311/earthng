@@ -31,7 +31,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'out/test-tools'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lupa.luajit21 import LuaRuntime
 import country_format as binary

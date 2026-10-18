@@ -1,4 +1,4 @@
-"""Cut an OSM package into a static tile archive for streaming (docs/BEAMNG_STREAMING.md, «Дані»).
+"""Cut an OSM package into a static tile archive for streaming (docs/NATIVE_MODS.md, «Дані»).
 
     C:/js/Earth2Road/.venv/Scripts/python.exe earthng/osm_tiles.py C:/js/Earth2Road/out/districts/.inputs/geofabrik/ukraine-260918-kyiv.osm.pbf --out data/osm_tiles/kyiv-260918
 

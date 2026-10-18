@@ -1,0 +1,38 @@
+{
+  "status": "failed",
+  "functional_status": "passed",
+  "performance_status": "failed",
+  "peak_private_mb": 4116,
+  "total_s": 144.0,
+  "coordinates": [
+    40.758,
+    -73.9855
+  ],
+  "drive": {
+    "frames": 2001,
+    "meanFrameMs": 25.047400849575,
+    "over100": 15,
+    "over33": 335,
+    "p99FrameMs": 86.5,
+    "worstAt": 79.65328744292,
+    "worstFrameMs": 231.58749999999
+  },
+  "travelledM": 718.90071532262,
+  "startupSeconds": 37.1112593,
+  "spawnSeconds": 13.141379630702,
+  "landingSeconds": 32.1277737620314,
+  "warmup": {
+    "frames": 13,
+    "meanFrameMs": 837.35323076923,
+    "p99FrameMs": 4512.9373,
+    "worstFrameMs": 4512.9373
+  },
+  "failures": [
+    "frame_over_100ms"
+  ],
+  "actualRenderSizes": [
+    "1264x681",
+    "1180x720",
+    "392x719"
+  ]
+}

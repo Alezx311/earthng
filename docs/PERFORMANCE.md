@@ -1,3 +1,5 @@
+> Історичні заміри розробки. Актуальна перевірка релізу: [RELEASE_CHECK.md](RELEASE_CHECK.md).
+
 # Продуктивність нативного світу
 
 Ніч і день 18.10.2026, гілка `codex/official-mod-packages`. BeamNG.drive 0.39.4 (build 20972),

@@ -1,0 +1,5 @@
+-r requirements-fast.txt
+-r requirements-nature.txt
+lupa==2.6
+psutil==7.2.2
+rasterio==1.5.2

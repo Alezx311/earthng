@@ -6,3 +6,6 @@ launcher.json
 country_setup.json
 .venv/
 .venv-linux/
+python/
+graphify-out/
+%LOCALAPPDATA%/

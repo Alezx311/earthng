@@ -1,7 +1,6 @@
 -- EarthNG planet level; active only in e2r_world. Native mode discovers mounted
 -- country source packs, generates 500m tiles in Lua and streams them over several
--- frames. See docs/NATIVE_MODS.md. The explicit --legacy build retains the Python
--- companion protocol (request/status/pose files) for developer comparisons.
+-- frames. See docs/NATIVE_MODS.md. Native is the only supported release runtime.
 local M = {}
 local loadNewMaterials
 local AP = nil   -- autopilot state (route test); read by writePose for the route ahead
@@ -10,7 +9,7 @@ local imguiUtils = require('ui/imguiUtils')
 local ffi = require('ffi')
 local logTag = 'e2r_world'
 local LANG = 'uk'   -- build_mod.py --lang en rewrites this line (the English packages: UK, California, New York)
-local NATIVE = true   -- build_mod.py --legacy keeps the companion development workflow
+local NATIVE = true   -- fixed for releases; protocol stubs remain for isolated widget tests
 local native = NATIVE and require('ge/extensions/e2r/native') or nil
 local planetMap = NATIVE and require('ge/extensions/e2r/planetMap') or nil
 local quality = require('ge/extensions/e2r/quality')

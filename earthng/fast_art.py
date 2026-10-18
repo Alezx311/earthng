@@ -393,11 +393,11 @@ def build(r, game_assets=True):
         Image.open(photo.TEXTURES / src / 'albedo.jpg').convert('RGB').resize((1024, 1024), Image.LANCZOS).save(r / 'real' / f'{name}.color.png')
         rr, g, b = Image.open(photo.TEXTURES / src / 'normal.jpg').convert('RGB').resize((1024, 1024), Image.LANCZOS).split()
         Image.merge('RGB', (rr, g.point(lambda v: 255 - v), b)).save(r / 'real' / f'{name}.normal.png')
-    # parked cars: one cell per paint colour, then glass and tyre (fast.CAR_COLOURS)
-    import fast
-    cars = Image.new('RGB', (32 * fast.CAR_ATLAS, 32))
+    # parked cars: one cell per paint colour, then glass and tyre (car_art.CAR_COLOURS)
+    import car_art
+    cars = Image.new('RGB', (32 * car_art.CAR_ATLAS, 32))
     d = ImageDraw.Draw(cars)
-    for k, rgb in enumerate(fast.CAR_COLOURS + [(36, 44, 52), (22, 22, 22)]):
+    for k, rgb in enumerate(car_art.CAR_COLOURS + [(36, 44, 52), (22, 22, 22)]):
         d.rectangle([32 * k, 0, 32 * k + 31, 31], fill=rgb)
     cars.save(r / 'real' / 'cars.color.png')
     # the PO-2 concrete fence: one 2.5 m x 2 m slab... laid over a 2.5 m repeat, the slab in the

@@ -16,8 +16,7 @@ from PIL import Image, ImageDraw
 
 import paths
 
-TEXTURES = next((p for p in (paths.PROJECT / 'data/textures', paths.EARTH2ROAD / 'game/assets/textures')
-                 if (p / 'panelka_panels/albedo.jpg').exists()), paths.PROJECT / 'data/textures')
+TEXTURES = paths.PROJECT / 'data/textures'
 TILE_PX = 1024          # one 6 m repeat: the panel photos' own 512 px per 3 m cell
 CELL = TILE_PX // 2
 SHEET_PX = 2048         # the whole II-68 loggia photo, 33 m

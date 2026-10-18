@@ -262,3 +262,19 @@ arrays after engine upload. Exact UTM is tested against pyproj in both hemispher
 - Сторож зависань пише стек Lua у `e2r-hang.txt`; `test_world.py` під'єднує
   моди жорсткими посиланнями.
 - Подробиці: `docs/NATIVE_MODS.md`, розділи «Якість доріг» і «Трафік і зависання».
+
+
+## 2026-10-18 — first native release preparation
+
+Removed companion launch/server/package paths and the retired Python mesh generator;
+kept native Lua runtime, shared source indexing and art tools. Country.bat bootstraps
+Python 3.13 through Setup.bat. Worker logs, Windows cancellation and truncated-download
+checks cover the local builder. The game harness now lives entirely in this checkout.
+
+Validation: 159 tests pass; clean source copy skips only two generated-basemap tests.
+Real Liechtenstein PBF → DEM → 144 cells → installed pack succeeds both through the
+console backend (34.74 s) and Tk/pythonw (57.07 s). NYC physics drives pass functional
+checks but fail the >100 ms frame gate under concurrent game/OSM worker load.
+See docs/RELEASE_CHECK.md and docs/benchmarks for reproducible commands and results.
+No personal game profile or existing OSM job was changed. Existing caches were not deleted. Tests use isolated
+out/release-* profiles. MIT chosen by the user; target master confirmed by the user.

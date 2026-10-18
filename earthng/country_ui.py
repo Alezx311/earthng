@@ -146,6 +146,9 @@ class Setup:
                 line = self.lines.get_nowait()
             except queue.Empty:
                 break
+            if callable(line):
+                line()
+                continue
             self.log.insert('end', line + '\n')
             self.log.see('end')
             self.status.set(line)
@@ -160,7 +163,7 @@ class Setup:
         try:
             self.places = places.load_index(ROOT, refresh, self.say)
             self.by_id = places.by_id(self.places)
-            self.root.after(0, self.refill)
+            self.lines.put(self.refill)
             self.say(f'{len(self.places)} regions. Pick a country or a smaller region inside it.')
         except Exception as exc:
             self.say(f'could not read the region list: {exc}')
@@ -243,13 +246,15 @@ class Setup:
             return
         if self.place and self.place['id'] == place_id:
             if size:
-                self.size.set(f'OSM extract: {size / 2**30:.2f} GB' if size >= 2**30 else f'OSM extract: {size / 2**20:.0f} MB')
+                label = f'OSM extract: {size / 2**30:.2f} GB' if size >= 2**30 else f'OSM extract: {size / 2**20:.0f} MB'
             else:
-                self.size.set('OSM extract size is unknown')
+                label = 'OSM extract size is unknown'
+            self.lines.put(lambda: self.size.set(label) if self.place and self.place['id'] == place_id else None)
 
     def busy(self, running):
         state = 'disabled' if running else 'normal'
         self.build_btn.configure(state=state)
+        self.download_btn.configure(state='disabled')
         self.stop_btn.configure(state=('normal' if running else 'disabled'))
         if not running:
             self.refresh_ready()
@@ -267,7 +272,7 @@ class Setup:
             except Exception as exc:
                 self.say(f'stopped: {exc}')
             finally:
-                self.root.after(0, lambda: self.busy(False))
+                self.lines.put(lambda: self.busy(False))
         self.worker = threading.Thread(target=wrap, daemon=True)
         self.worker.start()
 

@@ -2,6 +2,9 @@
 import unittest
 from pathlib import Path
 import zipfile
+import io
+import sys
+from unittest.mock import patch
 
 import country_fetch
 import looks
@@ -83,6 +86,27 @@ class LookTests(unittest.TestCase):
 
 
 class PackFileTests(unittest.TestCase):
+    def test_truncated_download_keeps_partial_and_existing_destination(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            dest = Path(folder) / 'extract.pbf'
+            dest.write_bytes(b'old')
+            response = io.BytesIO(b'short')
+            response.status = 200
+            with patch.object(country_fetch, 'content_length', return_value=20), \
+                    patch.object(country_fetch.urllib.request, 'urlopen', return_value=response):
+                with self.assertRaisesRegex(OSError, 'incomplete download'):
+                    country_fetch.download('https://example.com/extract.pbf', dest, emit=lambda _: None)
+            self.assertEqual(dest.read_bytes(), b'old')
+            self.assertEqual(dest.with_suffix('.pbf.part').read_bytes(), b'short')
+
+    def test_worker_output_and_failure_reach_the_gui_log(self):
+        import subprocess
+        lines = []
+        with self.assertRaises(subprocess.CalledProcessError):
+            country_fetch.run_step([sys.executable, '-c', 'print("tile failure"); raise SystemExit(3)'], lines.append)
+        self.assertIn('tile failure', lines)
+
     def test_missing_osmium_does_not_ask_for_another_checkout(self):
         import builtins
         import unittest.mock

@@ -1,6 +1,6 @@
-# Python packages for the fast generator (no Earth2Road needed): run_world.sh installs them on Linux
-numpy
-shapely
-pyproj
-osmium
-Pillow
+# Local country and planet builders. Python is not required while playing.
+numpy==2.5.4
+shapely==2.2.0
+pyproj==3.8.0
+osmium==4.3.1
+Pillow==13.0.0

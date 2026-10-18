@@ -3,7 +3,6 @@ from pathlib import Path
 import sys
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'out/test-tools'))
 from lupa.luajit21 import LuaRuntime
 
 ROOT = Path(__file__).resolve().parents[1] / 'mod/lua/ge/extensions/e2r'

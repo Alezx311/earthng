@@ -13,7 +13,6 @@ import fast_packs
 import fast_dds
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'out/test-tools'))
 from lupa.luajit21 import LuaRuntime
 
 

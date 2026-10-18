@@ -1,14 +1,7 @@
-"""End-to-end test of the planet mod in an isolated BeamNG user folder.
+"""Native in-game smoke/benchmark in a disposable BeamNG profile.
 
-    C:/js/Earth2Road/.venv/Scripts/python.exe earthng/test_world.py --out out/world-test-01 --lat 50.4475 --lon 30.5225
-
-Builds the mod into <out>/user/current/mods, starts world_server.py for that user folder and
-BeamNG.drive with the level e2r_world. e2r-world-test.json makes the extension open the picker,
-pick the point, land, drive (straight for --drive-seconds, or along --route with the extension's
-autopilot while tiles stream in) and quit; screenshots e2r-*.png and e2r-world-result.json are
-copied to <out>. The user's own BeamNG profile is not touched.
-
-    ... test_world.py --out out/world-test-route-01 --lat 50.5070 --lon 30.4990 --route out/region/kyiv-ns/route.json --drive-seconds 2400
+python earthng/test_world.py --out out/nyc --lat 40.758 --lon -73.9855 --mod out/native-packs/earthng_new-york.zip
+The user's normal profile is never changed. Requires requirements-dev.txt and BeamNG.
 """
 import argparse
 import json
@@ -21,8 +14,7 @@ import time
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import paths  # noqa: E402  (puts Earth2Road and its tools/ on sys.path)
-from beamng_bench import EXE, log_metrics, memory  # noqa: E402
+from game_bench import game_exe, log_metrics, memory
 import build_mod  # noqa: E402
 
 
@@ -31,7 +23,6 @@ def main():
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--lat', type=float, help='landing point; with --replay the route start by default')
     p.add_argument('--lon', type=float)
-    p.add_argument('--tiles', default=str(paths.TILES))
     p.add_argument('--timeout', type=int, default=420)
     p.add_argument('--route', type=Path, help='route.json (earthng/route.py) for the autopilot')
     p.add_argument('--speed', type=float, default=13.0, help='autopilot cruise speed, m/s')
@@ -45,9 +36,7 @@ def main():
     p.add_argument('--manual', action='store_true', help='land, then hand the car to the player; runs until the game is closed')
     p.add_argument('--probe', action='store_true', help='add the e2rprobe mod (earthng/probe.py runs Lua in the game)')
     p.add_argument('--min-distance', type=float, default=20, help='physics test fails below this, m')
-    p.add_argument('--workers', type=int, default=8)
-    p.add_argument('--generator', choices=('v2','fast'), default='v2')
-    p.add_argument('--native', action='store_true', help='only BeamNG + country ZIPs; never start the companion')
+    p.add_argument('--native', action='store_true', default=True, help='native mode (default; retained for existing commands)')
     p.add_argument('--planet', type=Path, help='test an existing planet ZIP (for repeatable before/after runs)')
     p.add_argument('--quality', type=int, choices=range(101), metavar='0..100', help='native world quality preset')
     p.add_argument('--quality-cycle', action='store_true', help='after driving, verify Potato/OASIS changes keep the road')
@@ -56,7 +45,6 @@ def main():
     p.add_argument('--picker-zoom', type=int, help='--picker-only: centre the map on --lat/--lon at this zoom')
     p.add_argument('--picker-hold', type=float, default=4, help='--picker-only: seconds the picker stays open')
     p.add_argument('--replay', action='store_true', help='camera/pose replay at constant speed; not a physics test')
-    p.add_argument('--index-cache', type=Path, help='reuse a source index; report is NOT a cold-start test')
     p.add_argument('--traffic', type=int, help="after landing: the game's AI traffic, this many cars")
     p.add_argument('--rain', type=int, help="after landing: the game's own rain (core_environment numOfDrops)")
     p.add_argument('--mod', action='append', default=[], type=Path, help='another mod ZIP for the test profile (e.g. Agent Traffic)')
@@ -64,21 +52,11 @@ def main():
     p.add_argument('--hop', action='append', default=[], metavar='LAT,LON[,STAGE]',
                    help='after landing, teleport here (from driving, or STAGE spawning/warmup mid-descent); repeatable')
     a = p.parse_args()
-    route_frame = None
-    native_route = a.native and a.route and 'geo' in json.loads(a.route.read_text(encoding='utf8'))
+    native_route = a.route and 'geo' in json.loads(a.route.read_text(encoding='utf8'))
+    if a.route and not native_route:
+        p.error('--route requires a native route with geo coordinates')
     if native_route and a.lat is None:
-        # a native route is lat/lon ({"geo": [[lat, lon], ...]}); the game projects it itself
         a.lat, a.lon = json.loads(a.route.read_text(encoding='utf8'))['geo'][0]
-    if a.route and a.generator == 'fast' and not native_route:
-        # a fast route is in the frame it was recorded in (route['frame']; before fast-9 the
-        # Kyiv one); the stream is in the landing's frame
-        import fast_sources
-        route = json.loads(a.route.read_text(encoding='utf8'))
-        spec = route.get('frame')
-        route_frame = fast_sources.Frame.of({'frame': spec if isinstance(spec, dict) else None})
-        if a.replay and a.lat is None:
-            lon, lat = route_frame.geographic(*route['points'][0][:2])     # land where it starts
-            a.lat, a.lon = float(lat), float(lon)
     if a.picker_only:
         a.lat, a.lon = a.lat or 0, a.lon or 0
     if a.lat is None or a.lon is None:
@@ -86,19 +64,10 @@ def main():
     out = a.out.resolve()
     if out.exists():
         raise SystemExit(f'{out} exists')
-    if route_frame:
-        import numpy as np
-        land = fast_sources.Frame.of(fast_sources.source_identity(a.tiles, paths.OUT / 'world' / 'cache', (a.lon, a.lat))[1])
-        pts = np.asarray(route['points'], dtype=float)
-        lon, lat = route_frame.geographic(pts[:, 0], pts[:, 1])
-        pts[:, 0], pts[:, 1] = land.local(lon, lat)
-        out.mkdir(parents=True)
-        a.route = out / 'route-landing.json'
-        a.route.write_text(json.dumps(dict(route, points=pts.round(3).tolist(), frame=land.spec())), encoding='utf8')
     user = out / 'user'
     profile = user / 'current'
     (profile / 'mods').mkdir(parents=True)
-    shutil.copy2(a.planet or build_mod.build(out / 'mod', legacy=not a.native), profile / 'mods' / build_mod.ZIP)
+    shutil.copy2(a.planet or build_mod.build(out / 'mod'), profile / 'mods' / build_mod.ZIP)
     if a.probe:
         # the development probe (earthng/probe.py): Lua commands into the running game
         shutil.copytree(HERE / 'probe', profile / 'mods' / 'unpacked' / 'e2rprobe')
@@ -133,8 +102,8 @@ def main():
         shutil.copy2(a.route, profile / 'e2r-route.json')
         test.update(route='/e2r-route.json', speed=a.speed)
     if a.replay:
-        if not a.route or (a.generator != 'fast' and not native_route):
-            p.error('--replay requires --route and --generator fast (or a native geo route)')
+        if not native_route:
+            p.error('--replay requires a native geo route')
         test['replay'] = True
     if a.packs:
         test['packs'] = True
@@ -155,8 +124,6 @@ def main():
     if a.manual:
         test['manual'] = True
         a.timeout = 10**9
-    if a.index_cache:
-        shutil.copytree(a.index_cache, out / 'work/fast-index')
     if a.stream_cache:
         shutil.copytree(a.stream_cache, profile / 'e2r_stream')
     (profile / 'e2r-world-test.json').write_text(json.dumps(test), encoding='utf8')
@@ -164,10 +131,7 @@ def main():
         test['skipMap'] = True  # native picker has an offline vector map instead of downloaded textures
         test_file = profile / 'e2r-world-test.json'
         test_file.write_text(json.dumps(test), encoding='utf8')
-    server = None if a.native else subprocess.Popen([sys.executable, str(HERE / 'world_server.py'), '--tiles', a.tiles,
-                               '--userfolder', str(profile), '--work', str(out / 'work'),
-                               '--workers', str(a.workers), '--generator', a.generator],
-                              cwd=paths.PROJECT, stdout=open(out / 'server.log', 'w'), stderr=subprocess.STDOUT)
+    EXE = game_exe()
     started = time.perf_counter()
     game = subprocess.Popen([str(EXE), '-userpath', str(user), '-level', build_mod.LEVEL, '-nosteam'], cwd=str(EXE.parent))
     peak = 0
@@ -200,9 +164,9 @@ def main():
         if game.poll() is None:
             game.kill()
     finally:
-        # the companion's tile builders are child processes: end the whole tree
-        if server:
-            subprocess.run(['taskkill', '/T', '/F', '/PID', str(server.pid)], capture_output=True)
+        if game.poll() is None:
+            game.kill()
+        game.wait(timeout=30)
     res_path = profile / 'e2r-world-result.json'
     result = json.loads(res_path.read_text(encoding='utf8')) if res_path.exists() else {'status': 'no_result'}
     for png in sorted((profile / 'screenshots').rglob('e2r-*.png')):
@@ -210,7 +174,7 @@ def main():
     if (profile / 'beamng.log').exists():
         shutil.copy2(profile / 'beamng.log', out / 'beamng.log')
     report = {'status': result.get('status'), 'exit_code': game.returncode,
-              'native': a.native, 'cold_index': a.index_cache is None, 'physics_test': not a.replay and not a.picker_only,
+              'native': a.native, 'physics_test': not a.replay and not a.picker_only,
               'total_s': round(time.perf_counter() - started, 1), 'peak_private_mb': round(peak / 2**20),
               'game': result, 'log': log_metrics(out / 'beamng.log')}
     if 'failures' in result:

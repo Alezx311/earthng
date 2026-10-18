@@ -136,7 +136,7 @@ def pixel_source(kind):
 
 
 def build(root):
-    import fast
+    import car_art
     out = root / 'pixel'
     out.mkdir(parents=True, exist_ok=True)
     for kind in style.KINDS:
@@ -145,11 +145,11 @@ def build(root):
         else:
             surface(pixel_source(kind)).save(out / f'{kind}.color.png')
     # The decorative cars share an atlas: preserve its cells and glass/tyre indices.
-    cars = Image.new('RGB', (32 * fast.CAR_ATLAS, 32), INK)
+    cars = Image.new('RGB', (32 * car_art.CAR_ATLAS, 32), INK)
     d = ImageDraw.Draw(cars)
-    for k in range(len(fast.CAR_COLOURS)):
+    for k in range(len(car_art.CAR_COLOURS)):
         d.rectangle((32 * k, 0, 32 * k + 31, 31), fill=PALETTE[2 + k % 7])
-    k = len(fast.CAR_COLOURS)
+    k = len(car_art.CAR_COLOURS)
     d.rectangle((32 * k, 0, 32 * k + 31, 31), fill=SLATE)
     cars.save(out / 'car.color.png')
 

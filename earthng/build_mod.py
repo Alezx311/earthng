@@ -1,12 +1,11 @@
-"""Build the Earth2Road planet mod for BeamNG.drive (docs/BEAMNG_STREAMING.md).
+"""Build the Earth2Road planet mod for BeamNG.drive (docs/NATIVE_MODS.md).
 
-    C:/js/Earth2Road/.venv/Scripts/python.exe earthng/build_mod.py --out out/mod
-    C:/js/Earth2Road/.venv/Scripts/python.exe earthng/build_mod.py --out out/mod --install %LOCALAPPDATA%/BeamNG/BeamNG.drive/current
+    .venv/Scripts/python.exe earthng/build_mod.py --out out/mod
+    .venv/Scripts/python.exe earthng/build_mod.py --out out/mod --install %LOCALAPPDATA%/BeamNG/BeamNG.drive/current
 
 Writes earthng_planet.zip with a carrier level, native Lua generator, offline map and
 shared art. Install it alongside earthng_<country>.zip in the normal BeamNG mods folder.
-No launcher or external runtime is required. --legacy builds the companion development
-variant. --lang en selects the level and UI language (uk by default).
+No launcher or external runtime is required. --lang uk selects Ukrainian (English by default).
 """
 import argparse
 import io
@@ -102,12 +101,9 @@ INFO = {
 WORLD_LUA = 'lua/ge/extensions/e2r/world.lua'
 
 
-def level_files(lang='uk', legacy=False):
+def level_files(lang='uk'):
     root = f'levels/{LEVEL}'
     title, description = INFO[lang]
-    if legacy:
-        description = ('Developer companion mode. Start EarthNG.bat before landing.' if lang == 'en' else
-                       'Режим розробника з компаньйоном. Перед висадкою запустіть EarthNG.bat.')
     objects = [
         {'__parent': 'MissionGroup', 'class': 'SimGroup', 'name': 'Sky'},
         {'__parent': 'MissionGroup', 'class': 'SpawnSphere', 'dataBlock': 'SpawnSphereMarker', 'name': 'spawn_pad',
@@ -133,12 +129,21 @@ def level_files(lang='uk', legacy=False):
     }
 
 
-def build(out, lang='uk', legacy=False):
+def build(out, lang='en'):
+    # Fail before writing a partial ZIP when building from a fresh source checkout.
+    import fast_photo
+    import fast_art
+    shared = HERE.parent / 'data/art-distributable' / fast_art.VERSION
+    if not (shared / 'packs.json').is_file() and not (fast_photo.TEXTURES / 'panelka_panels/albedo.jpg').is_file():
+        raise FileNotFoundError('Planet assets are missing. Extract earthng-developer-assets.zip from the release '
+                                'into the repository, or install the ready earthng_planet.zip. See README.md.')
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     path = out / ZIP
     temporary = path.with_suffix('.zip.tmp')
     with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED) as z:
+        for notice in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
+            z.write(HERE.parent / notice, f'earthng/planet/{notice}')
         for src in sorted(MOD.rglob('*')):
             if not src.is_file():
                 continue
@@ -149,32 +154,29 @@ def build(out, lang='uk', legacy=False):
                 if text.count(line) != 1:
                     raise SystemExit(f'{WORLD_LUA}: no single "{line}" line to set the language')
                 text = text.replace(line, f"local LANG = '{lang}'")
-                if legacy:
-                    text = text.replace('local NATIVE = true', 'local NATIVE = false')
                 z.writestr(name, text)
             else:
                 z.write(src, name)
-        for name, data in level_files(lang, legacy=legacy).items():
+        for name, data in level_files(lang).items():
             z.writestr(name, data)
         z.writestr('earthng/planet/manifest.json', json.dumps({
             'schemaVersion': 1, 'kind': 'earthng-planet', 'version': '0.4.0', 'natureVersion': 1,
-            'countrySchemaVersion': 1, 'runtime': 'companion' if legacy else 'lua',
+            'countrySchemaVersion': 1, 'runtime': 'lua',
         }))
-        if not legacy:
-            import fast_art
-            import fast_style
-            art = fast_art.prebuild(distributable=True)
-            z.writestr('earthng/planet/materials.json', json.dumps(fast_style.MATERIALS))
-            for src in sorted(art.rglob('*')):
-                if src.is_file() and src.suffix in ('.dds', '.json'):
-                    z.write(src, f'e2r_stream/fast-art/{fast_art.VERSION}/' + src.relative_to(art).as_posix())
-            # the picker's offline base map (Natural Earth tiles and labels; PNGs are stored as is)
-            import build_basemap
-            base = build_basemap.build()
-            for src in sorted(base.rglob('*')):
-                if src.is_file() and src.suffix in ('.png', '.json'):
-                    z.write(src, 'earthng/planet/basemap/' + src.relative_to(base).as_posix(),
-                            compress_type=zipfile.ZIP_STORED if src.suffix == '.png' else zipfile.ZIP_DEFLATED)
+        import fast_art
+        import fast_style
+        art = fast_art.prebuild(distributable=True)
+        z.writestr('earthng/planet/materials.json', json.dumps(fast_style.MATERIALS))
+        for src in sorted(art.rglob('*')):
+            if src.is_file() and src.suffix in ('.dds', '.json'):
+                z.write(src, f'e2r_stream/fast-art/{fast_art.VERSION}/' + src.relative_to(art).as_posix())
+        # the picker's offline base map (Natural Earth tiles and labels; PNGs are stored as is)
+        import build_basemap
+        base = build_basemap.build()
+        for src in sorted(base.rglob('*')):
+            if src.is_file() and src.suffix in ('.png', '.json'):
+                z.write(src, 'earthng/planet/basemap/' + src.relative_to(base).as_posix(),
+                        compress_type=zipfile.ZIP_STORED if src.suffix == '.png' else zipfile.ZIP_DEFLATED)
     temporary.replace(path)
     return path
 
@@ -183,10 +185,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--install', type=Path, help='BeamNG user folder (…/BeamNG.drive/current)')
-    p.add_argument('--lang', choices=sorted(INFO), default='uk')
-    p.add_argument('--legacy', action='store_true', help='development mode with the external Python companion')
+    p.add_argument('--lang', choices=sorted(INFO), default='en')
     a = p.parse_args()
-    path = build(a.out, a.lang, legacy=a.legacy)
+    path = build(a.out, a.lang)
     print(path)
     if a.install:
         mods = a.install / 'mods'

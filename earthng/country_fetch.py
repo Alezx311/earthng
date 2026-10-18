@@ -130,6 +130,10 @@ def download(url, dest, emit=print, cancel=None):
                     else:
                         emit(f'{dest.name}: {have / 2**20:.0f} MB')
                     last = now
+    if cancel is not None and cancel.is_set():
+        raise InterruptedError('download stopped')
+    if total is not None and part.stat().st_size != total:
+        raise OSError(f'incomplete download: expected {total} bytes, got {part.stat().st_size}')
     os.replace(part, dest)
     emit(f'downloaded {dest.name}')
     return dest
@@ -169,7 +173,8 @@ def _python():
     """Interpreter that can import osmium. This checkout only."""
     try:
         import osmium  # noqa: F401
-        return sys.executable
+        executable = Path(sys.executable)
+        return str(executable.with_name('python.exe') if executable.name.lower() == 'pythonw.exe' else executable)
     except ImportError:
         pass
     if os.name == 'nt':
@@ -194,7 +199,7 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     known.setdefault(place['id'], place)
     look = looks.canonical(look or looks.recommended(place['id'], known))
     include = looks.canonical_include(include if include is not None else {})
-    jobs = jobs or max(1, (os.cpu_count() or 2) - 1)
+    jobs = jobs or min(4, max(1, (os.cpu_count() or 2) - 1))
     if box is not None:
         if len(box) != 4 or not all(isinstance(v, (int, float)) for v in box):
             raise ValueError('the box is west, south, east, north in degrees')
@@ -214,7 +219,7 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
                    '--jobs', str(min(jobs, 4))]
         if box:
             command += ['--package-box', *(str(v) for v in box)]
-        subprocess.check_call(command, cwd=ROOT)
+        run_step(command, emit, cancel)
     index = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))
     dem = Path(root) / 'out' / 'world' / 'cache'
     missing = [path for path in fast_dem.audit(index, dem) if not path.exists()]
@@ -245,9 +250,41 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     archive = build_country.build_country(
         slug_id, place['name'], '0.4.0', regions, out, emit=emit, jobs=jobs,
         landing=landing, look=look, include=include)
+    if cancel is not None and cancel.is_set():
+        raise InterruptedError('build stopped; completed ZIP retained, not installed')
     installed = install_zip(archive, mods, slug_id)
     emit(f'installed {installed}')
     return installed
+
+
+def run_step(command, emit=print, cancel=None):
+    """Capture worker output even when Country.bat uses pythonw; cancel its process tree."""
+    import threading
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+    with subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, encoding='utf-8', errors='replace',
+                          env={**os.environ, 'PYTHONUNBUFFERED': '1', 'PYTHONIOENCODING': 'utf-8'},
+                          creationflags=creationflags) as process:
+        def relay():
+            for line in process.stdout:
+                emit(line.rstrip())
+        reader = threading.Thread(target=relay, daemon=True)
+        reader.start()
+        while process.poll() is None:
+            if cancel is not None and cancel.wait(0.2):
+                if os.name == 'nt':
+                    subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                                   capture_output=True, creationflags=creationflags)
+                else:
+                    process.terminate()
+                process.wait()
+                reader.join()
+                raise InterruptedError('tile cutting stopped')
+            if cancel is None:
+                time.sleep(0.2)
+        reader.join()
+        if process.returncode:
+            raise subprocess.CalledProcessError(process.returncode, command)
 
 
 def refresh_planet(mods, emit=print):

@@ -1,7 +1,7 @@
 """Road heights for the whole graph at once (fast generator, index time).
 
 Per-segment profiles from a 24 m DEM gave 112 % ramps and 3.5 m pits on short pieces
-(docs/HANDOFF_FAST_STREAMING.md). Here every road is sampled into stations (shared at graph
+(docs/PERFORMANCE.md). Here every road is sampled into stations (shared at graph
 nodes) and the heights minimise
 
     sum w*m*(h - target)^2 + ALPHA * sum (dh)^2/l + BETA * sum (d2h)^2/l^3
