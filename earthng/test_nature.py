@@ -1,6 +1,7 @@
 """P1 contracts across source classification, offline export and the real Lua generator."""
 import copy
 import json
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -286,6 +287,44 @@ class Runtime(unittest.TestCase):
         self.assertTrue(far_rocks)
         self.assertLessEqual(len(far_rocks), 16)
         self.assertTrue(set(far_rocks).issubset(set(rocks)))
+
+    def crowns(self, items):
+        return [item for item in items if 'grass' not in item[0] and 'rock' not in item[0]]
+
+    def test_open_ground_among_buildings_gets_groves_not_a_forest(self):
+        # 30 x 30 m blocks every 60 m, past the tile too: a 25 % built-up share, like a city district
+        houses = [dict(patch('building', (x, y, x + 30, y + 30), name=f'b{x}_{y}'), height=10)
+                  for x in range(-160, 660, 60) for y in range(-160, 660, 60)]
+        hill = self.crowns(self.statics(self.g.build([{'terrain': terrain()}])[1]))
+        town = self.crowns(self.statics(self.g.build([{'terrain': terrain(), 'buildings': houses}])[1]))
+        self.assertGreater(len(town), 100)
+        self.assertLess(len(town), len(hill) / 2)
+        self.assertFalse([item for item in town if 'scots_pine' in item[0]])
+        for item in town:
+            x, y = item[1][0], item[1][1]
+            gap = min(math.hypot(max(h['rings'][0][0][0] - x, 0, x - h['rings'][0][2][0]),
+                                 max(h['rings'][0][0][1] - y, 0, y - h['rings'][0][2][1])) for h in houses)
+            self.assertGreaterEqual(gap, 3 - 1e-6)
+        far = self.crowns(self.statics(self.g.build([{'terrain': terrain(), 'buildings': houses}], far=True)[2]))
+        self.assertTrue(far)
+        self.assertTrue(set(far).issubset(set(town)))
+
+    def test_osm_tree_rows_are_planted_every_8_m_before_the_lattice(self):
+        row = {'id': 'row', 'kind': 'tree_row', 'tags': {'natural': 'tree_row'},
+               'points': [[10, 250, 100], [490, 250, 100]]}
+        cell = {'terrain': terrain(), 'lines': [row]}
+        near = self.crowns(self.statics(self.g.build([cell], groundTrees=False)[1]))
+        self.assertEqual(len(near), 60)
+        self.assertTrue(all(abs(item[1][1] - 250) < 1e-6 for item in near))
+        xs = sorted(item[1][0] for item in near)
+        self.assertTrue(all(abs(b - a - 8) < 1e-6 for a, b in zip(xs, xs[1:])))
+        far = self.crowns(self.statics(self.g.build([cell], groundTrees=False, far=True, maxFarTrees=20)[2]))
+        self.assertEqual(len(far), 20)
+        self.assertTrue(set(far).issubset(set(near)))
+        # rows spend the cap first: a capped tile keeps every row crown
+        capped = self.crowns(self.statics(self.g.build([cell], maxTrees=100)[1]))
+        self.assertEqual(len(capped), 100)
+        self.assertTrue(set(near).issubset(set(capped)))
 
 
 if __name__ == '__main__':

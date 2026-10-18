@@ -176,6 +176,7 @@ python earthng/test_generator.py
 python earthng/test_native.py
 python earthng/test_widget.py
 python earthng/road_quality.py --step 4 --compare baseline   # якість доріг на полігоні
+python earthng/tree_census.py --label try --compare after   # крони за джерелом (docs/NATURE.md)
 python earthng/test_world.py --native --generator fast `
   --mod out/mods/earthng_ukraine.zip --lat 50.4475 --lon 30.5225 `
   --out out/native-game-test

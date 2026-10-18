@@ -411,6 +411,24 @@ local function inside(rings, x, y)
   return filled
 end
 
+-- Whether (x, y) lies closer than d to an edge of the rings (a crown against a wall).
+local function nearEdge(rings, x, y, d)
+  local d2 = d * d
+  for _, ring in ipairs(rings or {}) do
+    local previous = ring[#ring]
+    for _, p in ipairs(ring) do
+      local ax, ay = previous[1], previous[2]
+      local dx, dy = p[1] - ax, p[2] - ay
+      local len2 = dx * dx + dy * dy
+      local t = len2 > EPS and math.max(0, math.min(1, ((x - ax) * dx + (y - ay) * dy) / len2)) or 0
+      local ex, ey = ax + t * dx - x, ay + t * dy - y
+      if ex * ex + ey * ey < d2 then return true end
+      previous = p
+    end
+  end
+  return false
+end
+
 local function number(value, default)
   return tonumber(tostring(value or ''):match('^%s*([%d%.%-]+)')) or default
 end
@@ -2331,18 +2349,62 @@ local function build(cells, i, j, options)
     pause()
   end
   if decor then
-    local blockers = {}
-    for _, building in ipairs(lists.buildings) do
-      if ringsTouch(building.rings, rect) then blockers[#blockers + 1] = {rings = building.rings, bounds = ringBounds(building.rings)} end
+    -- Built-up share of the ground: building footprint in 50 m bins around the tile. The
+    -- cells carry their neighbours' buildings 100 m deep, which is what the share reads.
+    local BUILT_BIN, WALL = 50, 3
+    local blockers, builtBins = {}, {}
+    for index, building in ipairs(lists.buildings) do
+      local b = ringBounds(building.rings)
+      if boundsTouch(b, rect, WALL) then blockers[#blockers + 1] = {rings = building.rings, bounds = b, wall = true} end
+      if boundsTouch(b, rect, 3 * BUILT_BIN) then
+        local footprint = 0
+        for k, ring in ipairs(building.rings) do footprint = footprint + (k == 1 and 1 or -1) * math.abs(area2(ring)) / 2 end
+        local w, h = math.max(b[3] - b[1], EPS), math.max(b[4] - b[2], EPS)
+        for gx = floor(b[1] / BUILT_BIN), floor(b[3] / BUILT_BIN) do
+          local ox = math.min(b[3], (gx + 1) * BUILT_BIN) - math.max(b[1], gx * BUILT_BIN)
+          for gy = floor(b[2] / BUILT_BIN), floor(b[4] / BUILT_BIN) do
+            local oy = math.min(b[4], (gy + 1) * BUILT_BIN) - math.max(b[2], gy * BUILT_BIN)
+            local id = (gx + 32768) * 65536 + gy + 32768
+            builtBins[id] = (builtBins[id] or 0) + footprint * math.max(0, math.min(1, ox / w)) * math.max(0, math.min(1, oy / h))
+          end
+        end
+      end
+      if index % 256 == 0 then pause() end
     end
     for _, area in ipairs(lists.areas) do
       if (area.kind == 'water' or area.kind == 'paved') and ringsTouch(area.rings, rect) then
-        blockers[#blockers + 1] = {rings = area.rings, bounds = ringBounds(area.rings)}
+        blockers[#blockers + 1] = {rings = area.rings, bounds = ringBounds(area.rings), paved = area.kind == 'paved'}
       end
     end
+    -- The share over the 3 x 3 bins round a bin, blended between bin centres: no step at a
+    -- bin or tile edge, and a point reads the same buildings from either tile beside it.
+    local builtShare = {}
+    local function binShare(gx, gy)
+      local id = (gx + 32768) * 65536 + gy + 32768
+      local share = builtShare[id]
+      if not share then
+        share = 0
+        for dx = -1, 1 do
+          for dy = -1, 1 do share = share + (builtBins[(gx + dx + 32768) * 65536 + gy + dy + 32768] or 0) end
+        end
+        share = share / (9 * BUILT_BIN * BUILT_BIN)
+        builtShare[id] = share
+      end
+      return share
+    end
+    local function builtAt(x, y)
+      local fx, fy = x / BUILT_BIN - .5, y / BUILT_BIN - .5
+      local gx, gy = floor(fx), floor(fy)
+      local tx, ty = fx - gx, fy - gy
+      local a = binShare(gx, gy) + (binShare(gx + 1, gy) - binShare(gx, gy)) * tx
+      local b = binShare(gx, gy + 1) + (binShare(gx + 1, gy + 1) - binShare(gx, gy + 1)) * tx
+      return a + (b - a) * ty
+    end
     local blockedOps = 0
-    local function blocked(x, y, pad)
-      pad = pad or 3.5
+    -- wall: clearance from building walls (a crown), 0 for grass and stones. paved: a mapped
+    -- tree may stand in a square or a car park (a grate in the paving), a lattice one may not.
+    local function blocked(x, y, pad, wall, paved)
+      pad, wall = pad or 3.5, wall or 0
       local nearby = segmentBins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE
       for _, segment in ipairs(nearby) do
         local a = segment.a
@@ -2353,7 +2415,9 @@ local function build(cells, i, j, options)
       end
       for _, blocker in ipairs(blockers) do
         local b = blocker.bounds
-        if x >= b[1] and y >= b[2] and x <= b[3] and y <= b[4] and inside(blocker.rings, x, y) then return true end
+        local m = blocker.wall and wall or 0
+        if not (paved and blocker.paved) and x >= b[1] - m and y >= b[2] - m and x <= b[3] + m and y <= b[4] + m
+            and (inside(blocker.rings, x, y) or (m > 0 and nearEdge(blocker.rings, x, y, m))) then return true end
         blockedOps = blockedOps + 1
         if blockedOps % 512 == 0 then pause() end
       end
@@ -2404,8 +2468,25 @@ local function build(cells, i, j, options)
         end
       end
     end
+    -- Smooth 0..1 noise with GROVE m features: groups of town trees and the lawns between them.
+    local GROVE = 45
+    local function grove(x, y)
+      local fx, fy = x / GROVE, y / GROVE
+      local gx, gy = floor(fx), floor(fy)
+      local tx, ty = fx - gx, fy - gy
+      tx, ty = tx * tx * (3 - 2 * tx), ty * ty * (3 - 2 * ty)
+      local v00, v10 = ihash(7, gx, gy) % 1000 / 1000, ihash(7, gx + 1, gy) % 1000 / 1000
+      local v01, v11 = ihash(7, gx, gy + 1) % 1000 / 1000, ihash(7, gx + 1, gy + 1) % 1000 / 1000
+      local a, b = v00 + (v10 - v00) * tx, v01 + (v11 - v01) * tx
+      return a + (b - a) * ty
+    end
     -- Untagged hills in the country pack are kind 'ground'. Without this lattice
     -- they stay a green sheet with a tree only where OSM drew a forest polygon.
+    -- Untagged ground among buildings is something else: courtyards, school and hospital
+    -- grounds, verges, vacant lots (OSM areas the pack does not keep). Filled like a hill it
+    -- made a forest of every Kyiv block. Past URBAN_FROM of built-up share the hill lattice
+    -- fades into 'town' trees: groves with open lawns between them, broadleaf.
+    local URBAN_FROM, URBAN_FULL = .03, .12
     local wantGround = options.groundTrees ~= false and options.groundTrees ~= 0
     if wantGround then
       for gy = floor(rect[2] / groundSpacing) - 1, math.ceil(rect[4] / groundSpacing) do
@@ -2420,8 +2501,15 @@ local function build(cells, i, j, options)
               and coverAt(x, y) == 'ground' then
             positions[position] = true
             local cluster = ihash(3, floor(x / 65), floor(y / 65)) % 1000 / 1000
-            if keyHash(4, position) % 1000 / 1000 < (.94 + .06 * cluster) then
-              candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = 'ground', tags = NONE}
+            local chance, kind = .94 + .06 * cluster, 'ground'
+            local urban = math.max(0, math.min(1, (builtAt(x, y) - URBAN_FROM) / (URBAN_FULL - URBAN_FROM)))
+            if urban > 0 then
+              local town = grove(x, y) > .6 and .5 or .03
+              chance = chance + (town - chance) * urban
+              if urban >= .5 then kind = 'town' end
+            end
+            if keyHash(4, position) % 1000 / 1000 < chance then
+              candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = kind, tags = NONE}
             end
           end
         end
@@ -2490,14 +2578,49 @@ local function build(cells, i, j, options)
         pause()
       end
     end
-    spread(candidates, maxTrees, 25, function(candidate)
+    -- OSM tree rows (natural=tree_row): surveyed crowns along streets and field edges. They
+    -- go before the lattice and spend its cap first; far plants a prefix of the same rows.
+    -- A crown stands where the row crosses a ROW_STEP grid line of its main axis, so a row
+    -- read from two cells or tiles keeps one rhythm.
+    local ROW_STEP, rowPlanted, rowSeen = 8, 0, {}
+    for _, line in ipairs(maxTrees > 0 and lists.lines or NONE) do
+      if line.kind == 'tree_row' then
+        local points, tags = line.points or NONE, line.tags or NONE
+        local needle = tags.leaf_type == 'needleleaved' or tags.leaf_type == 'coniferous'
+        for index = 1, #points - 1 do
+          local a, b = points[index], points[index + 1]
+          local dx, dy = b[1] - a[1], b[2] - a[2]
+          local axis = math.abs(dx) >= math.abs(dy) and 1 or 2
+          local from, to = a[axis], b[axis]
+          for k = math.ceil(math.min(from, to) / ROW_STEP), math.floor(math.max(from, to) / ROW_STEP) do
+            local t = math.abs(to - from) > EPS and (k * ROW_STEP - from) / (to - from) or 1
+            local x, y = a[1] + dx * t, a[2] + dy * t
+            local position = latticeKey(3, floor(x), floor(y), 1)
+            -- t = 1 is the next segment's first crown
+            if rowPlanted < maxTrees and t < 1 - EPS and not rowSeen[position]
+                and x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] then
+              rowSeen[position] = true
+              local z = ground(x, y)
+              if (not sea or z > sea) and not blocked(x, y, .5, 2, true) then
+                local h = keyHash(8, position)
+                local set = needle and CONIFERS or TREES
+                static(string.format('tree_row_%d', position), set[h % #set + 1], x, y, z, h % 6283 / 1000, .8 + keyHash(6, position) % 400 / 1000)
+                rowPlanted = rowPlanted + 1
+              end
+            end
+          end
+          if index % 32 == 0 then pause() end
+        end
+      end
+    end
+    spread(candidates, maxTrees - rowPlanted, 25, function(candidate)
       local x, y, h = candidate.x, candidate.y, candidate.hash
       local z = ground(x, y)
       local elevation = rawHeight(x, y) - (options.seaLevel or 20)
       local _, _, nz = groundNormal(x, y)
       local bush = candidate.kind == 'scrub' or candidate.kind == 'heath'
       if not (nz >= (bush and .64 or .72) and elevation < treeline + (bush and 250 or 0)
-          and (not sea or z > sea) and not blocked(x, y)) then return false end
+          and (not sea or z > sea) and not blocked(x, y, nil, bush and 1.5 or WALL)) then return false end
       local leaf = candidate.tags.leaf_type or candidate.tags.wood
       local needle = leaf == 'needleleaved' or leaf == 'coniferous'
       if leaf ~= 'broadleaved' and leaf ~= 'deciduous' and not needle and candidate.kind == 'forest' then
@@ -2512,7 +2635,9 @@ local function build(cells, i, j, options)
       end
       local set = bush and BUSHES or needle and CONIFERS or TREES
       local scale = .65 + keyHash(6, candidate.key) % 900 / 1000
-      static('tree_' .. candidate.key, set[h % #set + 1], x, y, z,
+      -- Source and exact key: `..` prints 14 digits, and one lattice point's keys in two
+      -- namespaces (forest and open ground at one spacing) printed the same name.
+      static(string.format('tree_%s_%d', candidate.kind, candidate.key), set[h % #set + 1], x, y, z,
         h % 6283 / 1000, bush and scale * .8 or scale)
       return true
     end)
