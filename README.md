@@ -34,21 +34,50 @@ connection is required for setup and new data.
 In the country window:
 
 1. Select your **BeamNG user folder** (the folder containing `mods`, not `mods` itself).
-2. Search for a country or smaller Geofabrik region.
-3. Choose **Install a ready pack** when available, or adjust the look/layers and
+2. Search for a country or smaller Geofabrik region, or use **Select area** and drag
+   a rectangle on the map. The smallest available extract covering the entire
+   selection is chosen automatically. Scroll to zoom, use **Move map** to pan,
+   or type in **Find city** (English or Ukrainian) and press Enter. **Use whole
+   region** clears the rectangle; coordinates remain available in the second tab.
+3. Check **Look & preview**, then choose **Install a ready pack** when available, or adjust the look/layers and
    choose **Build my own**. Roads and terrain are always included.
-4. Wait for the `installed ...` message. The ZIP is also retained in
+4. Watch the current stage, elapsed time and approximate remaining time. Wait for
+   the `installed ...` message. The ZIP is also retained in
    `out/country-setup` for reuse or sharing.
+
+Map Builder reuses the offline Natural Earth map from `out/basemap/3` or the
+installed planet ZIP, with a coastline fallback. It is a regional map, without
+street-level detail. City search requires the offline map's labels. Extract
+boundaries are downloaded once from Geofabrik and cached; selecting a source
+from the list still works if that download is unavailable.
+
+The preview is an illustrative 2D street using the selected materials from the
+installed planet, local developer assets, and game textures. Trees and props are
+schematic; missing textures are explicitly marked as fallback colours. It is not
+a BeamNG render: lighting, actual buildings, OSM tags and the in-game style can
+change the final appearance.
+
+Build estimates are broad planning ranges, not a completion guarantee. They
+account for source size, selected area, layers and cached source tiles. Successful
+stage timings are saved locally in `out/country-setup/build-times.json` and reused
+for the same selection, layers and source-cache state. Network speed, terrain
+cache, hardware and OSM density can change the duration.
 
 The planet ZIP must also be installed. **Refresh planet code** updates code in an
 existing planet ZIP; it does not create the base assets.
 
 For a small test, choose Liechtenstein. Large countries can require many GB of
 source data, temporary files and hours of processing. A custom bounding box limits
-the exported area, but still downloads the selected region's complete PBF.
+the exported area, but still downloads and scans the selected region's complete PBF
+on the first build. Rebuilding an area with completed source tiles skips the PBF
+download and scan entirely; it uses that cached OSM snapshot. To deliberately
+update OSM data, use a fresh source-tile cache for that region under `data/osm_tiles`.
 The Stop button cancels the build before the pack is installed. Tile cutting stops
 at once. A download, the region index and the export stop at the next chunk, region
-or block. Keep the window open until the worker stops.
+or block. Closing the window requests cancellation and waits for the worker to stop.
+Settings are locked while a job runs. Elevation downloads use a bounded queue of
+eight workers, with cancellable retry delays; network requests already in flight
+may still need to finish or time out.
 
 Console equivalent (also useful for Linux/macOS with a local Python environment):
 

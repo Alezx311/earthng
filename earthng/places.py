@@ -97,3 +97,39 @@ def search(places, query, limit=None):
 def parent_name(place, places_by_id):
     parent = places_by_id.get(place.get('parent') or '')
     return parent['name'] if parent else (place.get('parent') or '')
+
+
+def load_boundaries(root, refresh=False):
+    """Separate, optional geometry cache: the region list remains usable offline."""
+    path = Path(root) / 'data' / 'geofabrik' / 'index-v1.json'
+    if path.exists() and not refresh:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    else:
+        request = urllib.request.Request('https://download.geofabrik.de/index-v1.json',
+                                         headers={'User-Agent': USER_AGENT})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read()
+        payload = json.loads(data)
+        parse_index(payload)  # validate before replacing the cache
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix('.json.part')
+        temporary.write_bytes(data)
+        temporary.replace(path)
+    from shapely.geometry import shape
+    result = {}
+    for feature in payload['features']:
+        prop = feature.get('properties') or {}
+        if feature.get('geometry') and prop.get('id'):
+            geometry = shape(feature['geometry'])
+            if not geometry.is_empty and geometry.is_valid:
+                result[prop['id']] = geometry
+    return result
+
+
+def smallest_covering(boundaries, box, available):
+    """Choose a complete source for the rectangle, including holes/border crossings."""
+    from shapely.geometry import box as rectangle
+    area = rectangle(*box)
+    candidates = ((geometry.area, key) for key, geometry in boundaries.items()
+                  if key in available and geometry.covers(area))
+    return min(candidates, default=(None, None))[1]

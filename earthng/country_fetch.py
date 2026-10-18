@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from itertools import islice
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ import sys
 import time
 import urllib.request
 import zipfile
+from contextlib import contextmanager
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -205,12 +207,18 @@ def fetch_dem(index, dem, emit=print, cancel=None):
             except Exception:
                 if attempt == 5:
                     raise
-                time.sleep(2 + attempt * 2)
+                if cancel is not None:
+                    if cancel.wait(2 + attempt * 2):
+                        raise InterruptedError('build stopped')
+                else:
+                    time.sleep(2 + attempt * 2)
     if not missing:
         return
     from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
     with ThreadPoolExecutor(8) as pool:
-        pending = {pool.submit(one, path) for path in missing}
+        remaining = iter(missing)
+        pending = {pool.submit(one, path) for path in islice(remaining, 16)}
+        completed = 0
         try:
             while pending:
                 if cancel is not None and cancel.is_set():
@@ -218,13 +226,18 @@ def fetch_dem(index, dem, emit=print, cancel=None):
                 done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
                 for future in done:
                     future.result()
+                    completed += 1
+                if done:
+                    emit(f'Elevation: {completed}/{len(missing)} tiles')
+                for path in islice(remaining, len(done)):
+                    pending.add(pool.submit(one, path))
         finally:
             for future in pending:
                 future.cancel()
 
 
 def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=None,
-                landing=None, by_id=None, emit=print, cancel=None):
+                landing=None, by_id=None, emit=print, cancel=None, progress=None):
     """Download sources if needed and write the country zip, then copy it into mods."""
     import build_country
 
@@ -235,41 +248,57 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     include = looks.canonical_include(include if include is not None else {})
     jobs = jobs or min(4, max(1, (os.cpu_count() or 2) - 1))
     if box is not None:
-        if len(box) != 4 or not all(isinstance(v, (int, float)) for v in box):
-            raise ValueError('the box is west, south, east, north in degrees')
-        west, south, east, north = (float(v) for v in box)
-        if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
-            raise ValueError('the box must stay on the map and run from west to east')
-        box = [west, south, east, north]
+        from builder_estimate import validate_box
+        box = validate_box(box)
+
+    @contextmanager
+    def stage(name):
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError('build stopped')
+        start = time.monotonic()
+        if progress:
+            progress(name, None)
+        yield
+        if progress:
+            progress(name, time.monotonic() - start)
+
     pbf = pbf_path(root, slug_id)
-    emit(f"PBF {place['name']}: {place['pbf']}")
-    download(place['pbf'], pbf, emit, cancel)
-    if cancel is not None and cancel.is_set():
-        raise InterruptedError('build stopped')
     tiles = tiles_dir(root, slug_id, box)
-    if not (tiles / 'index.json').exists():
-        emit(f'cutting tiles into {tiles.name}')
-        command = [_python(), str(HERE / 'osm_tiles_country.py'), str(pbf), '--out', str(tiles),
-                   '--jobs', str(min(jobs, 4))]
-        if box:
-            command += ['--package-box', *(str(v) for v in box)]
-        run_step(command, emit, cancel)
+    cached_tiles = (tiles / 'index.json').is_file()
+    with stage('Sources'):
+        if cached_tiles:
+            emit('Reusing completed source tiles; no PBF download or scan needed.')
+        else:
+            emit(f"PBF {place['name']}: {place['pbf']}")
+            download(place['pbf'], pbf, emit, cancel)
+    with stage('Cut tiles'):
+        if not cached_tiles:
+            emit(f'cutting tiles into {tiles.name}')
+            command = [_python(), str(HERE / 'osm_tiles_country.py'), str(pbf), '--out', str(tiles),
+                       '--jobs', str(min(jobs, 4))]
+            if box:
+                command += ['--package-box', *(str(v) for v in box)]
+            run_step(command, emit, cancel)
     index = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))
     dem = Path(root) / 'out' / 'world' / 'cache'
-    fetch_dem(index, dem, emit, cancel)
+    with stage('Elevation'):
+        fetch_dem(index, dem, emit, cancel)
     if cancel is not None and cancel.is_set():
         raise InterruptedError('build stopped')
     work = Path(root) / 'out' / 'world'
     emit('region index')
-    regions = build_country.grid_regions(tiles, dem, work, emit=emit, cancel=cancel)
+    with stage('Region index'):
+        regions = build_country.grid_regions(tiles, dem, work, emit=emit, cancel=cancel)
     out = Path(root) / 'out' / 'country-setup'
     emit(f"building earthng_{slug_id}.zip, block {look['block']}")
-    archive = build_country.build_country(
-        slug_id, place['name'], '0.4.0', regions, out, emit=emit, jobs=jobs,
-        landing=landing, look=look, include=include, cancel=cancel)
+    with stage('Export'):
+        archive = build_country.build_country(
+            slug_id, place['name'], '0.4.0', regions, out, emit=emit, jobs=jobs,
+            landing=landing, look=look, include=include, cancel=cancel)
     if cancel is not None and cancel.is_set():
         raise InterruptedError('build stopped; completed ZIP retained, not installed')
-    installed = install_zip(archive, mods, slug_id)
+    with stage('Install'):
+        installed = install_zip(archive, mods, slug_id)
     emit(f'installed {installed}')
     return installed
 
