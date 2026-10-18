@@ -145,7 +145,12 @@ TEXTURES['fence_mesh'] = {
 CHAINLINK_OPACITY = '/assets/materials/tileable/metal/chainlink/t_chainlink_fence_o.data.png'
 TEXTURES['car'] = {'baseColorMap': f'{ART}/real/cars.color.png'}
 # material fields beyond the stage: see-through fences, both sides of a single quad
-EXTRA = {'fence_mesh': {'alphaTest': True, 'alphaRef': 80, 'doubleSided': True, 'castShadows': False},
+# The chain-link opacity mips keep the share of texels over CHAINLINK_MIP_REF (fast_dds). The
+# material tests at 30: at 80 the wire dropped out after bilinear filtering and BC1 from ~6 m
+# to ~35 m, so a fence vanished as the car came close (night-fence-02: ref 80 gone at 8 and
+# 20 m, ref 30 drawn at 8, 20 and 40 m from the same DDS).
+CHAINLINK_MIP_REF = 80
+EXTRA = {'fence_mesh': {'alphaTest': True, 'alphaRef': 30, 'doubleSided': True, 'castShadows': False},
          'fence_wall': {'doubleSided': True}}
 # photo facades (fast_photo: Panelka pack): a 6 m repeat, the II-68 loggia sheet 33 m
 import fast_photo as _photo

@@ -127,7 +127,10 @@ function M.cell(data, first, last, ox, oy, rect, pause, keep)
   local nx, ny = u(), u()
   if nx < 2 or ny < 2 or nx > 257 or ny > 257 then error('invalid source elevation grid') end
   local heights, h = {}, 0
-  for k = 1, nx * ny do h = h + s(); heights[k] = h / 10 end
+  for k = 1, nx * ny do
+    h = h + s(); heights[k] = h / 10
+    if k % 8192 == 0 then pause() end
+  end
   local cell = {terrain = {rect = rect, nx = nx, ny = ny, heights = heights}}
   local done = 0
   for _, kind in ipairs(KINDS) do

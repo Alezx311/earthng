@@ -430,7 +430,7 @@ def build(r, game_assets=True):
     import fast_dds
     from concurrent.futures import ThreadPoolExecutor
     def to_dds(png):
-        ref = style.EXTRA['fence_mesh']['alphaRef'] if png.name == 'chainlink_o.data.png' else None
+        ref = style.CHAINLINK_MIP_REF if png.name == 'chainlink_o.data.png' else None
         fast_dds.save(Image.open(png), png.with_suffix('.dds'), alpha_ref=ref)
         png.unlink()
     with ThreadPoolExecutor(6) as pool:

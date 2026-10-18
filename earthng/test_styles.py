@@ -105,6 +105,8 @@ class TransitionTests(unittest.TestCase):
           driver=priorDriver
           core_celestial={getDriver=function() return driver end, setDriver=function(fn) driver=fn end}
         ''')
+        lua.globals().quality = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/quality.lua').read_text(encoding='utf8'))
+        lua.execute("local old=require; require=function(n) if n=='ge/extensions/e2r/quality' then return quality else return old(n) end end")
         lua.globals().mod = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/world.lua').read_text(encoding='utf8'))
         lua.execute('''
           S=up(mod.tick,'S'); S.now=10

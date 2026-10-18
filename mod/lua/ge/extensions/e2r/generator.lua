@@ -74,6 +74,22 @@ local function hash(value)
   return h
 end
 
+-- Numeric twin of hash() for scatter lattices: a tile walks tens of thousands of lattice
+-- points, and building a string per point made garbage and most of the scatter time.
+local HMOD = 2147483647
+local function ihash(seed, a, b, c)
+  local h = (seed * 1000003 + a) % HMOD
+  h = (h * 1000003 + b) % HMOD
+  if c then h = (h * 1000003 + c) % HMOD end
+  h = (h * 48271 + 11) % HMOD
+  return (h * 48271 + 7) % HMOD
+end
+-- An exact key of lattice point (gx, gy): namespace 0..3, lattice code 0..511.
+local function latticeKey(ns, gx, gy, code)
+  return (((gx + 524288) * 1048576 + (gy + 524288)) * 512 + code) * 4 + ns
+end
+local function keyHash(seed, key) return ihash(seed, key % HMOD, math.floor(key / HMOD)) end
+
 local function lerp(a, b, t)
   local n = math.max(#a, #b)
   -- A per-corner normal sits at [6..8]. A nil UV in [4] or [5] would stop `#` before it,
@@ -333,15 +349,63 @@ local function ringsTouch(rings, rect)
   return boundsTouch(ringBounds(rings), rect)
 end
 
+-- Edges of a big ring by y band, so a point test reads only the edges that can cross its
+-- row. The crossing rule is the plain one below, so the answer is the same. Forest rings of
+-- thousands of vertices made point tests most of a tile's scatter time.
+local bandIndex = setmetatable({}, {__mode = 'k'})
+local function ringBands(ring)
+  local index = bandIndex[ring]
+  if index ~= nil then return index end
+  local n = #ring
+  if n < 24 then bandIndex[ring] = false; return false end
+  local y0, y1 = math.huge, -math.huge
+  for k = 1, n do
+    local y = ring[k][2]
+    if y < y0 then y0 = y end
+    if y > y1 then y1 = y end
+  end
+  local count = math.max(1, math.min(4096, math.floor(n / 4)))
+  local h = (y1 - y0) / count
+  if not (h > 0) then bandIndex[ring] = false; return false end
+  local bands, previous = {}, ring[n]
+  for k = 1, n do
+    local a, b = ring[k][2], previous[2]
+    if a > b then a, b = b, a end
+    for i = math.min(count - 1, math.floor((a - y0) / h)), math.min(count - 1, math.floor((b - y0) / h)) do
+      local band = bands[i]
+      if not band then band = {}; bands[i] = band end
+      band[#band + 1] = k
+    end
+    previous = ring[k]
+  end
+  index = {y0 = y0, y1 = y1, h = h, count = count, bands = bands}
+  bandIndex[ring] = index
+  return index
+end
+
 local function inside(rings, x, y)
   local filled = false
-  for _, raw in ipairs(rings or {}) do
-    local ring = raw
-    local previous = ring[#ring]
-    for _, p in ipairs(ring) do
-      if (p[2] > y) ~= (previous[2] > y)
-        and x < (previous[1] - p[1]) * (y - p[2]) / (previous[2] - p[2]) + p[1] then filled = not filled end
-      previous = p
+  for _, ring in ipairs(rings or {}) do
+    local index = ringBands(ring)
+    if index then
+      if y >= index.y0 and y <= index.y1 then
+        local band = index.bands[math.min(index.count - 1, math.floor((y - index.y0) / index.h))]
+        if band then
+          local n = #ring
+          for _, k in ipairs(band) do
+            local p, previous = ring[k], ring[k == 1 and n or k - 1]
+            if (p[2] > y) ~= (previous[2] > y)
+              and x < (previous[1] - p[1]) * (y - p[2]) / (previous[2] - p[2]) + p[1] then filled = not filled end
+          end
+        end
+      end
+    else
+      local previous = ring[#ring]
+      for _, p in ipairs(ring) do
+        if (p[2] > y) ~= (previous[2] > y)
+          and x < (previous[1] - p[1]) * (y - p[2]) / (previous[2] - p[2]) + p[1] then filled = not filled end
+        previous = p
+      end
     end
   end
   return filled
@@ -392,23 +456,49 @@ end
 local ROAD_GRADE_MAT = {'road_worn', 'road_gravel', 'road_dirt', 'road_broken', 'road_track'}
 local TRACK_WIDTH = {4.0, 3.8, 3.5, 3.2, 2.8, 2.5}
 
-local function collector(rect, key, layer, pause)
+-- Near tiles: one material per ProceduralMesh. The engine pays ~2.3 ms the first frame it
+-- draws each (object, material) pair, whatever its size (night-probe-10); pieces of 1500
+-- triangles that mixed every material of their corner made ~110 pairs per city tile. A
+-- material is now cut only at PIECE_TRIS: about tris / PIECE_TRIS + materials pairs a tile.
+-- Far and horizon tiles (mixed): every ProceduralMesh is also a static collision instance,
+-- ~40 us each in every be:reloadCollision whether anything can reach it or not, so a
+-- distant tile packs MIXED_MATS materials per object (a far city tile: 28 -> 7 objects).
+-- Not all of them in one: its first frame would draw ~25 new pairs (~57 ms) at once.
+local PIECE_TRIS, MIXED_TRIS, MIXED_MATS = 2500, 4000, 4
+local function collector(rect, key, layer, pause, mixed)
   local origin = {(rect[1] + rect[3]) * 0.5, (rect[2] + rect[4]) * 0.5, 0}
-  local items, groups, used, triangles, operations = {}, {}, {}, 0, 0
+  local items, groups, used, operations, total = {}, {}, {}, 0, 0
+  local function flushMaterial(material)
+    local mesh = groups[material]
+    if not mesh then return end
+    mesh.vmap, mesh.nmap, mesh.umap, mesh.fmap = nil, nil, nil, nil
+    local triangles = mesh.tris
+    mesh.tris = nil
+    items[#items + 1] = {kind = 'proc', name = 'e2rl_' .. key .. '_' .. layer .. '_' .. #items,
+      pos = origin, meshes = {mesh}, triangles = triangles, mats = {material}, layer = layer}
+    groups[material] = nil
+  end
   local function flush()
-    local meshes, mats = {}, {}
+    local mats = {}
     for material in pairs(groups) do mats[#mats + 1] = material end
     table.sort(mats)
-    for _, material in ipairs(mats) do
-      local mesh = groups[material]
-      mesh.vmap, mesh.nmap, mesh.umap, mesh.fmap = nil, nil, nil, nil
-      meshes[#meshes + 1] = mesh
+    if not mixed then
+      for _, material in ipairs(mats) do flushMaterial(material) end
+      return
     end
-    if #meshes > 0 then
+    for first = 1, #mats, MIXED_MATS do
+      local meshes, names, triangles = {}, {}, 0
+      for k = first, math.min(#mats, first + MIXED_MATS - 1) do
+        local mesh = groups[mats[k]]
+        mesh.vmap, mesh.nmap, mesh.umap, mesh.fmap = nil, nil, nil, nil
+        triangles = triangles + mesh.tris
+        mesh.tris = nil
+        meshes[#meshes + 1], names[#names + 1] = mesh, mats[k]
+      end
       items[#items + 1] = {kind = 'proc', name = 'e2rl_' .. key .. '_' .. layer .. '_' .. #items,
-        pos = origin, meshes = meshes, triangles = triangles, mats = mats, layer = layer}
+        pos = origin, meshes = meshes, triangles = triangles, mats = names, layer = layer}
     end
-    groups, triangles = {}, 0
+    groups, total = {}, 0
   end
   -- Faces index positions, normals and UVs separately (BeamNG ProceduralMesh, like OBJ), so each
   -- is welded on its own: a ground node is one position for its six triangles, a flat road one
@@ -487,12 +577,13 @@ local function collector(rect, key, layer, pause)
     if up and nz < 0 then b, c, nx, ny, nz = c, b, -nx, -ny, -nz end
     nx, ny, nz = nx / len, ny / len, nz / len
     if up == 'flat' then nx, ny, nz = 0, 0, 1 end
-    if triangles >= 1500 then flush() end
     local material = 'e2rf_' .. kind
+    if mixed and total >= mixed then flush() end
     local mesh = groups[material]
+    if not mixed and mesh and mesh.tris >= PIECE_TRIS then flushMaterial(material); mesh = nil end
     if not mesh then
       mesh = {verts = {}, normals = {}, uvs = {}, faces = {}, material = material,
-        vmap = {}, nmap = {}, umap = {}, fmap = {}}
+        vmap = {}, nmap = {}, umap = {}, fmap = {}, tris = 0}
       groups[material], used[material] = mesh, true
     end
     local scale = scales[kind]
@@ -519,7 +610,7 @@ local function collector(rect, key, layer, pause)
     corner(mesh, a, cornerNormal(a), scale, axis)
     corner(mesh, c, cornerNormal(c), scale, axis)
     corner(mesh, b, cornerNormal(b), scale, axis)
-    triangles, operations = triangles + 1, operations + 1
+    mesh.tris, total, operations = mesh.tris + 1, total + 1, operations + 1
     if operations % 64 == 0 then pause() end
   end
   local function polygon(kind, polygon, up)
@@ -780,7 +871,7 @@ local function build(cells, i, j, options)
     lists, terrain = collect(cells, pause)
     if single then prepared[single] = {lists, terrain} end
   end
-  local roads, scene = collector(rect, key, 'road', pause), collector(rect, key, layerName, pause)
+  local roads, scene = collector(rect, key, 'road', pause), collector(rect, key, layerName, pause, distant and MIXED_TRIS or nil)
   local roadDecor, sceneDecor = collector(rect, key .. '_marks', 'road', pause), collector(rect, key .. '_cars', 'scene', pause)
   -- mark(name): the stage that just ended (the road quality bench times them)
   local mark = options.mark or function() end
@@ -848,10 +939,24 @@ local function build(cells, i, j, options)
   -- omits the quad instead of dropping a cliff to z = 0. A point on a shared cell edge
   -- belongs to every grid that contains it; the lower rect origin wins, so the order the
   -- cells were loaded in cannot move the surface.
+  -- Grids are cell rectangles that only share edges. Then a point well inside the grid of
+  -- the previous sample is in that grid alone, and the scan below would pick it anyway.
+  local disjoint, lastGrid = true, nil
+  for a = 1, #terrain do
+    for b = a + 1, #terrain do
+      local p, q = terrain[a].rect, terrain[b].rect
+      if p and q and p[1] < q[3] - EPS and q[1] < p[3] - EPS and p[2] < q[4] - EPS and q[2] < p[4] - EPS then disjoint = false end
+    end
+  end
   local function demAt(x, y)
     if #terrain == 0 then return 0 end
     local best, bestX, bestY
-    for _, grid in ipairs(terrain) do
+    local last = disjoint and lastGrid
+    if last then
+      local box = last.rect
+      if x > box[1] + EPS and x < box[3] - EPS and y > box[2] + EPS and y < box[4] - EPS then best = last end
+    end
+    for _, grid in ipairs(best and NONE or terrain) do
       local box = grid.rect
       if box and x >= box[1] - EPS and x <= box[3] + EPS and y >= box[2] - EPS and y <= box[4] + EPS
           and grid.nx >= 2 and grid.ny >= 2 and grid.heights then
@@ -862,6 +967,7 @@ local function build(cells, i, j, options)
       end
     end
     if not best then return nil end
+    lastGrid = best
     local grid, box = best, best.rect
     local gx = math.max(0, math.min(grid.nx - 1, (x - box[1]) / (box[3] - box[1]) * (grid.nx - 1)))
     local gy = math.max(0, math.min(grid.ny - 1, (y - box[2]) / (box[4] - box[2]) * (grid.ny - 1)))
@@ -961,33 +1067,49 @@ local function build(cells, i, j, options)
   -- The ground as drawn: each lattice cell is two triangles split along its (x0, y0)-(x1, y1)
   -- diagonal (the collector fans a quad from its first corner).
   local function ground(x, y)
-    local function fallen(z) return z and z - tune.groundDrop or 0 end
     local k, u, v = lattice(x, y)
-    if not k then return fallen(pulled(x, y)) end
-    local function nz(key)
-      local z = nodes[key]
-      if z == nil then return nil end
-      return z - (lower[key] or 0)
+    if k then
+      local a, b, c, d = nodes[k], nodes[k + 4096], nodes[k + 1], nodes[k + 4097]
+      -- A corner outside the DEM used to fall back to the raw grid and drop the road pull,
+      -- so the same verge sampled from the other tile landed tens of metres higher.
+      if a ~= nil and b ~= nil and c ~= nil and d ~= nil then
+        local z00, z10 = a - (lower[k] or 0), b - (lower[k + 4096] or 0)
+        local z01, z11 = c - (lower[k + 1] or 0), d - (lower[k + 4097] or 0)
+        if u >= v then return z00 + (z10 - z00) * u + (z11 - z10) * v end
+        return z00 + (z11 - z01) * u + (z01 - z00) * v
+      end
     end
-    local z00, z10, z01, z11 = nz(k), nz(k + 4096), nz(k + 1), nz(k + 4097)
-    -- A corner outside the DEM used to fall back to the raw grid and drop the road pull,
-    -- so the same verge sampled from the other tile landed tens of metres higher.
-    if z00 == nil or z10 == nil or z01 == nil or z11 == nil then return fallen(pulled(x, y)) end
-    if u >= v then return z00 + (z10 - z00) * u + (z11 - z10) * v end
-    return z00 + (z11 - z01) * u + (z01 - z00) * v
+    local z = pulled(x, y)
+    return z and z - tune.groundDrop or 0
   end
   -- Height of the drawn surface, or nil outside every DEM grid. No grids at all stays the
   -- numeric ground (flat near tiles). A sample just outside a grid is nil so the normal
   -- there is one-sided instead of a slope down to the old z = 0 fallback.
+  -- demAt(x, y) ~= nil without the interpolation: some grid holds the point.
+  local function demCovered(x, y)
+    local last = disjoint and lastGrid
+    if last then
+      local box = last.rect
+      if x > box[1] + EPS and x < box[3] - EPS and y > box[2] + EPS and y < box[4] - EPS then return true end
+    end
+    return demAt(x, y) ~= nil
+  end
   local function heightAt(x, y)
     if #terrain == 0 then return ground(x, y) end
-    if demAt(x, y) == nil then return nil end
+    if not demCovered(x, y) then return nil end
     return ground(x, y)
   end
   local normalCache -- enabled only after road pressing has finished
   local function groundNormal(x, y)
-    local key = normalCache and (string.format('%.6f:%.6f', x, y))
-    local cached = key and normalCache[key]
+    -- keyed by the point to a micrometre, as the old '%.6f' string key was, without the string
+    local row, key = nil, nil
+    if normalCache then
+      local kx = floor(x * 1e6 + .5)
+      row = normalCache[kx]
+      if not row then row = {}; normalCache[kx] = row end
+      key = floor(y * 1e6 + .5)
+    end
+    local cached = row and row[key]
     if cached then return cached[1], cached[2], cached[3] end
     local function slope(dx, dy)
       local zp, zm, z0 = heightAt(x + dx, y + dy), heightAt(x - dx, y - dy), heightAt(x, y)
@@ -999,7 +1121,7 @@ local function build(cells, i, j, options)
     local nx, ny, nz = -slope(step, 0), -slope(0, step), 1
     local len = math.sqrt(nx * nx + ny * ny + nz * nz)
     nx, ny, nz = nx / len, ny / len, nz / len
-    if key then normalCache[key] = {nx, ny, nz} end
+    if row then row[key] = {nx, ny, nz} end
     return nx, ny, nz
   end
   -- Spatially indexed mapped cover, shared by terrain and vegetation at all LODs.
@@ -1009,21 +1131,22 @@ local function build(cells, i, j, options)
     if CLAIM[area.kind] or area.kind == 'residential' then
       local b = ringBounds(area.rings)
       local rank = (CLAIM[area.kind] or 50) + (((area.tags or NONE).source or ''):find('worldcover', 1, true) and 100 or 0)
+      local idString = tostring(area.id)
       for gx = floor(math.max(rect[1], b[1]) / 100), floor(math.min(rect[3], b[3]) / 100) do
         for gy = floor(math.max(rect[2], b[2]) / 100), floor(math.min(rect[4], b[4]) / 100) do
-          local k = gx .. ':' .. gy
+          local k = (gx + 32768) * 65536 + gy + 32768
           local bin = coverBins[k] or {}; coverBins[k] = bin
-          bin[#bin + 1] = {area = area, rank = rank}
+          bin[#bin + 1] = {area = area, rank = rank, id = idString}
         end
       end
       pause()
     end
   end
   local function coverAt(x, y)
-    local best, rank
-    for _, entry in ipairs(coverBins[floor(x / 100) .. ':' .. floor(y / 100)] or NONE) do
-      if (not rank or entry.rank < rank or (entry.rank == rank and tostring(entry.area.id) < tostring(best.id)))
-          and inside(entry.area.rings, x, y) then best, rank = entry.area, entry.rank end
+    local best, rank, bestId
+    for _, entry in ipairs(coverBins[(floor(x / 100) + 32768) * 65536 + floor(y / 100) + 32768] or NONE) do
+      if (not rank or entry.rank < rank or (entry.rank == rank and entry.id < bestId))
+          and inside(entry.area.rings, x, y) then best, rank, bestId = entry.area, entry.rank, entry.id end
     end
     return best and best.kind or 'ground', best
   end
@@ -1085,7 +1208,9 @@ local function build(cells, i, j, options)
   end
   do
     local mouths, order = {}, {}
-    for _, road in ipairs(lists.roads) do
+    for index, road in ipairs(lists.roads) do
+      -- a city tile's cells hold thousands of roads: these loops ran 15-20 ms unbroken
+      if index % 64 == 0 then pause() end
       local points, nodes = road.points or NONE, road.nodes or NONE
       if #points >= 2 and nodes[1] ~= nil and nodes[2] ~= nil then
         local dist = {0}
@@ -1103,7 +1228,8 @@ local function build(cells, i, j, options)
         end
       end
     end
-    for _, id in ipairs(order) do
+    for index, id in ipairs(order) do
+      if index % 32 == 0 then pause() end
       local list = mouths[id]
       if #list > 1 then
         local radius = 0
@@ -1524,6 +1650,8 @@ local function build(cells, i, j, options)
   end
   -- Press the lattice under every surface strip (road and sidewalk, sampled every 2 m from each
   -- segment's start) and under junction plates, then the verges take the lowered ground.
+  -- One sample count for every strip: a city's short strips never reached a per-strip k % 16.
+  local pressed = 0
   for _, strip in ipairs(strips) do
     if strip.surface then
       local points, hw = strip.points, strip.hw
@@ -1543,13 +1671,15 @@ local function build(cells, i, j, options)
             for _, offset in ipairs({-right, -hw, -hw * .5, 0, hw * .5, hw, left}) do
               press(x + nx * offset, y + ny * offset, z)
             end
+            pressed = pressed + 1
+            if pressed % 128 == 0 then pause() end
           end
         end
-        if k % 16 == 0 then pause() end
       end
     end
   end
-  for _, plate in ipairs(plates) do
+  for index, plate in ipairs(plates) do
+    if index % 32 == 0 then pause() end
     local c = plate.centre
     press(c[1], c[2], c[3] - tune.margin)
     for k, m in ipairs(plate.mids or NONE) do
@@ -1660,9 +1790,20 @@ local function build(cells, i, j, options)
     end
     pause()
   end
+  -- Far and horizon tiles draw no carriageway, so a verge there is ground over ground: in a
+  -- city it was 83% of a far tile's triangles and ~90% of a horizon block's. Every
+  -- ProceduralMesh triangle is static collision the engine rebuilds on each
+  -- be:reloadCollision (night-probe-11: far 97 ms and horizon 182 ms of 356 ms in Kyiv).
+  -- A far tile keeps the verges along its edge, where they meet the near tile's ground.
+  local inner = {rect[1] + 30, rect[2] + 30, rect[3] - 30, rect[4] - 30}
+  local function vergeWanted(box)
+    if not boundsTouch(rect, box, 0) then return false end
+    if not distant then return true end
+    return not options.horizon and not (box[1] >= inner[1] and box[2] >= inner[2] and box[3] <= inner[3] and box[4] <= inner[4])
+  end
   for _, plate in ipairs(plates) do
     for _, quad in ipairs(plate.verges or NONE) do
-      if boundsTouch(rect, ringBounds({quad}), 0) then
+      if vergeWanted(ringBounds({quad})) then
         local outerA = {quad[3][1], quad[3][2], ground(quad[3][1], quad[3][2])}
         local outerB = {quad[4][1], quad[4][2], ground(quad[4][1], quad[4][2])}
         outerA[9], outerB[9] = 1, 1
@@ -1673,13 +1814,15 @@ local function build(cells, i, j, options)
   for _, strip in ipairs(strips) do
     for _, item in ipairs(strip.verges or NONE) do
       local verge = item[1]
-      verge[2][3], verge[3][3] = ground(verge[2][1], verge[2][2]), ground(verge[3][1], verge[3][2])
-      -- [9] marks the outer edge. The clip resamples it from ground() so both tiles agree.
-      verge[2][9], verge[3][9] = 1, 1
-      local groundMesh = distant and scene or roads
-      if tune.vergeCut > 0 then emit(groundMesh, vergeKind, verge, item[2], true)
-      elseif visualRoads then roads.polygon(vergeKind, verge, true)
-      elseif distant then scene.polygon(vergeKind, verge, true) end
+      if not distant or vergeWanted(ringBounds({verge})) then
+        verge[2][3], verge[3][3] = ground(verge[2][1], verge[2][2]), ground(verge[3][1], verge[3][2])
+        -- [9] marks the outer edge. The clip resamples it from ground() so both tiles agree.
+        verge[2][9], verge[3][9] = 1, 1
+        local groundMesh = distant and scene or roads
+        if tune.vergeCut > 0 then emit(groundMesh, vergeKind, verge, item[2], true)
+        elseif visualRoads then roads.polygon(vergeKind, verge, true)
+        elseif distant then scene.polygon(vergeKind, verge, true) end
+      end
     end
   end
 
@@ -2229,27 +2372,29 @@ local function build(cells, i, j, options)
     -- Town yards stay a loose lattice. A 8 m step turned every courtyard into forest
     -- and the extra crowns were what dropped the frame from 60 to the twenties.
     local spacingOf = {forest = forestSpacing, park = 12, residential = 14, orchard = 12, scrub = 12, heath = 16}
+    local townChance = {park = .7, residential = .4, orchard = .55}
     for _, area in ipairs(lists.areas) do
       local spacing = spacingOf[area.kind]
       if spacing and ringsTouch(area.rings, rect) then
         local box = ringBounds(area.rings)
         for gy = floor(math.max(rect[2], box[2]) / spacing) - 1, math.ceil(math.min(rect[4], box[4]) / spacing) do
           for gx = floor(math.max(rect[1], box[1]) / spacing) - 1, math.ceil(math.min(rect[3], box[3]) / spacing) do
-            local h = hash(tostring(gx) .. ':' .. tostring(gy) .. ':' .. spacing)
+            if gx % 8 == 0 then pause() end
+            local code = floor(spacing * 10 + .5)
+            local h = ihash(1, gx, gy, code)
             local x = (gx + .5 + (h % 1000 / 1000 - .5) * .6) * spacing
             local y = (gy + .5 + (floor(h / 1000) % 1000 / 1000 - .5) * .6) * spacing
-            local position = string.format('%.3f:%.3f', x, y)
+            local position = latticeKey(0, gx, gy, code)
             if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and not positions[position] then
               local kind, owner = coverAt(x, y)
               if owner and spacingOf[kind] == spacing then
                 positions[position] = true
                 -- Coherent patches make clearings, instead of uniformly filling polygons.
-                local cluster = hash('grove:' .. floor(x / 65) .. ':' .. floor(y / 65)) % 1000 / 1000
+                local cluster = ihash(3, floor(x / 65), floor(y / 65)) % 1000 / 1000
                 -- A low floor left whole 65 m groves almost empty, which read as a broken forest.
                 -- Parks and yards keep a lower chance so the town reads as lawns with trees, not canopy.
-                local townChance = {park = .7, residential = .4, orchard = .55}
                 local chance = kind == 'forest' and (.8 + .2 * cluster) or (townChance[kind] or 1)
-                if hash('density:' .. position) % 1000 / 1000 < chance then
+                if keyHash(4, position) % 1000 / 1000 < chance then
                   candidates[#candidates + 1] = {x=x, y=y, hash=h, key=position, kind=kind, tags=owner.tags or NONE}
                 end
               end
@@ -2265,15 +2410,17 @@ local function build(cells, i, j, options)
     if wantGround then
       for gy = floor(rect[2] / groundSpacing) - 1, math.ceil(rect[4] / groundSpacing) do
         for gx = floor(rect[1] / groundSpacing) - 1, math.ceil(rect[3] / groundSpacing) do
-          local h = hash('open:' .. tostring(gx) .. ':' .. tostring(gy) .. ':' .. groundSpacing)
+          if gx % 8 == 0 then pause() end
+          local code = floor(groundSpacing * 10 + .5)
+          local h = ihash(2, gx, gy, code)
           local x = (gx + .5 + (h % 1000 / 1000 - .5) * .6) * groundSpacing
           local y = (gy + .5 + (floor(h / 1000) % 1000 / 1000 - .5) * .6) * groundSpacing
-          local position = string.format('%.3f:%.3f', x, y)
+          local position = latticeKey(1, gx, gy, code)
           if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and not positions[position]
               and coverAt(x, y) == 'ground' then
             positions[position] = true
-            local cluster = hash('grove:' .. floor(x / 65) .. ':' .. floor(y / 65)) % 1000 / 1000
-            if hash('density:' .. position) % 1000 / 1000 < (.94 + .06 * cluster) then
+            local cluster = ihash(3, floor(x / 65), floor(y / 65)) % 1000 / 1000
+            if keyHash(4, position) % 1000 / 1000 < (.94 + .06 * cluster) then
               candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = 'ground', tags = NONE}
             end
           end
@@ -2281,7 +2428,6 @@ local function build(cells, i, j, options)
         pause()
       end
     end
-    table.sort(candidates, function(a, b) return a.hash == b.hash and a.key < b.key or a.hash < b.hash end)
     local config = type(options.nature) == 'table' and options.nature or NONE
     local treeChoice = lookOf('trees')
     if treeChoice == 'regional' then treeChoice = nil end
@@ -2297,10 +2443,15 @@ local function build(cells, i, j, options)
     -- A global hash prefix spends the whole cap on whichever grove hashed lowest,
     -- so the next street or hillside stays a green sheet. Round-robin gives every
     -- 25 m cell a turn. Far stops earlier on that same sequence, so it stays a prefix.
+    -- Candidates come unsorted: each bucket is sorted by (hash, key) on its own, which gives a
+    -- bucket the same order as one sort of the whole list did, with pauses between buckets
+    -- (that sort ran 15-30 ms unbroken in a city tile).
+    local function byHash(a, b) return a.hash == b.hash and a.key < b.key or a.hash < b.hash end
     local function spread(list, limit, cell, accept)
       if limit <= 0 then return end
       local buckets, ids = {}, {}
       for index = 1, #list do
+        if index % 64 == 0 then pause() end
         local item = list[index]
         local id = (floor(item.x / cell) + 32768) * 65536 + floor(item.y / cell) + 32768
         local bucket = buckets[id]
@@ -2312,6 +2463,10 @@ local function build(cells, i, j, options)
         bucket[#bucket + 1] = item
       end
       table.sort(ids)
+      for index = 1, #ids do
+        table.sort(buckets[ids[index]], byHash)
+        if index % 16 == 0 then pause() end
+      end
       local cursor, planted, moving = {}, 0, true
       while planted < limit and moving do
         moving = false
@@ -2321,6 +2476,7 @@ local function build(cells, i, j, options)
           local bucket = buckets[id]
           local at = (cursor[id] or 0) + 1
           while at <= #bucket do
+            pause() -- Bound even a long run of rejected candidates.
             local item = bucket[at]
             at = at + 1
             if accept(item) then
@@ -2348,21 +2504,23 @@ local function build(cells, i, j, options)
         local mix = leaf == 'mixed' and .5 or math.max(0, math.min(.85, (elevation-coniferStart)/700))
         if treeChoice == 'conifer' then mix = math.max(mix, .7)
         elseif treeChoice == 'broadleaf' and leaf ~= 'mixed' then mix = math.min(mix, .15) end
-        needle = hash('species:' .. candidate.key) % 1000 / 1000 < mix
+        needle = keyHash(5, candidate.key) % 1000 / 1000 < mix
       end
       -- Open hills have no leaf_type. A fixed share of pines keeps a Carpathian mix.
       if candidate.kind == 'ground' then
-        needle = hash('species:' .. candidate.key) % 1000 / 1000 < openPine
+        needle = keyHash(5, candidate.key) % 1000 / 1000 < openPine
       end
       local set = bush and BUSHES or needle and CONIFERS or TREES
-      local scale = .65 + hash('age:' .. candidate.key) % 900 / 1000
-      static('tree_' .. candidate.key:gsub('[^%w]', '_'), set[h % #set + 1], x, y, z,
+      local scale = .65 + keyHash(6, candidate.key) % 900 / 1000
+      static('tree_' .. candidate.key, set[h % #set + 1], x, y, z,
         h % 6283 / 1000, bush and scale * .8 or scale)
       return true
     end)
     -- Grass, forest floor and loose stone. Far keeps only a ranked handful of rocks:
     -- tufts do not read at the horizon, and the far list stays inside the near list.
+    local SEED = {grass = 11, bush = 12, rock = 13}
     local function scatter(prefix, spacingOf, chanceOf, shapes, cap, farCap, scaleMin, scaleMax, minNz, elevationOf)
+      local seed = SEED[prefix] or 19
       local limit = cap
       if distant then limit = farCap or 0 end
       if limit <= 0 then return end
@@ -2373,13 +2531,15 @@ local function build(cells, i, j, options)
           local box = ringBounds(area.rings)
           for gy = floor(math.max(rect[2], box[2]) / spacing) - 1, math.ceil(math.min(rect[4], box[4]) / spacing) do
             for gx = floor(math.max(rect[1], box[1]) / spacing) - 1, math.ceil(math.min(rect[3], box[3]) / spacing) do
-              local h = hash(prefix .. ':' .. tostring(gx) .. ':' .. tostring(gy) .. ':' .. spacing)
+              if gx % 8 == 0 then pause() end
+              local code = floor(spacing * 10 + .5)
+              local h = ihash(seed, gx, gy, code)
               local x = (gx + .5 + (h % 1000 / 1000 - .5) * .55) * spacing
               local y = (gy + .5 + (floor(h / 1000) % 1000 / 1000 - .5) * .55) * spacing
-              local position = string.format('%.3f:%.3f', x, y)
+              local position = latticeKey(0, gx, gy, code)
               if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and not positions[position] then
                 local kind = coverAt(x, y)
-                if spacingOf[kind] == spacing and hash(prefix .. ':density:' .. position) % 1000 / 1000 < (chanceOf[kind] or 0) then
+                if spacingOf[kind] == spacing and keyHash(seed + 100, position) % 1000 / 1000 < (chanceOf[kind] or 0) then
                   positions[position] = true
                   candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = kind}
                 end
@@ -2395,12 +2555,14 @@ local function build(cells, i, j, options)
       if openSpacing then
         for gy = floor(rect[2] / openSpacing) - 1, math.ceil(rect[4] / openSpacing) do
           for gx = floor(rect[1] / openSpacing) - 1, math.ceil(rect[3] / openSpacing) do
-            local h = hash(prefix .. ':open:' .. tostring(gx) .. ':' .. tostring(gy))
+            if gx % 8 == 0 then pause() end
+            local code = floor(openSpacing * 10 + .5)
+            local h = ihash(seed + 300, gx, gy, code)
             local x = (gx + .5 + (h % 1000 / 1000 - .5) * .55) * openSpacing
             local y = (gy + .5 + (floor(h / 1000) % 1000 / 1000 - .5) * .55) * openSpacing
-            local position = string.format('%.3f:%.3f', x, y)
+            local position = latticeKey(1, gx, gy, code)
             if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and not positions[position] then
-              if coverAt(x, y) == 'ground' and hash(prefix .. ':density:' .. position) % 1000 / 1000 < (chanceOf.ground or 0) then
+              if coverAt(x, y) == 'ground' and keyHash(seed + 100, position) % 1000 / 1000 < (chanceOf.ground or 0) then
                 positions[position] = true
                 candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = 'ground'}
               end
@@ -2409,7 +2571,6 @@ local function build(cells, i, j, options)
           pause()
         end
       end
-      table.sort(candidates, function(a, b) return a.hash == b.hash and a.key < b.key or a.hash < b.hash end)
       spread(candidates, limit, 25, function(candidate)
         local x, y, h = candidate.x, candidate.y, candidate.hash
         local z = ground(x, y)
@@ -2426,14 +2587,14 @@ local function build(cells, i, j, options)
           -- scaleMin/scaleMax are the blade height in metres, not a raw multiplier.
           local mesh = GRASS_MESH[shape]
           local span = mesh and mesh.span or 0.26
-          local want = scaleMin + (hash(prefix .. ':scale:' .. candidate.key) % 1000) / 1000 * (scaleMax - scaleMin)
+          local want = scaleMin + (keyHash(seed + 200, candidate.key) % 1000) / 1000 * (scaleMax - scaleMin)
           scale = want / span
           z = z - (mesh and mesh.bottom or 0) * scale
         else
-          scale = scaleMin + (hash(prefix .. ':scale:' .. candidate.key) % 1000) / 1000 * (scaleMax - scaleMin)
+          scale = scaleMin + (keyHash(seed + 200, candidate.key) % 1000) / 1000 * (scaleMax - scaleMin)
           if prefix == 'rock' and h % 5 == 0 then shape = shapes[#shapes]; scale = scale * .8 end
         end
-        static(prefix .. '_' .. candidate.key:gsub('[^%w]', '_'), shape, x, y, z, h % 6283 / 1000, scale)
+        static(prefix .. '_' .. candidate.key, shape, x, y, z, h % 6283 / 1000, scale)
         return true
       end)
     end
@@ -2463,7 +2624,8 @@ local function build(cells, i, j, options)
       local spacing, candidates, positions = 16, {}, {}
       for gy = floor(rect[2] / spacing) - 1, math.ceil(rect[4] / spacing) do
         for gx = floor(rect[1] / spacing) - 1, math.ceil(rect[3] / spacing) do
-          local h = hash('slope:' .. tostring(gx) .. ':' .. tostring(gy))
+          if gx % 8 == 0 then pause() end
+          local h = ihash(21, gx, gy)
           local x = (gx + .5 + (h % 1000 / 1000 - .5) * .5) * spacing
           local y = (gy + .5 + (floor(h / 1000) % 1000 / 1000 - .5) * .5) * spacing
           if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] then
@@ -2472,9 +2634,9 @@ local function build(cells, i, j, options)
             -- 0.94 is about 20°. Rounded Carpathian hills were steeper than flat ground
             -- and gentler than 45°, so the old 0.7 gate never placed a stone on them.
             if nz < .94 and nz >= .25 and kind ~= 'water' and kind ~= 'paved' and kind ~= 'residential' then
-              local position = string.format('%.3f:%.3f', x, y)
+              local position = latticeKey(2, gx, gy, 160)
               local steep = (.94 - nz) / .69
-              if not positions[position] and hash('slope:keep:' .. position) % 1000 / 1000 < (.45 + .55 * steep) then
+              if not positions[position] and keyHash(22, position) % 1000 / 1000 < (.45 + .55 * steep) then
                 positions[position] = true
                 candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position}
               end
@@ -2483,15 +2645,14 @@ local function build(cells, i, j, options)
         end
         pause()
       end
-      table.sort(candidates, function(a, b) return a.hash == b.hash and a.key < b.key or a.hash < b.hash end)
       spread(candidates, limit, 25, function(candidate)
         local x, y, h = candidate.x, candidate.y, candidate.hash
         local z = ground(x, y)
         if not ((not sea or z > sea) and not blocked(x, y)) then return false end
-        local scale = .7 + (hash('slope:scale:' .. candidate.key) % 1000) / 1000 * .7
+        local scale = .7 + (keyHash(23, candidate.key) % 1000) / 1000 * .7
         local shape = ROCKS[h % #ROCKS + 1]
         if h % 5 == 0 then shape = ROCKS[#ROCKS]; scale = scale * .8 end
-        static('srock_' .. candidate.key:gsub('[^%w]', '_'), shape, x, y, z, h % 6283 / 1000, scale)
+        static('srock_' .. candidate.key, shape, x, y, z, h % 6283 / 1000, scale)
         return true
       end)
     end

@@ -40,6 +40,26 @@ def geographic(x, y):
 
 
 class NativeTests(unittest.TestCase):
+    def test_quality_invalidates_prepared_density_but_distance_keeps_ready_tiles(self):
+        _, mod, cv = self.make()
+        lat, lon = geographic(1750, 1750)
+        mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
+        self.pump(mod)
+        ready = set(mod.status().stream.ready.keys())
+        self.assertTrue(ready)
+        tune = dict(mod.setTune(cv({})))
+        tune['grassM'] = 45
+        tune['farM'] = 1800
+        mod.setTune(cv(tune))
+        self.assertEqual(set(mod.status().stream.ready.keys()), ready)
+        tune['maxTrees'] = 700
+        mod.setTune(cv(tune))
+        self.assertFalse(set(mod.status().stream.ready.keys()))
+        self.assertFalse(set(mod.status().stream.scenes.keys()))
+        for _ in range(200):
+            mod.update(.016, 2)
+        self.assertTrue(set(mod.status().stream.ready.keys()))
+
     def make(self, files=None, real_generator=False):
         lua = LuaRuntime()
 
@@ -81,6 +101,8 @@ class NativeTests(unittest.TestCase):
         lua.globals().coordinates = lua.execute(coordinate_path.read_text(encoding='utf8')) if coordinate_path.exists() else lua.table()
         lua.globals().cellformat = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/cellformat.lua').read_text(encoding='utf8'))
         lua.execute("require=function(name) if name=='ge/extensions/e2r/countries' then return countries elseif name=='ge/extensions/e2r/coordinates' then return coordinates elseif name=='ge/extensions/e2r/cellformat' then return cellformat else return stubGenerator end end")
+        lua.globals().quality = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/quality.lua').read_text(encoding='utf8'))
+        lua.execute("local old=require; require=function(n) if n=='ge/extensions/e2r/quality' then return quality else return old(n) end end")
         mod = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/native.lua').read_text(encoding='utf8'))
         return lua, mod, convert
 
@@ -280,7 +302,9 @@ class NativeTests(unittest.TestCase):
         road = mod.manifest(key, 'road')
         before = mod.status().stream.cachedTriangles
         self.assertTrue(mod.release(key, 'road'))
-        self.assertIsNone(road['items'][1].meshes)
+        # delivered: the item tables go, the count stays (the renderer's collision check)
+        self.assertIsNone(road['items'][1])
+        self.assertGreaterEqual(road.itemCount, 1)
         self.assertIsNotNone(road.spawn)
         self.assertEqual(road.navSegments[1][1], 'segment')
         self.assertTrue(mod.status().stream.ready[key])
@@ -288,8 +312,8 @@ class NativeTests(unittest.TestCase):
         scene = mod.manifest(key, 'scene')
         scene['items'][1] = cv(dict(kind='proc', decor=True, meshes=[dict(verts=[])], triangles=1))
         self.assertTrue(mod.release(key, 'scene'))
-        self.assertIsNone(scene['items'][1].meshes)
-        self.assertTrue(scene['items'][1].decor)
+        self.assertIsNone(scene['items'][1])
+        self.assertGreaterEqual(scene.itemCount, 1)
         self.assertTrue(mod.unload(key))
         self.assertIsNone(mod.status().stream.ready[key])
         self.assertIsNone(mod.status().stream.scenes[key])
@@ -320,7 +344,7 @@ class NativeTests(unittest.TestCase):
         key = next(iter(held))
         self.assertIsNotNone(held[key]['items'][1].meshes)
         self.assertTrue(mod.release(key, 'road'))
-        self.assertIsNone(held[key]['items'][1].meshes)
+        self.assertIsNone(held[key]['items'][1])
 
 
 

@@ -43,10 +43,14 @@ def main():
     p.add_argument('--gallery-wait', type=float, default=1, help='seconds before the gallery (far tiles keep loading)')
     p.add_argument('--view', action='append', default=[], help='extra gallery view name:x,y,z:tx,ty,tz (world metres)')
     p.add_argument('--manual', action='store_true', help='land, then hand the car to the player; runs until the game is closed')
+    p.add_argument('--probe', action='store_true', help='add the e2rprobe mod (earthng/probe.py runs Lua in the game)')
     p.add_argument('--min-distance', type=float, default=20, help='physics test fails below this, m')
     p.add_argument('--workers', type=int, default=8)
     p.add_argument('--generator', choices=('v2','fast'), default='v2')
     p.add_argument('--native', action='store_true', help='only BeamNG + country ZIPs; never start the companion')
+    p.add_argument('--planet', type=Path, help='test an existing planet ZIP (for repeatable before/after runs)')
+    p.add_argument('--quality', type=int, choices=range(101), metavar='0..100', help='native world quality preset')
+    p.add_argument('--quality-cycle', action='store_true', help='after driving, verify Potato/OASIS changes keep the road')
     p.add_argument('--picker-only', action='store_true', help='verify native picker without landing')
     p.add_argument('--expected-countries', type=int, default=0, help='country count for --picker-only')
     p.add_argument('--picker-zoom', type=int, help='--picker-only: centre the map on --lat/--lon at this zoom')
@@ -94,7 +98,10 @@ def main():
     user = out / 'user'
     profile = user / 'current'
     (profile / 'mods').mkdir(parents=True)
-    shutil.copy2(build_mod.build(out / 'mod', legacy=not a.native), profile / 'mods' / build_mod.ZIP)
+    shutil.copy2(a.planet or build_mod.build(out / 'mod', legacy=not a.native), profile / 'mods' / build_mod.ZIP)
+    if a.probe:
+        # the development probe (earthng/probe.py): Lua commands into the running game
+        shutil.copytree(HERE / 'probe', profile / 'mods' / 'unpacked' / 'e2rprobe')
     for extra in a.mod:
         try:
             # big country packs: a hard link on the same drive, not gigabytes of copies
@@ -108,6 +115,10 @@ def main():
         # the first-run "Input Changes" page pauses the simulation (fast-game-02 never moved under it)
         'showedInputLayoutPopupV37': True}), encoding='utf8')
     test = {'lat': a.lat, 'lon': a.lon, 'driveSeconds': a.drive_seconds, 'skipMap': True, 'minDistance': a.min_distance}
+    if a.quality is not None:
+        test['quality'] = a.quality
+    if a.quality_cycle:
+        test['qualityCycle'] = [0, 100]
     if a.picker_only:
         test.update(pickerOnly=True, expectedCountries=a.expected_countries, pickerHold=a.picker_hold)
         if a.picker_zoom:

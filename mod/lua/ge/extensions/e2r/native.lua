@@ -461,30 +461,12 @@ local function completeLanding()
   active.prioritiesDirty = true
 end
 
--- Debug-panel radii and vegetation caps. Nil until the player applies a tune,
--- so a fresh landing keeps the generator defaults.
-local pendingTune
+-- Shared quality policy; fresh profiles start at Balanced, saved settings win.
+local quality = require('ge/extensions/e2r/quality')
+local pendingTune = quality.preset(50)
 
 local function clampTune(tune)
-  local function clamp(value, default, lo, hi)
-    local n = tonumber(value)
-    if n == nil then n = default end
-    return math.floor(math.max(lo, math.min(hi, n)) + 0.5)
-  end
-  tune = type(tune) == 'table' and tune or {}
-  local out = {
-    nearM = clamp(tune.nearM, 1000, 400, 4000),
-    farM = clamp(tune.farM, 3000, 800, 8000),
-    maxTrees = clamp(tune.maxTrees, 2400, 0, 2400),
-    maxFarTrees = clamp(tune.maxFarTrees, 800, 0, 1200),
-    maxGrass = clamp(tune.maxGrass, 4000, 0, 4800),
-    maxRocks = clamp(tune.maxRocks, 80, 0, 200),
-    forestSpacing = clamp(tune.forestSpacing, 5, 4, 24),
-    groundSpacing = clamp(tune.groundSpacing, 6, 4, 30),
-    groundTrees = tune.groundTrees ~= false and tune.groundTrees ~= 0,
-  }
-  if out.farM < out.nearM then out.farM = out.nearM end
-  return out
+  return quality.clamp(tune)
 end
 
 local function land(req)
@@ -784,12 +766,32 @@ local function buildTile(key, wanted)
   trimTiles()
 end
 
+-- After the landing, a frame with no near tile waiting builds the far ring and the horizon
+-- on a smaller budget: they can wait, the frame cannot (central Kyiv spent 5.3 ms a frame
+-- here while driving). A near tile coming due gets the whole budget back at once.
+local FAR_BUDGET_MS = 2
+local function nearPending(wanted)
+  for key, entry in pairs(wanted) do
+    if not entry.far and not entry.horizon and not active.failed[key] then
+      local cached = active.tiles[key]
+      if not (cached and cached.road) then return true end
+    end
+  end
+  return false
+end
+
 local function update(dt, budgetMs)
   ensure()
   if not active then return end
-  local wanted, best, bestKey = active.prioritiesDirty and priorities() or active.desired, nil, nil
+  local dirty = active.prioritiesDirty
+  local wanted, best, bestKey = dirty and priorities() or active.desired, nil, nil
   local timer = hptimer()
   budgetMs = finite(budgetMs) and math.max(0.1, math.min(8, budgetMs)) or 2
+  if dirty or active.nearKnownAt ~= state.stream.built then
+    active.nearWaiting, active.nearKnownAt = nearPending(wanted), state.stream.built
+  end
+  if not active.startupPinned and not active.nearWaiting then budgetMs = math.min(budgetMs, FAR_BUDGET_MS) end
+  state.stream.budgetMs = budgetMs
   active.timer, active.budget = timer, budgetMs
   local steps = 0
   repeat
@@ -907,7 +909,11 @@ local function release(key, layer)
   local entry = layerEntry(key)
   local data = entry and entry[layer] or active and active.manifests[key .. ':' .. layer]
   if not data then return false end
-  for _, item in ipairs(data.items or {}) do item.meshes = nil end
+  -- Delivered: the engine holds the meshes, the Forest commit and the grass cells keep
+  -- what they still need. These item tables were most of the Lua heap that the game's
+  -- collector walks (the far ring's crowns alone were ~78k tables), so only the count stays.
+  data.itemCount = #(data.items or {})
+  data.items = {}
   if entry then
     entry[layer .. 'Delivered'] = true
     entry.used = touch()
@@ -1107,10 +1113,22 @@ M.release = release
 local function setTune(tune)
   ensure()
   local out = clampTune(tune)
+  local changed = false
+  for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees'}) do
+    if out[key] ~= pendingTune[key] then changed = true end
+  end
   pendingTune = out
   if active then
     active.tune = out
     active.prioritiesDirty = true
+    if changed then
+      -- Also invalidate prepared tiles which have not reached the renderer yet.
+      -- Otherwise a preset change leaves a ring built with the previous density.
+      if active.work and not active.workHorizon then active.work, active.workKey, state.stream.building = nil, nil, 0 end
+      local keys = {}
+      for key in pairs(active.tiles) do keys[#keys+1] = key end
+      for _, key in ipairs(keys) do unload(key); unload(key, 'far') end
+    end
   end
   if state.stream then
     state.stream.loadRadius = out.nearM

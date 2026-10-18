@@ -280,7 +280,9 @@ class GeneratorTests(unittest.TestCase):
         self.assertGreater(len(calls), 50)
         self.assertGreater(len(road['items']), 1)
         for item, mesh in self.meshes(road):
-            self.assertLessEqual(item.triangles, 1500)
+            # one material per piece (each (object, material) pair costs a first draw), bounded
+            self.assertLessEqual(item.triangles, 2500)
+            self.assertEqual(len(item.meshes), 1)
             self.assertTrue(all(0 <= face.v < len(mesh.verts) for face in mesh.faces.values()))
         for triangle in self.triangles(road):
             self.assertTrue(all(0 <= p[0] <= 500 and 0 <= p[1] <= 500 for p in triangle))
@@ -337,6 +339,27 @@ class GeneratorTests(unittest.TestCase):
         lamps = [item for item in scene['items'].values()
                  if item.kind == 'static' and str(item.shape).endswith('lamp1.dae')]
         self.assertEqual(len(lamps), 0)
+
+    def test_distant_verges_only_meet_the_near_tile_edge(self):
+        # Far and horizon tiles draw no carriageway: a verge there is ground over ground and every
+        # triangle is static collision. A far tile keeps the band along its edge; the horizon none.
+        road = {'id': 'street', 'width': 7, 'nodes': [1, 2], 'points': [[-50, 250, 20], [550, 250, 20]],
+                'tags': {'highway': 'residential', 'sidewalk': 'no'}}
+        cell = {'roads': [road], 'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 5, 'ny': 5, 'heights': [20.0] * 25}}
+
+        def verges(manifest):
+            # verge pieces: small ground triangles that sit wholly in the band along the road
+            return [t for t in self.triangles(manifest, 'e2rf_ground')
+                    if all(238 <= p[1] <= 262 for p in t)]
+        far = verges(self.build([cell], far=True)[2])
+        self.assertTrue(far)
+        for triangle in far:
+            xs = [p[0] for p in triangle]
+            self.assertTrue(min(xs) < 31 or max(xs) > 469, xs)
+        horizon = self.build([cell], far=True, horizon=True)[2]
+        self.assertFalse(verges(horizon))
+        for item, _mesh in self.meshes(horizon):
+            self.assertLessEqual(len(item.meshes), 4)
 
     def test_photo_loggia_facades_use_33_metre_uv_repeat(self):
         source = [{'buildings': [{'id': 'a', 'height': 33, 'tags': {'building:material': 'concrete'},

@@ -61,7 +61,7 @@ def runtime(pack):
     ''')
     mods = {}
     load = lua.eval('function(source, name) return assert(load(source, "@" .. name))() end')
-    for name in ('countries', 'coordinates', 'cellformat', 'generator'):
+    for name in ('countries', 'coordinates', 'cellformat', 'generator', 'quality'):
         mods[name] = load((LUA / f'{name}.lua').read_text(encoding='utf8'), f'{name}.lua')
     g.mods = convert({})
     for name, mod in mods.items():

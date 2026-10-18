@@ -14,6 +14,14 @@ UK_LABELS = {'pick': 'Обрати інше місце', 'back': 'Поверну
 EN_LABELS = {'pick': 'Pick another place', 'back': 'Back to driving', 'hide': 'Hide', 'show': 'Show map'}
 
 
+def load_world(lua, src):
+    root = Path(__file__).resolve().parents[1] / 'mod/lua'
+    for name in ('quality', 'detail'):
+        lua.globals()[name] = lua.execute((root / f'ge/extensions/e2r/{name}.lua').read_text(encoding='utf8'))
+    lua.execute("local old=require; require=function(n) if n=='ge/extensions/e2r/quality' then return quality elseif n=='ge/extensions/e2r/detail' then return detail else return old(n) end end")
+    return lua.execute(src)
+
+
 class WidgetTests(unittest.TestCase):
     def test_map_ui_keeps_streaming(self):
         self.map_ui_flow('uk', UK_LABELS)
@@ -29,7 +37,7 @@ class WidgetTests(unittest.TestCase):
           require=function() return {} end
           hptimer=function() return {stopAndReset=function() return 1 end} end''')
         src = (Path(__file__).resolve().parents[1] / 'mod/lua/ge/extensions/e2r/world.lua').read_text(encoding='utf8').replace('local NATIVE = true', 'local NATIVE = false')
-        lua.globals().mod = lua.execute(src)
+        lua.globals().mod = load_world(lua, src)
         shown = lua.eval('''function(status)
           local function up(fn, name)
             for i=1,100 do local n,v=debug.getupvalue(fn,i); if n==name then return v end end
@@ -134,7 +142,7 @@ class WidgetTests(unittest.TestCase):
             error('missing upvalue '..name)
           end''')
         src = (root / 'mod/lua/ge/extensions/e2r/world.lua').read_text(encoding='utf8')
-        lua.globals().mod = lua.execute(src)
+        lua.globals().mod = load_world(lua, src)
         lua.execute('''
           S=up(mod.tick,'S'); draw=up(mod.onUpdate,'drawWindow')
           picker=up(draw,'drawPicker'); side=up(picker,'drawSidebar'); drawMap=up(picker,'drawMap')
@@ -213,7 +221,7 @@ class WidgetTests(unittest.TestCase):
           end
         ''')
         src = (Path(__file__).resolve().parents[1] / 'mod/lua/ge/extensions/e2r/world.lua').read_text(encoding='utf8').replace('local NATIVE = true', 'local NATIVE = false')
-        mod = lua.execute(src.replace("local LANG = 'uk'", f"local LANG = '{lang}'"))
+        mod = load_world(lua, src.replace("local LANG = 'uk'", f"local LANG = '{lang}'"))
         lua.globals().mod = mod
         for key, label in labels.items():
             lua.globals()['label_' + key] = label

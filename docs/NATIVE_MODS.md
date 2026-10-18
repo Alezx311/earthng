@@ -1,6 +1,7 @@
 # EarthNG як звичайний мод BeamNG
 
 P1 природи: [класи покриття, WorldCover, матеріали й рослинність](NATURE.md).
+Продуктивність, факти про рушій і як міряти: [PERFORMANCE.md](PERFORMANCE.md).
 
 Гілка міграції: `codex/official-mod-packages`.
 

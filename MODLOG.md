@@ -1,5 +1,80 @@
 # EarthNG native mod migration
 
+## 2026-10-18 (day): collision only where something can reach it, generator pauses
+
+Detail and measurements: `docs/PERFORMANCE.md`.
+
+- Found in game: a ProceduralMesh hidden during `be:reloadCollision` stays out of the static
+  collision after it is shown again (nothing else excludes it: material flags, renderEnabled,
+  disableCollision; `reloadStaticCollision` is the same call). New `e2r/collision.lua` records
+  every mesh with its owner and hides, for the rebuild only: the horizon, far and near tiles out
+  of reach (`want`/`keep` round the car, a parked car and every vehicle), markings, roofs and the
+  scene's ground covers (drapes 2.5-4 cm over the ground mesh). Central Kyiv rebuild 133 + 34 ms
+  physics -> 36-40 + ~12 ms. The rebuild check keeps running while any loaded tile is left out.
+- Generator: pauses in the junction builder, in the ground press (its counter restarted on
+  every road, so short city roads never paused) and in the plant sort (now per 25 m bucket, same
+  output: digest of 3x3 tiles in Kyiv and Yaremche unchanged). Kyiv stream bench longest resume
+  75.7 -> 59 ms. Cell decode pauses in the elevation grid.
+- Minimap lanes are projected at most 1500 points a frame.
+- Kyiv route: 15.1 -> 14.8 ms mean, p99 44 -> 39.5, frames > 100 ms 5 -> 2 (both the drive
+  start). Yaremche unchanged (8.6 ms). Traffic (8 cars): ground under every car in 950 checks.
+- Checks: 168 unit tests (new `test_collision.py`), Yaremche smoke with the quality cycle passed.
+
+## 2026-10-18 (night): streaming cost, Forest commits, collision, fences
+
+Detail and every measurement: `docs/PERFORMANCE.md`.
+
+- Engine facts measured in game with a new probe (`earthng/probe.py`, `test_world.py --probe`) and
+  `Engine.Debug.getLastPerformanceMetrics`: the built world renders in 5-7 ms; the cost was the
+  streaming itself on one main thread (GPU ~30%). `rebuildForestManagerInstanceData` is not needed
+  for crowns to show (identical frames) and cost 47-60 ms. Any Forest change costs ~3 ms of engine
+  Ticking per touched crown kind. Every ProceduralMesh is static collision whatever its group;
+  `be:reloadCollision` is ~0.27 ms per 1000 triangles plus ~35 us per object. A TSStatic is ~12 us,
+  not 0.9 ms (that was the first load of a shape). A new (object, material) pair costs ~2.3 ms the
+  first frame it is drawn. Vehicle Lua overlaps the frame only partly; no worker threads for GE Lua.
+- Forest: no instance rebuild; adds/removals queue per kind, one kind per 0.12 s, each kind at most
+  every 1.5 s; tiles find their crowns by rectangle (`getItemsBox`) instead of holding 160k userdata.
+  Rocks are TSStatic again; grass and rocks stream in whole 32 m cells with their own reach and cap.
+- Lua heap: delivered manifests keep only an item count; detail cells keep plain arrays.
+  Yaremche heap 256 -> 190 MB; the 300-420 ms full collections are gone from the test drives.
+- Meshes: near tiles one material per piece (pairs per city tile 113 -> ~49), distant tiles up to four;
+  at most 3 new pairs a frame while driving. Horizon draws no verges, far tiles only in a 30 m band at
+  the edge (city far tile 2950 -> 1215 triangles, horizon block 6340 -> 320).
+- Generator: numeric lattice hashing, banded point-in-polygon, string-free caches (near tiles 36%
+  faster); 2 ms budget once the landing is done and no near tile waits. Minimap: one ImVec2 per point.
+- Bugs: chain-link fences no longer vanish from ~6 to ~35 m (`alphaRef` 80 -> 30, same DDS); the parked
+  car no longer falls through the world when a free camera roams past 100 m; the test's `fell` check
+  is a sudden drop, not Kyiv's 50 m descent to Podil.
+- Checks: 164 unit tests pass (new: Forest commit queue, pair cap, rock cells, distant verges).
+  Results table: `docs/PERFORMANCE.md`.
+
+## 2026-10-18: bounded vegetation streaming and Potato / OASIS
+
+- Grass and rocks use a 32 m spatial index and camera-relative residency with global caps;
+  trees remain in the single Forest, queued in batches of 32. Decorative instances no
+  longer trigger collision rebuilds. Candidate loops yield frequently enough to respect
+  the native generation budget; the full Forest upload remains an indivisible cost.
+- Compact bilingual widget: master Potato / OASIS, independent detail and draw distance,
+  current FPS, preset buttons, collapsed advanced controls, style/traffic and statistics.
+  Settings persist alongside language. Density changes preserve road meshes/collision,
+  regenerate scenes separately, and invalidate prebuilt tiles at the old density.
+- LuaJIT regression checks: detail 8, widget 7, native 23, nature 16, generator 34,
+  styles 8 (96 passed). Test runtime: Earth2Road .venv; local Python 3.13 lacks luajit21.
+- Real BeamNG comparison, same Yaremche start (48.45306, 24.55611), 20-second straight
+  drive in fresh isolated profiles, one game process at a time. Different presets have
+  different density/range; this is a user-preset comparison, not identical geometry.
+  Before: 19.2 FPS, p99 92.5 ms. Balanced: 50.3 FPS, p99 59.5 ms. OASIS: 32.7 FPS,
+  p99 76 ms. All functional gates passed; the >100 ms frame gate still fails (2 / 1 / 5
+  frames respectively, worst 125.6 / 108.4 / 498.3 ms). No claim of locked 60 FPS.
+- Actual in-game Potato -> OASIS cycle retained the road groups and collision; car height
+  changed at most 0.27 m. Native screenshots and widget capture inspected. Test reports:
+  out/quality-before, out/quality-balanced-final, out/quality-oasis; comparison.json and
+  widget-final.png under out/quality-bench. The initial intermediate Balanced run is
+  out/quality-balanced; use the final run for comparisons.
+- Installed verified release ZIP in the normal BeamNG current/mods folder; previous ZIP
+  backed up at out/quality-bench/installed-before.zip. Country packs need no rebuild.
+  Release SHA256: da77174eec5f8056453173b0e83326cab4eade635d066c566de110b250612d00.
+
 ## 2026-10-18: country pack window
 
 - `Country.bat` lists every Geofabrik extract. A ready zip can be installed from
@@ -15,6 +90,7 @@
 - `Country.bat`, `EarthNG.bat` and the country build use this checkout's `.venv`
   (`requirements-fast.txt`). Earth2Road stays only for the optional `v2` generator.
 - The country-pack window, its log and the asset-block labels are English.
+- `Rebuild.bat` builds `earthng_planet.zip` with the local `.venv` and copies it into the BeamNG mods folder.
 
 ## 2026-10-17: one Forest, tiles paint again
 

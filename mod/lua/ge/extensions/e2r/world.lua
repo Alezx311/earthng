@@ -13,6 +13,10 @@ local LANG = 'uk'   -- build_mod.py --lang en rewrites this line (the English pa
 local NATIVE = true   -- build_mod.py --legacy keeps the companion development workflow
 local native = NATIVE and require('ge/extensions/e2r/native') or nil
 local planetMap = NATIVE and require('ge/extensions/e2r/planetMap') or nil
+local quality = require('ge/extensions/e2r/quality')
+local detail = require('ge/extensions/e2r/detail')
+local collision = require('ge/extensions/e2r/collision')
+local detailStream
 -- the UI language: the package's LANG until the player switches it (settings/earthng.json)
 local LANG_FILE = 'settings/earthng.json'
 local lang = LANG
@@ -23,7 +27,10 @@ local function loadLang()
 end
 local function setLang(l)
   lang = l
-  pcall(jsonWriteFile, LANG_FILE, {lang = l}, true)
+  local ok, cfg = pcall(jsonReadFile, LANG_FILE)
+  cfg = ok and type(cfg) == 'table' and cfg or {}
+  cfg.lang = l
+  pcall(jsonWriteFile, LANG_FILE, cfg, true)
 end
 
 local W, H = 720, 440          -- map picture size, px
@@ -122,6 +129,12 @@ local S = {
 local coordBuf = im.ArrayChar(64)
 local test, result = nil, {status = 'waiting', shots = {}}
 local frameTimer = hptimer()
+-- Streaming limits; see the comments where each is used.
+local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128,
+  forestStep = 0.12, forestKind = 1.5, forestMax = 2500,
+  collisionWant = 200, collisionLead = 6, collisionMargin = 200, vehicleCollision = {100, 300}}
+-- Read-only view for the development probe (earthng/probe.py); nothing in the mod calls it.
+function M.dbg() return {S = S, result = result, native = native, detail = detailStream, test = test} end
 
 -- the 4th field of a preset: the tile package area it belongs to (status.area, the tile folder's
 -- name without the date); a UK region also belongs to the whole united-kingdom package
@@ -293,12 +306,13 @@ end
 -- Collidable stays off: deleting a Forest whose items sit in static collision
 -- hangs the game, and a colliding population makes every later add cost the
 -- engine tick. The object is never deleted; the level unload drops it.
-local plantData, sharedForestId = {}, nil
-local FOREST_ADDS, FOREST_REMOVES = 80, 80
--- rebuildForestManagerInstanceData reuploads every crown. Once a frame it
--- stalls the GPU and stops the tile queue. Twice a second is enough for crowns
--- to show up, and the upload stays off the mesh frames in between.
-local FOREST_REBUILD_S = 0.4
+local plantData, plantShape, sharedForestId = {}, {}, nil
+-- Plants of a scene go through the queue in batches; each one only joins the Forest commit.
+-- createNewItem and removeItem show and hide a crown on their own in 0.39. The
+-- editor's rebuildForestManagerInstanceData walked every crown of the level:
+-- 47-60 ms at 40-50k crowns, up to 2.5 times a second while tiles streamed in.
+-- Frames before and after it were pixel-identical (night-probe-01), so the
+-- mod no longer calls it.
 
 local function shapeKey(shape)
   local h = 17
@@ -306,8 +320,9 @@ local function shapeKey(shape)
   return h
 end
 
--- Trees and bushes only. Grass and rocks stay TSStatic: a Forest item with an
--- alpha tuft was not drawing, so open slopes stayed a flat sheet.
+-- Trees and bushes only. Grass and rocks stay TSStatic without collision (~12 us each,
+-- night-probe-12): a Forest item with an alpha tuft is not drawn, and every Forest kind
+-- adds ~3 ms to each Forest commit (forestCommit), which five rock kinds would pay.
 local function vegetationShape(shape)
   return type(shape) == 'string' and not shape:find('3d_grass', 1, true) and not shape:find('/rocks/', 1, true)
     and (shape:find('/trees/', 1, true) or shape:find('trees_library', 1, true) or shape:find('scots_pine', 1, true))
@@ -367,6 +382,7 @@ local function plantDataFor(shape)
     d = created
   end
   plantData[shape] = d
+  plantShape[d:getName()] = shape
   return d
 end
 
@@ -409,88 +425,150 @@ local function yawOf(rot)
   return 2 * math.atan2(rot and rot[3] or 0, rot and rot[4] or 1)
 end
 
+-- Each change to the Forest costs the engine work a few frames later (its Ticking):
+-- ~3 ms for every crown kind (ForestItemData) the change touched, whatever the number
+-- of crowns or Forests (night-probe-06, -08). Crowns used to go in as tiles streamed and
+-- out as they unloaded, so the Forest changed in nearly every frame and Ticking sat at
+-- 20-25 ms; one commit a second of all 18 kinds was a 55 ms frame. Now adds and removals
+-- wait in a queue per kind, and a commit takes one kind: at most one every
+-- LIMIT.forestStep s, each kind at most once per LIMIT.forestKind s.
+
+local function forestQueue(name)
+  S.forestQ = S.forestQ or {}
+  local q = S.forestQ[name]
+  if not q then q = {adds = {}, removes = {}, since = nil, at = -10}; S.forestQ[name] = q end
+  if not q.since then q.since = S.now or 0 end
+  return q
+end
+
 local function spawnForestItem(it, tile)
-  if S.forestOff or not tile then return false end
-  local f = forestFor(tile)
-  if not f then return false end
-  local data = f:getData()
-  local kind = data and plantDataFor(it.shape)
-  if not data or not kind or not MatrixF then return false end
-  local m = MatrixF(true)
-  m:setFromEuler(vec3(0, 0, yawOf(it.rot)))
-  m:setPosition(vec3(it.pos[1], it.pos[2], it.pos[3]))
-  local ok, item = pcall(function() return data:createNewItem(kind, m, it.scale or 1) end)
-  if not ok or not item then
-    S.forestFails = (S.forestFails or 0) + 1
-    if S.forestFails >= 3 then
-      S.forestOff = true
-      result.forest = 'off'
-      log('W', logTag, 'Forest item create failed, vegetation stays TSStatic')
-    end
-    return false
-  end
-  tile.forestItems = tile.forestItems or {}
-  tile.forestItems[#tile.forestItems + 1] = item
-  S.forestBurst = (S.forestBurst or 0) + 1
-  S.forestDirty = true
-  result.forest = 'on'
-  result.forestItems = (result.forestItems or 0) + 1
+  if S.forestOff or not tile or not MatrixF then return false end
+  local kind = forestFor(tile) and plantDataFor(it.shape)
+  if not kind then return false end
+  local adds = forestQueue(it.shape).adds
+  adds[#adds + 1] = {it, tile, tile.forestGen or 0}
   return true
 end
 
+-- A tile does not keep its crowns: OASIS held ~160k ForestItem userdata in Lua for the
+-- game's collector to walk, and a full collection took 294 ms (night-route-oasis). The
+-- crowns a tile planted are found again in the Forest by its rectangle when it goes; a
+-- crown of this tile still waiting for a commit is skipped there instead (forestGen).
+-- Near and far crowns of one key never stand at once, so the rectangle is the tile's.
 local function retireForest(tile)
-  if not tile or not tile.forestId then return end
-  S.forestRetire = S.forestRetire or {}
-  S.forestRetire[#S.forestRetire + 1] = {id = tile.forestId, items = tile.forestItems or {}}
-  tile.forestId, tile.forestItems = nil, nil
-end
-
-local function digForests()
-  local jobs = S.forestRetire
-  if not jobs or #jobs == 0 then return end
-  local left = FOREST_REMOVES
-  while left > 0 and #jobs > 0 do
-    local job = jobs[1]
-    local f = job.id and scenetree.findObjectById(job.id)
-    local data = f and f.getData and f:getData()
-    while left > 0 and job.items and #job.items > 0 do
-      local item = table.remove(job.items)
-      if data then
-        if pcall(function() data:removeItem(item) end) then S.forestDirty = true end
-      end
-      left = left - 1
-    end
-    if not job.items or #job.items == 0 then
-      table.remove(jobs, 1)
-    else
-      break
+  if detailStream and tile then detailStream:remove(tile) end
+  if not tile then return end
+  tile.forestGen = (tile.forestGen or 0) + 1
+  if not tile.forestId or not tile.i then tile.forestId = nil; return end
+  tile.forestId = nil
+  local f = forestFor()
+  local data = f and f:getData()
+  if not data or not Box3F then return end
+  local t = S.stream and S.stream.tile or 500
+  local box = Box3F()
+  -- a centimetre in from the edges: a neighbour's crown on the shared edge stays
+  box.minExtents = vec3(tile.i * t + .01, tile.j * t + .01, -1e5)
+  box.maxExtents = vec3((tile.i + 1) * t - .01, (tile.j + 1) * t - .01, 1e5)
+  local ok, items = pcall(data.getItemsBox, data, box)
+  if not ok or type(items) ~= 'table' then return end
+  for _, item in ipairs(items) do
+    local okData, itemData = pcall(item.getData, item)
+    local shape = okData and itemData and plantShape[itemData:getName()]
+    if shape then
+      local removes = forestQueue(shape).removes
+      removes[#removes + 1] = item
     end
   end
 end
 
-local function resetForests()
-  sharedForestId, plantData = nil, {}
-  S.forestRetire, S.forestOff, S.forestFails, S.forestBurst, S.forestDirty = nil, nil, nil, nil, nil
-  S.forestRebuildAt = nil
-end
-
-local function refreshForest()
-  if not S.forestDirty then return end
-  if (S.now or 0) - (S.forestRebuildAt or -10) < FOREST_REBUILD_S then return end
-  S.forestDirty = nil
-  S.forestRebuildAt = S.now
-  if not (worldEditorCppApi and worldEditorCppApi.rebuildForestManagerInstanceData) then return end
+local function forestCommit()
+  local queues = S.forestQ
+  if not queues or (S.now or 0) - (S.forestCommitAt or -10) < LIMIT.forestStep then return end
+  -- the kind that has waited longest, if its last commit was long enough ago
+  local name, q
+  for shape, candidate in pairs(queues) do
+    if candidate.since and (S.now or 0) - candidate.at >= LIMIT.forestKind
+        and (not q or candidate.since < q.since or (candidate.since == q.since and shape < name)) then
+      name, q = shape, candidate
+    end
+  end
+  if not q then return end
+  S.forestCommitAt, q.at = S.now, S.now
   local timer = hptimer()
-  pcall(worldEditorCppApi.rebuildForestManagerInstanceData)
+  local f = forestFor()
+  local data = f and f:getData()
+  local removed, added = 0, 0
+  if data then
+    for _, item in ipairs(q.removes) do
+      if pcall(data.removeItem, data, item) then removed = removed + 1 end
+    end
+  end
+  q.removes = {}
+  local adds = q.adds
+  local count = math.min(#adds, LIMIT.forestMax)
+  local kind = data and plantDataFor(name)
+  -- createNewItem copies the transform, so one matrix and two vectors serve every crown
+  local m, euler, at = MatrixF(true), vec3(0, 0, 0), vec3(0, 0, 0)
+  for index = 1, count do
+    local entry = adds[index]
+    local it, tile = entry[1], entry[2]
+    if kind and not tile.dropped and not tile.vegetationDropped and (tile.forestGen or 0) == entry[3] then
+      euler.z = yawOf(it.rot)
+      m:setFromEuler(euler)
+      at.x, at.y, at.z = it.pos[1], it.pos[2], it.pos[3]
+      m:setPosition(at)
+      local ok, item = pcall(data.createNewItem, data, kind, m, it.scale or 1)
+      if ok and item then
+        tile.forestId = sharedForestId
+        added = added + 1
+      else
+        S.forestFails = (S.forestFails or 0) + 1
+        if S.forestFails >= 3 and not S.forestOff then
+          S.forestOff = true
+          result.forest = 'off'
+          log('W', logTag, 'Forest item create failed, vegetation stays TSStatic')
+        end
+      end
+    end
+  end
+  local rest = {}
+  for k = count + 1, #adds do rest[#rest + 1] = adds[k] end
+  q.adds = rest
+  q.since = #rest > 0 and S.now or nil
+  if added > 0 then result.forest = 'on' end
+  result.forestItems = math.max(0, (result.forestItems or 0) + added - removed)
+  result.forestCommits = (result.forestCommits or 0) + 1
   local ms = timer:stop()
-  result.forestRebuildMs = ms
-  if ms > (result.forestRebuildMaxMs or 0) then result.forestRebuildMaxMs = ms end
-  result.forestRebuilds = (result.forestRebuilds or 0) + 1
+  result.forestCommitMs = ms
+  if ms > (result.forestCommitMaxMs or 0) then result.forestCommitMaxMs = ms end
 end
 
-local function spawnItem(it, group, pause, tile)
-  if it.kind == 'proc' then
+local function resetForests()
+  detailStream = nil
+  sharedForestId, plantData, plantShape = nil, {}, {}
+  S.forestQ, S.forestOff, S.forestFails, S.forestCommitAt = nil, nil, nil, nil
+end
+
+-- The engine pays ~2.3 ms the first frame it draws each new (object, material) pair
+-- (night-probe-10). The queue used to create every small piece that fit its Lua budget,
+-- and the next frame drew ten new pairs at once (RenderShadows 40-118 ms in Kyiv).
+-- The queue and the grass cells have separate allowances, so streaming meshes cannot
+-- starve the grass round the car.
+local function pairsLeft()
+  return (S.state == 'driving' and LIMIT.pairsDriving or LIMIT.pairsLanding) - (S.pairsFrame or 0)
+end
+
+-- layer: 'road' or 'scene' for a near tile's job (collision.quiet), nil otherwise
+local function spawnItem(it, group, pause, tile, layer)
+  if it.kind == 'plants' then
+    if tile.vegetationDropped then return end
+    for _, plant in ipairs(it.items) do
+      spawnItem(plant, group, pause, tile, layer)
+      pause()
+    end
+  elseif it.kind == 'proc' then
     local meshes = it.meshes or binMeshes(it.shape, pause)
+    S.pairsFrame = (S.pairsFrame or 0) + #(meshes or {})
     if not meshes then error('missing mesh: ' .. tostring(it.shape)) end
     pause()
     -- the one call that cannot yield: its worst case is the floor of a frame's streaming cost
@@ -501,6 +579,10 @@ local function spawnItem(it, group, pause, tile)
     group:addObject(obj.obj)
     obj:createMesh({meshes})
     obj:setPosition(vec3(it.pos[1], it.pos[2], it.pos[3]))
+    if NATIVE and tile then
+      S.coll = S.coll or collision.new()
+      S.coll:track(tile, obj:getID(), not (tile.far or tile.horizon) and collision.quiet(meshes, layer))
+    end
     local ms = t:stop()
     if ms > (result.createMeshMs or 0) then result.createMeshMs, result.createMeshItem = ms, it.name end
   else
@@ -523,7 +605,69 @@ local function spawnItem(it, group, pause, tile)
       S.lamps = S.lamps or {}
       S.lamps[string.format('%d_%d', math.floor(it.pos[1]), math.floor(it.pos[2]))] = {it.pos[1], it.pos[2], it.pos[3]}
     end
+    return obj:getID()
   end
+end
+
+-- A 32 m cell of tufts or rocks as TSStatic without collision (~12 us each once the shape
+-- is loaded, night-probe-12). Merged ProceduralMesh cells were tried and dropped: every
+-- ProceduralMesh triangle is static collision, so the blades became bumps under the wheels.
+local function grassCell(parts, pause)
+  local handle = {}
+  for _, part in ipairs(parts) do
+    local group = part.tile.far and part.tile.group or part.tile.decor
+    for k = 1, part.n do
+      local half = part.yaw[k] / 2
+      local obj = createObject('TSStatic')
+      obj:setField('shapeName', 0, part.shape[k])
+      obj:setField('collisionType', 0, 'None')
+      obj:setField('decalType', 0, 'None')
+      obj.useInstanceRenderData = true
+      obj:setPosRot(part.x[k], part.y[k], part.z[k], 0, 0, math.sin(half), math.cos(half))
+      local scale = part.scale[k]
+      if scale ~= 1 then obj:setScale(vec3(scale, scale, scale)) end
+      obj:registerObject('')
+      if group then group:addObject(obj) end
+      handle[#handle + 1] = obj:getID()
+      if k % 32 == 0 then pause() end
+    end
+  end
+  result.grassSpawned = (result.grassSpawned or 0) + #handle
+  return handle
+end
+
+local function getDetailStream()
+  if not detailStream then
+    detailStream = detail.new(grassCell, function(handle)
+      for _, id in ipairs(handle or {}) do
+        local obj = scenetree.findObjectById(id)
+        if obj then obj:delete() end
+      end
+    end)
+  end
+  return detailStream
+end
+
+-- Batches avoid sorting/shifting tens of thousands of individual queue entries.
+-- Grass/rocks are indexed once and do not block delivery of a scene's meshes.
+local function queueItems(items, tile, key, layer)
+  local count, batch = 0, nil
+  for _, it in ipairs(items) do
+    if not getDetailStream():add(tile, it) then
+      if it.kind ~= 'proc' and vegetationShape(it.shape) then
+        if not batch or #batch.items >= LIMIT.plantBatch then
+          batch = {kind='plants', name='plants_' .. key, decor=true, items={}}
+          S.queue[#S.queue+1] = {tile=tile, key=key, item=batch, scene=layer=='scene', far=layer=='far'}
+          count = count + 1
+        end
+        batch.items[#batch.items+1] = it
+      else
+        S.queue[#S.queue+1] = {tile=tile, key=key, item=it, scene=layer=='scene', far=layer=='far'}
+        count = count + 1
+      end
+    end
+  end
+  return count
 end
 
 local function tileGroup(name, outside)
@@ -638,7 +782,10 @@ local function focus()
       end
       S.camName = okName and name or nil
       S.camDist = dist
+      S.heldCar = nil
       if okPos and cam and dist and dist > CAM_HANDOFF_M and not (okName and DRIVE_CAM[name]) then
+        -- the car stays where it was parked: updateTiles keeps the ground under it
+        S.heldCar = {p.x, p.y}
         return vec3(cam.x, cam.y, cam.z), vec3(0, 0, 0)
       end
       return p, v
@@ -726,6 +873,9 @@ loadNewMaterials = function(path)
   result.materialsLoaded = (result.materialsLoaded or 0) + n
 end
 
+-- A delivered manifest keeps only its item count (native.release).
+local function itemCount(manifest) return manifest.itemCount or #(manifest.items or {}) end
+
 local function tilePath(key, layer)
   local st = S.status and S.status.stream
   if NATIVE and st then
@@ -757,10 +907,12 @@ local function startScene(key, tile)
   if not ok or type(manifest) ~= 'table' or manifest.source ~= S.stream.region then return end
   loadNewMaterials(manifest.materials)
   tile.sceneStarted = true
-  tile.sceneLeft = #manifest.items
+  tile.sceneGroup = tileGroup('E2RS_' .. key)
+  tile.sceneLeft = queueItems(manifest.items, tile, key, 'scene')
   tile.sceneComplete = tile.sceneLeft == 0
-  tile.left = tile.left + #manifest.items
-  for _, it in ipairs(manifest.items) do table.insert(S.queue, {tile = tile, key = key, item = it, scene = true}) end
+  tile.left = tile.left + tile.sceneLeft
+  if NATIVE and tile.refreshScene then native.release(key, 'road'); tile.refreshScene = nil end
+  if NATIVE and tile.sceneComplete then native.release(key, 'scene') end
 end
 
 -- --- traffic -----------------------------------------------------------------------------------
@@ -955,9 +1107,12 @@ local function updateTiles()
   for key, tile in pairs(S.tiles) do
     local cx, cy = tileCentre(tile.i, tile.j)
     local d = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
-    if d > unloadR or behind(cx, cy, d) then
+    -- A free camera far from the car owns the bubble; the tiles under the parked car used to
+    -- unload with the rest and it fell through the world (night-fence-02, z 179 -> 0.2).
+    local held = S.heldCar and (cx - S.heldCar[1]) ^ 2 + (cy - S.heldCar[2]) ^ 2 <= 600 * 600
+    if not held and (d > unloadR or behind(cx, cy, d)) then
       retireForest(tile)
-      dropGroup('E2RT_' .. key); buryGroup('E2RD_' .. key)
+      dropGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
       S.tiles[key] = nil
       if NATIVE then native.unload(key) end
       tile.dropped = true
@@ -1012,7 +1167,7 @@ local function updateTiles()
       -- trees were drawn twice and z-fought for the whole spawn. Drop the far
       -- forest as soon as the near scene starts; its ground mesh stays until the
       -- near ground has replaced it.
-      if near and near.sceneStarted then retireForest(far) end
+      if near and near.sceneStarted then retireForest(far); far.vegetationDropped = true end
       if d > farR + 500 or (near and near.sceneComplete) then
         retireForest(far)
         buryGroup('E2RF_' .. key)
@@ -1052,7 +1207,8 @@ local function updateTiles()
           local far = {i = i, j = j, left = #manifest.items, group = tileGroup('E2RF_' .. key, true), far = true,
             serial = type(st.far[key]) == 'number' and st.far[key] or 1}
           S.far[key] = far
-          for _, it in ipairs(manifest.items) do table.insert(S.queue, {tile = far, key = key, item = it, far = true}) end
+          far.left = queueItems(manifest.items, far, key, 'far')
+          if NATIVE and far.left == 0 then native.release(key, 'far') end
         end
       end
     end
@@ -1136,10 +1292,9 @@ end
 
 local function stepQueue()
   local frame = hptimer()
-  S.forestBurst = 0
   -- Retires queued by updateTiles this frame start before new crowns are added.
-  digForests()
-  local function over() return frame:stop() >= BUDGET_MS end
+  local budget = math.max(.5, BUDGET_MS - (S.nativeMs or 0))
+  local function over() return frame:stop() >= budget end
   local function pause() if over() then coroutine.yield() end end
   if S.co and S.job and S.job.tile.dropped then S.co, S.job = nil, nil end
   repeat
@@ -1147,9 +1302,12 @@ local function stepQueue()
       local job = table.remove(S.queue, 1)
       while job and job.tile.dropped do job = table.remove(S.queue, 1) end
       if not job then break end
+      if job.item.kind == 'proc' and pairsLeft() <= 0 then table.insert(S.queue, 1, job); break end
       S.job = job
-      local group = ((job.far or job.horizon) and job.tile.group) or (job.item.decor and job.tile.decor) or job.tile.group
-      S.co = coroutine.create(function(p) spawnItem(job.item, group, p, job.tile) end)
+      local group = ((job.far or job.horizon) and job.tile.group) or (job.item.decor and job.tile.decor)
+        or (job.scene and job.tile.sceneGroup) or job.tile.group
+      local layer = not (job.far or job.horizon) and (job.scene and 'scene' or 'road') or nil
+      S.co = coroutine.create(function(p) spawnItem(job.item, group, p, job.tile, layer) end)
     end
     -- a resume far over the budget: is it the collector (Lua heap shrinks inside it)?
     local kb0, t0 = collectgarbage('count'), hptimer()
@@ -1199,10 +1357,9 @@ local function stepQueue()
         table.sort(sorted)
         S.deliveryP99 = sorted[math.ceil(#sorted * .99)]
       end
-      if S.job.scene and not tile.dropped then S.collisionDirty = true; tile.sceneDirty = true end
+      if S.job.scene and not tile.dropped and not S.job.item.decor then S.collisionDirty = true; tile.sceneDirty = true end
     end
-  until over() or (S.forestBurst or 0) >= FOREST_ADDS
-  refreshForest()
+  until over()
 end
 
 -- be:reloadCollision rebuilds the static collision of the whole loaded world; the call returns in
@@ -1210,38 +1367,92 @@ end
 -- runs only when a loaded tile without collision is near the car (COLLISION_R); far tiles get
 -- theirs with the next rebuild. tileReady() (autopilot, touchdown) needs the collision.
 local COLLISION_R = 450
+-- be:reloadCollision rebuilds the static collision of every ProceduralMesh in the scene,
+-- in the MissionGroup or not (night-probe-11): 66 ms in Yaremche, 100-130 ms in central
+-- Kyiv, +20-30 ms of physics the next frame. A rebuild is asked for only when a tile the
+-- car can reach soon lacks collision; the radius grows with speed.
+function LIMIT.collisionRadius(v)
+  local speed = v and v:length() or 0
+  return math.max(650, math.min(1600, speed * ((S.deliveryP99 or 2) + 10) + 400))
+end
+
+-- Natively a rebuild keeps only the tiles round the car, a parked car and the traffic
+-- (collision.lua: central Kyiv 133 + 34 ms -> ~40 + 12 ms). Collision has to stay ahead of
+-- the next rebuild, not of the generator: the car's reach grows with speed, and the tiles it
+-- leaves out are rebuilt with collision once one of them comes within `want`.
+local function collisionPoints(p, v)
+  local points = {}
+  if not p then return points end
+  local speed = v and v:length() or 0
+  local want = math.min(1600, math.max(LIMIT.collisionWant, speed * LIMIT.collisionLead + 100))
+  -- the descent waits for collision on every tile within 500 m of the spawn (tick)
+  if S.state ~= 'driving' then want = math.max(want, 750) end
+  points[1] = {p.x, p.y, want, want + LIMIT.collisionMargin}
+  local vw, vk = LIMIT.vehicleCollision[1], LIMIT.vehicleCollision[2]
+  if S.heldCar then points[2] = {S.heldCar[1], S.heldCar[2], vw, vk} end
+  pcall(function()
+    for k = 0, be:getObjectCount() - 1 do
+      local q = be:getObject(k):getPosition()
+      points[#points + 1] = {q.x, q.y, vw, vk}
+    end
+  end)
+  return points
+end
+
 local function updateCollision()
   if not S.collisionDirty or S.now - S.collisionAt < COLLISION_EVERY then return end
   local p, v = focus()
   local fast = S.stream and S.stream.generator
-  local radius = fast and math.max(750, (v and v:length() or 0) * ((S.deliveryP99 or 2) + 4) + 354) or COLLISION_R
+  local radius = fast and LIMIT.collisionRadius(v) or COLLISION_R
   -- the descent waits for collision on every tile within 500 m of the spawn (tick): a corner
   -- tile's centre is up to ~1060 m away, and when such a tile came in last nothing else asked for
   -- a rebuild and the landing waited forever (native-perf-10)
   if S.state ~= 'driving' then radius = math.max(radius, 500 * math.sqrt(2) + S.stream.tile * 0.71) end
+  local size = S.stream and S.stream.tile or 500
+  local points = NATIVE and collisionPoints(p, v) or {}
   local near = S.removedCollision or false
   for _, tile in pairs(S.tiles) do
-    if tile.state == 'loaded' and not tile.collided and not (tile.manifest.empty or #tile.manifest.items == 0) then
-      local cx, cy = tileCentre(tile.i, tile.j)
-      if not p or math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) <= radius then near = true; break end
-    end
-    -- buildings/ground next to the car get theirs soon; far scenery waits for a road rebuild
-    if fast and tile.sceneDirty and p then
-      local cx, cy = tileCentre(tile.i, tile.j)
-      if math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) <= 400 then near = true; break end
+    local empty = tile.manifest.empty or itemCount(tile.manifest) == 0
+    if NATIVE then
+      if (tile.state == 'loaded' and not tile.collided and not empty) or (tile.sceneDirty and fast) then
+        if #points == 0 or collision.within(tile, points, size, 3) then near = true; break end
+      end
+    else
+      if tile.state == 'loaded' and not tile.collided and not empty then
+        local cx, cy = tileCentre(tile.i, tile.j)
+        if not p or math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) <= radius then near = true; break end
+      end
+      -- buildings/ground next to the car get theirs soon; far scenery waits for a road rebuild
+      if fast and tile.sceneDirty and p then
+        local cx, cy = tileCentre(tile.i, tile.j)
+        if math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) <= 400 then near = true; break end
+      end
     end
   end
   if not near then return end
   local timer = hptimer()
-  be:reloadCollision()
+  if NATIVE then
+    S.coll = S.coll or collision.new()
+    S.coll:rebuild(points, size, function(id) return scenetree.findObjectById(id) end,
+      function() be:reloadCollision() end)
+    result.collisionHidden = S.coll.lastHidden
+  else
+    be:reloadCollision()
+  end
   local ms = timer:stop()
   result.reloadCollisionMs = math.max(result.reloadCollisionMs or 0, ms)
   result.collisionReloads = (result.collisionReloads or 0) + 1
+  result.collisionMsSum = (result.collisionMsSum or 0) + ms
+  local left = false
   for _, tile in pairs(S.tiles) do
-    if tile.roadComplete and not tile.failed then tile.collided = true end
+    if tile.roadComplete and not tile.failed then
+      tile.collided = not NATIVE or collision.solid(tile, points, size)
+      left = left or not tile.collided
+    end
     tile.sceneDirty = false
   end
-  S.collisionDirty, S.collisionAt = false, S.now
+  -- natively the tiles left out keep the check running as the car moves
+  S.collisionDirty, S.collisionAt = NATIVE and left, S.now
   S.removedCollision = false
   return true
 end
@@ -1603,7 +1814,7 @@ local function beginArrival(job)
   -- leave the previous region
   for key, tile in pairs(S.tiles) do
     retireForest(tile)
-    dropGroup('E2RT_' .. key); dropGroup('E2RD_' .. key); tile.dropped = true
+    dropGroup('E2RT_' .. key); dropGroup('E2RD_' .. key); dropGroup('E2RS_' .. key); tile.dropped = true
   end
   for key, far in pairs(S.far) do
     retireForest(far)
@@ -1904,22 +2115,31 @@ end
 
 -- A tile's navigation lanes in lat/lon with their bounds ({south, west, north, east}), once per
 -- manifest: the minimap culls them by the view instead of projecting every point every frame.
+-- Projected a few segments a frame: the minimap's first frame in central Kyiv projected every
+-- loaded tile's lanes at once (155 ms, the drive-start hitch). A tile's lanes fill in over a
+-- few frames instead; the points a frame are shared by all tiles.
 local navLineCache = setmetatable({}, {__mode = 'k'})
+local NAV_POINTS_PER_FRAME, navBudget = 1500, {at = -1, left = 0}
 local function navLines(manifest)
   local hit = navLineCache[manifest]
-  if hit then return hit end
-  local lines = {}
-  if not (S.status and S.status.stream and S.status.stream.geo) then return lines end
-  for _, segment in ipairs(manifest.navSegments or {}) do
+  if hit and hit.done then return hit.lines end
+  if not (S.status and S.status.stream and S.status.stream.geo) then return hit and hit.lines or {} end
+  if navBudget.at ~= mapFrame then navBudget.at, navBudget.left = mapFrame, NAV_POINTS_PER_FRAME end
+  if not hit then hit = {lines = {}, next = 1}; navLineCache[manifest] = hit end
+  local segments, lines = manifest.navSegments or {}, hit.lines
+  while hit.next <= #segments and navBudget.left > 0 do
+    local segment = segments[hit.next]
+    hit.next = hit.next + 1
     local geo, s, w, n, e = {}, math.huge, math.huge, -math.huge, -math.huge
     for k = 8, #segment, 3 do
       local lat, lon = worldToGeo(segment[k], segment[k + 1])
       geo[#geo + 1], geo[#geo + 2] = lat, lon
       s, w, n, e = math.min(s, lat), math.min(w, lon), math.max(n, lat), math.max(e, lon)
     end
+    navBudget.left = navBudget.left - #geo / 2
     if #geo >= 4 then lines[#lines + 1] = {id = segment[1], geo = geo, box = {s, w, n, e}} end
   end
-  navLineCache[manifest] = lines
+  hit.done = hit.next > #segments
   return lines
 end
 
@@ -2194,11 +2414,15 @@ local function drawMap(width, height, view, pick)
           local ox, oy = r0.x - x0, r0.y - y0
           local px, py = m[1] + ox, m[2] + oy
           local last = #m - 1
+          -- a segment's end is the next one's start: one ImVec2 per drawn point, not two
+          -- (the minimap was ~1000 ImVec2 a frame in central Kyiv, most of the widget's 1.2 ms)
+          local from = im.ImVec2(px, py)
           for k = 3, last, 2 do
             local x, y = m[k] + ox, m[k + 1] + oy
-            if k == last or (x - px) ^ 2 + (y - py) ^ 2 >= 16 then
-              im.ImDrawList_AddLine(dl, im.ImVec2(px, py), im.ImVec2(x, y), lane, 2)
-              px, py = x, y
+            if k == last or (x - px) ^ 2 + (y - py) ^ 2 >= 36 then
+              local to = im.ImVec2(x, y)
+              im.ImDrawList_AddLine(dl, from, to, lane, 2)
+              from, px, py = to, x, y
             end
           end
         end
@@ -2699,10 +2923,9 @@ local function drawPicker()
   im.End()
 end
 
--- Live density and draw distance. Defaults match the generator. Apply drops
--- resident near and far tiles so they rebuild; the horizon stays.
-local TUNE_DEFAULT = {nearM = 1000, farM = 3000, maxTrees = 2400, maxFarTrees = 800,
-  maxGrass = 4000, maxRocks = 80, forestSpacing = 5, groundSpacing = 6, groundTrees = true}
+-- Live density and draw distance. Density rebuilds scenes while roads stay in
+-- place; changing only distances or global small-decor caps needs no rebuild.
+local TUNE_DEFAULT = quality.preset(50)
 local tunePtr = {}
 
 local function ensureTune()
@@ -2722,29 +2945,40 @@ local function applyTune()
       elseif applied[key] then ptr[0] = applied[key] end
     end
   end
-  local keep = {}
-  for _, job in ipairs(S.queue or {}) do
-    if job.horizon then keep[#keep + 1] = job else job.tile.dropped = true end
+  local base = S.appliedTune or TUNE_DEFAULT
+  local rebuild = false
+  for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees'}) do
+    if S.tune[key] ~= base[key] then rebuild = true end
   end
-  S.queue = keep
-  if S.job and not S.job.horizon then S.co, S.job = nil, nil end
-  for key, tile in pairs(S.tiles) do
-    retireForest(tile)
-    dropGroup('E2RT_' .. key)
-    buryGroup('E2RD_' .. key)
-    tile.dropped = true
-    native.unload(key)
+  if rebuild then
+    local keep = {}
+    for _, job in ipairs(S.queue or {}) do
+      if job.horizon or not job.scene and not job.far then keep[#keep+1] = job end
+    end
+    S.queue = keep
+    if S.job and (S.job.scene or S.job.far) then S.co, S.job = nil, nil end
+    -- Keep driveable road meshes and collision under the car throughout the rebuild.
+    for key, tile in pairs(S.tiles) do
+      retireForest(tile)
+      buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
+      tile.decor = tileGroup('E2RD_' .. key, true)
+      tile.left = tile.roadLeft
+      tile.sceneStarted, tile.sceneComplete, tile.sceneLeft = nil, nil, nil
+      tile.refreshScene = true
+      native.unload(key)
+    end
+    for key, far in pairs(S.far) do
+      retireForest(far); buryGroup('E2RF_' .. key)
+      far.dropped = true; native.unload(key, 'far')
+    end
+    S.far = {}
+    S.collisionDirty = true
   end
-  for key, far in pairs(S.far) do
-    retireForest(far)
-    buryGroup('E2RF_' .. key)
-    far.dropped = true
-    native.unload(key, 'far')
-  end
-  S.tiles, S.far = {}, {}
-  S.collisionDirty = true
+  local ok, cfg = pcall(jsonReadFile, LANG_FILE)
+  cfg = ok and type(cfg) == 'table' and cfg or {}
+  cfg.lang, cfg.tune = lang, S.tune
+  pcall(jsonWriteFile, LANG_FILE, cfg, true)
   result.tuneApplied = S.now
-  result.forestItems, result.staticTrees, result.grassSpawned, result.rockSpawned = 0, 0, 0, 0
   S.appliedTune = {}
   for k, v in pairs(S.tune) do S.appliedTune[k] = v end
 end
@@ -2752,7 +2986,7 @@ end
 local function tuneSlider(key, lo, hi, uk, en)
   local tune = S.tune
   if not tunePtr[key] then tunePtr[key] = im.FloatPtr(tune[key]) end
-  im.Text(L(uk, en))
+  if uk ~= '' then im.Text(L(uk, en)) end
   if im.SetNextItemWidth then im.SetNextItemWidth(-1) end
   local ok, changed = pcall(im.SliderFloat, '##' .. key, tunePtr[key], lo, hi, '%.0f')
   if ok then
@@ -2768,6 +3002,7 @@ local function tuneSlider(key, lo, hi, uk, en)
     if im.Button('+##' .. key) then tune[key] = math.min(hi, tune[key] + math.max(1, (hi - lo) / 20)); S.tuneApplyNow = true end
     im.SameLine()
     im.Text(string.format('%.0f', tune[key]))
+    tunePtr[key][0] = tune[key]
   end
 end
 
@@ -2781,50 +3016,64 @@ end
 
 local function drawTune()
   ensureTune()
-  local nearN, farN = 0, 0
-  for _ in pairs(S.tiles) do nearN = nearN + 1 end
-  for _ in pairs(S.far) do farN = farN + 1 end
-  local cam = S.camName and tostring(S.camName) or '?'
-  local dist = S.camDist and string.format('%.0f m', S.camDist) or '?'
-  local applied = S.appliedTune or TUNE_DEFAULT
-  im.Text(string.format(L('Камера: %s, до авто %s', 'Camera: %s, to the car %s'), cam, dist))
-  im.Text(string.format(L('Ліс: %s, крон %d, запасних %d, перезбірка %d мс',
-    'Forest: %s, crowns %d, fallback %d, rebuild %d ms'),
-    tostring(result.forest or '?'), result.forestItems or 0, result.staticTrees or 0,
-    math.floor(result.forestRebuildMs or 0)))
-  im.Text(string.format(L('Поставлено: трава %d, каміння %d. Тайли %d/%d, черга %d',
-    'Spawned: grass %d, rocks %d. Tiles %d/%d, queue %d'),
-    result.grassSpawned or 0, result.rockSpawned or 0, nearN, farN, #(S.queue or {})))
-  im.Text(string.format(L('У світі: ближня %d м, далека %d м, дерева %d/%d, трава %d, каміння %d',
-    'In the world: near %d m, far %d m, trees %d/%d, grass %d, rocks %d'),
-    applied.nearM or 0, applied.farM or 0, applied.maxTrees or 0, applied.maxFarTrees or 0,
-    applied.maxGrass or 0, applied.maxRocks or 0))
-  if im.Button(L('Застосувати і перебудувати', 'Apply and rebuild')) then applyTune() end
-  tuneSlider('nearM', 400, 4000, 'Ближній радіус, м', 'Near radius, m')
-  tuneSlider('farM', 800, 8000, 'Далекий радіус, м', 'Far radius, m')
-  tuneSlider('maxTrees', 0, 2400, 'Дерева на ближній тайл', 'Trees per near tile')
-  tuneSlider('maxFarTrees', 0, 1200, 'Дерева на далекий тайл', 'Trees per far tile')
-  tuneSlider('forestSpacing', 4, 24, 'Крок лісу, м', 'Forest spacing, m')
-  tuneSlider('groundSpacing', 4, 30, 'Крок на відкритому ґрунті, м', 'Open-ground spacing, m')
-  tuneSlider('maxGrass', 0, 4800, 'Трава на ближній тайл', 'Grass per near tile')
-  tuneSlider('maxRocks', 0, 200, 'Каміння на ближній тайл', 'Rocks per near tile')
-  if not tunePtr.groundTrees then tunePtr.groundTrees = im.BoolPtr(S.tune.groundTrees and true or false) end
-  local okBox, flipped = pcall(im.Checkbox, L('Дерева на відкритому ґрунті', 'Trees on open ground'), tunePtr.groundTrees)
-  if okBox then
-    S.tune.groundTrees = tunePtr.groundTrees[0] and true or false
-    if flipped then S.tuneApplyNow = true end
+  local function quick(key, uk, en)
+    local before = S.tune[key]
+    tuneSlider(key, 0, 100, uk, en)
+    if S.tune[key] ~= before then
+      if key == 'quality' then S.tune = quality.preset(S.tune.quality)
+      else S.tune = quality.preset(S.tune.detail, S.tune.distance) end
+      for k, ptr in pairs(tunePtr) do if S.tune[k] ~= nil then ptr[0] = S.tune[k] end end
+    end
   end
-  if not okBox and im.Button(L(S.tune.groundTrees and 'Відкритий ґрунт: дерева є' or 'Відкритий ґрунт: без дерев',
-      S.tune.groundTrees and 'Open ground: trees on' or 'Open ground: trees off')) then
-    S.tune.groundTrees = not S.tune.groundTrees
-    S.tuneApplyNow = true
+  if not S.qualityFpsAt or S.now - S.qualityFpsAt > .5 then
+    local sum, n = 0, 0
+    for _, ms in ipairs(S.recent or {}) do sum, n = sum + ms, n + 1 end
+    S.qualityFrameMs, S.qualityFpsAt = n > 0 and sum/n or 0, S.now
   end
+  if (S.qualityFrameMs or 0) > 0 then
+    im.Text(string.format('%.0f FPS  /  %.1f ms', 1000 / S.qualityFrameMs, S.qualityFrameMs))
+  end
+  im.Text('Potato')
+  im.SameLine(math.max(100, im.GetContentRegionAvailWidth() - 50))
+  im.Text('OASIS')
+  quick('quality', '', '')
+  local name = quality.name(S.tune.quality)
+  if S.tune.detail ~= S.tune.distance then name = L('Власні', 'Custom') end
+  im.Text(name)
+  quick('detail', 'Деталізація', 'Detail')
+  quick('distance', 'Дальність малювання', 'Draw distance')
+  im.Text(string.format(L('Трава %d м · каміння %d м · світ %.1f км',
+    'Grass %d m · rocks %d m · world %.1f km'), S.tune.grassM, S.tune.rockM, S.tune.farM / 1000))
+  if im.Button('Potato') then S.tune = quality.preset(0); tunePtr = {}; S.tuneApplyNow = true end
+  im.SameLine()
+  if im.Button('Balanced') then S.tune = quality.preset(50); tunePtr = {}; S.tuneApplyNow = true end
+  im.SameLine()
+  if im.Button('OASIS') then S.tune = quality.preset(100); tunePtr = {}; S.tuneApplyNow = true end
   if tuneDiffers() then
-    im.TextColored(im.ImVec4(1, 0.7, 0.2, 1), L('Відпустіть повзунок — світ перебудується.',
-      'Release the slider and the world rebuilds.'))
+    im.TextColored(im.ImVec4(1, .7, .2, 1), L('Відпустіть повзунок, щоб застосувати.', 'Release the slider to apply.'))
+    if im.Button(L('Застосувати', 'Apply')) then S.tuneApplyNow = true end
   end
-  im.TextColored(theme.muted, L('Трава лише в ближньому радіусі. Горизонт без рослин. Далекі крони рідші, щоб тримати кадр.',
-    'Grass is inside the near radius only. The horizon has no plants. Far crowns are sparser so the frame holds.'))
+  if im.CollapsingHeader1(L('Точні налаштування', 'Advanced settings')) then
+    tuneSlider('grassM', 0, 220, 'Дальність трави, м', 'Grass distance, m')
+    tuneSlider('rockM', 0, 900, 'Дальність каміння, м', 'Rock distance, m')
+    tuneSlider('nearM', 400, 4000, 'Ближній світ, м', 'Near world, m')
+    tuneSlider('farM', 800, 8000, 'Далекий світ, м', 'Far world, m')
+    tuneSlider('maxTrees', 0, 2400, 'Крони на ближній тайл', 'Crowns per near tile')
+    tuneSlider('maxFarTrees', 0, 1200, 'Крони на далекий тайл', 'Crowns per far tile')
+    tuneSlider('maxGrass', 0, 4800, 'Щільність трави на тайл', 'Grass density per tile')
+    tuneSlider('maxRocks', 0, 200, 'Каміння на тайл', 'Rocks per tile')
+    tuneSlider('grassBudget', 0, 6000, 'Загальний ліміт трави', 'Total grass limit')
+    tuneSlider('rockBudget', 0, 1600, 'Загальний ліміт каміння', 'Total rock limit')
+    tuneSlider('forestSpacing', 4, 24, 'Крок лісу, м', 'Forest spacing, m')
+    tuneSlider('groundSpacing', 4, 30, 'Крок на відкритому ґрунті, м', 'Open-ground spacing, m')
+    if not tunePtr.groundTrees then tunePtr.groundTrees = im.BoolPtr(S.tune.groundTrees) end
+    if im.Checkbox(L('Дерева на відкритому ґрунті', 'Trees on open ground'), tunePtr.groundTrees) then
+      S.tune.groundTrees = tunePtr.groundTrees[0] and true or false; S.tuneApplyNow = true
+    end
+    local counts = detailStream and detailStream.count or {}
+    im.Text(string.format(L('Зараз: трава %d · каміння %d', 'Live: grass %d · rocks %d'), counts.grass or 0, counts.rock or 0))
+    im.Text(string.format(L('Черга %d · крон %d', 'Queue %d · crowns %d'), #S.queue, result.forestItems or 0))
+  end
   if S.tuneApplyNow and tuneDiffers() then applyTune() end
   S.tuneApplyNow = nil
 end
@@ -2847,7 +3096,7 @@ local function drawWindow()
     drawLangButton()
     -- the mini map follows the car (an arrow along the heading); a drag frees it
     S.mini = S.mini or {center = {lat = S.center.lat, lon = S.center.lon}, zoom = 15, follow = true}
-    drawMap(360, 220, S.mini)
+    drawMap(360, 180, S.mini)
     if not S.mini.follow then
       if im.Button(L('До авто', 'To the car')) then S.mini.follow = true end
       im.SameLine()
@@ -2868,10 +3117,12 @@ local function drawWindow()
       im.Text(string.format(L('Автопілот: %.1f км%s', 'Autopilot: %.1f km%s'), AP.travelled / 1000,
         AP.waiting and L(' (чекаю тайл)', ' (waiting for a tile)') or ''))
     end
-    if S.packs then drawPacks() end
-    drawTraffic()
-    if im.CollapsingHeader1(L('Статистика', 'Statistics'), im.TreeNodeFlags_DefaultOpen) then drawStats(st, p, v) end
-    if im.CollapsingHeader1(L('Щільність і дистанція', 'Density and distance'), im.TreeNodeFlags_DefaultOpen) then drawTune() end
+    if im.CollapsingHeader1(L('Вигляд і трафік', 'Style and traffic')) then
+      if S.packs then drawPacks() end
+      drawTraffic()
+    end
+    if im.CollapsingHeader1(L('Статистика', 'Statistics')) then drawStats(st, p, v) end
+    if im.CollapsingHeader1(L('Якість світу', 'World quality'), im.TreeNodeFlags_DefaultOpen) then drawTune() end
     im.End()
     popTheme()
     return
@@ -2921,7 +3172,7 @@ local function refreshCountries()
   if S.stream then
     for key, tile in pairs(S.tiles) do
       retireForest(tile)
-      dropGroup('E2RT_' .. key); dropGroup('E2RD_' .. key); tile.dropped = true
+      dropGroup('E2RT_' .. key); dropGroup('E2RD_' .. key); dropGroup('E2RS_' .. key); tile.dropped = true
     end
     for key, far in pairs(S.far) do
       retireForest(far)
@@ -2938,7 +3189,7 @@ local function refreshCountries()
     if trafficRunning() then gameplay_traffic.deleteVehicles() end
     S.stream, S.co, S.job, S.landing = nil, nil, nil, nil
     S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending = {}, {}, {}, {}, {}, {}
-    S.collisionDirty, S.state = true, 'off'
+    S.collisionDirty, S.state, S.coll = true, 'off', nil
   end
   if S.state == 'generating' or S.state == 'warmup' then
     S.state, S.landSeq, S.landAt, S.landTimer = 'off', nil, nil, nil
@@ -2989,6 +3240,38 @@ end
 local function runTest()
   -- automation: pick, land, drive (straight, or the route with the autopilot), screenshots
   local t = S.now - (S.phaseAt or 0)
+  if test.quality and not S.testQuality and S.state == 'pick' then
+    S.testQuality = true
+    S.tune = quality.preset(test.quality)
+    applyTune()
+    result.quality = test.quality
+  end
+  if test.qualityCycle and S.testDone and not S.qualityCycleDone then
+    local veh = getPlayerVehicle(0)
+    local p = veh:getPosition()
+    veh:queueLuaCommand("input.event('throttle',0,2) input.event('brake',0,2) input.event('parkingbrake',1,2)")
+    local records = result.qualityCycle or {}
+    result.qualityCycle = records
+    local last = records[#records]
+    if last then last.minZ = math.min(last.minZ, p.z) end
+    if not S.qualityCycleAt or S.now - S.qualityCycleAt > 10 then
+      if last and (not last.roadPreserved or last.z - last.minZ > 5) then
+        result.failures[#result.failures+1] = 'quality_road_lost'
+      end
+      local q = test.qualityCycle[#records+1]
+      if q then
+        local i,j = tileOf(p.x,p.y)
+        local tile = S.tiles[i .. '_' .. j]
+        local road = tile and tile.group
+        S.tune = quality.preset(q); tunePtr = {}; applyTune()
+        records[#records+1] = {quality=q,z=p.z,minZ=p.z,
+          roadPreserved=tile and tile.group == road and tile.roadComplete and not tile.dropped or false}
+        S.qualityCycleAt = S.now
+      else S.qualityCycleDone = true end
+      saveResult()
+    end
+    return
+  end
   if NATIVE and S.now - (S.nativeReportAt or -10) > 2 then
     S.nativeReportAt = S.now
     local status = native.status()
@@ -3174,6 +3457,12 @@ local function runTest()
       end
       result.driveFrames = accStats(S.driveAcc)
       if not S.replay and p.z < (S.lowestZ or math.huge) then S.lowestZ = p.z; result.lowestZ = p.z end
+      -- a fall is a drop faster than any road: Kyiv's descent to Podil loses 50 m over a
+      -- minute and used to fail the old "lowest point 30 m under the landing" check
+      if not S.replay and S.traceZ and S.traceZ - p.z > 10 then
+        result.fellAt = result.fellAt or {math.floor(S.now), math.floor(S.traceZ), math.floor(p.z)}
+      end
+      S.traceZ = p.z
       saveResult()
     end
     if AP and AP.travelled / 1000 >= S.nextShotKm then
@@ -3199,7 +3488,7 @@ local function runTest()
       else
         if result.travelledM < (test.minDistance or 20) then table.insert(f, 'not_moved') end
         if (result.spawnHeadingErrorDeg or 0) > 20 then table.insert(f, 'spawn_heading') end
-        if result.vehicleSettled and S.lowestZ and S.lowestZ < result.vehicleSettled[3] - 30 then table.insert(f, 'fell') end
+        if result.fellAt then table.insert(f, 'fell') end
         if AP and (AP.assists or 0) > 0 then table.insert(f, 'assists') end
         if (result.waitSeconds or 0) > 0 then table.insert(f, 'waited_for_tiles') end
       end
@@ -3360,7 +3649,7 @@ function M.onUpdate(dtReal)
     return
   end
   S.now, S.dt = S.now + dtReal, dtReal
-  digForests()
+  forestCommit()
   local frameMs = frameTimer:stopAndReset()
   table.insert(S.frames, frameMs)
   S.recentAt = (S.recentAt or 0) % 240 + 1        -- the widget's FPS: the last 240 frames
@@ -3431,6 +3720,7 @@ function M.onUpdate(dtReal)
 end
 
 function M.tick(dt)
+  S.pairsFrame = 0
   if NATIVE then
     local kb, t = collectgarbage('count'), hptimer()
     if S.profKb then
@@ -3481,7 +3771,14 @@ function M.tick(dt)
     local reloaded = updateCollision()
     local tColl = timer:stopAndReset()
     local kb2 = collectgarbage('count')
-    if not reloaded then stepQueue(); digGraves() end
+    if not reloaded then
+      stepQueue(); digGraves()
+      local p = focus()
+      local detailTimer = hptimer()
+      getDetailStream():step(p, S.appliedTune or TUNE_DEFAULT, S.now, detailTimer, 1)
+      result.detailMs = detailTimer:stop()
+      result.liveGrass, result.liveRocks = detailStream.count.grass, detailStream.count.rock
+    end
     local tQueue = timer:stopAndReset()
     local kb3 = collectgarbage('count')
     if S.state == 'driving' then navStep() end
@@ -3511,7 +3808,7 @@ function M.tick(dt)
         for y = sp[2]-500, sp[2]+500, 250 do
           local i,j = tileOf(x,y)
           local t = S.tiles[i .. '_' .. j]
-          if not t or t.failed or not t.roadComplete or (#t.manifest.items > 0 and not t.collided) then buffered = false end
+          if not t or t.failed or not t.roadComplete or (itemCount(t.manifest) > 0 and not t.collided) then buffered = false end
         end
       end
       -- the descent only (the index of a big city's window, before it, takes minutes and is
@@ -3524,7 +3821,7 @@ function M.tick(dt)
             local i,j = tileOf(x,y)
             local key = i .. '_' .. j
             local t = S.tiles[key]
-            if not t or t.failed or not t.roadComplete or (#t.manifest.items > 0 and not t.collided) or not blocked[key] then
+            if not t or t.failed or not t.roadComplete or (itemCount(t.manifest) > 0 and not t.collided) or not blocked[key] then
               blocked[key] = {inGame = t ~= nil, failed = t and t.failed, road = t and t.roadComplete, scene = t and t.sceneComplete,
                 collided = t and t.collided, left = t and t.left, ready = st.ready and st.ready[key] ~= nil,
                 wanted = st.wanted and st.wanted[key], nativeFailed = st.failed and st.failed[key]}
@@ -3554,7 +3851,12 @@ end
 function M.onExtensionLoaded()
   setExtensionUnloadMode(M, 'manual')
   loadLang()
-  if NATIVE then native.refresh() end
+  if NATIVE then
+    native.refresh()
+    local ok, cfg = pcall(jsonReadFile, LANG_FILE)
+    S.tune = quality.clamp(ok and type(cfg) == 'table' and cfg.tune or nil)
+    S.appliedTune = native.setTune(S.tune)
+  end
   log('I', logTag, 'Earth2Road planet extension loaded')
 end
 
