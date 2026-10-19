@@ -8,6 +8,17 @@ prepare country packs locally. No companion server or Earth2Road checkout is req
 
 ## Install and play
 
+The [player release](https://github.com/Alezx311/earthng/releases/tag/EarthNG)
+has three downloads:
+
+| Download | Purpose |
+| --- | --- |
+| **earthng_planet.zip** (~87 MB) | Required native mod. Put in BeamNG's `mods` folder, keep packed. |
+| **earthng_albania.zip** (~226 MB) | Ready Albania demo map. Put beside the planet ZIP, keep packed. |
+| **EarthNG-MapBuilder.zip** (~300 KB) | Optional tool for making other maps. Extract to a separate writable folder and run **MapBuilder.bat**. |
+
+**To play the demo, download only the first two files. Python is not required.**
+
 1. Install **earthng_planet.zip** and at least one **earthng_<country>.zip** in the
    `mods` directory of your BeamNG user folder. Keep the ZIPs packed.
 2. Start BeamNG.drive and open **Freeroam → EarthNG - Planet**.
@@ -26,8 +37,9 @@ terrain detail and performance vary between places.
 ## Build your own country (Windows)
 
 Install **Python 3.13** from python.org, including the Python launcher and Tcl/Tk.
-Download or clone this repository, extract it to a writable folder, then open
-**MapBuilder.bat** (Country.bat still starts the same window). On first use it runs
+Download **[EarthNG-MapBuilder.zip](https://github.com/Alezx311/earthng/releases/download/EarthNG/EarthNG-MapBuilder.zip)**,
+extract the entire archive to a writable folder, then open **MapBuilder.bat**.
+You can also clone this repository (Country.bat starts the same window). On first use it runs
 **Setup.bat** to create `.venv` and install the required packages. An internet
 connection is required for setup and new data.
 
@@ -97,13 +109,25 @@ py -3.13 -m venv .venv
 .venv\Scripts\python.exe -m unittest discover -s earthng -p "test_*.py"
 ```
 
-To rebuild the planet, extract the release's **earthng-developer-assets.zip** into
+To rebuild the planet, extract **earthng-developer-assets.zip** from the separate
+[developer resources](https://github.com/Alezx311/earthng/releases/tag/developer-assets-0.4.0) into
 this checkout first. It supplies the separately distributed CC0 texture sources,
 prebuilt distributable art and offline basemap. Then run `Rebuild.bat`, or:
 
 ```powershell
 .venv\Scripts\python.exe earthng/build_mod.py --out out/mod --lang en
 ```
+
+Stage player downloads from committed source (excluding local uncommitted work):
+
+```powershell
+.venv\Scripts\python.exe earthng/prepare_release.py --out out/release/player --planet out/mod/earthng_planet.zip --country out/country-setup/earthng_albania.zip
+```
+
+Use an empty output directory. The script produces the native mod, selected country
+pack and a focused Map Builder archive, and prints SHA-256 sums for the release
+description. It follows local Python imports, includes runtime resources and embeds
+a ready-pack catalog. Developer assets, tests and research notes are not player downloads.
 
 The basemap can regenerate from Natural Earth over the network. Rebuilding art
 requires the texture sources; the helper for seasonal textures alone does not
