@@ -1,7 +1,29 @@
-# First native release candidate — 2026-10-18
+# Release verification
+
+## Player package update — 2026-10-19
+
+The `EarthNG` release now separates the native planet (86.5 MB), the Albania demo
+(225.8 MB, 8 regions) and `EarthNG-MapBuilder.zip` (about 300 KB). Developer assets,
+full source and the small Liechtenstein test pack are in `developer-assets-0.4.0`.
+The player archive includes only the builder's local module dependencies, runtime
+resources, startup files, instructions and licenses. Its ready-pack catalog links
+to Albania. `prepare_release.py` reads committed source, leaving local work out.
+
+- Extracted Map Builder: 50 builder, country and UI tests passed; both CLI entry
+  points load. Package lint: no failures or warnings. Initial verification caught
+  a missing material JSON; the final archive includes it and passes these checks.
+- The native planet is byte-for-byte the previously published release ZIP.
+- Albania ZIP integrity passed. BeamNG 0.39.4, disposable profile, Tirana at
+  41.3275 / 19.8187: loaded, rendered and drove 147.9 m; functional checks passed.
+- Performance gate **failed**: 2 of 918 driving frames exceeded 100 ms;
+  mean 18.68 ms, p99 50.5 ms, worst 167.12 ms. This is a smoke test at one place,
+  not verification of every region or a stable-performance guarantee.
+- Local evidence: `out/release-albania-game/report.json` and its screenshots.
+
+## Original candidate verification — 2026-10-18
 
 Target: `master` (the repository does not currently have a `main` branch).
-Candidate manifest version: 0.4.0. No release tag or public release has been created.
+Candidate manifest version: 0.4.0. The following records the checks before publication.
 
 ## Country builder
 
