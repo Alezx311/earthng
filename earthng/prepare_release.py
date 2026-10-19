@@ -18,6 +18,17 @@ Put earthng_planet.zip and the demo country's ZIP in your BeamNG user folder's
 mods directory. Keep both ZIPs packed. Open Freeroam > EarthNG - Planet.
 Map Builder and Python are only needed to make or download other map packs.
 
+Ready maps — no generation or Python needed
+Ukraine (2.96 GB):
+https://drive.google.com/file/d/1WriRBq6pBBjSUyySV81RMgzRViK83NpJ/view
+All ready country maps:
+https://drive.google.com/drive/folders/1n3A-msXrJtuQ2qJKn7YqzCooLZyliKMy?usp=drive_link
+Download the individual country's ZIP, keep it packed and place it in mods
+beside earthng_planet.zip. Always get the planet ZIP from GitHub Releases.
+If Drive creates a wrapper ZIP when downloading several files, extract that
+wrapper first; the earthng_<country>.zip files inside must remain packed.
+Map Builder also has a Download ready maps (Google Drive) button.
+
 Build your own map
 1. Install Python 3.13 from https://www.python.org/downloads/windows/
    Include Tcl/Tk and the Python launcher in the installer.

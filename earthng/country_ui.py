@@ -11,6 +11,7 @@ from pathlib import Path
 import queue
 import threading
 import time
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -26,6 +27,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 SETTINGS = ROOT / 'country_setup.json'
 HISTORY = ROOT / 'out' / 'country-setup' / 'build-times.json'
+READY_MAPS_URL = 'https://drive.google.com/drive/folders/1n3A-msXrJtuQ2qJKn7YqzCooLZyliKMy?usp=drive_link'
 
 
 def load_settings():
@@ -142,6 +144,10 @@ class Setup:
         right = ttk.Frame(body, padding=(12, 0, 0, 0), width=460)
         right.pack(side='left', fill='y')
         self.controls = [top, search, selection_buttons, right]
+        ttk.Button(right, text='Download ready maps (Google Drive)',
+                   command=lambda: webbrowser.open(READY_MAPS_URL)).pack(anchor='w', pady=(0, 4))
+        ttk.Label(right, text='Download a country ZIP, keep it packed and put it in mods.',
+                  wraplength=420).pack(anchor='w', pady=(0, 8))
         ttk.Label(right, textvariable=self.ready, wraplength=340).pack(anchor='w')
         ttk.Label(right, textvariable=self.size, foreground='#555').pack(anchor='w', pady=(2, 8))
         buttons = ttk.Frame(right)
@@ -528,7 +534,7 @@ class Setup:
             'installed': 'A ready pack is already in mods.',
             'local': 'A ready pack is on disk. It can be copied into mods without a build.',
             'url': 'A link to a ready pack is available.',
-            'none': 'No ready pack. Build one from OpenStreetMap and elevation.',
+            'none': 'No one-click pack. Check the Google Drive collection above, or build your own.',
         }[info['state']]
         self.ready.set(f'{self.place["name"]}\n{text}')
         self.download_btn.configure(state=('normal' if not self.running and info['state'] in ('local', 'url') else 'disabled'))

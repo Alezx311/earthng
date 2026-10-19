@@ -8,16 +8,22 @@ prepare country packs locally. No companion server or Earth2Road checkout is req
 
 ## Install and play
 
-The [player release](https://github.com/Alezx311/earthng/releases/tag/EarthNG)
-has three downloads:
+Choose your downloads from the [player release](https://github.com/Alezx311/earthng/releases/tag/EarthNG):
 
 | Download | Purpose |
 | --- | --- |
 | **earthng_planet.zip** (~87 MB) | Required native mod. Put in BeamNG's `mods` folder, keep packed. |
-| **earthng_albania.zip** (~226 MB) | Ready Albania demo map. Put beside the planet ZIP, keep packed. |
+| **[earthng_ukraine.zip](https://drive.google.com/file/d/1WriRBq6pBBjSUyySV81RMgzRViK83NpJ/view)** (2.96 GB, Google Drive) | Ready Ukraine map, 80 regions. Put beside the planet ZIP, keep packed. |
 | **EarthNG-MapBuilder.zip** (~300 KB) | Optional tool for making other maps. Extract to a separate writable folder and run **MapBuilder.bat**. |
 
 **To play the demo, download only the first two files. Python is not required.**
+
+**[Download more ready maps from Google Drive](https://drive.google.com/drive/folders/1n3A-msXrJtuQ2qJKn7YqzCooLZyliKMy?usp=drive_link)**
+or use the [individual map links](docs/READY_MAPS.md). No generation is needed.
+For a smaller first download, **earthng_albania.zip** (~226 MB) remains available
+in the GitHub release. Always use the current **planet ZIP from GitHub** with these
+country packs. If Drive wraps several downloads in an extra ZIP, extract that
+wrapper; keep each `earthng_<country>.zip` inside packed.
 
 1. Install **earthng_planet.zip** and at least one **earthng_<country>.zip** in the
    `mods` directory of your BeamNG user folder. Keep the ZIPs packed.
@@ -44,6 +50,9 @@ You can also clone this repository (Country.bat starts the same window). On firs
 connection is required for setup and new data.
 
 In the country window:
+
+**Download ready maps (Google Drive)** opens the collection in your browser.
+Download a country ZIP and put it in your BeamNG `mods` folder, then restart the game.
 
 1. Select your **BeamNG user folder** (the folder containing `mods`, not `mods` itself).
 2. Search for a country or smaller Geofabrik region, or use **Select area** and drag
