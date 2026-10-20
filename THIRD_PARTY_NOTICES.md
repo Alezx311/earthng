@@ -6,6 +6,8 @@ of the following data and assets:
 - OpenStreetMap contributors: ODbL 1.0. Country packs contain derived OSM data;
   retain their manifests and attribution. https://www.openstreetmap.org/copyright
 - Geofabrik provides the regional OSM extracts: https://download.geofabrik.de/
+- Map Builder's optional street detail shows OpenStreetMap standard tiles, used
+  under the tile usage policy: https://operations.osmfoundation.org/policies/tiles/
 - Terrarium elevation tiles: https://registry.opendata.aws/terrain-tiles/
   See the source attribution and terms there when redistributing elevation data.
 - Natural Earth: public-domain map data. https://www.naturalearthdata.com/about/terms-of-use/

@@ -1,16 +1,31 @@
-"""Tk region picker. Reuses the planet's offline Natural Earth map, no web tiles."""
+"""Tk region picker. Reuses the planet's offline Natural Earth map; OpenStreetMap street
+tiles are fetched only while the user turns street detail on."""
+from collections import OrderedDict
 import io
 import json
 import math
 from functools import lru_cache
 from pathlib import Path
+import queue
+import threading
+import time
 import tkinter as tk
 from tkinter import ttk
+import urllib.request
 import zipfile
 
 from PIL import Image, ImageTk
 
+import paths
+
 MAX_LAT = 85.05112878
+MAX_ZOOM = 14          # offline map, its last level enlarged
+ONLINE_MAX_ZOOM = 17   # street names and blocks are legible here
+
+
+def rgb(data):
+    with Image.open(io.BytesIO(data)) as image:
+        return image.convert('RGB')
 
 
 def project(lon, lat):
@@ -47,8 +62,7 @@ class MapData:
         name = self.index.get('tiles', {}).get(key)
         if name:
             try:
-                with Image.open(io.BytesIO(self.read(f't/{name}.png'))) as image:
-                    return image.convert('RGB')
+                return rgb(self.read(f't/{name}.png'))
             except (OSError, KeyError):
                 pass
         return None
@@ -57,6 +71,100 @@ class MapData:
         self.tile.cache_clear()
         if self.archive:
             self.archive.close()
+
+
+class OnlineTiles:
+    """OpenStreetMap raster tiles for street detail, kept to the tile usage policy
+    (https://operations.osmfoundation.org/policies/tiles/): an identifying User-Agent, two
+    connections, only tiles still on screen (no prefetch), a week-long disk cache and the
+    attribution drawn on the map. Workers only download; the Tk thread owns all state."""
+    URL = 'https://tile.openstreetmap.org/{}/{}/{}.png'
+    AGENT = 'EarthNG-MapBuilder/0.4 (+https://github.com/Alezx311/earthng)'
+    MAX_AGE = 7 * 86400
+    RETRY = 60
+    KEEP = 160   # decoded tiles in memory, ~31 MB
+
+    def __init__(self, cache, workers=2):
+        self.cache = Path(cache)
+        self.images = OrderedDict()
+        self.queued = set()
+        self.failed = {}
+        self.visible = set()
+        self.error = None
+        self.todo = queue.LifoQueue()   # the latest view first
+        self.arrived = queue.SimpleQueue()
+        for _ in range(workers):
+            threading.Thread(target=self.work, daemon=True).start()
+
+    def path(self, key):
+        z, x, y = key
+        return self.cache / str(z) / str(x) / f'{y}.png'
+
+    def get(self, key):
+        """The tile, or a stale cached copy or None while it downloads (queued once)."""
+        image = self.images.get(key)
+        if image is not None:
+            self.images.move_to_end(key)
+            return image
+        path = self.path(key)
+        try:
+            fresh = time.time() - path.stat().st_mtime < self.MAX_AGE
+            image = self.keep(key, rgb(path.read_bytes()))
+        except OSError:
+            fresh = False
+        if not fresh and key not in self.queued and time.time() - self.failed.get(key, 0) > self.RETRY:
+            self.queued.add(key)
+            self.todo.put(key)
+        return image
+
+    def keep(self, key, image):
+        self.images[key] = image
+        self.images.move_to_end(key)
+        while len(self.images) > self.KEEP:
+            self.images.popitem(last=False)
+        return image
+
+    def work(self):
+        while True:
+            self.fetch(self.todo.get())
+
+    def fetch(self, key):
+        # A tile panned off screen before its turn is dropped; it queues again if seen again.
+        if key not in self.visible:
+            self.arrived.put((key, None, None))
+            return
+        try:
+            self.arrived.put((key, self.download(key), None))
+        except (OSError, ValueError) as exc:
+            self.arrived.put((key, None, exc))
+
+    def download(self, key):
+        request = urllib.request.Request(self.URL.format(*key), headers={'User-Agent': self.AGENT})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = response.read()
+        image = rgb(data)   # an error page is never cached as a tile
+        path = self.path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part = path.with_suffix('.part')
+        part.write_bytes(data)
+        part.replace(path)
+        return image
+
+    def drain(self):
+        """Take finished downloads; True when a tile arrived and the map should redraw."""
+        arrived = False
+        while True:
+            try:
+                key, image, error = self.arrived.get_nowait()
+            except queue.Empty:
+                return arrived
+            self.queued.discard(key)
+            if error is not None:
+                self.failed[key], self.error = time.time(), str(error)
+            elif image is not None:
+                self.keep(key, image)
+                self.failed.pop(key, None)
+                self.error, arrived = None, True
 
 
 class RegionMap(ttk.Frame):
@@ -69,6 +177,8 @@ class RegionMap(ttk.Frame):
         self.center = project(30.5, 50.45)
         self.zoom = 4
         self.pending = None
+        self.polling = None
+        self.online = None
         self.enabled = True
         self.drag = None
         self.photos = []
@@ -80,6 +190,9 @@ class RegionMap(ttk.Frame):
         ttk.Button(bar, text='+', width=3, command=lambda: self.change_zoom(1)).pack(side='left', padx=3)
         ttk.Button(bar, text='−', width=3, command=lambda: self.change_zoom(-1)).pack(side='left')
         ttk.Button(bar, text='Fit source', command=self.fit_source).pack(side='left', padx=3)
+        self.streets = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text='Street detail (online)', variable=self.streets,
+                        command=self.toggle_streets).pack(side='left', padx=6)
         self.canvas = tk.Canvas(self, background='#aad3df', highlightthickness=0, height=340)
         self.canvas.pack(fill='both', expand=True, pady=4)
         self.canvas.bind('<Configure>', lambda _: self.schedule())
@@ -89,7 +202,9 @@ class RegionMap(ttk.Frame):
         self.canvas.bind('<ButtonRelease-1>', self.release)
         self.hint = tk.StringVar(value='Drag to move. Select area → drag a rectangle. Wheel to zoom.')
         ttk.Label(self, textvariable=self.hint, wraplength=600).pack(anchor='w')
-        ttk.Label(self, text='Natural Earth • offline regional map (no street detail)', foreground='#666').pack(anchor='w')
+        self.credit = tk.StringVar()
+        ttk.Label(self, textvariable=self.credit, foreground='#666').pack(anchor='w')
+        self.toggle_streets()
         search = ttk.Frame(self)
         search.pack(fill='x', pady=4)
         ttk.Label(search, text='Find city').pack(side='left')
@@ -99,6 +214,20 @@ class RegionMap(ttk.Frame):
         self.city.bind('<<ComboboxSelected>>', self.go_city)
         self.city.bind('<Return>', self.go_city)
         self.city_matches = {}
+
+    def toggle_streets(self):
+        if self.streets.get():
+            if self.online is None:
+                self.online = OnlineTiles(paths.OUT / 'osm-tiles')
+            self.credit.set('Natural Earth offline; street detail © OpenStreetMap contributors (online)')
+        else:
+            self.credit.set('Natural Earth • offline regional map (no street detail)')
+            if self.zoom > MAX_ZOOM:
+                self.change_zoom(MAX_ZOOM - self.zoom)
+        self.schedule()
+
+    def max_zoom(self):
+        return ONLINE_MAX_ZOOM if self.streets.get() else MAX_ZOOM
 
     def find_cities(self, _event=None):
         needle = self.city.get().casefold().strip()
@@ -136,14 +265,14 @@ class RegionMap(ttk.Frame):
         x1, y1 = project(e, s)
         self.center = ((x0 + x1) / 2, (y0 + y1) / 2)
         width, height = max(200, self.canvas.winfo_width() - 40), max(160, self.canvas.winfo_height() - 40)
-        self.zoom = max(1, min(14, math.floor(math.log2(min(width / max(1e-9, x1-x0), height / max(1e-9, y1-y0)) / 256))))
+        self.zoom = max(1, min(self.max_zoom(), math.floor(math.log2(min(width / max(1e-9, x1-x0), height / max(1e-9, y1-y0)) / 256))))
         self.schedule()
 
     def change_zoom(self, delta, x=None, y=None):
         if x is None:
             x, y = self.canvas.winfo_width()/2, self.canvas.winfo_height()/2
         before = project(*self.geo(x, y))
-        self.zoom = max(1, min(14, self.zoom + delta))
+        self.zoom = max(1, min(self.max_zoom(), self.zoom + delta))
         scale = 256 * 2 ** self.zoom
         self.center = (before[0] - (x-self.canvas.winfo_width()/2)/scale,
                        before[1] - (y-self.canvas.winfo_height()/2)/scale)
@@ -181,37 +310,71 @@ class RegionMap(ttk.Frame):
         if self.pending is None:
             self.pending = self.after(30, self.draw)
 
+    def poll(self):
+        self.polling = None
+        if self.online.drain():
+            self.schedule()   # draw polls again while tiles are still on the way
+        elif self.online.queued:
+            self.polling = self.after(150, self.poll)
+        elif self.online.error:
+            self.schedule()   # show why street detail is missing
+
+    def tile_grid(self, z, size, width, height):
+        """(x, y, left, top) of the zoom-z tiles, drawn size px wide, that cover the canvas."""
+        ox, oy = self.center[0]*2**z*size-width/2, self.center[1]*2**z*size-height/2
+        return [(x, y, x*size-ox, y*size-oy)
+                for x in range(max(0, math.floor(ox/size)), min(2**z, math.ceil((ox+width)/size)))
+                for y in range(max(0, math.floor(oy/size)), min(2**z, math.ceil((oy+height)/size)))]
+
+    def paste(self, tile, left, top, size, width, height):
+        # Crop before resizing: zoom 14 must not allocate a 16384² bitmap.
+        dx, dy = max(0, left), max(0, top)
+        dw, dh = min(width, left+size)-dx, min(height, top+size)-dy
+        crop = ((dx-left)*256/size, (dy-top)*256/size,
+                (dx+dw-left)*256/size, (dy+dh-top)*256/size)
+        rendered = tile.transform((max(1, math.ceil(dw)), max(1, math.ceil(dh))), Image.Transform.EXTENT, crop)
+        photo = ImageTk.PhotoImage(rendered)
+        self.photos.append(photo)
+        self.canvas.create_image(dx, dy, image=photo, anchor='nw')
+
     def draw(self):
         self.pending = None
         c = self.canvas
         c.delete('all')
         self.photos = []
         width, height = c.winfo_width(), c.winfo_height()
-        if self.data and self.data.index:
-            # Enlarge the highest local tile for city-scale selection; never fetch remote tiles.
-            z = min(self.zoom, self.data.index['maxZoom'])
+        local = self.data.index['maxZoom'] if self.data and self.data.index else None
+        streets = []
+        if self.online and self.streets.get() and (local is None or self.zoom > local):
+            grid = self.tile_grid(self.zoom, 256, width, height)
+            self.online.visible = {(self.zoom, x, y) for x, y, _left, _top in grid}
+            streets = [(self.online.get((self.zoom, x, y)), left, top) for x, y, left, top in grid]
+        if streets and all(tile is not None for tile, _left, _top in streets):
+            pass   # street tiles cover the whole canvas
+        elif local is not None:
+            # Enlarge the highest local tile for city-scale selection.
+            z = min(self.zoom, local)
             size = 256 * 2 ** (self.zoom-z)
-            ox, oy = self.center[0]*2**z*size-width/2, self.center[1]*2**z*size-height/2
-            for x in range(max(0, math.floor(ox/size)), min(2**z, math.ceil((ox+width)/size))):
-                for y in range(max(0, math.floor(oy/size)), min(2**z, math.ceil((oy+height)/size))):
-                    tile = self.data.tile(f'{z}/{x}/{y}')
-                    if tile:
-                        # Crop before resizing: zoom 14 must not allocate a 16384² bitmap.
-                        left, top = x*size-ox, y*size-oy
-                        dx, dy = max(0, left), max(0, top)
-                        dw, dh = min(width, left+size)-dx, min(height, top+size)-dy
-                        crop = ((dx-left)*256/size, (dy-top)*256/size,
-                                (dx+dw-left)*256/size, (dy+dh-top)*256/size)
-                        rendered = tile.transform((max(1, math.ceil(dw)), max(1, math.ceil(dh))), Image.Transform.EXTENT, crop)
-                        photo = ImageTk.PhotoImage(rendered)
-                        self.photos.append(photo)
-                        c.create_image(dx, dy, image=photo, anchor='nw')
+            for x, y, left, top in self.tile_grid(z, size, width, height):
+                tile = self.data.tile(f'{z}/{x}/{y}')
+                if tile:
+                    self.paste(tile, left, top, size, width, height)
         elif self.data:
             for ring in self.data.coast:
                 points = [v for lon, lat in ring for v in self.xy(lon, lat)]
                 if len(points) >= 6:
                     c.create_polygon(points, fill='#f2efe9', outline='#9aafa6')
-        if self.data:
+        for tile, left, top in streets:
+            if tile is not None:
+                self.paste(tile, left, top, 256, width, height)
+        if streets:
+            note = '© OpenStreetMap contributors'
+            if self.online.error:
+                note = f'Street detail unavailable ({self.online.error}) · {note}'
+            c.create_text(width-4, height-4, text=note, anchor='se', fill='#273640', font=('Segoe UI', 8))
+            if self.online.queued and self.polling is None:
+                self.polling = self.after(150, self.poll)
+        if self.data and not streets:   # street tiles carry their own names
             for row in self.data.labels:
                 lat, lon, minzoom, label = row[:4]
                 if self.zoom < minzoom + 1:
