@@ -47,6 +47,47 @@ class SelectionTests(unittest.TestCase):
         self.assertLess(timing.area_km2([0, 60, 1, 61]), equator * .51)
 
 
+class OnlineTileTests(unittest.TestCase):
+    def test_fresh_cache_served_missing_queued_once_and_offscreen_dropped(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as tmp:
+            tiles = builder_map.OnlineTiles(tmp, workers=0)
+            cached = tiles.path((5, 1, 2))
+            cached.parent.mkdir(parents=True)
+            Image.new('RGB', (256, 256), 'red').save(cached)
+            self.assertEqual(tiles.get((5, 1, 2)).size, (256, 256))
+            self.assertIsNone(tiles.get((5, 1, 3)))
+            self.assertIsNone(tiles.get((5, 1, 3)))
+            self.assertEqual(tiles.todo.qsize(), 1)
+            with patch.object(tiles, 'download', side_effect=AssertionError('fetched off screen')):
+                tiles.fetch(tiles.todo.get())
+            self.assertFalse(tiles.drain())
+            self.assertEqual(tiles.queued, set())
+
+    def test_failure_waits_before_retry_and_error_pages_are_not_cached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tiles = builder_map.OnlineTiles(tmp, workers=0)
+            key = (5, 1, 3)
+            tiles.visible = {key}
+            tiles.get(key)
+
+            class Page:
+                def __enter__(self): return self
+                def __exit__(self, *_): return False
+                def read(self): return b'<html>blocked</html>'
+            with patch.object(builder_map.urllib.request, 'urlopen', return_value=Page()) as opened:
+                tiles.fetch(tiles.todo.get())
+            self.assertIn('EarthNG', opened.call_args[0][0].get_header('User-agent'))
+            self.assertFalse(tiles.drain())
+            self.assertTrue(tiles.error)
+            self.assertFalse(tiles.path(key).exists())
+            tiles.get(key)
+            self.assertEqual(tiles.todo.qsize(), 0)
+            with patch.object(builder_map.time, 'time', return_value=time.time() + tiles.RETRY + 1):
+                tiles.get(key)
+            self.assertEqual(tiles.todo.qsize(), 1)
+
+
 class EstimateTests(unittest.TestCase):
     def test_estimate_accounts_for_cache_source_scan_and_area(self):
         include = looks.canonical_include({})

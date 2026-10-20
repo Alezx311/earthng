@@ -68,7 +68,10 @@ Download a country ZIP and put it in your BeamNG `mods` folder, then restart the
 
 Map Builder reuses the offline Natural Earth map from `out/basemap/3` or the
 installed planet ZIP, with a coastline fallback. It is a regional map, without
-street-level detail. City search requires the offline map's labels. Extract
+street-level detail. Tick **Street detail (online)** to see streets when zoomed
+past it (to zoom 17): OpenStreetMap's standard tiles, only those on screen, two
+at a time, cached for a week in `out/osm-tiles`. Until ticked, the map stays
+offline. City search requires the offline map's labels. Extract
 boundaries are downloaded once from Geofabrik and cached; selecting a source
 from the list still works if that download is unavailable.
 
