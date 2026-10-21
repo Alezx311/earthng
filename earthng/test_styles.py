@@ -17,6 +17,18 @@ from lupa.luajit21 import LuaRuntime
 
 
 class AssetTests(unittest.TestCase):
+    def test_road_detail_nodes_have_kinds(self):
+        kind = style.point_kind
+        self.assertEqual(kind({'highway': 'crossing', 'crossing': 'uncontrolled'}), 'crossing')
+        self.assertEqual(kind({'highway': 'crossing', 'crossing:markings': 'zebra', 'crossing': 'unmarked'}), 'crossing')
+        self.assertIsNone(kind({'highway': 'crossing', 'crossing': 'unmarked'}))
+        self.assertIsNone(kind({'highway': 'crossing', 'crossing:markings': 'no'}))
+        self.assertEqual(kind({'highway': 'give_way', 'direction': 'forward'}), 'give_way')
+        self.assertEqual(kind({'highway': 'stop'}), 'stop_sign')
+        self.assertEqual(kind({'highway': 'turning_loop'}), 'turning_circle')
+        self.assertEqual(kind({'highway': 'mini_roundabout'}), 'mini_roundabout')
+        self.assertEqual(kind({'highway': 'bus_stop'}), 'stop')
+
     def test_dark_surfaces_are_not_light_sources(self):
         for pack in ('night', 'rain', 'cyber'):
             fields = art.pack_fields(pack, style.ART)

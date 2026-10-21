@@ -9,7 +9,10 @@ nodes) and the heights minimise
 (data, grade, change of grade), solved by Jacobi-preconditioned conjugate gradients. A node
 has one height for every road that meets there, so tiles and junction mouths agree by
 construction. Bridges pull up and real tunnels pull down only softly; their approaches become
-ramps. tunnel=building_passage is an arch through a house, at ground level.
+ramps. Where a bridge crosses a road in plan, the two are held CLEARANCE apart (the solve
+shares the step: the deck rises, the road under it dips into a cutting). A 24 m DEM has no
+cuttings or embankments, and the soft pull alone left Juri's overpasses 1.3 m over the ring
+road. tunnel=building_passage is an arch through a house, at ground level.
 """
 import math
 
@@ -27,6 +30,42 @@ JUNCTION_FLAT = 10.0
 # a street) are tied to one height: on Khreshchatyk the carriageways overlapped by 1 m with
 # profiles up to 1.02 m apart.
 COUPLE = 1000.0
+# A deck over a road: 4.5 m headroom + 1 m of deck (the generator draws it 1 m deep), per layer.
+CLEARANCE, CLEAR_WEIGHT, CLEAR_PASSES = 5.5, 1e4, 4
+
+
+def crossings(pos, seg_of, same, upper, lower):
+    """Station edges of upper segments that cross station edges of lower segments in plan.
+    Returns edge start rows (a, b) and the parameters (u, t) of the crossing on each."""
+    e0 = np.flatnonzero(same)
+    top, bottom = e0[upper[e0]], e0[lower[e0]]
+    if not len(top) or not len(bottom):
+        return np.zeros(0, int), np.zeros(0, int), np.zeros(0), np.zeros(0)
+    cell = 24.0                        # > a station edge (STEP): crossing edges are neighbours
+    mid = (pos[bottom] + pos[bottom + 1]) / 2
+    key = np.floor(mid / cell).astype(np.int64)
+    bins = {}
+    for k, (x, y) in enumerate(key.tolist()):
+        bins.setdefault((x, y), []).append(k)
+    out = ([], [], [], [])
+    for a in top.tolist():
+        p, r = pos[a], pos[a + 1] - pos[a]
+        x, y = np.floor((p + r / 2) / cell).astype(np.int64).tolist()
+        near = [k for dx in (-1, 0, 1) for dy in (-1, 0, 1) for k in bins.get((x + dx, y + dy), ())]
+        if not near:
+            continue
+        b = bottom[near]
+        q, d = pos[b], pos[b + 1] - pos[b]
+        den = r[0] * d[:, 1] - r[1] * d[:, 0]
+        ok = np.abs(den) > 1e-9
+        den = np.where(ok, den, 1.)
+        w = q - p
+        u = (w[:, 0] * d[:, 1] - w[:, 1] * d[:, 0]) / den
+        t = (w[:, 0] * r[1] - w[:, 1] * r[0]) / den
+        hit = ok & (u >= 0) & (u <= 1) & (t >= 0) & (t <= 1)
+        for k in np.flatnonzero(hit).tolist():
+            out[0].append(a); out[1].append(int(b[k])); out[2].append(float(u[k])); out[3].append(float(t[k]))
+    return (np.array(out[0], int), np.array(out[1], int), np.array(out[2]), np.array(out[3]))
 
 
 def close_pairs(pos, seg_of, width, ground, same):
@@ -163,6 +202,39 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     rows = [np.arange(nvar), ea, eb, ea, eb]
     cols = [np.arange(nvar), ea, eb, eb, ea]
     vals = [mw, ce, ce, -ce, -ce]
+    # a bridge over a road: (1-u) h_a + u h_a' - (1-t) h_b - t h_b' = clear, weight CLEAR_WEIGHT
+    xa, xb, xu, xt = crossings(pos_st, seg_of, same, k_st > 0, k_st <= 0)
+    xv = (ids[xa], ids[xa + 1], ids[xb], ids[xb + 1])
+    apart = np.ones(len(xa), bool)
+    for i in range(2):
+        for j in range(2, 4):
+            apart &= xv[i] != xv[j]                # not a ramp leaving the bridge's own node
+    xa, xb, xu, xt = xa[apart], xb[apart], xu[apart], xt[apart]
+    xv = tuple(v[apart] for v in xv)
+    xc = (1 - xu, xu, -(1 - xt), -xt)
+    clear = CLEARANCE * layers[seg_of[xa]]
+    # the road under a bridge passes close to the bridge's approaches in plan: they are not
+    # one surface, so no coupling ties them (it dragged the trunk down to the underpass)
+    if len(xa):
+        touching = {}
+        for k, seg in enumerate(segments):
+            for n in seg['nodes']:
+                touching.setdefault(n, set()).add(k)
+        def approach(u, hops=2):
+            near = {u}
+            for _ in range(hops):
+                near |= {m for k in near for n in segments[k]['nodes'] for m in touching[n]}
+            return near
+        apart_of = {}
+        for u, w in set(zip(seg_of[xa].tolist(), seg_of[xb].tolist())):
+            over, below = approach(u), approach(w) - {u}
+            for k in over - below:
+                apart_of.setdefault(k, set()).update(below - over)
+            for k in below - over:
+                apart_of.setdefault(k, set()).update(over - below)
+        sa, sb = seg_of[pa[keep]], seg_of[pe[keep]]
+        free = np.array([b not in apart_of.get(a, ()) for a, b in zip(sa.tolist(), sb.tolist())], bool)
+        va, vb1, vb2, pt = va[free], vb1[free], vb2[free], pt[free]
     # residual h_a - (1-t) h_b1 - t h_b2, weight COUPLE
     cv, cw = (va, vb1, vb2), (np.ones(len(va)), -(1 - pt), -pt)
     for i in range(3):
@@ -173,29 +245,60 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
         for j in range(3):
             rows.append(trip[i]); cols.append(trip[j]); vals.append(ct * coef[i] * coef[j])
     ptr, col, data = csr(np.concatenate(rows), np.concatenate(cols), np.concatenate(vals), nvar)
-    diag = np.bincount(np.repeat(np.arange(nvar), np.diff(ptr)), np.where(
+    diag0 = np.bincount(np.repeat(np.arange(nvar), np.diff(ptr)), np.where(
         col == np.repeat(np.arange(nvar), np.diff(ptr)), data, 0.), nvar)
 
-    def matvec(h):
-        return np.add.reduceat(data * h[col], ptr[:-1])
+    # the clearance springs act only where a deck would be too low (a lower bound): on a
+    # crossing in an active set, outside the CSR matrix
+    active = np.zeros(len(xa))
 
-    # solve for the offset from the DEM: the start residual is small and well scaled
-    b = mw * target - matvec(dem)
-    x = np.zeros(nvar); r = b.copy(); z = r / diag; p = z.copy(); rz = r @ z
-    norm0 = math.sqrt(b @ b) or 1.
-    it = 0
-    for it in range(iterations):
-        if math.sqrt(r @ r) < tol * norm0 or rz <= 0:
-            break                                  # e.g. a flat DEM is already the answer
-        ap = matvec(p)
-        alpha = rz / (p @ ap)
-        x += alpha * p; r -= alpha * ap
-        if math.sqrt(r @ r) < tol * norm0:
+    def gap(h):
+        return sum(c * h[v] for c, v in zip(xc, xv))
+
+    def matvec(h, springs=True):
+        out = np.add.reduceat(data * h[col], ptr[:-1])
+        if springs and active.any():
+            g = CLEAR_WEIGHT * active * gap(h)
+            for c, v in zip(xc, xv):
+                out += np.bincount(v, g * c, nvar)
+        return out
+
+    def cg(b):
+        diag = diag0 + sum(np.bincount(v, CLEAR_WEIGHT * active * c * c, nvar) for c, v in zip(xc, xv))
+        x = np.zeros(nvar); r = b.copy(); z = r / diag; p = z.copy(); rz = r @ z
+        norm0 = math.sqrt(b @ b) or 1.
+        it = 0
+        for it in range(iterations):
+            if math.sqrt(r @ r) < tol * norm0 or rz <= 0:
+                break                              # e.g. a flat DEM is already the answer
+            ap = matvec(p)
+            alpha = rz / (p @ ap)
+            x += alpha * p; r -= alpha * ap
+            if math.sqrt(r @ r) < tol * norm0:
+                break
+            z = r / diag; rz2 = r @ z
+            p = z + (rz2 / rz) * p; rz = rz2
+        return x, it + 1, math.sqrt(r @ r) / norm0
+
+    # solve for the offset from the DEM: the start residual is small and well scaled. A spring
+    # gives part of the clearance only: its target is raised by the shortfall and solved again.
+    base = mw * target
+    aim = clear.copy()
+    for _ in range(CLEAR_PASSES + 1):
+        b = base - matvec(dem)
+        for c, v in zip(xc, xv):
+            b += np.bincount(v, CLEAR_WEIGHT * active * aim * c, nvar)
+        x, its, residual = cg(b)
+        short = clear - gap(dem + x)
+        if not len(xa) or short.max() < .1:
             break
-        z = r / diag; rz2 = r @ z
-        p = z + (rz2 / rz) * p; rz = rz2
+        # a low crossing joins the set; an active one aims higher by what it still lacks
+        aim = np.where(active > 0, aim + np.maximum(short, 0), clear)
+        active = np.where(short > .1, 1., active)
     if emit:
-        emit(f'profile: {nvar} stations, {len(va)} close station-edge pairs, {it + 1} CG iterations, residual {math.sqrt(r @ r) / norm0:.1e}')
+        low = int((short > .5).sum()) if len(xa) else 0
+        emit(f'profile: {nvar} stations, {len(va)} close station-edge pairs, {len(xa)} bridge crossings '
+             f'({low} short of clearance), {its} CG iterations, residual {residual:.1e}')
     h = dem + x
     hs = h[ids]
     bounds = np.r_[run, len(s)]
