@@ -163,7 +163,7 @@ def build(out, lang='en'):
         for name, data in level_files(lang).items():
             z.writestr(name, data)
         z.writestr('earthng/planet/manifest.json', json.dumps({
-            'schemaVersion': 1, 'kind': 'earthng-planet', 'version': '0.4.0', 'natureVersion': 1,
+            'schemaVersion': 1, 'kind': 'earthng-planet', 'version': '0.5.0', 'natureVersion': 1,
             'countrySchemaVersion': 1, 'runtime': 'lua',
         }))
         import fast_art
