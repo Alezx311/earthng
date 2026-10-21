@@ -162,6 +162,9 @@ def install_zip(source, mods, slug_id):
 def tiles_dir(root, slug_id, box):
     name = f'{slug_id}-user'
     if box:
+        # '-cells': tiles cut from the selection grown to whole cells (osm_tiles.source_box);
+        # older caches held only the cells wholly inside the selection and are not reused.
+        name = f'{name}-cells'
         digest = hashlib.sha1(','.join(f'{float(v):.5f}' for v in box).encode()).hexdigest()[:8]
         name = f'{name}-{digest}'
     return Path(root) / 'data' / 'osm_tiles' / name
