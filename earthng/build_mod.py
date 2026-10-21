@@ -91,19 +91,21 @@ def preview():
     return out.getvalue()
 
 
-# the level in the Freeroam list: title, description
+# the level in the Freeroam list: title, description, spawn point. Since 0.40 the list shows
+# one tile per spawn point, named "<spawn point> (<title>)" with the spawn point's own preview.
 INFO = {
     'uk': ('EarthNG - Планета', 'Оберіть установлену країну на мапі та висадіться. '
-                                 'Lua генерує світ із даних активних earthng_<країна>.zip під час гри.'),
+                                 'Lua генерує світ із даних активних earthng_<країна>.zip під час гри.', 'Вибір країни'),
     'en': ('EarthNG - Planet', 'Pick an installed country on the map and land there. '
-                                 'Lua generates the world from active earthng_<country>.zip data packs while you drive.'),
+                                 'Lua generates the world from active earthng_<country>.zip data packs while you drive.',
+           'Country picker'),
 }
 WORLD_LUA = 'lua/ge/extensions/e2r/world.lua'
 
 
 def level_files(lang='uk'):
     root = f'levels/{LEVEL}'
-    title, description = INFO[lang]
+    title, description, spawn = INFO[lang]
     objects = [
         {'__parent': 'MissionGroup', 'class': 'SimGroup', 'name': 'Sky'},
         {'__parent': 'MissionGroup', 'class': 'SpawnSphere', 'dataBlock': 'SpawnSphereMarker', 'name': 'spawn_pad',
@@ -116,7 +118,8 @@ def level_files(lang='uk'):
         f'{root}/info.json': json.dumps({
             'title': title, 'authors': 'Earth2Road', 'description': description,
             'defaultSpawnPointName': 'spawn_pad', 'size': [8192, 8192], 'previews': ['preview.jpg'],
-            'spawnPoints': [{'name': 'Pad', 'objectname': 'spawn_pad'}]}, ensure_ascii=False, indent=2),
+            'spawnPoints': [{'name': spawn, 'objectname': 'spawn_pad', 'preview': 'preview.jpg'}]},
+            ensure_ascii=False, indent=2),
         f'{root}/preview.jpg': preview(),
         f'{root}/main/items.level.json': json.dumps({'class': 'SimGroup', 'name': 'MissionGroup'}) + '\n',
         f'{root}/main/MissionGroup/items.level.json': ''.join(json.dumps(o) + '\n' for o in objects),
