@@ -855,6 +855,49 @@ local function writePose()
   jsonWriteFile('e2r_world/pose.json', pose, false)
 end
 
+-- A game file a material names, by its own path or (a '.png' map) the '.dds' beside it, as the
+-- game resolves its maps. Only the game's /assets are checked; our own art ships with the mod.
+local assetSeen = {}
+local function assetMissing(path)
+  if type(path) ~= 'string' or path:sub(1, 8) ~= '/assets/' then return false end
+  if assetSeen[path] == nil then
+    local found = FS:fileExists(path) or (path:sub(-4) == '.png' and FS:fileExists(path:sub(1, -5) .. '.dds'))
+    assetSeen[path] = found and true or false
+  end
+  return not assetSeen[path]
+end
+
+-- The road decals and the curb (fast_style.DECAL_FALLBACK) use maps an older game may not have:
+-- such a material is loaded as its e2rFallback, the look it had before them.
+local function materialFor(def)
+  if type(def) ~= 'table' or not def.e2rFallback then return def end
+  local fallback = def.e2rFallback
+  def.e2rFallback = nil
+  for _, stage in ipairs(def.Stages or {}) do
+    for _, value in pairs(stage) do
+      if assetMissing(value) then return fallback end
+    end
+  end
+  return def
+end
+
+-- A texture pack's fields (and its warm-up materials) leave out a map the game does not have.
+local function dropMissingMaps(fields)
+  for _, f in pairs(fields or {}) do
+    if type(f) == 'table' then
+      for field, value in pairs(f) do
+        if assetMissing(value) then f[field] = '' end
+      end
+      for _, stage in ipairs(f.Stages or {}) do
+        for field, value in pairs(stage) do
+          if assetMissing(value) then stage[field] = nil end
+        end
+      end
+    end
+  end
+  return fields
+end
+
 -- Every tile's materials file defines all of the region's shared names. Loading a file re-creates
 -- the materials that already exist ("duplicate material. Overwriting"), ~80 per tile, and the
 -- frames after it stall for 1-3 s (route-05). So only the definitions not loaded yet go through
@@ -866,7 +909,7 @@ loadNewMaterials = function(path)
   local fresh, n = {}, 0
   for name, def in pairs(defs) do
     if not S.knownMats[name] then
-      fresh[name] = def
+      fresh[name] = materialFor(def)
       S.knownMats[name] = true
       n = n + 1
     end
@@ -1851,7 +1894,12 @@ local function beginArrival(job)
     '/levels/east_coast_usa/art/shapes/trees/trees_beech/main.materials.json',
     '/levels/east_coast_usa/art/shapes/trees/trees_aspen/main.materials.json',
     '/levels/east_coast_usa/art/shapes/groundcover/3d_grass_test/main.materials.json',
-    '/levels/east_coast_usa/art/shapes/rocks/main.materials.json'}
+    '/levels/east_coast_usa/art/shapes/rocks/main.materials.json',
+    -- firs, poplars, garden shrubs, clover, daisies and ferns (generator.lua VEG)
+    '/levels/east_coast_usa/art/shapes/trees/trees_douglasfir/main.materials.json',
+    '/levels/east_coast_usa/art/shapes/trees/ECA_coast_bush/main.materials.json',
+    '/levels/east_coast_usa/art/shapes/groundcover/main.materials.json',
+    '/levels/automation_test_track/art/shapes/trees/trees_poplar/main.materials.json'}
   for _, path in ipairs(stockMaterials) do
     if FS:fileExists(path) then loadJsonMaterialsFile(path) end
   end
@@ -1859,6 +1907,10 @@ local function beginArrival(job)
   if manifest.spawn and job.horizonZ then pcall(makeHorizon, job.horizonZ, manifest.spawn.pos[1], manifest.spawn.pos[2]) end
   if manifest.packs and FS:fileExists(manifest.packs) then
     local okP, packs = pcall(jsonReadFile, manifest.packs)
+    if okP and packs then
+      for _, fields in pairs(packs.fields or {}) do dropMissingMaps(fields) end
+      for _, defs in pairs(packs.warm or {}) do dropMissingMaps(defs) end
+    end
     S.packs = okP and packs and packs.fields or nil
     S.packEnv = okP and packs and packs.environment or nil
     if okP and packs and packs.order then
@@ -3602,7 +3654,8 @@ local function runTest()
           cam, look = cx and {cx, cy, v.camGeo[3]}, tx and {tx, ty, v.atGeo[3]}
         end
         if cam and look then
-          table.insert(S.gallery, {'v-' .. v.name, vec3(cam[1], cam[2], cam[3]), vec3(look[1], look[2], look[3]), v.camAgl, v.atAgl})
+          table.insert(S.gallery, {'v-' .. v.name, vec3(cam[1], cam[2], cam[3]), vec3(look[1], look[2], look[3]), v.camAgl, v.atAgl,
+            fov = v.fov})
         end
       end
       S.galleryIdx, S.galleryAt, S.galleryPrefix = 0, S.now - 10, ''
@@ -3672,6 +3725,9 @@ local function runTest()
         local q = quatFromDir(view[3] - view[2], vec3(0, 0, 1))
         commands.setFreeCamera()
         core_camera.setPosRot(0, view[2].x, view[2].y, view[2].z, q.x, q.y, q.z, q.w)
+        -- a view's own lens (a photo to match); the others keep the camera's own
+        S.galleryFov0 = S.galleryFov0 or core_camera.getFovDeg()
+        pcall(core_camera.setFOV, 0, view.fov or S.galleryFov0)
         S.galleryPending = (v.pack and v.pack .. '-' or S.galleryPrefix) .. v[1]
         S.galleryAt, S.galleryView = S.now + (switched and 2.5 or 0), view
       end

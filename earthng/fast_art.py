@@ -82,6 +82,19 @@ FLAT = {   # kind: (toon colour, model colour)
     'roof': ((120, 96, 92), (210, 210, 210)), 'curb': ((240, 240, 240), (250, 250, 250)),
     'park': ((126, 196, 112), (226, 228, 222)), 'roof_tile': ((176, 84, 62), (200, 200, 200)),
     'roof_metal': ((96, 120, 116), (205, 205, 205)), 'parapet': ((200, 196, 190), (236, 236, 236)),
+    'roof_sheet': ((160, 160, 152), (212, 212, 212)), 'roof_mtile_red': ((168, 64, 52), (204, 204, 204)),
+    'roof_mtile_brown': ((120, 86, 72), (200, 200, 200)), 'roof_mtile_green': ((72, 120, 92), (206, 206, 206)),
+    'door_garage': ((128, 134, 140), (222, 222, 222)), 'door_rust': ((140, 98, 74), (218, 218, 218)),
+    'clad_metal': ((196, 204, 212), (232, 232, 232)), 'clad_tin': ((156, 128, 108), (220, 220, 220)),
+    'plinth': ((132, 126, 118), (214, 214, 214)),
+    'gable': ((150, 128, 104), (216, 216, 216)),
+    'hw_white': ((240, 236, 226), (238, 238, 238)), 'hw_yellow': ((236, 206, 128), (232, 232, 232)),
+    'hw_blue': ((172, 200, 222), (230, 230, 230)), 'hw_green': ((186, 212, 170), (232, 232, 232)),
+    'hw_pink': ((232, 194, 182), (234, 234, 234)), 'hw_aged': ((204, 192, 160), (228, 228, 228)),
+    'hw_brick_red': ((176, 96, 74), (222, 222, 222)), 'hw_silicate': ((226, 222, 210), (236, 236, 236)),
+    'hw_siding': ((206, 196, 166), (230, 230, 230)), 'hw_wood': ((112, 88, 66), (210, 210, 210)),
+    'win_pvc': ((70, 96, 120), (180, 190, 200)), 'win_wood': ((96, 74, 56), (176, 176, 176)),
+    'door_house': ((110, 76, 54), (190, 190, 190)), 'plinth_brown': ((120, 74, 60), (206, 206, 206)),
 }
 BASE_PACKS = ('real', 'toon', 'model', 'synth')
 PACKS = BASE_PACKS + ('pixel',) + fast_packs.PACKS
@@ -238,8 +251,17 @@ def synth_sun():
     return im
 
 
-def colour(rgb):
-    return ' '.join(f'{c / 255:.3f}' for c in rgb) + ' 1'
+def colour(rgb, alpha=1):
+    return ' '.join(f'{c / 255:.3f}' for c in rgb) + f' {alpha:g}'
+
+
+def stylised_decal(kind, f):
+    """Road decals in a flat-coloured pack: lines keep the worn paint's outline (their quads are
+    wider than the paint), the edge decals are hidden (a flat band over the asphalt edge)."""
+    if kind in ('mark', 'mark_yellow'):
+        f['opacityMap'] = style.TEXTURES['line_worn']['opacityMap']
+    elif kind in style.EDGES:
+        f['opacityFactor'] = 0
 
 
 def pack_fields(pack, base):
@@ -269,7 +291,8 @@ def pack_fields(pack, base):
                 f['baseColorFactor'] = colour([c * 255 for c in style.TINT[kind][:3]])
             elif tex:
                 f.update(style.TEXTURES[tex])
-                f['baseColorFactor'] = colour([c * 255 for c in style.TINT.get(kind, [1, 1, 1])[:3]])
+                tint = style.TINT.get(kind, [1, 1, 1, 1])
+                f['baseColorFactor'] = colour([c * 255 for c in tint[:3]], tint[3] if len(tint) > 3 else 1)
             else:
                 f['baseColorFactor'] = colour([c * 255 for c in fallback[:3]])
         elif pack == 'synth':
@@ -284,6 +307,8 @@ def pack_fields(pack, base):
                 f['baseColorFactor'] = colour(SYNTH.get(kind, (30, 20, 50)))
         else:
             f['baseColorFactor'] = colour(FLAT.get(kind, ((200, 200, 200), (230, 230, 230)))[0 if pack == 'toon' else 1])
+        if pack != 'real':
+            stylised_decal(kind, f)
         out['e2rf_' + kind] = f
     return out
 
@@ -439,17 +464,22 @@ def build(r, game_assets=True):
     return r
 
 
-def write_manifest(r):
-    """Refresh pack settings independently of the expensive texture build."""
+def manifest_text():
+    """packs.json: pack settings, written apart from the expensive texture build."""
     base = '/e2r_stream/fast-art/' + VERSION
     fields = {p: pack_fields(p, base) for p in PACKS}
-    tmp = r / 'packs.json.tmp'
     sun = {'e2rf_synth_sun': {'name': 'e2rf_synth_sun', 'mapTo': 'e2rf_synth_sun', 'class': 'Material', 'version': 1.5,
                               # additive: the black around the disc adds nothing (an alpha test left a square)
                               'translucent': True, 'translucentBlendOp': 'Add', 'translucentZWrite': False,
                               'doubleSided': True,
                               'Stages': [{'baseColorMap': f'{base}/synth/sun.color.png', 'emissiveMap': f'{base}/synth/sun.color.png',
                                           'emissiveFactor': [1, 1, 1]}, {}, {}, {}]}}
-    tmp.write_text(json.dumps(style.dds({'order': list(PACKS), 'labels': LABELS, 'fields': fields, 'warm': {p: warm_defs(p, fields[p]) for p in PACKS},
-                               'environment': {p: environment(p) for p in PACKS}, 'extra': sun})), encoding='utf8')
+    return json.dumps(style.dds({'order': list(PACKS), 'labels': LABELS, 'fields': fields, 'warm': {p: warm_defs(p, fields[p]) for p in PACKS},
+                                 'environment': {p: environment(p) for p in PACKS}, 'extra': sun}))
+
+
+def write_manifest(r):
+    """Refresh pack settings independently of the expensive texture build."""
+    tmp = r / 'packs.json.tmp'
+    tmp.write_text(manifest_text(), encoding='utf8')
     os.replace(tmp, r / 'packs.json')

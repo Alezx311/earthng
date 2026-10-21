@@ -71,6 +71,108 @@ class AssetTests(unittest.TestCase):
         self.assertFalse(art.environment('real').get('authoredSun', False))
 
 
+def lua_table(lua, value):
+    """Nested dicts and lists as Lua tables (lists 1-based)."""
+    if isinstance(value, dict):
+        return lua.table_from({k: lua_table(lua, v) for k, v in value.items()})
+    if isinstance(value, list):
+        return lua.table_from([lua_table(lua, v) for v in value])
+    return value
+
+
+class RoadDecalTests(unittest.TestCase):
+    """The game's decal-road and trim maps on roads, and their fallback for an older game."""
+
+    def test_generator_checks_exactly_the_edge_maps(self):
+        lua = LuaRuntime()
+        generator = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/generator.lua').read_text(encoding='utf8'))
+        checked = {generator.EDGE_MAPS[k] for k in range(1, len(generator.EDGE_MAPS) + 1)}
+        maps = {p[:-4] + '.dds' for kind in style.EDGES for p in style.TEXTURES[kind].values()}
+        self.assertEqual(checked, maps)
+
+    def test_decal_kinds_fall_back_to_their_old_look(self):
+        decal_paths = ('/assets/materials/decalroad/', '/assets/materials/trim/')
+        for kind, old in style.DECAL_FALLBACK.items():
+            material = style.MATERIALS['e2rf_' + kind]
+            stage = material['Stages'][0]
+            self.assertTrue(stage['baseColorMap'].startswith(decal_paths), kind)
+            fallback = material['e2rFallback']
+            self.assertEqual(fallback['name'], 'e2rf_' + kind)
+            self.assertNotIn('e2rFallback', fallback)
+            values = [v for v in fallback['Stages'][0].values() if isinstance(v, str)]
+            self.assertFalse(any(v.startswith(decal_paths) for v in values), kind)
+            if old is None:
+                self.assertIn('diffuseColor', fallback['Stages'][0])
+        for kind in ('mark', 'edge_grass', 'edge_dirt'):
+            self.assertTrue(style.MATERIALS['e2rf_' + kind]['alphaTest'])
+            self.assertNotIn('translucent', style.MATERIALS['e2rf_' + kind])
+            self.assertIn('opacityMap', style.MATERIALS['e2rf_' + kind]['Stages'][0])
+        self.assertNotIn('e2rFallback', style.MATERIALS['e2rf_road'])
+
+    def test_flat_packs_hide_the_edges_and_keep_the_line_outline(self):
+        base = '/e2r_stream/fast-art/' + art.VERSION
+        line = style.TEXTURES['line_worn']['opacityMap']
+        for pack in ('toon', 'model', 'synth', 'pixel'):
+            fields = art.pack_fields(pack, base)
+            for kind in style.EDGES:
+                self.assertEqual(fields['e2rf_' + kind]['opacityFactor'], 0, (pack, kind))
+            self.assertEqual(fields['e2rf_mark']['opacityMap'], line, pack)
+        real = art.pack_fields('real', base)
+        self.assertEqual(real['e2rf_mark']['baseColorFactor'], '0.990 0.990 0.990 1')
+        self.assertNotIn('opacityFactor', real['e2rf_edge_grass'])
+        winter = fast_packs.fields('winter', base, real)
+        for kind in style.EDGES:
+            self.assertEqual(winter['e2rf_' + kind]['baseColorMap'], f'{base}/winter/ground_ground.color.dds')
+            self.assertEqual(winter['e2rf_' + kind]['opacityMap'], style.TEXTURES[kind]['opacityMap'])
+        autumn = fast_packs.fields('autumn', base, real)
+        self.assertEqual(autumn['e2rf_edge_grass']['opacityFactor'], 0)
+        self.assertNotIn('opacityFactor', autumn['e2rf_edge_dirt'])
+
+
+class BuildingStyleTests(unittest.TestCase):
+    def test_lua_post_soviet_countries_match_the_look_block(self):
+        import re
+        import looks
+        source = (ROOT / 'mod/lua/ge/extensions/e2r/generator.lua').read_text(encoding='utf8')
+        table = source.split('BLD.postsoviet = {', 1)[1].split('}', 1)[0]
+        lua_ids = set(re.findall(r'([a-z]+) = true', table))
+        block = next(b for b in looks.BLOCKS if b['id'] == 'postsoviet')
+        self.assertEqual(lua_ids, set(block['ids']))
+
+    def test_every_pack_names_only_art_that_ships(self):
+        base = '/e2r_stream/fast-art/' + art.VERSION
+        shipped = ROOT / 'data/art-distributable' / art.VERSION
+        if not shipped.is_dir():
+            self.skipTest('no distributable art in this checkout')
+        missing = set()
+        for pack in art.PACKS:
+            for fields in art.pack_fields(pack, base).values():
+                for value in fields.values():
+                    if isinstance(value, str) and value.startswith(base + '/'):
+                        path = shipped / value[len(base) + 1:]
+                        if not path.exists() and not path.with_suffix('.dds').exists():
+                            missing.add(value)
+        self.assertEqual(missing, set())
+
+    def test_factor_is_an_srgb_colour(self):
+        # a map's own mean colour needs no tint; half its linear brightness is .73 in sRGB
+        self.assertEqual(style._factor((188, 188, 188), .5)[:3], [1.0, 1.0, 1.0])
+        half = style._factor((137, 137, 137), .5)[0]
+        self.assertAlmostEqual(half, .735, places=2)
+        self.assertEqual(style._factor((255, 0, 0), .2), [1.0, 0.0, 0.0, 1])
+
+    def test_building_kinds_fall_back_and_roofs_are_double_sided(self):
+        for kind in style.BUILDING_FALLBACK:
+            material = style.MATERIALS['e2rf_' + kind]
+            self.assertIn('e2rFallback', material)
+            old = material['e2rFallback']['Stages'][0]
+            self.assertTrue(all(not v.startswith('/assets/materials/tileable/metal/corrugation') for v in old.values()
+                                if isinstance(v, str)))
+        for kind in style.ROOFS:
+            self.assertTrue(style.MATERIALS['e2rf_' + kind]['doubleSided'])
+        self.assertFalse(style.MATERIALS['e2rf_roof']['doubleSided'])
+
+
 class TransitionTests(unittest.TestCase):
     def setUp(self):
         self.lua = lua = LuaRuntime()
@@ -150,6 +252,51 @@ class TransitionTests(unittest.TestCase):
           assert(exposure.manualEV==5)
           mod.onExtensionUnloaded(); assert(exposure.manualEV==12)
         ''')
+
+    def test_missing_game_maps_load_the_fallback_material_and_clear_pack_fields(self):
+        self.lua.execute('''
+          -- an older game: no decal-road maps; the trim's colour map only as a .dds
+          FS = {fileExists = function(_, path)
+            return not path:find('/decalroad/', 1, true) and not path:find('_curb_trim_01_b.color.png', 1, true)
+          end}
+          function findUp(name)
+            local seen, queue, i = {}, {}, 1
+            for _, f in pairs(mod) do if type(f) == 'function' then queue[#queue + 1] = f end end
+            while queue[i] do
+              local fn = queue[i]; i = i + 1
+              if not seen[fn] then
+                seen[fn] = true
+                for k = 1, 255 do
+                  local n, v = debug.getupvalue(fn, k)
+                  if not n then break end
+                  if n == name then return v end
+                  if type(v) == 'function' then queue[#queue + 1] = v end
+                end
+              end
+            end
+            error('no upvalue ' .. name)
+          end
+          materialFor, dropMissingMaps = findUp('materialFor'), findUp('dropMissingMaps')
+        ''')
+        lua = self.lua
+        for kind in ('mark', 'edge_grass', 'curb'):
+            material = lua.table_from(lua_table(lua, style.MATERIALS['e2rf_' + kind]))
+            loaded = lua.globals().materialFor(material)
+            if kind == 'curb':
+                # every trim map is there (the colour map as its .dds): the decal look stays
+                self.assertTrue(str(loaded.Stages[1].baseColorMap).endswith('_curb_trim_01_b.color.png'))
+            else:
+                self.assertIsNotNone(loaded.Stages[1].diffuseColor, kind)
+                self.assertIsNone(loaded.Stages[1].baseColorMap, kind)
+            self.assertIsNone(loaded.e2rFallback)
+        road = lua.globals().materialFor(lua.table_from(lua_table(lua, style.MATERIALS['e2rf_road'])))
+        self.assertTrue(str(road.Stages[1].baseColorMap).startswith('/assets/materials/tileable/road/'))
+        fields = lua_table(lua, {'e2rf_mark': dict(style.TEXTURES['line_worn'], baseColorFactor='1 1 1 1'),
+                                 'e2rf_pk_real_mark': {'Stages': [dict(style.TEXTURES['line_worn'])]}})
+        cleared = lua.globals().dropMissingMaps(lua.table_from(fields))
+        self.assertEqual(cleared.e2rf_mark.baseColorMap, '')
+        self.assertEqual(cleared.e2rf_mark.baseColorFactor, '1 1 1 1')
+        self.assertIsNone(cleared.e2rf_pk_real_mark.Stages[1].opacityMap)
 
     def test_rapid_switch_preserves_pending_material_reloads(self):
         self.lua.execute('''

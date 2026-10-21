@@ -334,7 +334,9 @@ def run_step(command, emit=print, cancel=None):
 
 
 def refresh_planet(mods, emit=print):
-    """Replace Lua and materials.json inside an existing planet zip. Art files stay."""
+    """Replace Lua, materials.json and the packs' settings inside an existing planet zip. Art
+    files stay (the settings name only art of the same version, and the game's own maps)."""
+    import fast_art
     import fast_style
 
     zip_path = Path(mods) / 'mods' / 'earthng_planet.zip'
@@ -346,6 +348,7 @@ def refresh_planet(mods, emit=print):
         if src.is_file():
             replacements[src.relative_to(mod).as_posix()] = src.read_bytes()
     replacements['earthng/planet/materials.json'] = json.dumps(fast_style.MATERIALS).encode('utf-8')
+    replacements[f'e2r_stream/fast-art/{fast_art.VERSION}/packs.json'] = fast_art.manifest_text().encode('utf-8')
     temporary = zip_path.with_suffix('.zip.tmp')
     replaced = 0
     with zipfile.ZipFile(zip_path) as source, zipfile.ZipFile(temporary, 'w') as dest:

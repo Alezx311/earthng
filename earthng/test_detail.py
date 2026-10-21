@@ -52,6 +52,16 @@ class DetailTests(unittest.TestCase):
           p={x=0,y=0,z=500}; step(100); assert(stream.count.grass==0 and next(live)==nil)
         ''')
 
+    def test_groundcover_patches_stream_with_the_grass(self):
+        lua = self.make()
+        lua.execute('''
+          local function kind(shape) return detail.kind({kind='static', shape=shape}) end
+          assert(kind('/levels/east_coast_usa/art/shapes/groundcover/Clover_closetop.dae') == 'grass')
+          assert(kind('/levels/east_coast_usa/art/shapes/groundcover/lush_ferns_01_a.dae') == 'grass')
+          assert(kind('/levels/east_coast_usa/art/shapes/trees/ECA_coast_bush/generibush.dae') == nil)
+          assert(kind('/levels/east_coast_usa/art/shapes/rocks/eca_rock_small.dae') == 'rock')
+        ''')
+
     def test_rocks_have_their_own_cells_and_negative_cells_unload(self):
         lua = self.make()
         lua.execute('''

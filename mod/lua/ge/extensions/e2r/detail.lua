@@ -8,7 +8,9 @@ M.KINDS = {'grass', 'rock'}
 function M.kind(it)
   local s = it and it.shape
   if it and it.kind ~= 'proc' and type(s) == 'string' then
-    if s:find('3d_grass', 1, true) then return 'grass' end
+    -- grass tufts, and the clover, daisy and fern patches beside them (all East Coast
+    -- groundcover): placed per tile as TSStatics they cost ~3 ms a frame in Obolon (vegab-obolon)
+    if s:find('3d_grass', 1, true) or s:find('/groundcover/', 1, true) then return 'grass' end
     if s:find('/rocks/', 1, true) then return 'rock' end
   end
 end

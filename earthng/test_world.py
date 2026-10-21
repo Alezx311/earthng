@@ -19,17 +19,28 @@ import build_mod  # noqa: E402
 
 
 def geo_point(point):
-    """'lat,lon,agl' or [lat, lon, agl] -> [lat, lon, z]: z in the game's frame (DEM height + the world's lift)."""
+    """'lat,lon,agl' or [lat, lon, agl] -> [lat, lon, z]: z in the game's frame (DEM height + the world's lift).
+    A height ending in 'a' is metres above sea level instead (a photo's camera altitude)."""
     import fast_dem
     from fast_sources import LIFT
-    lat, lon, agl = (float(c) for c in (point.split(',') if isinstance(point, str) else point))
+    lat, lon, h = (point.split(',') if isinstance(point, str) else point)
+    lat, lon = float(lat), float(lon)
+    if isinstance(h, str) and h.endswith('a'):
+        return [lat, lon, round(float(h[:-1]) + LIFT, 2)]
     ground = fast_dem.height(lat, lon, HERE.parent / 'out' / 'world' / 'cache')
-    return [lat, lon, round(ground + agl + LIFT, 2)]
+    return [lat, lon, round(ground + float(h) + LIFT, 2)]
+
+
+def above_ground(point):
+    """The height over the game's surface a view corrects to, or None for a sea-level altitude."""
+    h = point.split(',')[2]
+    return None if h.endswith('a') else float(h)
 
 
 class Recorder:
-    """The primary monitor to an H.264 file while the game's e2r-rec.json says 'start'
-    (Desktop Duplication + NVENC, so the game keeps the CPU)."""
+    """The game's own window to an H.264 file while its e2r-rec.json says 'start' (Windows
+    Graphics Capture + NVENC, so the game keeps the CPU). The window, not the monitor: a desktop
+    capture recorded whatever was on top of a game the player had covered."""
 
     def __init__(self, out, fps):
         self.out, self.fps, self.state, self.proc, self.clips = out, fps, None, None, []
@@ -48,7 +59,7 @@ class Recorder:
             self.clips.append(clip.name)
             self.proc = subprocess.Popen(
                 [shutil.which('ffmpeg') or 'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
-                 '-i', f'ddagrab=output_idx=0:framerate={self.fps}:draw_mouse=0',
+                 '-i', f'gfxcapture=window_exe=BeamNG.drive.x64.exe:max_framerate={self.fps}:capture_cursor=0',
                  '-c:v', 'h264_nvenc', '-preset', 'p5', '-rc', 'vbr', '-cq', '18', '-b:v', '0', str(clip)],
                 stdin=subprocess.PIPE)
         elif state == 'stop':
@@ -78,8 +89,8 @@ def main():
     p.add_argument('--pack-gallery', help='comma list of packs: the gallery once in each (implies --gallery)')
     p.add_argument('--gallery-wait', type=float, default=1, help='seconds before the gallery (far tiles keep loading)')
     p.add_argument('--view', action='append', default=[], help='extra gallery view name:x,y,z:tx,ty,tz (world metres)')
-    p.add_argument('--geo-view', action='append', default=[], metavar='NAME:LAT,LON,AGL:LAT,LON,AGL',
-                   help='extra gallery view by coordinates, heights in metres above the ground')
+    p.add_argument('--geo-view', action='append', default=[], metavar='NAME:LAT,LON,AGL:LAT,LON,AGL[:FOV]',
+                   help='extra gallery view by coordinates, heights in metres above the ground (or 123a: above sea level), optional FOV')
     p.add_argument('--only-views', action='store_true', help='the gallery is only --view/--geo-view, not the views round the car')
     p.add_argument('--view-settle', type=float, help='each view waits until loading stops, at most this many seconds')
     p.add_argument('--tod', type=float, help="time of day after landing (the game's 0..1, 0 noon, 0.25 dusk)")
@@ -184,9 +195,13 @@ def main():
         for v in a.geo_view:
             # the DEM height places the camera while the place loads; the game corrects it to
             # its own surface (camAgl/atAgl) before the shot
-            name, cam, look = v.split(':')
-            test['views'].append({'name': name, 'camGeo': geo_point(cam), 'atGeo': geo_point(look),
-                                  'camAgl': float(cam.split(',')[2]), 'atAgl': float(look.split(',')[2])})
+            # name:cam:target[:fov] - fov in degrees (the game's camera), to match a photo's lens
+            name, cam, look, *fov = v.split(':')
+            view = {'name': name, 'camGeo': geo_point(cam), 'atGeo': geo_point(look),
+                    'camAgl': above_ground(cam), 'atAgl': above_ground(look)}
+            if fov:
+                view['fov'] = float(fov[0])
+            test['views'].append(view)
         if a.only_views:
             test['onlyViews'] = True
         if a.view_settle:

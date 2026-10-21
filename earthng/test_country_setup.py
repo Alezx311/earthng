@@ -146,14 +146,16 @@ class PackFileTests(unittest.TestCase):
             with zipfile.ZipFile(planet, 'w') as archive:
                 archive.writestr('lua/ge/extensions/e2r/generator.lua', 'old')
                 archive.writestr('e2r_stream/fast-art/v10/real/keep.dds', b'dds')
+                archive.writestr('e2r_stream/fast-art/v10/packs.json', '{}')
             # refresh_planet reads the repository mod/, so the lua member changes
-            # and the untouched art member stays.
+            # and the untouched art member stays; the packs' settings are code too.
             country_fetch.refresh_planet(mods, emit=lambda _text: None)
             with zipfile.ZipFile(planet) as archive:
                 names = set(archive.namelist())
                 self.assertIn('e2r_stream/fast-art/v10/real/keep.dds', names)
                 self.assertNotEqual(archive.read('lua/ge/extensions/e2r/generator.lua'), b'old')
                 self.assertIn(b'mark_yellow', archive.read('earthng/planet/materials.json'))
+                self.assertIn(b'e2rf_edge_grass', archive.read('e2r_stream/fast-art/v10/packs.json'))
 
 
 if __name__ == '__main__':

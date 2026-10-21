@@ -423,7 +423,7 @@ def fields(pack, base, real):
         put('footway_asphalt', roughnessMap=f'{base}/rain/wet_road.data.png', baseColorFactor='0.55 0.55 0.58 1')
         put('sidewalk', roughnessMap=f'{base}/rain/wet_sidewalk.data.png', baseColorFactor='0.62 0.62 0.64 1')
         put('paved', roughnessMap=f'{base}/rain/wet_sidewalk.data.png')
-        for k in ('footway', 'roof', 'roof_metal', 'roof_tile', 'parapet', 'car', 'curb', 'fence_wall'):
+        for k in ('footway', 'roof', 'parapet', 'car', 'curb', 'fence_wall') + style.ROOFS:
             put(k, roughnessFactor=.18)
         if pack == 'rain':
             for w in walls:
@@ -431,6 +431,10 @@ def fields(pack, base, real):
             put('water', baseColorFactor=_colour((.1, .14, .16)), roughnessFactor=.05)
             for kind in GROUND_KINDS + COVER_KINDS:
                 put(kind, baseColorFactor='0.62 0.66 0.6 1')
+            # the edge decals darken like the ground they lie on (their tint times the ground's)
+            for kind in style.EDGES:
+                tint = [a * b for a, b in zip(style.TINT[kind], (.62, .66, .6))]
+                put(kind, baseColorFactor=_colour(tint))
     if pack == 'winter':
         for kind in GROUND_KINDS + ('paved',):
             put(kind, baseColorMap=f'{art}/ground_{kind}.color.png', normalMap=f'{art}/ground_{kind}.normal.png',
@@ -443,7 +447,7 @@ def fields(pack, base, real):
         for kind in UNPAVED_ROADS:
             put(kind, baseColorMap=f'{art}/trodden.color.png', normalMap=f'{art}/trodden.normal.png',
                 roughnessMap='', ambientOcclusionMap='', baseColorFactor='1 1 1 1')
-        for kind in ('roof', 'roof_tile', 'roof_metal'):
+        for kind in ('roof',) + style.ROOFS:
             put(kind, baseColorMap=f'{art}/roof.color.png', normalMap=f'{art}/roof.normal.png', roughnessMap='',
                 ambientOcclusionMap='', baseColorFactor='1 1 1 1')
         put('sidewalk', baseColorMap=f'{art}/sidewalk.color.png', normalMap=f'{art}/sidewalk.normal.png', roughnessMap='',
@@ -454,6 +458,10 @@ def fields(pack, base, real):
             put(k, roughnessMap=f'{art}/slush.data.png', baseColorFactor='0.95 0.96 1 1')
         put('curb', baseColorFactor=_colour((.93, .95, 1)))
         put('parapet', baseColorFactor=_colour((.88, .9, .95)))
+        # snow drifts over the asphalt's edge: the snowed ground through the decal's outline
+        for kind in style.EDGES:
+            put(kind, baseColorMap=f'{art}/ground_ground.color.png', normalMap=f'{art}/ground_ground.normal.png',
+                roughnessMap='', ambientOcclusionMap='', baseColorFactor='1 1 1 1')
         # cold open water: as pale ice it merged with the snow and rivers vanished (the Inn)
         put('water', baseColorFactor=_colour((.3, .38, .45)), roughnessFactor=.12)
         for w in walls:
@@ -464,6 +472,9 @@ def fields(pack, base, real):
         put('footway', baseColorMap=f'{art}/paving.color.png', normalMap=f'{art}/paving.normal.png')
         for w in walls:
             put('wall_' + w, baseColorFactor='1 0.97 0.92 1')
+        # the decal's grass is summer green and no tint turns it the autumn sheet's orange
+        # (2.5 times the red): the dirt shoulder stays, the grass edge goes
+        put('edge_grass', opacityFactor=0)
     # the trees: their own materials (fast_tree_materials.json)
     for mat, rel in LEAF_MATS.items():
         f = {}
@@ -477,6 +488,12 @@ def fields(pack, base, real):
             f = {'baseColorFactor': '0.5 0.4 0.75 1'}
         if f:
             out[mat] = f
+    # the poplars: bare in winter, back to their own yellow in autumn
+    for mat in style.POPLAR_LEAVES:
+        if pack == 'winter':
+            out[mat] = {'opacityFactor': '0'}
+        elif pack == 'autumn':
+            out[mat] = {'baseColorFactor': style.POPLAR_AUTUMN}
     return style.dds(out)
 
 

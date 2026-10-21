@@ -5,17 +5,19 @@
 -- hides, for its duration only, what the car cannot touch:
 --   - the horizon, and far tiles out of the car's reach (Kyiv: 145 -> 67 ms);
 --   - near tiles out of that reach too: they are rebuilt with collision as the car comes;
---   - markings (8 mm over the road), roofs, and the scene's ground covers: areas and paths
+--   - markings and edge decals (mm to cm over the road and verge), roofs, and the scene's ground covers: areas and paths
 --     are drapes 2.5-4 cm over the ground mesh, which collides. The road layer's ground
 --     takes those same cover materials where a cover fills a cell, so they stay solid there.
 -- Hiding and showing ~1000 meshes costs ~1.5 ms; rendering does not see it (one Lua call).
 local M = {}
 
 local QUIET = {road = {}, scene = {}}
-for _, kind in ipairs({'mark', 'mark_yellow'}) do
+for _, kind in ipairs({'mark', 'mark_yellow', 'edge_grass', 'edge_dirt'}) do
   QUIET.road['e2rf_' .. kind], QUIET.scene['e2rf_' .. kind] = true, true
 end
-for _, kind in ipairs({'roof', 'roof_tile', 'roof_metal', 'footway', 'footway_asphalt', 'trodden', 'ground',
+for _, kind in ipairs({'roof', 'roof_tile', 'roof_metal', 'roof_sheet', 'roof_mtile_red', 'roof_mtile_brown',
+    'win_pvc', 'win_wood', 'door_house', 'door_garage', 'door_rust',
+    'roof_mtile_green', 'footway', 'footway_asphalt', 'trodden', 'ground',
     'paved', 'water', 'glacier', 'bare_rock', 'scree', 'beach', 'wetland', 'orchard', 'vineyard', 'farmland',
     'meadow', 'heath', 'scrub', 'forest', 'park', 'bare_ground'}) do
   QUIET.scene['e2rf_' .. kind] = true

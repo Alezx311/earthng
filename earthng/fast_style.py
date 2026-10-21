@@ -113,21 +113,50 @@ TEXTURES = {
     },
 }
 
+
+def _maps(folder, stem, *suffixes):
+    """A stock material's maps by suffix: b, nm, r, ao, o."""
+    names = {'b': ('baseColorMap', 'color'), 'nm': ('normalMap', 'normal'), 'r': ('roughnessMap', 'data'),
+             'ao': ('ambientOcclusionMap', 'data'), 'o': ('opacityMap', 'data')}
+    return {names[s][0]: f'{folder}/{stem}_{s}.{names[s][1]}.png' for s in suffixes}
+
+
+# Road decals and the curb from the game's decal-road and trim sets, laid out along the road
+# by the generator (uv mode 'strip': u across, v along). The worn line is the one East Coast
+# paints 0.15 m wide with a 6.4 m repeat; the edges are 2 m wide with an 8 m repeat, the
+# asphalt side at u = 0. The curb is the top row of the trim sheet. Of the game's grass edges
+# t_road_edge_grass_02 is nearest the photo ground (linear means .107 .126 .051 against .090
+# .131 .037) and fades out on both sides.
+_DR = '/assets/materials/decalroad'
+TEXTURES['line_worn'] = _maps(f'{_DR}/lines/line_white_damage_01', 't_line_white_damaged_01', 'b', 'nm', 'r', 'ao', 'o')
+TEXTURES['edge_grass'] = _maps(f'{_DR}/vegetation/dirt_road_edge_grassy_d', 't_road_edge_grass_02', 'b', 'nm', 'r', 'ao', 'o')
+TEXTURES['edge_dirt'] = _maps(f'{_DR}/asphalt/m_asphalt_dirt_edge', 't_asphalt_dirt_edge_02', 'b', 'nm', 'r', 'ao', 'o')
+TEXTURES['curb_trim'] = _maps('/assets/materials/trim/concrete/m_sidewalk_curb_trim_01', 't_sidewalk_curb_trim_01',
+                              'b', 'nm', 'r', 'ao')
+
 # kind: (texture, fallback colour, groundType, metres per texture repeat, uv mode)
-# uv mode 'plan' projects from above; 'wall' runs u along the wall and v up it.
+# uv mode 'plan' projects from above; 'wall' runs u along the wall and v up it; 'strip' runs
+# u across a road strip and v along it (the generator's own UVs).
 KINDS = {
     'road':        ('asphalt',       [.18, .19, .20, 1], 'ASPHALT', 6.0, 'plan'),
     'road_major':  ('asphalt_major', [.16, .17, .18, 1], 'ASPHALT', 6.0, 'plan'),
     'sidewalk':    ('sidewalk',      [.55, .55, .52, 1], 'ASPHALT', 3.0, 'plan'),
-    'mark':        (None,            [.92, .91, .86, 1], 'ASPHALT', 1.0, 'plan'),
-    'mark_yellow': (None,            [.93, .74, .12, 1], 'ASPHALT', 1.0, 'plan'),
+    'mark':        ('line_worn',     [.92, .91, .86, 1], 'ASPHALT', 6.4, 'strip'),
+    'mark_yellow': ('line_worn',     [.93, .74, .12, 1], 'ASPHALT', 6.4, 'strip'),
     'ground':      ('grass',         [.29, .36, .22, 1], 'GRASS',   8.0, 'plan'),
     'paved':       ('concrete',      [.45, .45, .43, 1], 'ASPHALT', 6.0, 'plan'),
     'water':       (None,            [.12, .29, .38, 1], 'MUD',     8.0, 'plan'),
     'roof':        ('roof',          [.32, .31, .30, 1], 'ROCK',    6.0, 'plan'),
     'forest':      ('grass',         [.20, .30, .16, 1], 'GRASS',   8.0, 'plan'),
-    'curb':        ('concrete',      [.70, .70, .68, 1], 'ASPHALT', 1.0, 'plan'),
+    'curb':        ('curb_trim',     [.70, .70, .68, 1], 'ASPHALT', 2.0, 'strip'),
+    'edge_grass':  ('edge_grass',    [.29, .36, .22, 1], 'GRASS',   8.0, 'strip'),
+    'edge_dirt':   ('edge_dirt',     [.45, .40, .32, 1], 'DIRT',    8.0, 'strip'),
 }
+# What these kinds were before the decals (texture or None for the flat colour): the material
+# world.lua loads when the game lacks a map (an older BeamNG). The generator draws no edge
+# strips then (generator.lua decalsPresent).
+DECAL_FALLBACK = {'mark': None, 'mark_yellow': None, 'curb': 'concrete', 'edge_grass': None, 'edge_dirt': None}
+EDGES = ('edge_grass', 'edge_dirt')
 ART = '/e2r_stream/fast-art/v10'      # fast_art.ensure writes the facades there
 WALLS = ('panel', 'precast', 'brick', 'brick_red', 'brick_white', 'plaster', 'stucco', 'glass', 'windows', 'block')
 for w in WALLS:
@@ -152,14 +181,86 @@ TEXTURES['car'] = {'baseColorMap': f'{ART}/real/cars.color.png'}
 CHAINLINK_MIP_REF = 80
 EXTRA = {'fence_mesh': {'alphaTest': True, 'alphaRef': 30, 'doubleSided': True, 'castShadows': False},
          'fence_wall': {'doubleSided': True}}
+# Road decals are cut by their opacity, not blended: a translucent ProceduralMesh is lit in the
+# forward pass, and an edge came out 0.8 of the verge in the sun and 1.1 in the shade beside it
+# (decals-trunk-01). The game's own decal roads draw into the deferred buffers instead.
+for _k in ('mark', 'mark_yellow') + EDGES:
+    EXTRA[_k] = {'alphaTest': True, 'alphaRef': 77, 'castShadows': False}
 # photo facades (fast_photo: Panelka pack): a 6 m repeat, the II-68 loggia sheet 33 m
 import fast_photo as _photo
 for w, (_family, _colour, _metres) in _photo.PHOTO_WALLS.items():
     KINDS['wall_' + w] = (None, [*_colour, 1], 'ROCK', _metres, 'wall')
 # roofs: the parapet's inner face and pitched tile roofs of houses
 KINDS['parapet'] = ('concrete', [.55, .55, .53, 1], 'ROCK', 3.0, 'wall')
-KINDS['roof_tile'] = ('roof_tile', [.45, .22, .16, 1], 'ROCK', 4.0, 'plan')
-KINDS['roof_metal'] = ('roof_metal', [.36, .42, .40, 1], 'ROCK', 4.0, 'plan')
+KINDS['roof_tile'] = ('roof_tile', [.45, .22, .16, 1], 'ROCK', 2.0, 'roof')
+KINDS['roof_metal'] = ('roof_metal', [.36, .42, .40, 1], 'ROCK', 2.0, 'roof')
+# Post-Soviet roofs and outbuildings from the game's tileable set: asbestos-cement slate (шифер)
+# on the light corrugation, painted metal tile on the grey slates sheet, garage doors, metal
+# cladding of sheds and warehouses, a plinth. Uv mode 'roof': u along the ridge, v down the
+# slope (generator.lua pitchedRoof).
+_T = '/assets/materials/tileable'
+TEXTURES['sheet'] = _maps(f'{_T}/metal/corrugation', 't_corrugation', 'b', 'nm', 'r', 'ao')
+TEXTURES['metal_tile'] = _maps(f'{_T}/roofing/m_roof_slates_ochre', 't_roof_slates_ochre', 'b', 'nm', 'r', 'ao')
+TEXTURES['rollup'] = _maps(f'{_T}/metal/t_italy_bld_rollupdoor', 't_italy_bld_rollupdoor', 'b', 'nm', 'r')
+TEXTURES['rust_door'] = {'baseColorMap': f'{_T}/metal/WareHouse_door/Warehouse_door_d.png',
+                         'normalMap': f'{_T}/metal/WareHouse_door/Warehouse_door_n.png'}
+TEXTURES['cladding'] = _maps(f'{_T}/metal/m_metal_wall_corrugate', 't_metal_wall_corrugated', 'b', 'nm', 'r', 'ao')
+TEXTURES['tin'] = _maps(f'{_T}/metal/m_corrugated_tin_v1', 't_corrugated_tin_v1', 'b', 'nm', 'r')
+# PBR maps only: the legacy cement_coating with its old-style _n normal rendered the plinth near
+# black in the shade (bld-hatne-03)
+TEXTURES['plinth'] = _maps(f'{_T}/concrete/concrete_painted', 't_concrete_painted', 'b', 'nm', 'r')
+TEXTURES['boards'] = _maps(f'{_T}/wood/weatherboards', 't_weatherboards', 'b', 'nm', 'r', 'ao')
+KINDS['roof_sheet'] = ('sheet', [.62, .62, .60, 1], 'ROCK', 1.75, 'roof')
+for _c, _rgb in (('red', [.44, .15, .13]), ('brown', [.29, .20, .18]), ('green', [.13, .28, .21])):
+    KINDS['roof_mtile_' + _c] = ('metal_tile', [*_rgb, 1], 'METAL', 1.4, 'roof')
+KINDS['door_garage'] = ('rollup', [.42, .42, .41, 1], 'METAL', 3.0, 'wall')
+KINDS['door_rust'] = ('rust_door', [.30, .26, .22, 1], 'METAL', 3.0, 'wall')
+KINDS['clad_metal'] = ('cladding', [.69, .71, .74, 1], 'METAL', 3.0, 'wall')
+KINDS['clad_tin'] = ('tin', [.55, .45, .38, 1], 'METAL', 3.0, 'wall')
+KINDS['plinth'] = ('plinth', [.46, .45, .42, 1], 'ROCK', 3.0, 'wall')
+# the gables of pitched roofs: boards (a facade's windows ran on into the gable askew)
+KINDS['gable'] = ('boards', [.58, .52, .44, 1], 'ROCK', 1.5, 'wall')
+# What the building kinds fall back to in a game without one of their maps (world.lua)
+BUILDING_FALLBACK = {'roof_sheet': 'roof_metal', 'roof_mtile_red': 'roof_tile', 'roof_mtile_brown': 'roof_tile',
+                     'roof_mtile_green': 'roof_tile', 'door_garage': 'block', 'door_rust': 'block',
+                     'clad_metal': 'block', 'clad_tin': 'block', 'plinth': 'concrete', 'gable': None}
+FALLBACK = {**DECAL_FALLBACK, **BUILDING_FALLBACK}
+# Pitched roofs are seen from below under their eaves (generator.lua pitchedRoof)
+ROOFS = ('roof_tile', 'roof_metal', 'roof_sheet', 'roof_mtile_red', 'roof_mtile_brown', 'roof_mtile_green')
+for _k in ROOFS:
+    EXTRA[_k] = {'doubleSided': True}
+# Houses of one or two floors (generator.lua BLD.house): plain walls from the game's tileable set
+# with windows and a door as their own quads from its atlases, so a village is not one photo
+# facade with the same window rhythm. Colours are set below (TINT, by _factor).
+TEXTURES['hw_stucco'] = _maps(f'{_T}/plaster/stucco1_white', 't_stucco1_white', 'b', 'nm', 'r', 'ao')
+TEXTURES['hw_aged'] = _maps(f'{_T}/plaster/m_worn_brushed_plaster', 't_worn_brushed_plaster', 'b', 'nm', 'r', 'ao')
+_brick = _maps(f'{_T}/brick/brick_painted', 't_brick_plain', 'nm', 'r', 'ao')
+TEXTURES['hw_brick'] = {'baseColorMap': f'{_T}/brick/brick_plain/t_brick_plain_b.color.png', **_brick}
+TEXTURES['hw_silicate'] = {'baseColorMap': f'{_T}/brick/brick_painted/t_brick_painted_b.color.png', **_brick}
+TEXTURES['hw_siding'] = {'baseColorMap': f'{_T}/wood/eca_bld_woodcladding_new/eca_bld_woodcladding_new_d.png',
+                         'normalMap': f'{_T}/wood/eca_bld_woodcladding_new/eca_bld_woodcladding_new_n.png'}
+TEXTURES['hw_wood'] = _maps(f'{_T}/wood/ut_bld_wood_old', 't_ut_bld_wood_old', 'b', 'nm', 'r', 'ao')
+TEXTURES['win_pvc'] = _maps('/assets/materials/trim/plastic/windows_doors', 't_windows_doors', 'b', 'nm', 'r', 'ao')
+TEXTURES['win_wood'] = _maps('/assets/materials/atlas/t_italy_bld_windows', 't_italy_bld_windows', 'b', 'nm', 'r')
+TEXTURES['door_house'] = {'baseColorMap': '/assets/materials/atlas/m_door/doors1_d.png',
+                          'normalMap': '/assets/materials/atlas/m_door/doors1_n.png'}
+HOUSE_WALLS = {   # kind: (texture, flat colour for a game without the maps)
+    'hw_white': ('hw_stucco', [.86, .85, .82]), 'hw_yellow': ('hw_stucco', [.78, .66, .38]),
+    'hw_blue': ('hw_stucco', [.55, .64, .72]), 'hw_green': ('hw_stucco', [.6, .7, .55]),
+    'hw_pink': ('hw_stucco', [.78, .64, .6]), 'hw_aged': ('hw_aged', [.6, .57, .48]),
+    'hw_brick_red': ('hw_brick', [.55, .32, .26]), 'hw_silicate': ('hw_silicate', [.82, .8, .76]),
+    'hw_siding': ('hw_siding', [.72, .68, .58]), 'hw_wood': ('hw_wood', [.36, .3, .24]),
+}
+for _k, (_tex, _rgb) in HOUSE_WALLS.items():
+    KINDS[_k] = (_tex, [*_rgb, 1], 'ROCK', 3.0, 'wall')
+KINDS['win_pvc'] = ('win_pvc', [.22, .26, .3, 1], 'GLASS', 1.0, 'wall')
+KINDS['win_wood'] = ('win_wood', [.3, .22, .15, 1], 'GLASS', 1.0, 'wall')
+KINDS['door_house'] = ('door_house', [.32, .24, .18, 1], 'WOOD', 1.0, 'wall')
+KINDS['plinth_brown'] = ('plinth', [.36, .22, .18, 1], 'ROCK', 3.0, 'wall')
+# flat colours in a game without the maps: every house kind keeps its look's colour
+BUILDING_FALLBACK.update({k: None for k in (*HOUSE_WALLS, 'win_pvc', 'win_wood', 'door_house')})
+BUILDING_FALLBACK['plinth_brown'] = 'concrete'
+FALLBACK.update(BUILDING_FALLBACK)
 # footpaths and fences (decoration, no collision)
 KINDS['footway'] = ('paving', [.50, .48, .46, 1], 'ASPHALT', 2.0, 'plan')
 KINDS['footway_asphalt'] = ('asphalt', [.20, .21, .22, 1], 'ASPHALT', 6.0, 'plan')
@@ -175,6 +276,40 @@ KINDS['park'] = ('grass', [.30, .40, .22, 1], 'GRASS', _photo.GROUND_M, 'plan')
 
 # baseColorFactor per kind: the game's grass is dry West Coast grass; Kyiv's is green
 TINT = {'ground': [.55, .85, .42, 1], 'forest': [.36, .58, .28, 1], 'paved': [.62, .62, .60, 1]}
+# Lines as East Coast paints them. The edge grass tint was set from linear means but acts as an
+# sRGB factor (_factor below); in game it sits at .9 of the verge, so it stays. The dirt edge is
+# twice as bright as the asphalt: a little darker and less yellow reads as a gravel shoulder; a
+# blue-grey tint made a second, darker asphalt (decals-trunk-05).
+TINT.update({'mark': [.99, .99, .99, 1], 'mark_yellow': [.94, .79, .27, 1],
+             'edge_grass': [.84, 1, .73, 1], 'edge_dirt': [.74, .72, .70, 1]})
+def _factor(srgb, mean):
+    """baseColorFactor that takes a map whose linear mean is `mean` to the colour `srgb` (0-255).
+    The game reads the factor as an sRGB colour: it multiplies by about factor ** 2.2. A plinth
+    with a .26 factor came out at a twentieth of the wall above it in the same shade, where .26
+    of the map's albedo would have been a third (bld-hatne-04)."""
+    def linear(c):
+        c /= 255
+        return c / 12.92 if c <= .04045 else ((c + .055) / 1.055) ** 2.4
+
+    def encode(m):
+        return 12.92 * m if m <= .0031308 else 1.055 * m ** (1 / 2.4) - .055
+    return [round(min(1., encode(min(1., linear(c) / mean))), 3) for c in srgb] + [1]
+
+
+# Building colours (sRGB) over the maps' linear means: aged asbestos slate (158 158 150), metal
+# tile in RAL 3009 (112 38 32), 8017 (74 52 46) and 6005-ish (32 72 54), pale cladding (176 182
+# 188), a grey plinth (130 127 120), brown-grey stained boards (150 140 125).
+TINT.update({'roof_sheet': _factor((158, 158, 150), .677), 'roof_mtile_red': _factor((112, 38, 32), .355),
+             'roof_mtile_brown': _factor((74, 52, 46), .355), 'roof_mtile_green': _factor((32, 72, 54), .355),
+             'clad_metal': _factor((176, 182, 188), .677), 'plinth': _factor((130, 127, 120), .862),
+             'gable': _factor((150, 140, 125), .641)})
+# House walls: lime-washed white, ochre, the blue and green of village houses, a pink; aged
+# plaster as it is; red brick as it is; silicate brick off-white; beige siding; old dark wood as
+# it is. Plinths grey or painted red-brown.
+TINT.update({'hw_white': _factor((236, 234, 226), .885), 'hw_yellow': _factor((226, 196, 124), .885),
+             'hw_blue': _factor((170, 196, 216), .885), 'hw_green': _factor((182, 206, 168), .885),
+             'hw_pink': _factor((226, 192, 182), .885), 'hw_silicate': _factor((222, 218, 206), .948),
+             'hw_siding': _factor((188, 180, 156), .486), 'plinth_brown': _factor((112, 68, 56), .862)})
 
 # Stock PBR textures: referenced in the installed game, never copied into the mod.
 for _name, _path in {
@@ -352,8 +487,14 @@ def material(kind):
         stage['roughnessFactor'] = .96
     elif kind in ('road_gravel', 'road_dirt', 'road_broken', 'road_track'):
         stage['roughnessFactor'] = .98
-    return {'name': 'e2rf_' + kind, 'mapTo': 'e2rf_' + kind, 'class': 'Material', 'version': 1.5,
-            'groundType': ground, 'Stages': [stage, {}, {}, {}], 'doubleSided': False, **EXTRA.get(kind, {})}
+    out = {'name': 'e2rf_' + kind, 'mapTo': 'e2rf_' + kind, 'class': 'Material', 'version': 1.5,
+           'groundType': ground, 'Stages': [stage, {}, {}, {}], 'doubleSided': False, **EXTRA.get(kind, {})}
+    if kind in FALLBACK:
+        old = FALLBACK[kind]
+        out['e2rFallback'] = {'name': 'e2rf_' + kind, 'mapTo': 'e2rf_' + kind, 'class': 'Material', 'version': 1.5,
+                              'groundType': ground, 'doubleSided': EXTRA.get(kind, {}).get('doubleSided', False),
+                              'Stages': [dict(TEXTURES[old]) if old else {'diffuseColor': colour}, {}, {}, {}]}
+    return out
 
 
 def dds(obj):
@@ -374,6 +515,20 @@ MATERIALS = dds({'e2rf_' + k: material(k) for k in KINDS})
 import json as _json
 from pathlib import Path as _Path
 MATERIALS.update(_json.loads((_Path(__file__).with_name('fast_tree_materials.json')).read_text(encoding='utf8')))
+# Poplar leaves (Automation Test Track's poplars, generator.lua VEG.poplar) as that level defines
+# them but summer green: its leaves are autumn yellow (sRGB 154 132 58) and stood out in every
+# village (veg-hatne-a). The autumn pack gives the level's own colour back, winter drops them.
+# Their billboards (the level's baked imposter) stay yellow: the generator plants few poplars.
+_POPLAR = '/assets/materials/tree/poplar'
+POPLAR_LEAVES = {}
+for _name, _folder, _stem in (('m_poplar_leaves_01', 't_poplar_leaves_01', 't_poplar_leaves'),
+                              ('m_poplar_leaves_02', 't_poplar_leaves_02', 't_poplar_leaves_02')):
+    POPLAR_LEAVES[_name] = {
+        'name': _name, 'mapTo': _name, 'class': 'Material', 'version': 1.5, 'alphaTest': True, 'alphaRef': 70,
+        'Stages': [{**_maps(f'{_POPLAR}/{_folder}', _stem, 'b', 'nm', 'r', 'ao', 'o'),
+                    'baseColorFactor': [.5, .8, .74, 1]}, {}, {}, {}]}
+POPLAR_AUTUMN = '1 0.962 0.872 1'
+MATERIALS.update(POPLAR_LEAVES)
 
 INDUSTRIAL = {'industrial', 'warehouse', 'factory', 'garages', 'garage', 'shed', 'hangar', 'service', 'storage_tank'}
 OFFICE = {'office', 'commercial', 'retail', 'supermarket', 'mall', 'hotel'}

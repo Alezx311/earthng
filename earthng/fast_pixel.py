@@ -155,6 +155,7 @@ def build(root):
 
 
 def fields(base):
+    import fast_art
     import fast_packs
     out = {}
     for kind in style.KINDS:
@@ -164,11 +165,23 @@ def fields(base):
         texture = {'meadow': 'ground', 'orchard': 'park', 'scrub': 'forest', 'heath': 'ground',
                    'farmland': 'trodden', 'vineyard': 'trodden', 'bare_rock': 'paved',
                    'scree': 'trodden', 'beach': 'trodden', 'wetland': 'forest',
-                   'glacier': 'mark', 'bare_ground': 'trodden', 'mark_yellow': 'mark'}.get(kind, kind)
+                   'glacier': 'mark', 'bare_ground': 'trodden', 'mark_yellow': 'mark',
+                   'edge_grass': 'ground', 'edge_dirt': 'trodden',
+                   'road_worn': 'road', 'road_gravel': 'trodden', 'road_dirt': 'trodden',
+                   'road_broken': 'trodden', 'road_track': 'trodden',
+                   'roof_sheet': 'roof_metal', 'roof_mtile_red': 'roof_tile', 'roof_mtile_brown': 'roof_tile',
+                   'roof_mtile_green': 'roof_tile', 'door_garage': 'wall_block', 'door_rust': 'wall_block',
+                   'clad_metal': 'wall_block', 'clad_tin': 'wall_block', 'plinth': 'paved',
+                   'gable': 'wall_plaster', 'hw_white': 'wall_stucco', 'hw_yellow': 'wall_plaster',
+                   'hw_blue': 'wall_pls_blue', 'hw_green': 'wall_pls_green', 'hw_pink': 'wall_pls_peach',
+                   'hw_aged': 'wall_plaster', 'hw_brick_red': 'wall_brick_red', 'hw_silicate': 'wall_brick_white',
+                   'hw_siding': 'wall_stucco', 'hw_wood': 'fence_wall', 'win_pvc': 'water', 'win_wood': 'water',
+                   'door_house': 'wall_block', 'plinth_brown': 'paved'}.get(kind, kind)
         f.update(baseColorMap=f'{base}/pixel/{texture}.color.png', baseColorFactor='1 1 1 1',
                  emissiveFactor='0 0 0', roughnessFactor=.9, metallicFactor=0)
         if kind == 'mark_yellow':
             f['baseColorFactor'] = '0.95 0.75 0.12 1'
+        fast_art.stylised_decal(kind, f)
         if kind == 'fence_mesh':
             f['opacityMap'] = f'{base}/real/chainlink_o.data.png'
         out['e2rf_' + kind] = f

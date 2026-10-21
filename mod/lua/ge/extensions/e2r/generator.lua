@@ -67,6 +67,117 @@ local ROCKS = {'/levels/east_coast_usa/art/shapes/rocks/eca_rock_small.dae',
   '/levels/east_coast_usa/art/shapes/rocks/eca_rock_small_3.dae',
   '/levels/east_coast_usa/art/shapes/rocks/eca_rock_small_4.dae',
   '/levels/east_coast_usa/art/shapes/rocks/eca_rock_medium_1.dae'}
+-- Vegetation sets, one table (build() is near LuaJIT's 60 upvalues). Heights are the models'
+-- own (first LOD): the forest variants stand 16-21 m and at a 1.55 scale made 30 m trees in
+-- every Kyiv yard; towns and gardens take the 8-12 m small variants instead.
+local ECA_GC = '/levels/east_coast_usa/art/shapes/groundcover/'
+local VEG = {
+  forest = TREES,
+  town = {ECA_TREE .. 'trees_oak/tree_oak_sml_a.dae', ECA_TREE .. 'trees_oak/tree_oak_sml_b.dae',
+    ECA_TREE .. 'trees_beech/tree_beech_small_b.dae', ECA_TREE .. 'trees_beech/tree_beech_small_c.dae',
+    ECA_TREE .. 'trees_aspen/tree_aspen_small_a.dae', ECA_TREE .. 'trees_aspen/tree_aspen_small_c.dae',
+    ECA_TREE .. 'trees_aspen/tree_aspen_large_a.dae', '/assets/meshes/foliage/trees_library/oak/tree_oak_sml_a.dae'},
+  -- old park trees: the town's and the broad crowns
+  park = {ECA_TREE .. 'trees_oak/tree_oak_sml_a.dae', ECA_TREE .. 'trees_oak/tree_oak_large_a.dae',
+    ECA_TREE .. 'trees_oak/tree_oak_large_b.dae', ECA_TREE .. 'trees_beech/tree_beech_small_d.dae',
+    ECA_TREE .. 'trees_beech/tree_beech_large_b.dae', ECA_TREE .. 'trees_aspen/tree_aspen_large_a.dae',
+    '/assets/meshes/foliage/trees_library/oak/tree_oak_sml_a.dae'},
+  -- village yards: small trees and big shrubs
+  garden = {ECA_TREE .. 'trees_oak/tree_oak_sml_a.dae', ECA_TREE .. 'trees_beech/tree_beech_small_c.dae',
+    ECA_TREE .. 'trees_aspen/tree_aspen_small_b.dae', ECA_TREE .. 'ECA_coast_bush/generibush.dae',
+    ECA_TREE .. 'trees_oak/tree_oak_bush_c.dae', '/assets/meshes/foliage/trees_library/oak/tree_oak_sml_a.dae'},
+  -- Kyiv's and the villages' poplars: one in ten crowns of a tree row
+  poplar = {'/levels/automation_test_track/art/shapes/trees/trees_poplar/s_poplar_large_01.dae',
+    '/levels/automation_test_track/art/shapes/trees/trees_poplar/s_poplar_large_02.dae',
+    '/levels/automation_test_track/art/shapes/trees/trees_poplar/s_poplar_large_03.dae'},
+  pine = CONIFERS,
+  -- spruce and fir of the mountains: the Douglas fir stands in
+  fir = {ECA_TREE .. 'trees_douglasfir/tree_douglasfir_large_a.dae', ECA_TREE .. 'trees_douglasfir/tree_douglasfir_large_c.dae',
+    ECA_TREE .. 'trees_douglasfir/tree_douglasfir_small_a.dae', ECA_TREE .. 'trees_douglasfir/tree_douglasfir_small_c.dae'},
+  bush = BUSHES,
+  grass = GRASS, grassMesh = GRASS_MESH, rocks = ROCKS, tree = TREE,
+  flowers = {ECA_GC .. 'Clover_closetop.dae', ECA_GC .. 'daisies_closetop.dae'},
+  ferns = {ECA_GC .. 'lush_ferns_01_a.dae', ECA_GC .. 'lush_ferns_01_b.dae', ECA_GC .. 'lush_ferns_02_a.dae',
+    ECA_GC .. 'lush_ferns_02_b.dae'},
+  -- the material files their shapes need (world.lua loads them; a game without one keeps going)
+  materials = {'/levels/east_coast_usa/art/shapes/trees/trees_douglasfir/main.materials.json',
+    '/levels/east_coast_usa/art/shapes/trees/ECA_coast_bush/main.materials.json',
+    '/levels/east_coast_usa/art/shapes/groundcover/main.materials.json',
+    '/levels/automation_test_track/art/shapes/trees/trees_poplar/main.materials.json'},
+}
+-- Gardens: from this built-up share of the ground round a point, fully at gardenFrom +
+-- gardenRamp (a village street reads .04-.14). Firs from firFrom m above the sea, fully at
+-- firFrom + firRamp: the Polissia and steppe pinewoods stay pine, the Carpathians turn fir.
+VEG.gardenFrom, VEG.gardenRamp, VEG.firFrom, VEG.firRamp = .004, .012, 450, 450
+-- Every shape the generator may place, once, for world.lua's load-time warm-up
+function VEG.warm(...)
+  local out, seen = {}, {}
+  local function add(shape) if shape and not seen[shape] then seen[shape] = true; out[#out + 1] = shape end end
+  for _, name in ipairs({'forest', 'town', 'park', 'garden', 'poplar', 'pine', 'fir', 'bush', 'flowers', 'ferns'}) do
+    for _, shape in ipairs(VEG.have(name)) do add(shape) end
+  end
+  add(VEG.grass[1]); add(VEG.grass[4]); add(VEG.rocks[1]); add(VEG.rocks[5])
+  for _, shape in ipairs({...}) do add(shape) end
+  return out
+end
+-- A set without the shapes this game lacks (FS absent, as outside the game: all of them); an
+-- empty set falls back to the forest's. Checked once per shape.
+VEG.seen = {}
+function VEG.have(name)
+  local set = VEG[name]
+  VEG.ok = VEG.ok or {}
+  if VEG.ok[name] then return VEG.ok[name] end
+  local out = {}
+  for _, shape in ipairs(set) do
+    local found = VEG.seen[shape]
+    if found == nil then
+      found = true
+      if FS then
+        local ok, exists = pcall(function() return FS:fileExists(shape) end)
+        found = ok and exists and true or false
+      end
+      VEG.seen[shape] = found
+    end
+    if found then out[#out + 1] = shape end
+  end
+  if #out == 0 and name ~= 'forest' then out = VEG.have('forest') end
+  VEG.ok[name] = out
+  return out
+end
+-- Road decals (fast_style 'strip' kinds) carry their own UVs: u across, v along the road.
+-- The worn line's paint is the middle two thirds of its texture, so a quad is markSpread
+-- times the painted width. An edge decal is edgeWidth wide with the asphalt side at u = 0;
+-- the road's edge sits at edgeAt, where both edge textures are past their ragged start (their
+-- alpha test passes from u ~ .2), and at most edgeIn metres of it lie over the asphalt. The
+-- curb is the top row of the trim sheet, two stones a repeat. One table: build() is near
+-- LuaJIT's 60 upvalues.
+local DECAL = {markRepeat = 6.4, markSpread = 1.45, markLift = .008,
+  edgeWidth = 2, edgeAt = .38, edgeIn = .6, edgeRepeat = 8, edgeLift = {.004, .03},
+  curbRepeat = 2, curbRow = {.005, .195},
+  dirtRoads = {motorway = true, trunk = true, primary = true, secondary = true, tertiary = true}}
+local BUILT_BIN = 50   -- m: bins of the built-up share (sidewalks, town groves)
+-- Every map of the edge materials (fast_style.TEXTURES). A game without one of them (an older
+-- BeamNG) gets the fallback materials from world.lua, and no edge strip is drawn.
+local EDGE_MAPS = {}
+for _, stem in ipairs({'vegetation/dirt_road_edge_grassy_d/t_road_edge_grass_02',
+    'asphalt/m_asphalt_dirt_edge/t_asphalt_dirt_edge_02'}) do
+  for _, suffix in ipairs({'_b.color', '_nm.normal', '_r.data', '_ao.data', '_o.data'}) do
+    EDGE_MAPS[#EDGE_MAPS + 1] = '/assets/materials/decalroad/' .. stem .. suffix .. '.dds'
+  end
+end
+local decalsFound
+local function decalsPresent()
+  if decalsFound == nil then
+    decalsFound = true
+    if FS then
+      for _, path in ipairs(EDGE_MAPS) do
+        local ok, found = pcall(function() return FS:fileExists(path) end)
+        if not (ok and found) then decalsFound = false; break end
+      end
+    end
+  end
+  return decalsFound
+end
 
 local function hash(value)
   local h = 17
@@ -709,14 +820,177 @@ local function walkSides(tags)
   return {[1] = true, [-1] = true}
 end
 
-local function wallMaterial(building, look)
+-- A segment's sidewalk sides. An untagged street gets walkSides' default only where the ground
+-- round its middle is built over: Ukraine's village streets and tertiary roads through the
+-- forest were paved 2 m either side (decals-rural-04, decals-village-04). Built share along
+-- the streets of the Ukraine pack (p10-p90): central Kyiv .21-.45, Obolon and Darnytsia main
+-- roads .04-.39, Boyarka .10-.22, Kyiv's private houses .09-.18, the villages Hatne and Bilychi
+-- .04-.14, fields 0. Main roads keep sidewalks from WALK_MAIN (a village's high street, a
+-- prospect between far-apart blocks); streets from WALK_STREET (a town, not a village).
+local WALK_MAIN, WALK_STREET = .04, .12
+local MAIN_ROADS = {primary = true, secondary = true, tertiary = true}
+local function walkAt(tags, sides, a, b, builtAt)
+  if tags.sidewalk ~= nil or not next(sides) then return sides end
+  local least = MAIN_ROADS[tags.highway] and WALK_MAIN or WALK_STREET
+  return builtAt((a[1] + b[1]) / 2, (a[2] + b[2]) / 2) >= least and sides or NONE
+end
+
+-- Building rules in one table (build() is near LuaJIT's 60 upvalues).
+local BLD = {floor = 3.1, plinth = .35, guessed = 9, door = {bay = 3.1, width = 2.5, height = 2.2, out = .02}}
+-- Outbuildings' heights, and the uses that are houses.
+BLD.low = {garage = 2.7, garages = 2.7, shed = 2.4, carport = 2.4, kiosk = 2.7, hut = 2.6, cabin = 3.1,
+  toilets = 2.7, greenhouse = 2.6, roof = 3.5, stable = 4.5, cowshed = 5, barn = 6, farm_auxiliary = 4}
+BLD.houses = {house = true, detached = true, semidetached_house = true, bungalow = true, terrace = true,
+  farm = true}
+BLD.shops = {industrial = true, warehouse = true, factory = true, commercial = true, retail = true, service = true}
+
+-- A building's height. The pack writes 3 floors x 3 m where OSM has no height or levels
+-- (build_country.py): every house of a village stood 9 m tall under a flat roof (bld-hatne-01,
+-- 377 of Hatne's 392 buildings). Such a guess is made again from the use and the footprint:
+-- outbuildings by use, small houses one floor (a quarter of the 140-260 m2 ones two), 260-450
+-- m2 two floors, small shops and workshops one tall floor; anything bigger keeps the pack's.
+function BLD.height(building, tags, area, h)
+  local height = building.height or number(tags.height, number(tags['building:levels'], 3) * 3)
+  if tags.height or tags['building:levels'] or height ~= BLD.guessed then return height end
+  local b = tags.building or 'yes'
+  if BLD.low[b] then return BLD.low[b] end
+  if b == 'yes' or b == 'residential' or BLD.houses[b] then
+    if area < 30 and not BLD.houses[b] then return 2.6 end
+    if area < 140 then return BLD.floor end
+    if area < 260 then return h % 4 == 0 and 2 * BLD.floor or BLD.floor end
+    if area < 450 then return 2 * BLD.floor end
+  elseif BLD.shops[b] and area < 300 then
+    return 4
+  end
+  return height
+end
+
+-- Post-Soviet roofs: asbestos-cement slate and painted metal tile, some profiled sheet and clay.
+-- By the look's block, or for a pack built before looks by its country (looks.py 'postsoviet').
+BLD.postsoviet = {ukraine = true, belarus = true, moldova = true, russia = true, georgia = true,
+  armenia = true, azerbaijan = true, kazakhstan = true, uzbekistan = true, kyrgyzstan = true,
+  tajikistan = true, turkmenistan = true, estonia = true, latvia = true, lithuania = true,
+  romania = true, bulgaria = true}
+BLD.mix = {'roof_sheet', 'roof_sheet', 'roof_sheet', 'roof_sheet', 'roof_sheet', 'roof_sheet', 'roof_sheet',
+  'roof_mtile_red', 'roof_mtile_red', 'roof_mtile_red', 'roof_mtile_red', 'roof_mtile_brown',
+  'roof_mtile_brown', 'roof_mtile_brown', 'roof_mtile_green', 'roof_mtile_green', 'roof_metal',
+  'roof_metal', 'roof_tile', 'roof_tile'}
+BLD.colour = {red = 'roof_mtile_red', darkred = 'roof_mtile_red', maroon = 'roof_mtile_red',
+  brown = 'roof_mtile_brown', saddlebrown = 'roof_mtile_brown', green = 'roof_mtile_green',
+  darkgreen = 'roof_mtile_green', grey = 'roof_sheet', gray = 'roof_sheet', lightgrey = 'roof_sheet',
+  white = 'roof_sheet', silver = 'roof_metal'}
+-- metres per texture repeat on a pitched roof (u along the ridge, v down the slope)
+BLD.repeats = {roof_tile = 2, roof_metal = 2, roof_sheet = 1.75, roof_mtile_red = 1.4,
+  roof_mtile_brown = 1.4, roof_mtile_green = 1.4}
+
+function BLD.roof(tags, h, postsoviet)
+  local m, colour = tags['roof:material'], BLD.colour[tostring(tags['roof:colour'] or ''):lower()]
+  if m == 'metal' or m == 'tin' or m == 'metal_sheet' then
+    return colour and colour:find('mtile', 1, true) and colour or 'roof_metal'
+  end
+  if m == 'roof_tiles' or m == 'tile' or m == 'clay' then return 'roof_tile' end
+  if m == 'eternit' or m == 'asbestos' or (m == 'slate' and postsoviet) then return 'roof_sheet' end
+  if colour then return colour end
+  if postsoviet then return BLD.mix[math.floor(h / 13) % #BLD.mix + 1] end
+  return 'roof_tile'
+end
+
+-- Houses of one or two floors: a plain wall from the game's tileable set, and the windows and a
+-- door as their own quads from its atlases (fast_style HOUSE_WALLS). The photo facades gave every
+-- house of a village the same plaster and the same window rhythm (bld-hatne-05).
+BLD.homes = {yes = true, house = true, detached = true, semidetached_house = true, bungalow = true,
+  terrace = true, residential = true, farm = true, cabin = true}
+-- by h % 100: lime-wash colours, aged plaster, red and silicate brick, siding, old wood
+BLD.walls = {{16, 'hw_white'}, {26, 'hw_yellow'}, {35, 'hw_blue'}, {42, 'hw_green'}, {46, 'hw_pink'},
+  {52, 'hw_aged'}, {68, 'hw_brick_red'}, {82, 'hw_silicate'}, {92, 'hw_siding'}, {100, 'hw_wood'}}
+BLD.wallColour = {white = 'hw_white', ivory = 'hw_white', cream = 'hw_aged', beige = 'hw_aged', yellow = 'hw_yellow',
+  orange = 'hw_yellow', blue = 'hw_blue', lightblue = 'hw_blue', green = 'hw_green', lightgreen = 'hw_green',
+  pink = 'hw_pink', red = 'hw_brick_red', brown = 'hw_brick_red', grey = 'hw_silicate', gray = 'hw_silicate'}
+-- metres per texture repeat on a house wall
+BLD.wallScale = {hw_brick_red = 1.6, hw_silicate = 1.6, hw_siding = 1.2, hw_wood = 2}
+-- atlas cells {u0, v0, u1, v1} (v0 at the image's top) and the opening's size in metres
+BLD.windows = {
+  win_pvc = {w = 1.15, h = 1.5, cells = {{.441, .002, .641, .264}, {.644, .002, .846, .264},
+    {.442, .27, .640, .545}, {.643, .27, .840, .545}}},
+  win_wood = {w = 1.0, h = 1.55, cells = {{.013, .025, .134, .215}, {.139, .025, .260, .214},
+    {.264, .025, .386, .214}, {.632, .116, .753, .306}, {.503, .307, .624, .496}, {.629, .308, .751, .5}}}}
+BLD.doors = {w = 1.0, h = 2.05, cells = {{0, 0, .25, .5}, {.252, 0, .498, .5}, {.752, 0, 1, .5}}}
+
+function BLD.house(tags, height, h)
+  if height >= 8 or not BLD.homes[tags.building or 'yes'] then return nil end
+  local m = tostring(tags['building:material'] or tags['facade:material'] or '')
+  if m == 'panel' or m == 'concrete' or m == 'reinforced_concrete' or m == 'glass' or m == 'metal' then return nil end
+  local colour = BLD.wallColour[(tostring(tags['building:colour'] or ''):lower():gsub('[%s_]', ''))]
+  if m == 'brick' then return (colour == 'hw_white' or colour == 'hw_silicate') and 'hw_silicate' or 'hw_brick_red' end
+  if m == 'wood' or m == 'timber_framing' or m == 'log' then return h % 3 == 0 and 'hw_siding' or 'hw_wood' end
+  if colour and (m == 'plaster' or m == 'stucco' or m == '') then return colour end
+  local plaster = m == 'plaster' or m == 'stucco'
+  for _, w in ipairs(BLD.walls) do
+    if h % 100 < w[1] then
+      if plaster and w[1] > 52 then return 'hw_white' end   -- tagged plaster: not brick or wood
+      return w[2]
+    end
+  end
+  return 'hw_white'
+end
+
+-- One house's openings: its window style and cell, door cell, plinth, gable and roof guesses.
+function BLD.dress(kind, h)
+  local old = kind == 'hw_wood' or kind == 'hw_aged' or kind == 'hw_blue' or kind == 'hw_green'
+  local win = (old and h % 10 < 8 or not old and h % 10 < 4) and 'win_wood' or 'win_pvc'
+  local cells = BLD.windows[win].cells
+  return {win = win, cell = cells[math.floor(h / 11) % #cells + 1],
+    door = BLD.doors.cells[math.floor(h / 17) % #BLD.doors.cells + 1],
+    plinth = (h % 20 < 7) and 'plinth_brown' or 'plinth',
+    gable = (kind == 'hw_siding' or kind == 'hw_wood' or math.floor(h / 3) % 3 ~= 0) and kind or 'gable',
+    shape = math.floor(h / 23) % 20 < 9 and 'hipped' or 'gabled', pitch = 26 + math.floor(h / 29) % 13}
+end
+
+-- Windows on every floor of an outer wall a -> b (inside on its left), evenly spaced, 3 cm out;
+-- the door in one slot of the door wall's ground floor.
+function BLD.openings(scene, a, b, length, base, height, dress, door)
+  if length < 2.4 then return end
+  local style = BLD.windows[dress.win]
+  local n = math.max(1, math.floor((length - .8) / 2.9))
+  local dx, dy = (b[1] - a[1]) / length, (b[2] - a[2]) / length
+  local ox, oy = dy * .03, -dx * .03
+  local function quad(kind, s, w, z0, z1, cell)
+    local s0, s1 = s - w / 2, s + w / 2
+    scene.polygon(kind, {{a[1] + dx * s0 + ox, a[2] + dy * s0 + oy, z0, cell[1], cell[4]},
+      {a[1] + dx * s1 + ox, a[2] + dy * s1 + oy, z0, cell[3], cell[4]},
+      {a[1] + dx * s1 + ox, a[2] + dy * s1 + oy, z1, cell[3], cell[2]},
+      {a[1] + dx * s0 + ox, a[2] + dy * s0 + oy, z1, cell[1], cell[2]}}, false)
+  end
+  local floors = math.max(1, math.floor((height + .3) / BLD.floor))
+  local doorSlot = door and (n == 1 and 1 or (dress.shape == 'hipped' and n or 1))
+  for f = 0, floors - 1 do
+    local z0 = base + f * BLD.floor + .85
+    if z0 + style.h > base + height - .15 then break end
+    for i = 1, n do
+      local s = (i - .5) * length / n
+      if f == 0 and i == doorSlot then
+        quad('door_house', s, BLD.doors.w, base + .1, base + .1 + BLD.doors.h, dress.door)
+      else
+        quad(dress.win, s, style.w, z0, z0 + style.h, dress.cell)
+      end
+    end
+  end
+end
+
+local function wallMaterial(building, look, height)
   local tags = building.tags or {}
   local h = hash(tostring(building.id or ''))
-  local height = building.height or number(tags.height, number(tags['building:levels'], 3) * 3)
+  height = height or building.height or number(tags.height, number(tags['building:levels'], 3) * 3)
   local material = tags['building:material'] or tags['facade:material']
   local b = tags.building
   look = type(look) == 'table' and look or NONE
-  if b == 'industrial' or b == 'warehouse' or b == 'garages' or b == 'garage' or b == 'shed' or b == 'factory' then return 'wall_block' end
+  -- garages: blank cement walls between the doors (the block facade has windows)
+  if b == 'garages' or b == 'garage' then return 'plinth' end
+  -- sheds in rusty corrugated tin, warehouses half clad in metal sheet
+  if b == 'shed' then return h % 2 == 0 and 'clad_tin' or 'wall_block' end
+  if b == 'industrial' or b == 'warehouse' or b == 'factory' then return h % 2 == 0 and 'clad_metal' or 'wall_block' end
+  local house = BLD.house(tags, height, h)
+  if house then return house end
   if material == 'glass' or b == 'office' or b == 'commercial' or b == 'retail' or b == 'hotel' or tags.office then
     local family = height > 20 and {'off_blue', 'off_green', 'off_grey', 'off_ribbon'} or {'off_ribbon', 'off_ribbon_dark'}
     return 'wall_' .. family[h % #family + 1]
@@ -729,6 +1003,7 @@ local function wallMaterial(building, look)
   if material == 'brick' then family = brick
   elseif material == 'panel' or material == 'concrete' or material == 'reinforced_concrete' then family = height >= 26 and h % 3 ~= 0 and loggia or panel
   elseif material == 'plaster' or material == 'stucco' then family = plaster
+  elseif height < 8 then family = h % 5 < 3 and plaster or brick   -- a house is not a panel block
   elseif look.buildings == 'panel' then family = height >= 26 and (h % 3 ~= 0 and loggia or panel) or panel
   elseif look.buildings == 'brick' then family = brick
   elseif look.buildings == 'plaster' then family = plaster
@@ -740,6 +1015,9 @@ end
 
 local function facadeScale(kind)
   if kind:find('_end$', 1) then return 6 end
+  if kind:find('door_', 1, true) == 1 or kind:find('clad_', 1, true) == 1 or kind == 'plinth' then return 3 end
+  if kind == 'gable' then return 1.5 end
+  if kind:find('hw_', 1, true) == 1 then return BLD.wallScale[kind] or 3 end
   if kind:find('wall_lgg_', 1, true) == 1 then return 33 end
   if kind:find('wall_pnl_', 1, true) == 1 then return 12 end
   if kind == 'wall_block' then return 3 end
@@ -765,38 +1043,66 @@ local function footprintFrame(ring)
   return {ax = ax, ay = ay, bx = bx, by = by, u0 = u0, v0 = v0, u1 = u1, v1 = v1, area = math.abs(area) / 2}
 end
 
-local function pitchedRoof(scene, rings, tags, top, base, kind, height)
+-- guess: a house's dress (BLD.dress) for its roof shape, pitch and gables where OSM has none
+local function pitchedRoof(scene, rings, tags, top, base, kind, height, material, guess)
   if #rings ~= 1 then return false end -- Courtyards always keep their open flat-roof footprint.
   local ring = cleanRing(rings[1])
   if #ring < 3 then return false end
   local frame = footprintFrame(ring)
   local length, width = frame.u1 - frame.u0, frame.v1 - frame.v0
-  local shape, house = tags['roof:shape'], tags.building == 'house' or tags.building == 'detached' or tags.building == 'bungalow'
-  if shape and shape ~= 'gabled' and shape ~= 'hipped' and shape ~= 'pyramidal' and shape ~= 'half-hipped' then return false end
-  if not shape and not (house or (height < 8 and frame.area < 260)) then return false end
+  local explicit, house = tags['roof:shape'], tags.building == 'house' or tags.building == 'detached' or tags.building == 'bungalow'
+  if explicit and explicit ~= 'gabled' and explicit ~= 'hipped' and explicit ~= 'pyramidal' and explicit ~= 'half-hipped' then return false end
+  if not explicit and not (house or (height < 8 and frame.area < 260)) then return false end
   if width < 3 or length < 3 or frame.area / math.max(EPS, length * width) < .82 then return false end
-  if not shape and width > 18 then return false end
-  local rise = math.max(.5, math.min(10, number(tags['roof:height'], math.min(6, width / 2 * math.tan(math.rad(house and 35 or 28))))))
-  local function point(u, v, z) return {u * frame.ax + v * frame.bx, u * frame.ay + v * frame.by, z} end
-  local a, b, c, d = point(frame.u0, frame.v0, top), point(frame.u1, frame.v0, top),
-                         point(frame.u1, frame.v1, top), point(frame.u0, frame.v1, top)
+  if not explicit and width > 18 then return false end
+  guess = guess or NONE
+  local shape = explicit or guess.shape
+  local pitch = guess.pitch or (house and 35 or 28)
+  local rise = math.max(.5, math.min(10, number(tags['roof:height'], math.min(6, width / 2 * math.tan(math.rad(pitch))))))
+  material = material or 'roof_tile'
+  -- Eaves: the roof runs on past the walls (a box under a lid read as a toy, bld-hatne-01) and
+  -- drops by the pitch; the material is double sided, so the overhang shows from below.
+  local slope = rise / math.max(EPS, width / 2)
+  local eave = width < 5 and .25 or .5
+  local mid = (frame.v0 + frame.v1) / 2
+  local u0, u1, v0, v1 = frame.u0 - eave, frame.u1 + eave, frame.v0 - eave, frame.v1 + eave
+  local low = top - eave * slope
+  -- UVs: u along the ridge, v down the slope from the ridge, BLD.repeats metres a repeat
+  local scale = BLD.repeats[material] or 2
+  local stretch = math.sqrt(1 + slope * slope)
+  local function point(u, v, z, along, down)
+    return {u * frame.ax + v * frame.bx, u * frame.ay + v * frame.by, z, along / scale, down * stretch / scale}
+  end
   local inset = (shape == 'hipped' or shape == 'half-hipped' or shape == 'pyramidal') and math.min(width / 2, length / 2) or 0
   if shape == 'pyramidal' then inset = length / 2 end
-  local r0, r1 = point(frame.u0 + inset, (frame.v0 + frame.v1) / 2, top + rise),
-                   point(frame.u1 - inset, (frame.v0 + frame.v1) / 2, top + rise)
-  local material = (tags['roof:material'] == 'metal' or tags['roof:material'] == 'tin') and 'roof_metal' or 'roof_tile'
+  -- the two long slopes
+  local a, b = point(u0, v0, low, 0, mid - v0), point(u1, v0, low, u1 - u0, mid - v0)
+  local c, d = point(u1, v1, low, u1 - u0, v1 - mid), point(u0, v1, low, 0, v1 - mid)
+  local r0 = point(frame.u0 + inset - (inset > 0 and 0 or eave), mid, top + rise, frame.u0 + inset - (inset > 0 and 0 or eave) - u0, 0)
+  local r1 = point(frame.u1 - inset + (inset > 0 and 0 or eave), mid, top + rise, frame.u1 - inset + (inset > 0 and 0 or eave) - u0, 0)
   scene.polygon(material, {a, b, r1, r0}, true)
   scene.polygon(material, {c, d, r0, r1}, true)
   if inset > 0 then
-    scene.polygon(material, {b, c, r1}, true)
-    scene.polygon(material, {d, a, r0}, true)
+    -- hip ends: u across the end, v down from the ridge's end
+    local function hip(p, q, r, ridgeU)
+      local function at(x, uu, vv) return {x[1], x[2], x[3], (vv - v0) / scale, math.abs(uu - ridgeU) * stretch / scale} end
+      return {at(p, p.u, p.v), at(q, q.u, q.v), at(r, ridgeU, mid)}
+    end
+    b.u, b.v, c.u, c.v, d.u, d.v, a.u, a.v = u1, v0, u1, v1, u0, v1, u0, v0
+    scene.polygon(material, hip(b, c, r1, frame.u1 - inset), true)
+    scene.polygon(material, hip(d, a, r0, frame.u0 + inset), true)
   else
-    local scale = facadeScale(kind)
+    a, b = point(frame.u0, frame.v0, top, 0, 0), point(frame.u1, frame.v0, top, 0, 0)
+    c, d = point(frame.u1, frame.v1, top, 0, 0), point(frame.u0, frame.v1, top, 0, 0)
+    r0, r1 = point(frame.u0, mid, top + rise, 0, 0), point(frame.u1, mid, top + rise, 0, 0)
+    -- a facade's gables are boards: its windows ran on into the gable askew (bld-hatne-03)
+    local gable = guess.gable or (kind:find('wall_', 1, true) == 1 and 'gable' or kind)
+    local scale = facadeScale(gable)
     for _, face in ipairs({{b, c, r1}, {d, a, r0}}) do
       face[1] = {face[1][1], face[1][2], top, 0, (top - base) / scale}
       face[2] = {face[2][1], face[2][2], top, width / scale, (top - base) / scale}
       face[3] = {face[3][1], face[3][2], top + rise, width / (2 * scale), (top + rise - base) / scale}
-      scene.polygon(kind, face, false)
+      scene.polygon(gable, face, false)
     end
   end
   return true
@@ -894,6 +1200,7 @@ local function build(cells, i, j, options)
   -- mark(name): the stage that just ended (the road quality bench times them)
   local mark = options.mark or function() end
   local look = type(options.look) == 'table' and options.look or NONE
+  local postsoviet = look.block == 'postsoviet' or BLD.postsoviet[tostring(options.country or '')] or false
   local function lookOf(slot)
     local value = look[slot]
     return type(value) == 'string' and value or nil
@@ -1208,6 +1515,61 @@ local function build(cells, i, j, options)
     end
   end
   local stripReach = 3 + tune.sidewalk + tune.shoulder + step
+  -- Built-up share of the ground: building footprint in 50 m bins, read over the 3 x 3 bins
+  -- round a point and blended between bin centres, so there is no step at a bin or tile edge.
+  -- The cells carry their neighbours' buildings 100 m deep: bins up to 4 past the tile give a
+  -- point within stripReach of it the same share from either tile beside it.
+  local builtBins, builtShare, lowBins, lowShare = {}, {}, {}, {}
+  for index, building in ipairs(lists.buildings) do
+    local b = ringBounds(building.rings)
+    if boundsTouch(b, rect, 4 * BUILT_BIN) then
+      local footprint = 0
+      for k, ring in ipairs(building.rings) do footprint = footprint + (k == 1 and 1 or -1) * math.abs(area2(ring)) / 2 end
+      -- a house or a shed (one or two floors, small): its plot is a garden, not a town yard
+      local tags = building.tags or NONE
+      local levels = number(tags['building:levels'], 0)
+      local low = footprint < 400 and levels <= 2 and (number(tags.height, 0) < 8)
+        and (BLD.homes[tags.building or 'yes'] or BLD.low[tags.building or ''] ~= nil)
+      local w, h = math.max(b[3] - b[1], EPS), math.max(b[4] - b[2], EPS)
+      for gx = floor(b[1] / BUILT_BIN), floor(b[3] / BUILT_BIN) do
+        local ox = math.min(b[3], (gx + 1) * BUILT_BIN) - math.max(b[1], gx * BUILT_BIN)
+        for gy = floor(b[2] / BUILT_BIN), floor(b[4] / BUILT_BIN) do
+          local oy = math.min(b[4], (gy + 1) * BUILT_BIN) - math.max(b[2], gy * BUILT_BIN)
+          local id = (gx + 32768) * 65536 + gy + 32768
+          local part = footprint * math.max(0, math.min(1, ox / w)) * math.max(0, math.min(1, oy / h))
+          builtBins[id] = (builtBins[id] or 0) + part
+          if low then lowBins[id] = (lowBins[id] or 0) + part end
+        end
+      end
+    end
+    if index % 256 == 0 then pause() end
+  end
+  local function binShare(gx, gy, bins, cache)
+    bins, cache = bins or builtBins, cache or builtShare
+    local id = (gx + 32768) * 65536 + gy + 32768
+    local share = cache[id]
+    if not share then
+      share = 0
+      for dx = -1, 1 do
+        for dy = -1, 1 do share = share + (bins[(gx + dx + 32768) * 65536 + gy + dy + 32768] or 0) end
+      end
+      share = share / (9 * BUILT_BIN * BUILT_BIN)
+      cache[id] = share
+    end
+    return share
+  end
+  -- built-up share round (x, y); low: only the houses' and sheds'
+  local function builtAt(x, y, low)
+    local bins, cache = low and lowBins or builtBins, low and lowShare or builtShare
+    local fx, fy = x / BUILT_BIN - .5, y / BUILT_BIN - .5
+    local gx, gy = floor(fx), floor(fy)
+    local tx, ty = fx - gx, fy - gy
+    local s00, s10 = binShare(gx, gy, bins, cache), binShare(gx + 1, gy, bins, cache)
+    local s01, s11 = binShare(gx, gy + 1, bins, cache), binShare(gx + 1, gy + 1, bins, cache)
+    local a = s00 + (s10 - s00) * tx
+    local b = s01 + (s11 - s01) * tx
+    return a + (b - a) * ty
+  end
   -- Junctions from the road graph itself. A source road is one graph segment, its two ends
   -- the nodes road.nodes names, so a node's mouths are the road ends sharing its id. The pack
   -- builder's rules (fast_sources.write_index, fast.junction_star): a node of two or more mouths
@@ -1318,8 +1680,16 @@ local function build(cells, i, j, options)
       local surfaceRoad = tags.bridge ~= 'yes' and tags.tunnel ~= 'yes' and tags.layer ~= '-1'
       local major = tags.highway == 'motorway' or tags.highway == 'trunk' or tags.highway == 'primary'
       local material = grade == 0 and (major and majorRoad or minorRoad) or ROAD_GRADE_MAT[grade]
-      local strip = {road = road, points = points, normals = normals, hw = hw, tags = tags,
-        surface = surfaceRoad, material = material, grade = grade, sides = walkSides(tags)}
+      local dist = {0}   -- along the strip, for the UVs of its curbs and edges
+      for k = 2, #points do
+        dist[k] = dist[k - 1] + math.sqrt((points[k][1] - points[k - 1][1]) ^ 2 + (points[k][2] - points[k - 1][2]) ^ 2)
+      end
+      -- The sides a segment has sidewalks on: the tags', or for an untagged street only where
+      -- it is built up (walkAt).
+      local sides, walk = walkSides(tags), {}
+      for k = 1, #points - 1 do walk[k] = walkAt(tags, sides, points[k], points[k + 1], builtAt) end
+      local strip = {road = road, points = points, normals = normals, hw = hw, tags = tags, dist = dist,
+        surface = surfaceRoad, material = material, grade = grade, sides = sides, walk = walk}
       strips[#strips + 1] = strip
       trimmed[road] = points
       -- A cut mouth's corridor back to its node, a centimetre under the junction fan: drawn only
@@ -1376,8 +1746,10 @@ local function build(cells, i, j, options)
   -- gets a sidewalk ring.
   local walkEnds = {}
   for _, strip in ipairs(strips) do
-    if next(strip.sides) then
-      for _, p in ipairs({strip.points[1], strip.points[#strip.points]}) do
+    local last = #strip.points
+    for _, e in ipairs({{strip.points[1], 1}, {strip.points[last], last - 1}}) do
+      if next(strip.walk[e[2]] or NONE) then
+        local p = e[1]
         local key = (floor(p[1]) + 65536) * 131072 + floor(p[2]) + 65536
         local list = walkEnds[key] or {}
         walkEnds[key], list[#list + 1] = list, p
@@ -1637,14 +2009,21 @@ local function build(cells, i, j, options)
       if boundsTouch(rect, box, hw + stripReach) then
         local near = function(entry) return entry.road == strip and math.abs(entry.index - k) <= 1 end
         for _, sign in ipairs({1, -1}) do
-          local walk = strip.sides[sign] and tune.sidewalk or 0
+          local walk = strip.walk[k][sign] and tune.sidewalk or 0
           local outer = hw + walk
           if walk > 0 then
             local curb = math.min(tune.curb, walk)
             local band = {edge(k, sign * hw), edge(k, sign * (hw + curb)), edge(k + 1, sign * (hw + curb)), edge(k + 1, sign * hw)}
             local paved = {edge(k, sign * (hw + curb)), edge(k, sign * outer), edge(k + 1, sign * outer), edge(k + 1, sign * (hw + curb))}
             if boundsTouch(rect, ringBounds({band, paved}), 0) then
-              if curb > 0 then emit(roads, 'curb', band, near, 'flat') end
+              if curb > 0 then
+                -- u along the curb from the strip's own distance, v across the trim row
+                local u0 = strip.dist[k] / DECAL.curbRepeat % 1
+                local u1 = u0 + (strip.dist[k + 1] - strip.dist[k]) / DECAL.curbRepeat
+                band[1][4], band[1][5], band[2][4], band[2][5] = u0, DECAL.curbRow[1], u0, DECAL.curbRow[2]
+                band[3][4], band[3][5], band[4][4], band[4][5] = u1, DECAL.curbRow[2], u1, DECAL.curbRow[1]
+                emit(roads, 'curb', band, near, 'flat')
+              end
               emit(roads, 'sidewalk', paved, near, 'flat')
             end
           end
@@ -1652,7 +2031,12 @@ local function build(cells, i, j, options)
             local inner = {edge(k, sign * outer, -tune.vergeSink), edge(k + 1, sign * outer, -tune.vergeSink)}
             local o1, o2 = edge(k, sign * (outer + tune.shoulder)), edge(k + 1, sign * (outer + tune.shoulder))
             local verge = {inner[1], o1, o2, inner[2]}
-            if boundsTouch(rect, ringBounds({verge}), 0) then strip.verges = strip.verges or {}; strip.verges[#strip.verges + 1] = {verge, own} end
+            -- a carriageway edge (no sidewalk) also gets an edge decal once the ground is final;
+            -- its part over the asphalt can reach a tile whose rect the verge misses
+            if boundsTouch(rect, ringBounds({verge}), walk == 0 and DECAL.edgeIn or 0) then
+              strip.verges = strip.verges or {}
+              strip.verges[#strip.verges + 1] = {verge, own, k = k, edge = walk == 0}
+            end
           end
         end
       end
@@ -1677,8 +2061,8 @@ local function build(cells, i, j, options)
         local a, b = points[k], points[k + 1]
         local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
         if boundsTouch(rect, ringBounds({{a, b}}), hw + tune.sidewalk + step + 1) then
-          local left = hw + (strip.sides[1] and tune.sidewalk or 0)
-          local right = hw + (strip.sides[-1] and tune.sidewalk or 0)
+          local left = hw + (strip.walk[k][1] and tune.sidewalk or 0)
+          local right = hw + (strip.walk[k][-1] and tune.sidewalk or 0)
           local na, nb = strip.normals[k], strip.normals[k + 1]
           local samples = math.max(1, math.ceil(length / 2))
           for s = 0, samples do
@@ -1829,7 +2213,39 @@ local function build(cells, i, j, options)
       end
     end
   end
+  -- Edge decals over a carriageway's edge where it has no sidewalk: grass creeping onto the
+  -- asphalt, or a dirt shoulder along main roads (and wherever the look's verge is bare).
+  -- Graded roads are dirt already. Decoration only: no collision (collision.lua QUIET).
+  local edgesOn = visualRoads and decalsPresent()
+  local function edgeKind(strip)
+    if not edgesOn or strip.grade > 1 or strip.tags.service == 'parking_aisle' then return nil end
+    if vergeChoice == 'dirt' or vergeChoice == 'gravel' or vergeChoice == 'dry' then return 'edge_dirt' end
+    return DECAL.dirtRoads[((strip.tags.highway or ''):gsub('_link$', ''))] and 'edge_dirt' or 'edge_grass'
+  end
+  -- The decal lies edgeLift over the road and over the verge as drawn: a point `metres` past
+  -- the road's edge (negative: over the asphalt) on the line from the verge's inner corner a to
+  -- its outer corner o, which is tune.shoulder away.
+  local function edgePoint(a, o, metres, lift, v)
+    local t = metres / tune.shoulder
+    local z = metres > 0 and a[3] + (o[3] - a[3]) * t or a[3] + tune.vergeSink
+    return {a[1] + (o[1] - a[1]) * t, a[2] + (o[2] - a[2]) * t, z + lift, DECAL.edgeAt + metres / DECAL.edgeWidth, v}
+  end
+  local function emitEdge(kind, strip, item)
+    local verge, k = item[1], item.k
+    local inside = math.min(DECAL.edgeIn, strip.hw * .25)
+    local out = math.min(DECAL.edgeWidth * (1 - DECAL.edgeAt), tune.shoulder)
+    local v0 = strip.dist[k] / DECAL.edgeRepeat % 1
+    local v1 = v0 + (strip.dist[k + 1] - strip.dist[k]) / DECAL.edgeRepeat
+    local a, o, b, p = verge[1], verge[2], verge[4], verge[3]   -- inner and outer corners at k, k + 1
+    local low, high = DECAL.edgeLift[1], DECAL.edgeLift[2]
+    emit(roadDecor, kind, {edgePoint(a, o, -inside, low, v0), edgePoint(a, o, 0, low, v0),
+      edgePoint(b, p, 0, low, v1), edgePoint(b, p, -inside, low, v1)}, item[2], 'flat')
+    emit(roadDecor, kind, {edgePoint(a, o, 0, low, v0), edgePoint(a, o, out, high, v0),
+      edgePoint(b, p, out, high, v1), edgePoint(b, p, 0, low, v1)}, item[2], true)
+  end
+  local edgeOps = 0
   for _, strip in ipairs(strips) do
+    local kind = edgeKind(strip)
     for _, item in ipairs(strip.verges or NONE) do
       local verge = item[1]
       if not distant or vergeWanted(ringBounds({verge})) then
@@ -1840,6 +2256,11 @@ local function build(cells, i, j, options)
         if tune.vergeCut > 0 then emit(groundMesh, vergeKind, verge, item[2], true)
         elseif visualRoads then roads.polygon(vergeKind, verge, true)
         elseif distant then scene.polygon(vergeKind, verge, true) end
+        if kind and item.edge then
+          emitEdge(kind, strip, item)
+          edgeOps = edgeOps + 1
+          if edgeOps % 64 == 0 then pause() end
+        end
       end
     end
   end
@@ -1871,11 +2292,16 @@ local function build(cells, i, j, options)
             local function span(mark, start, finish)
               if finish - start <= EPS then return end
               local p, q = lerp(a, b, (start - distance) / length), lerp(a, b, (finish - distance) / length)
-              local left, right = mark.offset - mark.width / 2, mark.offset + mark.width / 2
-              roadDecor.polygon(markKind, {{p[1] + nx * left, p[2] + ny * left, (p[3] or 0) + lift + .008},
-                {p[1] + nx * right, p[2] + ny * right, (p[3] or 0) + lift + .008},
-                {q[1] + nx * right, q[2] + ny * right, (q[3] or 0) + lift + .008},
-                {q[1] + nx * left, q[2] + ny * left, (q[3] or 0) + lift + .008}}, 'flat')
+              local half = mark.width * DECAL.markSpread / 2
+              local left, right = mark.offset - half, mark.offset + half
+              -- the worn paint runs on along the road: v from the source distance
+              local v0 = start / DECAL.markRepeat % 1
+              local v1 = v0 + (finish - start) / DECAL.markRepeat
+              local zp, zq = (p[3] or 0) + lift + DECAL.markLift, (q[3] or 0) + lift + DECAL.markLift
+              roadDecor.polygon(markKind, {{p[1] + nx * left, p[2] + ny * left, zp, 0, v0},
+                {p[1] + nx * right, p[2] + ny * right, zp, 1, v0},
+                {q[1] + nx * right, q[2] + ny * right, zq, 1, v1},
+                {q[1] + nx * left, q[2] + ny * left, zq, 0, v1}}, 'flat')
             end
             for _, mark in ipairs(marks) do
               if mark.dashed then
@@ -2100,6 +2526,7 @@ local function build(cells, i, j, options)
     local rings, tags = building.rings or {}, building.tags or {}
     local exterior = cleanRing(rings[1])
     if #exterior >= 3 and ringsTouch(rings, rect) then
+      local footprint, h = math.abs(area2(exterior)) / 2, hash(tostring(building.id or ''))
       -- Buildings can cross source-cell boundaries. Their full exported footprint Z
       -- gives both tiles the same datum even when the centroid's DEM cell is absent.
       local sourceLow, sourceSum, sourceCount = math.huge, 0, 0
@@ -2115,9 +2542,19 @@ local function build(cells, i, j, options)
       for _, p in ipairs(exterior) do low, cx, cy = math.min(low, ground(p[1], p[2])), cx + p[1], cy + p[2] end
       local base = sourceCount > 0 and sourceSum / sourceCount or ground(cx / #exterior, cy / #exterior)
       if sourceCount > 0 then low = sourceLow end
-      local height = math.max(2.5, math.min(850, building.height or number(tags.height, number(tags['building:levels'], 3) * 3)))
-      local bottom = (building.minHeight or number(tags.min_height, 0)) > 0 and base + (building.minHeight or number(tags.min_height, 0)) or low - .3
-      local top, kind = base + height, wallMaterial(building, look)
+      local height = math.max(2.2, math.min(850, BLD.height(building, tags, footprint, h)))
+      local lifted = (building.minHeight or number(tags.min_height, 0)) > 0
+      local bottom = lifted and base + (building.minHeight or number(tags.min_height, 0)) or low - .3
+      local top, kind = base + height, wallMaterial(building, look, height)
+      -- A plinth under low brick and plaster walls (the photo panels have their own); garage
+      -- doors along a row's long walls, or a single garage's short ones.
+      local plinth = not lifted and height <= 13 and (kind:find('wall_brk_', 1, true) == 1 or kind:find('wall_pls_', 1, true) == 1)
+      -- a house (BLD.house): its plinth colour, windows, door, gables and roof guesses
+      local dress = kind:find('hw_', 1, true) == 1 and BLD.dress(kind, h) or nil
+      if dress then plinth = not lifted and dress.plinth end
+      local plinthKind = type(plinth) == 'string' and plinth or 'plinth'
+      local use = tags.building
+      local doors = (use == 'garage' or use == 'garages') and (h % 3 == 0 and 'door_rust' or 'door_garage')
       for _, raw in ipairs(rings) do
         local ring, along = cleanRing(raw), 0
         local signed = 0
@@ -2125,21 +2562,60 @@ local function build(cells, i, j, options)
         -- Outer walls face away from CCW rings; courtyard walls face into clockwise rings.
         local reverse = (raw == rings[1] and signed < 0) or (raw ~= rings[1] and signed > 0)
         if reverse then local reversed = {}; for k = #ring, 1, -1 do reversed[#reversed + 1] = ring[k] end; ring = reversed end
+        -- a house's door goes on its longest outer wall
+        local doorWall = 0
+        if dress and raw == rings[1] and not options.far then
+          for k, a in ipairs(ring) do
+            local b = ring[k % #ring + 1]
+            doorWall = math.max(doorWall, (b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+          end
+        end
         for k, a in ipairs(ring) do
           local b = ring[k % #ring + 1]
           local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
           local wallKind = kind
           if length < 16 and (kind:find('wall_pnl_', 1, true) == 1 or kind:find('wall_lgg_', 1, true) == 1 or kind:find('wall_brk_', 1, true) == 1) then wallKind = kind .. '_end' end
+          local door = doors and ((use == 'garages' and length >= 8) or (use == 'garage' and length <= 4.5))
           local scale = facadeScale(wallKind)
-          scene.polygon(wallKind, {{a[1], a[2], bottom, along / scale, (bottom - base) / scale},
-            {b[1], b[2], bottom, (along + length) / scale, (bottom - base) / scale},
+          local seam = plinth and math.min(top, math.max(bottom, base + BLD.plinth)) or bottom
+          if seam > bottom then
+            scene.polygon(plinthKind, {{a[1], a[2], bottom, along / 3, (bottom - base) / 3},
+              {b[1], b[2], bottom, (along + length) / 3, (bottom - base) / 3},
+              {b[1], b[2], seam, (along + length) / 3, (seam - base) / 3},
+              {a[1], a[2], seam, along / 3, (seam - base) / 3}}, false)
+          end
+          scene.polygon(wallKind, {{a[1], a[2], seam, along / scale, (seam - base) / scale},
+            {b[1], b[2], seam, (along + length) / scale, (seam - base) / scale},
             {b[1], b[2], top, (along + length) / scale, height / scale},
             {a[1], a[2], top, along / scale, height / scale}}, false)
+          if door and length > EPS then
+            -- one door a bay, 2 cm out from the cement: a row of doors between piers, not one
+            -- shutter along the whole row (bld-garages-03)
+            local d = BLD.door
+            local bays = math.max(1, math.floor((length + .3) / d.bay))
+            local width = math.min(d.width, length / bays - .4)
+            local dx, dy = (b[1] - a[1]) / length, (b[2] - a[2]) / length
+            local ox, oy = dy * d.out, -dx * d.out        -- outward: the ring runs with the wall's inside on its left
+            local z0, z1 = math.min(seam, base), base + d.height
+            for n = 0, bays - 1 do
+              local s0 = (n + .5) * length / bays - width / 2
+              local s1 = s0 + width
+              scene.polygon(doors, {{a[1] + dx * s0 + ox, a[2] + dy * s0 + oy, z0, 0, (z0 - base) / d.height},
+                {a[1] + dx * s1 + ox, a[2] + dy * s1 + oy, z0, 1, (z0 - base) / d.height},
+                {a[1] + dx * s1 + ox, a[2] + dy * s1 + oy, z1, 1, 1},
+                {a[1] + dx * s0 + ox, a[2] + dy * s0 + oy, z1, 0, 1}}, false)
+            end
+          end
+          if doorWall > 0 then
+            local isDoor = length * length >= doorWall - 1e-6
+            BLD.openings(scene, a, b, length, base, height, dress, isDoor)
+            if isDoor then doorWall = math.huge end
+          end
           along = along + length
           if k % 32 == 0 then pause() end
         end
       end
-      if options.far or not pitchedRoof(scene, rings, tags, top, base, kind, height) then
+      if options.far or not pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet), dress) then
         for _, tri in ipairs(triangulate(rings, pause, rect)) do
           for _, p in ipairs(tri) do p[3] = top end
           scene.polygon('roof', tri, true)
@@ -2320,7 +2796,7 @@ local function build(cells, i, j, options)
             local t = math.max(0, math.min(1, ((p[1] - a[1]) * dx + (p[2] - a[2]) * dy) / len2))
             local qx, qy = a[1] + dx * t, a[2] + dy * t
             local d = (p[1] - qx) ^ 2 + (p[2] - qy) ^ 2
-            if d < best then best, hit = d, {strip = strip, x = qx, y = qy, dx = dx, dy = dy, len = math.sqrt(len2)} end
+            if d < best then best, hit = d, {strip = strip, k = k, x = qx, y = qy, dx = dx, dy = dy, len = math.sqrt(len2)} end
           end
         end
       end
@@ -2329,7 +2805,7 @@ local function build(cells, i, j, options)
     local nx, ny = -hit.dy / hit.len, hit.dx / hit.len
     local side = (p[1] - hit.x) * nx + (p[2] - hit.y) * ny >= 0 and 1 or -1
     if math.sqrt(best) < hit.strip.hw + .5 then side = -1 end  -- on the carriageway: its right side
-    local walk = hit.strip.sides[side] and tune.sidewalk or 0
+    local walk = hit.strip.walk[hit.k][side] and tune.sidewalk or 0
     local off = hit.strip.hw + walk + 1.4
     local x, y = hit.x + nx * side * off, hit.y + ny * side * off
     if x < rect[1] or x >= rect[3] or y < rect[2] or y >= rect[4] then return end
@@ -2343,62 +2819,23 @@ local function build(cells, i, j, options)
     if p and point.kind == 'stop' and wantStops then
       shelter(point, p)
     elseif p and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
-      local shape = point.kind == 'tree' and TREE or (point.kind == 'lamp' and wantLamps) and LAMP
+      local shape = point.kind == 'tree' and VEG.tree or (point.kind == 'lamp' and wantLamps) and LAMP
       if shape then static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), shape, p[1], p[2], ground(p[1], p[2]), 0) end
     end
     pause()
   end
   if decor then
-    -- Built-up share of the ground: building footprint in 50 m bins around the tile. The
-    -- cells carry their neighbours' buildings 100 m deep, which is what the share reads.
-    local BUILT_BIN, WALL = 50, 3
-    local blockers, builtBins = {}, {}
+    local WALL = 3
+    local blockers = {}
     for index, building in ipairs(lists.buildings) do
       local b = ringBounds(building.rings)
       if boundsTouch(b, rect, WALL) then blockers[#blockers + 1] = {rings = building.rings, bounds = b, wall = true} end
-      if boundsTouch(b, rect, 3 * BUILT_BIN) then
-        local footprint = 0
-        for k, ring in ipairs(building.rings) do footprint = footprint + (k == 1 and 1 or -1) * math.abs(area2(ring)) / 2 end
-        local w, h = math.max(b[3] - b[1], EPS), math.max(b[4] - b[2], EPS)
-        for gx = floor(b[1] / BUILT_BIN), floor(b[3] / BUILT_BIN) do
-          local ox = math.min(b[3], (gx + 1) * BUILT_BIN) - math.max(b[1], gx * BUILT_BIN)
-          for gy = floor(b[2] / BUILT_BIN), floor(b[4] / BUILT_BIN) do
-            local oy = math.min(b[4], (gy + 1) * BUILT_BIN) - math.max(b[2], gy * BUILT_BIN)
-            local id = (gx + 32768) * 65536 + gy + 32768
-            builtBins[id] = (builtBins[id] or 0) + footprint * math.max(0, math.min(1, ox / w)) * math.max(0, math.min(1, oy / h))
-          end
-        end
-      end
       if index % 256 == 0 then pause() end
     end
     for _, area in ipairs(lists.areas) do
       if (area.kind == 'water' or area.kind == 'paved') and ringsTouch(area.rings, rect) then
         blockers[#blockers + 1] = {rings = area.rings, bounds = ringBounds(area.rings), paved = area.kind == 'paved'}
       end
-    end
-    -- The share over the 3 x 3 bins round a bin, blended between bin centres: no step at a
-    -- bin or tile edge, and a point reads the same buildings from either tile beside it.
-    local builtShare = {}
-    local function binShare(gx, gy)
-      local id = (gx + 32768) * 65536 + gy + 32768
-      local share = builtShare[id]
-      if not share then
-        share = 0
-        for dx = -1, 1 do
-          for dy = -1, 1 do share = share + (builtBins[(gx + dx + 32768) * 65536 + gy + dy + 32768] or 0) end
-        end
-        share = share / (9 * BUILT_BIN * BUILT_BIN)
-        builtShare[id] = share
-      end
-      return share
-    end
-    local function builtAt(x, y)
-      local fx, fy = x / BUILT_BIN - .5, y / BUILT_BIN - .5
-      local gx, gy = floor(fx), floor(fy)
-      local tx, ty = fx - gx, fy - gy
-      local a = binShare(gx, gy) + (binShare(gx + 1, gy) - binShare(gx, gy)) * tx
-      local b = binShare(gx, gy + 1) + (binShare(gx + 1, gy + 1) - binShare(gx, gy + 1)) * tx
-      return a + (b - a) * ty
     end
     local blockedOps = 0
     -- wall: clearance from building walls (a crown), 0 for grass and stones. paved: a mapped
@@ -2431,12 +2868,29 @@ local function build(cells, i, j, options)
       if not value then value = default end
       return math.max(lo, math.min(hi, value))
     end
+    -- Smooth 0..1 noise with `size` m features (GROVE by default): groups of trees and the
+    -- lawns or fields between them.
+    local GROVE = 45
+    local function grove(x, y, size, seed)
+      size = size or GROVE
+      local fx, fy = x / size, y / size
+      local gx, gy = floor(fx), floor(fy)
+      local tx, ty = fx - gx, fy - gy
+      tx, ty = tx * tx * (3 - 2 * tx), ty * ty * (3 - 2 * ty)
+      seed = seed or 7
+      local v00, v10 = ihash(seed, gx, gy) % 1000 / 1000, ihash(seed, gx + 1, gy) % 1000 / 1000
+      local v01, v11 = ihash(seed, gx, gy + 1) % 1000 / 1000, ihash(seed, gx + 1, gy + 1) % 1000 / 1000
+      local a, b = v00 + (v10 - v00) * tx, v01 + (v11 - v01) * tx
+      return a + (b - a) * ty
+    end
     local forestSpacing = optNum('forestSpacing', 5, 4, 24)
     local groundSpacing = optNum('groundSpacing', 6, 4, 30)
     -- Town yards stay a loose lattice. A 8 m step turned every courtyard into forest
-    -- and the extra crowns were what dropped the frame from 60 to the twenties.
-    local spacingOf = {forest = forestSpacing, park = 12, residential = 14, orchard = 12, scrub = 12, heath = 16}
-    local townChance = {park = .7, residential = .4, orchard = .55}
+    -- and the extra crowns were what dropped the frame from 60 to the twenties. 21.10 the
+    -- user still found a tree on every free spot of the city: yards and parks are looser
+    -- again, and residential land plants only inside groves (VEG.grove below).
+    local spacingOf = {forest = forestSpacing, park = 14, residential = 16, orchard = 13, scrub = 12, heath = 16}
+    local townChance = {park = .5, orchard = .45}
     for _, area in ipairs(lists.areas) do
       local spacing = spacingOf[area.kind]
       if spacing and ringsTouch(area.rings, rect) then
@@ -2458,8 +2912,20 @@ local function build(cells, i, j, options)
                 -- A low floor left whole 65 m groves almost empty, which read as a broken forest.
                 -- Parks and yards keep a lower chance so the town reads as lawns with trees, not canopy.
                 local chance = kind == 'forest' and (.8 + .2 * cluster) or (townChance[kind] or 1)
+                if kind == 'residential' then chance = grove(x, y) > .45 and .6 or .1 end
+                -- A wood drawn over a village (Hatne's houses stand in an 11 ha forest polygon)
+                -- thins round the houses to a sixth, its crowns kept off them like yard trees.
+                local wooded = false
+                if kind == 'forest' then
+                  local built = builtAt(x, y, true)   -- houses only: a park wood among blocks stays a wood
+                  if built > VEG.gardenFrom then
+                    wooded = true
+                    chance = chance * (1 - .85 * math.min(1, (built - VEG.gardenFrom) / .02))
+                  end
+                end
                 if keyHash(4, position) % 1000 / 1000 < chance then
-                  candidates[#candidates + 1] = {x=x, y=y, hash=h, key=position, kind=kind, tags=owner.tags or NONE}
+                  candidates[#candidates + 1] = {x=x, y=y, hash=h, key=position, kind=kind, tags=owner.tags or NONE,
+                    wooded=wooded}
                 end
               end
             end
@@ -2467,18 +2933,6 @@ local function build(cells, i, j, options)
           pause()
         end
       end
-    end
-    -- Smooth 0..1 noise with GROVE m features: groups of town trees and the lawns between them.
-    local GROVE = 45
-    local function grove(x, y)
-      local fx, fy = x / GROVE, y / GROVE
-      local gx, gy = floor(fx), floor(fy)
-      local tx, ty = fx - gx, fy - gy
-      tx, ty = tx * tx * (3 - 2 * tx), ty * ty * (3 - 2 * ty)
-      local v00, v10 = ihash(7, gx, gy) % 1000 / 1000, ihash(7, gx + 1, gy) % 1000 / 1000
-      local v01, v11 = ihash(7, gx, gy + 1) % 1000 / 1000, ihash(7, gx + 1, gy + 1) % 1000 / 1000
-      local a, b = v00 + (v10 - v00) * tx, v01 + (v11 - v01) * tx
-      return a + (b - a) * ty
     end
     -- Untagged hills in the country pack are kind 'ground'. Without this lattice
     -- they stay a green sheet with a tree only where OSM drew a forest polygon.
@@ -2500,11 +2954,23 @@ local function build(cells, i, j, options)
           if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and not positions[position]
               and coverAt(x, y) == 'ground' then
             positions[position] = true
+            -- Open land far from buildings stays the wooded hill it was (the Carpathian slopes the
+            -- pack has no forest on went bare with fields between groves, veg-yaremche-a), with
+            -- clearings of 110 m noise over about a third. Within ~75 m of buildings (a village,
+            -- the private sector): sparse garden trees. Among a town's buildings: a few groves.
+            local built, houses = builtAt(x, y), builtAt(x, y, true)
             local cluster = ihash(3, floor(x / 65), floor(y / 65)) % 1000 / 1000
-            local chance, kind = .94 + .06 * cluster, 'ground'
-            local urban = math.max(0, math.min(1, (builtAt(x, y) - URBAN_FROM) / (URBAN_FULL - URBAN_FROM)))
+            local chance, kind = grove(x, y, 110, 9) > .32 and .94 + .06 * cluster or .06, 'ground'
+            local garden = math.max(0, math.min(1, (built - VEG.gardenFrom) / VEG.gardenRamp))
+            if garden > 0 then
+              chance = chance + ((grove(x, y) > .45 and .4 or .12) - chance) * garden
+              if garden >= .5 then kind = 'garden' end
+            end
+            -- a town only by the share of its bigger buildings: a private sector of houses at
+            -- 10 % built-up stayed bare under the town rule (veg-private-a)
+            local urban = math.max(0, math.min(1, (built - houses - URBAN_FROM) / (URBAN_FULL - URBAN_FROM)))
             if urban > 0 then
-              local town = grove(x, y) > .6 and .5 or .03
+              local town = grove(x, y) > .6 and .35 or .02
               chance = chance + (town - chance) * urban
               if urban >= .5 then kind = 'town' end
             end
@@ -2603,8 +3069,10 @@ local function build(cells, i, j, options)
               local z = ground(x, y)
               if (not sea or z > sea) and not blocked(x, y, .5, 2, true) then
                 local h = keyHash(8, position)
-                local set = needle and CONIFERS or TREES
-                static(string.format('tree_row_%d', position), set[h % #set + 1], x, y, z, h % 6283 / 1000, .8 + keyHash(6, position) % 400 / 1000)
+                -- a poplar now and then: their billboards are baked autumn yellow (the level's
+                -- imposter), and a village full of them looked like October from 150 m (veg-hatne-b)
+                local set = VEG.have(needle and 'pine' or (h % 10 < 1 and 'poplar' or 'town'))
+                static(string.format('tree_row_%d', position), set[math.floor(h / 7) % #set + 1], x, y, z, h % 6283 / 1000, .8 + keyHash(6, position) % 300 / 1000)
                 rowPlanted = rowPlanted + 1
               end
             end
@@ -2619,8 +3087,13 @@ local function build(cells, i, j, options)
       local elevation = rawHeight(x, y) - (options.seaLevel or 20)
       local _, _, nz = groundNormal(x, y)
       local bush = candidate.kind == 'scrub' or candidate.kind == 'heath'
+      local kind = candidate.kind
+      local settled = kind == 'town' or kind == 'residential' or kind == 'garden' or kind == 'park' or candidate.wooded
+      -- a crown's radius from walls (4.5 m) and roads (4 m) where people live: it stood 3 m off a wall.
+      -- A garden's small fruit-sized trees keep 3 m.
       if not (nz >= (bush and .64 or .72) and elevation < treeline + (bush and 250 or 0)
-          and (not sea or z > sea) and not blocked(x, y, nil, bush and 1.5 or WALL)) then return false end
+          and (not sea or z > sea) and not blocked(x, y, settled and (kind == 'garden' and 3 or 4) or nil,
+            bush and 1.5 or (settled and (kind == 'garden' and 3 or 4.5) or WALL))) then return false end
       local leaf = candidate.tags.leaf_type or candidate.tags.wood
       local needle = leaf == 'needleleaved' or leaf == 'coniferous'
       if leaf ~= 'broadleaved' and leaf ~= 'deciduous' and not needle and candidate.kind == 'forest' then
@@ -2633,17 +3106,31 @@ local function build(cells, i, j, options)
       if candidate.kind == 'ground' then
         needle = keyHash(5, candidate.key) % 1000 / 1000 < openPine
       end
-      local set = bush and BUSHES or needle and CONIFERS or TREES
-      local scale = .65 + keyHash(6, candidate.key) % 900 / 1000
+      -- Species and size by where it stands. Conifers: Scots pine in the lowlands, the fir
+      -- (spruce, fir) from VEG.firFrom m up. Forests .7-1.25 of the model; town, park and
+      -- garden trees are the small variants at .55-1.0 (the 1.55 cap made 30 m crowns).
+      local u = keyHash(6, candidate.key) % 1000 / 1000
+      local name, scale
+      if bush then name, scale = 'bush', .5 + u * .4
+      elseif needle then
+        local fir = math.max(0, math.min(.9, (elevation - VEG.firFrom) / VEG.firRamp))
+        name, scale = keyHash(10, candidate.key) % 1000 / 1000 < fir and 'fir' or 'pine', .7 + u * .55
+      elseif kind == 'park' then name, scale = 'park', .6 + u * .45
+      elseif kind == 'garden' or kind == 'orchard' then
+        if h % 100 < 25 then name, scale = 'town', .65 + u * .35 else name, scale = 'garden', .5 + u * .35 end
+      elseif settled then name, scale = 'town', .55 + u * .45
+      elseif candidate.wooded then name, scale = 'forest', .6 + u * .4
+      else name, scale = 'forest', .7 + u * .55 end
+      local set = VEG.have(name)
       -- Source and exact key: `..` prints 14 digits, and one lattice point's keys in two
       -- namespaces (forest and open ground at one spacing) printed the same name.
       static(string.format('tree_%s_%d', candidate.kind, candidate.key), set[h % #set + 1], x, y, z,
-        h % 6283 / 1000, bush and scale * .8 or scale)
+        h % 6283 / 1000, scale)
       return true
     end)
     -- Grass, forest floor and loose stone. Far keeps only a ranked handful of rocks:
     -- tufts do not read at the horizon, and the far list stays inside the near list.
-    local SEED = {grass = 11, bush = 12, rock = 13}
+    local SEED = {grass = 11, bush = 12, rock = 13, flower = 14, fern = 15}
     local function scatter(prefix, spacingOf, chanceOf, shapes, cap, farCap, scaleMin, scaleMax, minNz, elevationOf)
       local seed = SEED[prefix] or 19
       local limit = cap
@@ -2710,7 +3197,7 @@ local function build(cells, i, j, options)
         local scale
         if prefix == 'grass' then
           -- scaleMin/scaleMax are the blade height in metres, not a raw multiplier.
-          local mesh = GRASS_MESH[shape]
+          local mesh = VEG.grassMesh[shape]
           local span = mesh and mesh.span or 0.26
           local want = scaleMin + (keyHash(seed + 200, candidate.key) % 1000) / 1000 * (scaleMax - scaleMin)
           scale = want / span
@@ -2735,12 +3222,19 @@ local function build(cells, i, j, options)
     -- stolen by the woods, and so the TSStatic count stays off the frame time.
     scatter('grass', {meadow = 3.2, farmland = 8, heath = 7, park = 2.6, forest = 12, residential = 2.6, orchard = 5, vineyard = 9, ground = 8},
       {meadow = .94, farmland = .35, heath = .5, park = .98, forest = .2, residential = .98, orchard = .55, vineyard = .28, ground = .35},
-      GRASS, maxGrass, 0, 0.20, 0.30, .72, {forest = treeline + 80})
+      VEG.grass, maxGrass, 0, 0.20, 0.30, .72, {forest = treeline + 80})
     scatter('bush', {forest = 14, park = 18},
       {forest = .4, park = .22},
-      BUSHES, maxUnder, 0, .85, 1.3, .72, {forest = treeline + 80})
+      VEG.have('bush'), maxUnder, 0, .85, 1.3, .72, {forest = treeline + 80})
+    -- clover and daisy patches (2.3 and 1.5 m across) and ferns under the trees
+    local maxFlowers = math.floor(maxGrass * .12)
+    scatter('flower', {meadow = 7, park = 9, ground = 12, orchard = 10, residential = 11},
+      {meadow = .45, park = .3, ground = .2, orchard = .3, residential = .2},
+      VEG.have('flowers'), maxFlowers, 0, .8, 1.2, .8, {meadow = treeline})
+    scatter('fern', {forest = 9}, {forest = .3},
+      VEG.have('ferns'), math.floor(maxGrass * .1), 0, .7, 1.2, .72, {forest = treeline})
     scatter('rock', {bare_rock = 11, scree = 8}, {bare_rock = .72, scree = .84},
-      ROCKS, maxRocks, math.min(16, maxRocks), .55, 1.25, .45, nil)
+      VEG.rocks, maxRocks, math.min(16, maxRocks), .55, 1.25, .45, nil)
     -- Slopes too steep for trees still had no stones unless OSM tagged bare_rock or scree.
     -- Same sorted lattice near and far, so the far handful stays inside the near list.
     local function scatterSlopeRocks()
@@ -2775,8 +3269,8 @@ local function build(cells, i, j, options)
         local z = ground(x, y)
         if not ((not sea or z > sea) and not blocked(x, y)) then return false end
         local scale = .7 + (keyHash(23, candidate.key) % 1000) / 1000 * .7
-        local shape = ROCKS[h % #ROCKS + 1]
-        if h % 5 == 0 then shape = ROCKS[#ROCKS]; scale = scale * .8 end
+        local shape = VEG.rocks[h % #VEG.rocks + 1]
+        if h % 5 == 0 then shape = VEG.rocks[#VEG.rocks]; scale = scale * .8 end
         static('srock_' .. candidate.key, shape, x, y, z, h % 6283 / 1000, scale)
         return true
       end)
@@ -2822,9 +3316,7 @@ local function build(cells, i, j, options)
     return {version = 1, generator = 'earthng-lua-v1', source = options.regionId, layer = layer,
       tile = {i, j}, rect = rect, materials = options.materials or '/earthng/planet/materials.json',
       items = collector.items, mats = mats, triangles = total, packs = options.packs,
-      warmShapes = {TREES[1], TREES[2], TREES[3], TREES[4], TREES[5], TREES[6], TREES[7], TREES[8],
-        CONIFERS[1], CONIFERS[2], BUSHES[1], BUSHES[2], BUSHES[3], BUSHES[4],
-        GRASS[1], GRASS[4], ROCKS[1], ROCKS[5], LAMP, BUS_STOP}}
+      warmShapes = VEG.warm(LAMP, BUS_STOP)}
   end
   local roadManifest, sceneManifest = manifest(roads, 'road'), manifest(scene, 'scene')
   roadManifest.spawn = bestSpawn or {pos = {target[1], target[2], ground(target[1], target[2]) + ROAD_LIFT}, yaw = 0}
@@ -2842,4 +3334,5 @@ end
 M.build = build
 M.triangulate = triangulate
 M.clip = clip
+M.EDGE_MAPS = EDGE_MAPS
 return M

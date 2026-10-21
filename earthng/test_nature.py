@@ -144,7 +144,9 @@ class Runtime(unittest.TestCase):
         self.assertGreater(len(far), 40)
         self.assertLessEqual(len(far), 800)
         self.assertTrue(set(far).issubset(set(near)))
-        self.assertTrue(all('scots_pine' in s[0] for s in far))
+        # needleleaved at 1200 m: mostly the mountain fir, some pines (VEG.firFrom, firRamp)
+        self.assertTrue(all('scots_pine' in s[0] or 'douglasfir' in s[0] for s in far))
+        self.assertGreater(sum('douglasfir' in s[0] for s in far), len(far) / 2)
         self.assertTrue(all(not (100 < s[1][0] < 200 and 100 < s[1][1] < 200) for s in near))
         self.assertEqual(near, self.statics(self.g.build([copy.deepcopy(cell)])[1]))
 
@@ -216,12 +218,12 @@ class Runtime(unittest.TestCase):
         return [z for z in (self.g.surface_at(triangles, x, 250) for x in range(16, 485, 12)) if z is not None]
 
     def test_country_roads_gain_a_grade_without_moving_city_asphalt(self):
-        city = self.ribbon({'highway': 'residential'})
+        city = self.ribbon({'highway': 'residential', 'sidewalk': 'both'})   # a city street: no buildings here
         city_z = self.profile(city, 'e2rf_road')
         self.assertTrue(city_z)
         self.assertTrue(all(abs(z - 10.1) < 1e-4 for z in city_z))
         self.assertTrue(list(self.g.triangles(city, 'e2rf_sidewalk')))
-        worn = self.ribbon({'highway': 'residential', 'smoothness': 'bad'})
+        worn = self.ribbon({'highway': 'residential', 'smoothness': 'bad', 'sidewalk': 'both'})
         self.assertTrue(self.profile(worn, 'e2rf_road_worn'))
         self.assertFalse(list(self.g.triangles(worn, 'e2rf_road')))
         self.assertTrue(list(self.g.triangles(worn, 'e2rf_sidewalk')))
@@ -289,7 +291,8 @@ class Runtime(unittest.TestCase):
         self.assertTrue(set(far_rocks).issubset(set(rocks)))
 
     def crowns(self, items):
-        return [item for item in items if 'grass' not in item[0] and 'rock' not in item[0]]
+        # trees only: not grass, clover, daisies or ferns (all from the groundcover folders), nor stones
+        return [item for item in items if 'groundcover' not in item[0] and 'rock' not in item[0]]
 
     def test_open_ground_among_buildings_gets_groves_not_a_forest(self):
         # 30 x 30 m blocks every 60 m, past the tile too: a 25 % built-up share, like a city district

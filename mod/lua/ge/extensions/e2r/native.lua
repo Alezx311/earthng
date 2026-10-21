@@ -719,7 +719,7 @@ local function buildTile(key, wanted)
       far = wanted.far, horizon = wanted.horizon, farDecor = wanted.decor and true or false,
       farStep = 100, horizonStep = wanted.step or 100,
       latitude = r.data.geo and r.data.geo[4], nature = r.data.nature,
-      look = r.data.look,
+      look = r.data.look, country = r.country and r.country.id,
       seaLevel = finite(r.data.seaLevel) and r.data.seaLevel or nil,
       maxTrees = tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = tune.maxGrass,
       maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
