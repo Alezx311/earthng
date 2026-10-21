@@ -50,11 +50,11 @@ errors, open a terminal here and run:
 
 Uninstall: delete this extracted folder. Generated packs already installed in
 BeamNG remain in mods; remove their ZIPs there if no longer wanted.
-This experimental release was tested with BeamNG.drive 0.39.4 on Windows.
+This experimental release was tested with BeamNG.drive 0.39.4 and 0.40 on Windows.
 OSM coverage and performance vary. No multiplayer compatibility is claimed.
 
 Code: MIT (LICENSE). Data and assets: THIRD_PARTY_NOTICES.md.
-Release packaging assisted by OpenAI Codex.
+Release packaging assisted by OpenAI Codex and Claude Code.
 Source and issues: https://github.com/Alezx311/earthng
 """
 

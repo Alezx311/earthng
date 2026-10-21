@@ -1,5 +1,29 @@
 # Release verification
 
+## Planet 0.5.0 — 2026-10-21
+
+The `EarthNG` player release gets a new `earthng_planet.zip` (planet manifest 0.5.0,
+built from b88dc1a) and `EarthNG-MapBuilder.zip`. The update covers road decals,
+the buildings pass, vegetation density and species, and the BeamNG 0.40 Freeroam tile.
+Country packs are not rebuilt: `earthng_albania.zip` is byte-for-byte the 0.4.0 file.
+
+- Planet vs 0.4.0: the same 20,552 entries, 9 changed (five Lua modules, `materials.json`,
+  fast-art `packs.json`, the manifest and the level's `info.json`); art and basemap unchanged.
+  The spawn point is now "Country picker" with `preview.jpg`.
+- Apart from the manifest version, the planet matches the planet in the development
+  profile where the changes were checked in BeamNG 0.40.
+- Unit suite: **207 tests passed**.
+- Extracted Map Builder (folder with spaces): 50 files, as in 0.4.0. **53 builder, country,
+  map and tile tests passed**. The `country_fetch`, `build_country` and `osm_tiles_country`
+  CLIs answer `--help`, and `country_ui` imports.
+- Development A/B runs at Obolon, Kyiv, BeamNG 0.40, after the groundcover fix: 4 drives,
+  mean 16.3–17.9 ms, p99 51–53.5 ms, worst 73–122 ms. All functional checks passed. Three
+  of the four drives had one frame over 100 ms, so the performance gate failed in those runs.
+  These were development builds, not the release ZIP.
+- **Not done:** no separate smoke test of the release ZIPs in a disposable profile, because
+  the game was in use. BeamNG 0.39 was not re-run because its game files are gone; road
+  decals fall back to the previous look when stock maps are missing (`e2rFallback`).
+
 ## Player package update — 2026-10-19
 
 The `EarthNG` release now separates the native planet (86.5 MB), the Albania demo
