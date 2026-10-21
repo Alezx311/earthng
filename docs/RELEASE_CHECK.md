@@ -5,6 +5,7 @@
 The `EarthNG` player release gets a new `earthng_planet.zip` (planet manifest 0.5.0,
 built from b88dc1a) and `EarthNG-MapBuilder.zip`. The update covers road decals,
 the buildings pass, vegetation density and species, and the BeamNG 0.40 Freeroam tile.
+Map Builder also gets the optional online OSM street detail (#3).
 Country packs are not rebuilt: `earthng_albania.zip` is byte-for-byte the 0.4.0 file.
 
 - Planet vs 0.4.0: the same 20,552 entries, 9 changed (five Lua modules, `materials.json`,
@@ -12,8 +13,8 @@ Country packs are not rebuilt: `earthng_albania.zip` is byte-for-byte the 0.4.0 
   The spawn point is now "Country picker" with `preview.jpg`.
 - Apart from the manifest version, the planet matches the planet in the development
   profile where the changes were checked in BeamNG 0.40.
-- Unit suite: **207 tests passed**.
-- Extracted Map Builder (folder with spaces): 50 files, as in 0.4.0. **53 builder, country,
+- Unit suite, with #3 merged: **209 tests passed**.
+- Extracted Map Builder (folder with spaces): 50 files, as in 0.4.0. **55 builder, country,
   map and tile tests passed**. The `country_fetch`, `build_country` and `osm_tiles_country`
   CLIs answer `--help`, and `country_ui` imports.
 - Development A/B runs at Obolon, Kyiv, BeamNG 0.40, after the groundcover fix: 4 drives,
