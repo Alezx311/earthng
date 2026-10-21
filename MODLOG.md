@@ -26,6 +26,10 @@ road 2/E263 trunk, its ring road and roundabouts.
   and the road under a bridge end is no longer coupled to the bridge's approach (it dragged
   the trunk into an underpass: 43% grade). 33 crossings, 0 short; steepest ground road 5.7%.
   Lua draws deck edges, a soffit and parapets. Bridge/tunnel tests match `fast_profile.kind`.
+- Estonia (`country_fetch.py build --local-dem`, `earthng/est_dem.py`): the Land Board's 10 m
+  LiDAR DTM (19 sheets, no login) is burnt into the cached Terrarium z12 tiles, feathered over
+  500 m at the survey's edge; originals kept in `terrain/12.orig`, `--restore` puts them back.
+  Terrarium stood 3-10 m high under forest and towns (Jüri 61.7 -> 52.8 m).
 - Bench (`road_quality.py`, 78 tiles): curb on road 0.5 -> 0.4, ground on road 5.64 -> 5.42,
   holes 5.78 -> 5.56 m2/km; no metric worse. 231 unit tests.
 

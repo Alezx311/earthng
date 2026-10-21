@@ -109,6 +109,14 @@ Console equivalent (also useful for Linux/macOS with a local Python environment)
 .venv\Scripts\python.exe earthng/country_fetch.py build --place liechtenstein --mods "D:\BeamNG\current" --jobs 2
 ```
 
+For Estonia, `--local-dem` replaces the SRTM-based heights under the area with the
+Land Board's 10 m LiDAR terrain (bare ground, about 4 m lower under forest and towns,
+feathered into Terrarium over 500 m at the survey's edge). It needs `rasterio`
+(`requirements-nature.txt`); the sheets are cached in `out/world/cache/est`, the
+original tiles in `out/world/cache/terrain/12.orig`, and
+`.venv\Scripts\python.exe earthng/est_dem.py --cache out/world/cache --restore` puts
+them back.
+
 Data downloads/cache live under `data`, intermediates under `out`; neither is
 committed. The default build uses at most four worker processes. Linux/macOS
 country building has not been validated for this release.

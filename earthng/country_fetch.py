@@ -240,8 +240,9 @@ def fetch_dem(index, dem, emit=print, cancel=None):
 
 
 def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=None,
-                landing=None, by_id=None, emit=print, cancel=None, progress=None):
-    """Download sources if needed and write the country zip, then copy it into mods."""
+                landing=None, by_id=None, emit=print, cancel=None, progress=None, local_dem=False):
+    """Download sources if needed and write the country zip, then copy it into mods.
+    local_dem: burn the Estonian Land Board's 10 m LiDAR terrain into the elevation tiles."""
     import build_country
 
     slug_id = places.slug(place['id'])
@@ -286,6 +287,10 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     dem = Path(root) / 'out' / 'world' / 'cache'
     with stage('Elevation'):
         fetch_dem(index, dem, emit, cancel)
+        if local_dem:
+            import est_dem
+            import fast_dem
+            est_dem.refine(fast_dem.audit(index, dem), dem, emit)
     if cancel is not None and cancel.is_set():
         raise InterruptedError('build stopped')
     work = Path(root) / 'out' / 'world'
@@ -387,6 +392,8 @@ def main():
     parser.add_argument('--block', default='')
     parser.add_argument('--landing', type=float, nargs=2, metavar=('LAT', 'LON'))
     parser.add_argument('--refresh-index', action='store_true')
+    parser.add_argument('--local-dem', action='store_true',
+                        help='Estonia: refine the elevation with the Land Board 10 m LiDAR terrain')
     for slot in looks.SLOTS:
         parser.add_argument(f'--{slot}', default='')
     for key, _label, _default in looks.LAYERS:
@@ -424,7 +431,8 @@ def main():
     include = {key: not getattr(args, f'no_{key}') for key, _label, _default in looks.LAYERS}
     built = build_place(place, args.mods, look=looks.canonical(base), include=include,
                         box=args.box, jobs=args.jobs or None, by_id=index,
-                        landing=tuple(args.landing) if args.landing else None)
+                        landing=tuple(args.landing) if args.landing else None,
+                        local_dem=args.local_dem)
     print(built)
 
 
