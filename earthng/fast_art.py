@@ -99,7 +99,8 @@ FLAT = {   # kind: (toon colour, model colour)
 BASE_PACKS = ('real', 'toon', 'model', 'synth')
 PACKS = BASE_PACKS + ('pixel',) + fast_packs.PACKS
 LABELS = {'real': 'Реальний', 'toon': 'Мультяшний', 'model': 'Макет', 'synth': 'Синтвейв', 'pixel': 'Ретро-місто', **fast_packs.LABELS}
-MAP_FIELDS = ('baseColorMap', 'normalMap', 'roughnessMap', 'ambientOcclusionMap', 'emissiveMap', 'opacityMap')
+MAP_FIELDS = ('baseColorMap', 'normalMap', 'roughnessMap', 'ambientOcclusionMap', 'emissiveMap', 'opacityMap', 'detailMap',
+              'detailNormalMap', 'roughnessDetailMap')
 # synthwave: dark violet surfaces, neon lines glowing (emissive), a striped sun at the horizon
 SYNTH = {
     'road': (22, 16, 44), 'road_major': (26, 18, 52), 'sidewalk': (44, 30, 78), 'paved': (30, 20, 60),
@@ -217,6 +218,101 @@ def photo_real(name):
 
 LAYERS = []
 
+# Roads (fetch_textures.ROAD_SETS, CC0 photos), laid out as the game's own roads are: a base over
+# the generator's road repeat (style.ROAD_M, generator.lua COVER_SCALE) and a fine detail over
+# style.DETAIL_M through the detail maps. The base is Poly Haven's 30 m aerial photo of a street
+# (cracks, patches, tyre marks; 4K, ~7 mm a texel); the detail is a 2 m photo at full size (~1 mm
+# a texel) of each asphalt. Two 3 m photos squeezed into a 6 m repeat were blurred, and their
+# stains drew a grid (park-vis-02).
+BASE_PX, DETAIL_PX = 4096, 2048
+BASE_MEAN, BASE_ROUGH = .12, .8     # linear albedo of the brightest asphalt; the others are tinted down
+BASE_SATURATION = .5                # the aerial's purple cast
+# The game adds a detail map to the base: base + (2 * detail - 1) * strength (defaultMat.hlsl
+# blendDetail), linear. So a detail is the photo's own contrast around 0.5, without what is
+# wider than DETAIL_SIGMA texels (it would repeat every 2 m); 4 sigma of it reach 0 and 1.
+DETAIL_SIGMA = 48
+# The paint of a line (ambientCG RoadLines025B: a worn solid line 21 px wide down the sheet's
+# left edge), cut so the paint fills 1 / markSpread of the strip (generator.lua DECAL).
+LINE_COLUMNS = (5, 36)
+LINE_SIZE = (64, 2048)
+
+
+def _srgb_to_linear(a):
+    import numpy as np
+    return np.where(a <= .04045, a / 12.92, ((a + .055) / 1.055) ** 2.4)
+
+
+def _linear_to_srgb(a):
+    import numpy as np
+    return np.where(a <= .0031308, 12.92 * a, 1.055 * np.maximum(a, 0) ** (1 / 2.4) - .055)
+
+
+def _blur_wrap(a, sigma):
+    """Gaussian blur of a 2D array that wraps at the edges, as the repeat does."""
+    import numpy as np
+    fy, fx = np.fft.fftfreq(a.shape[0])[:, None], np.fft.fftfreq(a.shape[1])[None, :]
+    return np.real(np.fft.ifft2(np.fft.fft2(a) * np.exp(-2 * (np.pi * sigma) ** 2 * (fx * fx + fy * fy))))
+
+
+def road_sheets(r):
+    """The roads' base, the detail maps of each asphalt and the line paint as PNGs in r/real
+    (build turns them into DDS)."""
+    import numpy as np
+
+    def load(path, mode, size):
+        return np.asarray(Image.open(path).convert(mode).resize((size, size), Image.LANCZOS), np.float32) / 255
+
+    def save(a, path):
+        Image.fromarray((np.clip(a, 0, 1) * 255 + .5).astype(np.uint8)).convert('RGB').save(path)
+
+    def normal(path, size, sigma=None):
+        # green flipped for the game, as the paths'; a detail loses its slopes wider than sigma
+        n = load(path, 'RGB', size) * 2 - 1
+        nx, ny = n[..., 0], n[..., 1]
+        if sigma:
+            nx, ny = nx - _blur_wrap(nx, sigma), ny - _blur_wrap(ny, sigma)
+        nz = np.sqrt(np.clip(1 - nx * nx - ny * ny, 0, 1))
+        return np.stack([nx, -ny, nz], -1) * .5 + .5
+
+    def detail(a):
+        hp = a - _blur_wrap(a, DETAIL_SIGMA)
+        return .5 + .5 * np.clip(hp / (4 * hp.std()), -1, 1)
+
+    out = r / 'real'
+    out.mkdir(parents=True, exist_ok=True)
+    src = photo.TEXTURES / 'road_macro'
+    lin = _srgb_to_linear(load(src / 'albedo.jpg', 'RGB', BASE_PX))
+    lum = lin @ np.array([.2126, .7152, .0722], np.float32)
+    lin = lum[..., None] + (lin - lum[..., None]) * BASE_SATURATION
+    save(_linear_to_srgb(lin * (BASE_MEAN / lin.mean())), out / 'road_base.color.png')
+    save(normal(src / 'normal.jpg', BASE_PX), out / 'road_base.normal.png')
+    ra = load(src / 'roughness.jpg', 'L', DETAIL_PX)
+    save(np.clip(ra - ra.mean() + BASE_ROUGH, .05, 1), out / 'road_base.data.png')
+    # the cracks' occlusion, softened: a whole street under it was darker in every light
+    save(1 - (1 - load(src / 'ao.jpg', 'L', DETAIL_PX)) * .5, out / 'road_base_ao.data.png')
+    for name in ('road_city', 'road_worn', 'road_fresh'):
+        src = photo.TEXTURES / name
+        lum = _srgb_to_linear(load(src / 'albedo.jpg', 'L', DETAIL_PX))
+        save(detail(lum / max(lum.mean(), 1e-4)), out / f'{name}_dc.data.png')
+        save(normal(src / 'normal.jpg', DETAIL_PX, DETAIL_SIGMA), out / f'{name}_dn.normal.png')
+        save(detail(load(src / 'roughness.jpg', 'L', DETAIL_PX)), out / f'{name}_dr.data.png')
+    src = photo.TEXTURES / 'road_line'
+    box = (LINE_COLUMNS[0], 0, LINE_COLUMNS[1], 2048)
+
+    def strip(m, mode='RGB'):
+        return Image.open(src / f'{m}.jpg').convert(mode).crop(box).resize(LINE_SIZE, Image.LANCZOS)
+    alpha = np.asarray(strip('opacity', 'L'), np.float32) / 255
+    # white paint: the yellow sheet's brightness, its mean set to an aged white line; the texels
+    # around the paint take that mean too, so no dark fringe creeps in with the mips
+    lum = np.asarray(strip('albedo', 'L'), np.float32) / 255
+    paint = lum[alpha > .5].mean()
+    lum = np.where(alpha > .5, lum * (.8 / paint), .8)
+    Image.fromarray((np.clip(lum, 0, 1) * 255 + .5).astype(np.uint8)).convert('RGB').save(out / 'line.color.png')
+    rr, g, b = strip('normal').split()
+    Image.merge('RGB', (rr, g.point(lambda v: 255 - v), b)).save(out / 'line.normal.png')
+    strip('roughness').save(out / 'line.data.png')
+    Image.fromarray((alpha * 255 + .5).astype(np.uint8)).convert('RGB').save(out / 'line_o.data.png')
+
 
 def synth_glow(name):
     """Emissive map for a synthwave facade: only the neon window frames light up."""
@@ -309,7 +405,8 @@ def pack_fields(pack, base):
             f['baseColorFactor'] = colour(FLAT.get(kind, ((200, 200, 200), (230, 230, 230)))[0 if pack == 'toon' else 1])
         if pack != 'real':
             stylised_decal(kind, f)
-        out['e2rf_' + kind] = f
+        # a field is set from a string (detailScale '15.0 15.0')
+        out['e2rf_' + kind] = {k: ' '.join(map(str, v)) if isinstance(v, list) else v for k, v in f.items()}
     return out
 
 
@@ -383,6 +480,10 @@ def prebuild(distributable=False):
     if not (shared / 'packs.json').exists():
         build(shared, game_assets=not distributable)
     else:
+        if not (shared / 'real' / 'road_base.color.dds').exists():
+            # roads came after this build's facades: only they are written
+            road_sheets(shared)
+            to_dds(shared / 'real')
         write_manifest(shared)  # environment/fields are code, not a texture cache
     return shared
 
@@ -447,21 +548,30 @@ def build(r, game_assets=True):
         synth_grid(SYNTH[kind]).save(r / 'synth' / f'grid_{kind}.color.png')
     synth_grid(None, glow=True).save(r / 'synth' / 'grid.glow.png')
     synth_sun().save(r / 'synth' / 'sun.color.png')
+    road_sheets(r)
     fast_packs.build(r, base)
     fast_pixel.build(r)
-    # every map as a BC1 DDS with its mips, the PNG removed: the game reads '<name>.png' from
-    # '<name>.dds' as it does its own assets, and does not cook (vis-08-centre showed checker
-    # placeholders for ~30 s while ~70 PNGs cooked one by one)
-    import fast_dds
-    from concurrent.futures import ThreadPoolExecutor
-    def to_dds(png):
-        ref = style.CHAINLINK_MIP_REF if png.name == 'chainlink_o.data.png' else None
-        fast_dds.save(Image.open(png), png.with_suffix('.dds'), alpha_ref=ref)
-        png.unlink()
-    with ThreadPoolExecutor(6) as pool:
-        list(pool.map(to_dds, sorted(r.rglob('*.png'))))
+    to_dds(r)
     write_manifest(r)
     return r
+
+
+# alphaRef per opacity map whose mips keep its coverage (fast_dds.keep_coverage)
+MIP_REFS = {'chainlink_o.data.png': style.CHAINLINK_MIP_REF, 'line_o.data.png': style.EXTRA['mark']['alphaRef']}
+
+
+def to_dds(r):
+    """Every map as a BC1 DDS with its mips, the PNG removed: the game reads '<name>.png' from
+    '<name>.dds' as it does its own assets, and does not cook (vis-08-centre showed checker
+    placeholders for ~30 s while ~70 PNGs cooked one by one)."""
+    import fast_dds
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(png):
+        fast_dds.save(Image.open(png), png.with_suffix('.dds'), alpha_ref=MIP_REFS.get(png.name))
+        png.unlink()
+    with ThreadPoolExecutor(6) as pool:
+        list(pool.map(one, sorted(r.rglob('*.png'))))
 
 
 def manifest_text():

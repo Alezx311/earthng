@@ -11,9 +11,11 @@ of the following data and assets:
 - Terrarium elevation tiles: https://registry.opendata.aws/terrain-tiles/
   See the source attribution and terms there when redistributing elevation data.
 - Natural Earth: public-domain map data. https://www.naturalearthdata.com/about/terms-of-use/
-- Panelka pack by kureca and ambientCG textures: CC0, as recorded in the texture
-  source manifest distributed with the developer assets.
-  https://kureca.itch.io/panelka-pack and https://ambientcg.com/
+- Panelka pack by kureca, ambientCG and Poly Haven textures: CC0, as recorded in
+  the texture source manifest distributed with the developer assets. Road surfaces
+  and line paint: Poly Haven asphalt_01 and aerial_asphalt_01, ambientCG Asphalt025C,
+  Asphalt026C and RoadLines025B.
+  https://kureca.itch.io/panelka-pack, https://ambientcg.com/ and https://polyhaven.com/
 - BeamNG.drive models and materials are referenced from the player's installed
   game. They are not included in EarthNG release archives. BeamNG.drive is
   required and is not supplied by this project.

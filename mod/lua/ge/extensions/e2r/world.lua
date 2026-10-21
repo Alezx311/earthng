@@ -15,6 +15,7 @@ local planetMap = NATIVE and require('ge/extensions/e2r/planetMap') or nil
 local quality = require('ge/extensions/e2r/quality')
 local detail = require('ge/extensions/e2r/detail')
 local collision = require('ge/extensions/e2r/collision')
+local parking = require('ge/extensions/e2r/parking')
 local detailStream
 -- the UI language: the package's LANG until the player switches it (settings/earthng.json)
 local LANG_FILE = 'settings/earthng.json'
@@ -957,6 +958,7 @@ local function startScene(key, tile)
   if not ok or type(manifest) ~= 'table' or manifest.source ~= S.stream.region then return end
   loadNewMaterials(manifest.materials)
   tile.sceneStarted = true
+  tile.parking = manifest.parking
   tile.sceneGroup = tileGroup('E2RS_' .. key)
   tile.sceneLeft = queueItems(manifest.items, tile, key, 'scene')
   tile.sceneComplete = tile.sceneLeft == 0
@@ -1132,6 +1134,23 @@ local function drawTraffic()
     end
     if im.Button(L(a[2], a[3]) .. '##traffic_' .. a[1], im.ImVec2(width, 0)) and not active then setTraffic(a[1]) end
     if active then im.PopStyleColor(2) end
+  end
+  im.Text(L('Припарковані машини:', 'Parked cars:'))
+  local parked = S.parkedPick or (S.tune and S.tune.parkedCars) or 0
+  width = math.floor((im.GetContentRegionAvailWidth() - 2 * spacing) / 3)
+  for k, a in ipairs(parking.AMOUNTS) do
+    if k > 1 then im.SameLine() end
+    local active = parked == a[1]
+    if active then
+      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
+      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
+    end
+    if im.Button(L(a[2], a[3]) .. '##parked_' .. a[1], im.ImVec2(width, 0)) and not active then S.parkedPick = a[1] end
+    if active then im.PopStyleColor(2) end
+  end
+  if S.park and (S.park.spawned or 0) > 0 then
+    im.Text(string.format(L('На стоянках: %d машин, місць %d', 'In the lots: %d cars, %d spots'),
+      gameplay_parking and gameplay_parking.getParkedCarsAmount() or 0, S.park.count))
   end
 end
 
@@ -1443,8 +1462,12 @@ local function collisionPoints(p, v)
   if S.heldCar then points[2] = {S.heldCar[1], S.heldCar[2], vw, vk} end
   pcall(function()
     for k = 0, be:getObjectCount() - 1 do
-      local q = be:getObject(k):getPosition()
-      points[#points + 1] = {q.x, q.y, vw, vk}
+      -- a car the parking pool has hidden needs no ground where it was left
+      local obj = be:getObject(k)
+      if obj:getActive() then
+        local q = obj:getPosition()
+        points[#points + 1] = {q.x, q.y, vw, vk}
+      end
     end
   end)
   return points
@@ -1877,8 +1900,9 @@ local function beginArrival(job)
     horizon.dropped = true
   end
   S.tiles, S.far, S.horizon, S.queue, S.co = {}, {}, {}, {}, nil
-  -- traffic of the old place has no roads here
+  -- traffic and parked cars of the old place have no roads here
   if trafficRunning() then gameplay_traffic.deleteVehicles() end
+  if S.park then parking.clear(S.park) end
   S.nav, S.navPending, S.navDirty, S.trafficWanted = {}, {}, false, nil
   S.stream = {region = job.region, country = job.country, tile = job.tileSize, generator = job.generator}
   -- the level's TimeOfDay at the landing: the sun of the place (Kyiv's at Los Angeles was hours off)
@@ -3011,6 +3035,7 @@ local function applyTune()
   for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees'}) do
     if S.tune[key] ~= base[key] then rebuild = true end
   end
+  if ((S.tune.parkedCars or 0) > 0) ~= ((base.parkedCars or 0) > 0) then rebuild = true end
   if rebuild then
     local keep = {}
     for _, job in ipairs(S.queue or {}) do
@@ -3042,6 +3067,46 @@ local function applyTune()
   result.tuneApplied = S.now
   S.appliedTune = {}
   for k, v in pairs(S.tune) do S.appliedTune[k] = v end
+end
+
+-- Parked cars (parking.lua): the spots of the loaded tiles go to the game every parking.EVERY s,
+-- the pool follows the setting. The cars load (~0.5 s a car) while the camera comes down, round
+-- the spawn point, not in the drive. A pool car left on a tile that has gone or lost its
+-- collision would fall through the world: it is moved to a usable spot first.
+local function updateParking()
+  if S.parkedPick then
+    ensureTune()
+    S.tune.parkedCars, S.parkedPick = S.parkedPick, nil
+    applyTune()
+  end
+  if not NATIVE or not S.stream or (S.state ~= 'driving' and S.state ~= 'spawning') then return end
+  if S.now - (S.parkAt or -1e9) < parking.EVERY then return end
+  S.parkAt = S.now
+  S.park = S.park or parking.new()
+  local timer = hptimer()
+  parking.sync(S.park, S.tiles)
+  local syncMs = timer:stopAndReset()
+  local p = focus()
+  if S.state == 'spawning' then local sp = S.landing.spawn.pos; p = vec3(sp[1], sp[2], sp[3]) end
+  if p then
+    local want = (S.appliedTune or TUNE_DEFAULT).parkedCars or 0
+    if parking.step(S.park, want, vec3(p.x, p.y, p.z)) then result.parkedSpawns = (result.parkedSpawns or 0) + 1 end
+    result.parkingStepMs = math.max(result.parkingStepMs or 0, timer:stopAndReset())
+    if S.state == 'driving' and S.park.spawned > 0 and gameplay_parking then
+      for _, id in ipairs(gameplay_parking.getParkedCarsList() or {}) do
+        if be:getObjectActive(id) then
+          local x, y = be:getObjectPositionXYZ(id)
+          local tile = S.tiles[string.format('%d_%d', tileOf(x, y))]
+          if not (tile and tile.collided) then
+            gameplay_parking.forceTeleport(id, vec3(p.x, p.y, p.z), 0, 400)
+            result.parkedRescued = (result.parkedRescued or 0) + 1
+          end
+        end
+      end
+    end
+  end
+  if syncMs > (result.parkingSyncMs or 0) then result.parkingSyncMs = syncMs end
+  result.parkingSpots, result.parkingSpotsAll, result.parkedCars = S.park.count, S.park.total, S.park.spawned
 end
 
 local function tuneSlider(key, lo, hi, uk, en)
@@ -3081,8 +3146,10 @@ local function drawTune()
     local before = S.tune[key]
     tuneSlider(key, 0, 100, uk, en)
     if S.tune[key] ~= before then
+      local parked = S.tune.parkedCars
       if key == 'quality' then S.tune = quality.preset(S.tune.quality)
       else S.tune = quality.preset(S.tune.detail, S.tune.distance) end
+      S.tune.parkedCars = parked
       for k, ptr in pairs(tunePtr) do if S.tune[k] ~= nil then ptr[0] = S.tune[k] end end
     end
   end
@@ -3105,11 +3172,14 @@ local function drawTune()
   quick('distance', 'Дальність малювання', 'Draw distance')
   im.Text(string.format(L('Трава %d м · каміння %d м · світ %.1f км',
     'Grass %d m · rocks %d m · world %.1f km'), S.tune.grassM, S.tune.rockM, S.tune.farM / 1000))
-  if im.Button('Potato') then S.tune = quality.preset(0); tunePtr = {}; S.tuneApplyNow = true end
-  im.SameLine()
-  if im.Button('Balanced') then S.tune = quality.preset(50); tunePtr = {}; S.tuneApplyNow = true end
-  im.SameLine()
-  if im.Button('OASIS') then S.tune = quality.preset(100); tunePtr = {}; S.tuneApplyNow = true end
+  for k, q in ipairs({{'Potato', 0}, {'Balanced', 50}, {'OASIS', 100}}) do
+    if k > 1 then im.SameLine() end
+    if im.Button(q[1]) then
+      local parked = S.tune.parkedCars
+      S.tune = quality.preset(q[2]); S.tune.parkedCars = parked
+      tunePtr = {}; S.tuneApplyNow = true
+    end
+  end
   if tuneDiffers() then
     im.TextColored(im.ImVec4(1, .7, .2, 1), L('Відпустіть повзунок, щоб застосувати.', 'Release the slider to apply.'))
     if im.Button(L('Застосувати', 'Apply')) then S.tuneApplyNow = true end
@@ -3287,7 +3357,10 @@ local function restorePackState()
   dropLights()
 end
 
-function M.onExtensionUnloaded() restorePackState() end
+function M.onExtensionUnloaded()
+  restorePackState()
+  if S.park then pcall(parking.clear, S.park) end
+end
 
 function M.onClientEndMission()
   restorePackState()
@@ -4003,6 +4076,7 @@ function M.tick(dt)
     local tQueue = timer:stopAndReset()
     local kb3 = collectgarbage('count')
     if S.state == 'driving' then navStep() end
+    updateParking()
     local tNav = timer:stopAndReset()
     if tNav > (result.navStepMs or 0) then result.navStepMs = tNav end
     profAdd('pose', tPose); profAdd('tiles', tTiles, kb1 - kb0); profAdd('collision', tColl); profAdd('queue', tQueue, kb3 - kb2)

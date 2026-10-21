@@ -18,9 +18,12 @@ local TUNE = {roadLift = ROAD_LIFT, groundDrop = .25, pullFull = 12, pullZero = 
 local CLAIM = {paved = 1, water = 2, glacier = 3, bare_rock = 4, scree = 5, beach = 6,
   wetland = 7, orchard = 8, vineyard = 9, farmland = 10, meadow = 11, heath = 12,
   scrub = 13, forest = 14, park = 15, bare_ground = 16}
+-- Asphalt: the aerial street photo over 30 m, its fine detail through the detail maps
+-- (fast_style.ROAD_M, DETAIL_M).
 local COVER_SCALE = {ground = 24, forest = 24, park = 24, meadow = 24, orchard = 24,
   scrub = 24, heath = 24, glacier = 24, farmland = 12, vineyard = 12, bare_rock = 12,
-  scree = 12, beach = 12, wetland = 12, bare_ground = 12}
+  scree = 12, beach = 12, wetland = 12, bare_ground = 12,
+  road = 30, road_major = 30, road_worn = 30, footway_asphalt = 30}
 local ABIN = 12.5      -- m: bins of asphalt pieces that sidewalks and verges are cut by
 local SEA_ABOVE = 0.3   -- the sea plane over the DEM's flat sea surface (no z-fighting)
 local ECA_TREE = '/levels/east_coast_usa/art/shapes/trees/'
@@ -2720,12 +2723,14 @@ local function build(cells, i, j, options)
       shape = shape, decor = true, layer = 'scene', collision = 'None'}
   end
   mark('lines')
+  local parking = {}
   if not distant then
     local occupied = {}
     for _, building in ipairs(lists.buildings) do
       if ringsTouch(building.rings, rect) then occupied[#occupied + 1] = {bounds = ringBounds(building.rings), rings = building.rings} end
     end
-    local cars, maxCars = 0, math.max(0, math.min(200, options.maxCars or 200))
+    local cars, maxCars = 0, math.max(0, math.min(300, options.maxCars or 300))
+    local realCars = (options.parkedCars or 0) > 0
     local function buildingAt(x, y)
       for _, building in ipairs(occupied) do
         local b = building.bounds
@@ -2735,7 +2740,9 @@ local function build(cells, i, j, options)
     end
     for _, area in ipairs(lists.areas) do
       local tags = area.tags or {}
-      if cars < maxCars and (tags.amenity == 'parking' or area.kind == 'parking') and ringsTouch(area.rings, rect) then
+      -- an underground or rooftop car park keeps its cars off the ground above it
+      local surface = tags.parking ~= 'underground' and tags.parking ~= 'rooftop' and tags.location ~= 'underground'
+      if cars < maxCars and surface and (tags.amenity == 'parking' or area.kind == 'parking') and ringsTouch(area.rings, rect) then
         local frame = footprintFrame(cleanRing(area.rings[1]))
         if frame.area >= 120 then
           local row = 0
@@ -2744,8 +2751,7 @@ local function build(cells, i, j, options)
               for u = frame.u0 + 1.35, frame.u1 - 1.3, 2.7 do
                 local x, y = u * frame.ax + v * frame.bx, u * frame.ay + v * frame.by
                 local h = hash(tostring(area.id) .. ':' .. string.format('%.3f:%.3f', u, v))
-                if h % 100 < 66 and x >= rect[1] - 3 and x < rect[3] + 3 and y >= rect[2] - 3 and y < rect[4] + 3
-                  and not buildingAt(x, y) then
+                if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and not buildingAt(x, y) then
                   local yaw = math.atan2(frame.by, frame.bx) + (h % 2 == 0 and math.pi or 0)
                   local fits = true
                   for _, corner in ipairs({{-2.2, -.9}, {2.2, -.9}, {2.2, .9}, {-2.2, .9}}) do
@@ -2753,7 +2759,15 @@ local function build(cells, i, j, options)
                     local cy = y + corner[1] * math.sin(yaw) + corner[2] * math.cos(yaw)
                     if not inside(area.rings, cx, cy) then fits = false end
                   end
-                  if fits then parkedCar(sceneDecor, x, y, ground(x, y) + .02, yaw, math.floor(h / 100) % 8); cars = cars + 1 end
+                  if fits then
+                    -- every free bay is a spot for the game's parked cars (parking.lua); with
+                    -- those off, two of three bays get a box car
+                    parking[#parking + 1] = {x, y, ground(x, y), yaw}
+                    if not realCars and h % 100 < 66 then
+                      parkedCar(sceneDecor, x, y, ground(x, y) + .02, yaw, math.floor(h / 100) % 8)
+                    end
+                    cars = cars + 1
+                  end
                 end
                 if cars >= maxCars then break end
               end
@@ -3321,6 +3335,7 @@ local function build(cells, i, j, options)
   local roadManifest, sceneManifest = manifest(roads, 'road'), manifest(scene, 'scene')
   roadManifest.spawn = bestSpawn or {pos = {target[1], target[2], ground(target[1], target[2]) + ROAD_LIFT}, yaw = 0}
   roadManifest.drivable = bestSpawn ~= nil
+  sceneManifest.parking = parking
   if distant then
     sceneManifest.layer = layerName
     for _, item in ipairs(sceneManifest.items) do

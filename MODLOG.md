@@ -278,3 +278,19 @@ checks but fail the >100 ms frame gate under concurrent game/OSM worker load.
 See docs/RELEASE_CHECK.md and docs/benchmarks for reproducible commands and results.
 No personal game profile or existing OSM job was changed. Existing caches were not deleted. Tests use isolated
 out/release-* profiles. MIT chosen by the user; target master confirmed by the user.
+
+## 2026-10-21: асфальт із фото і справжні припарковані машини
+
+- Дороги як у самої гри: основа — аерофото вулиці Poly Haven `aerial_asphalt_01` (4K на 30 м:
+  тріщини, латки, сліди шин), деталь — фото асфальту на 2 м повного розміру через detail-карти
+  (`asphalt_01` у місті, ambientCG `Asphalt026C` зношений, `Asphalt025C` свіжий). Розмітка —
+  стерта лінія ambientCG `RoadLines025B`. Усе CC0, джерела в `data/textures/manifest.json`.
+- Гра додає detail-карти до кольору лінійно (`defaultMat.hlsl`, `blendDetail`); BC1-кодувальник
+  тепер округлює канали, а не обрізає (давав фіолетово-зелені плями).
+- Коробки на стоянках замінено машинами гри: `parking.lua` віддає місця з OSM-стоянок системі
+  `gameplay_parking` (легкі `simple_traffic` *_parked). Машини вантажаться під час спуску, місця без
+  колізії заборонені. Вибір у панелі: Вимк (коробки) / Мало (8) / Багато (16). Підземні паркінги
+  й паркінги на дахах пропускаються.
+- Київ, Мінська, 60 с автопілота, два прогони кожної збірки: середній кадр 16,1 / 15,1 мс проти
+  14,3 / 13,9 мс у старої планети, p99 42,5 / 38 проти 36,5 / 37,5 мс, кадрів >100 мс 2–4 в обох.
+  Кадри: `out/park-vis-04`. Планета 86,5 → 127,6 МБ.

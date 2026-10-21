@@ -351,6 +351,14 @@ def build(r, base):
     for tex, out in (('asphalt', 'road'), ('sidewalk', 'sidewalk')):
         rough = fast_art.game_texture(style.TEXTURES[tex]['roughnessMap'])
         rough = rough.convert('L').resize((1024, 1024)) if rough else Image.new('L', (1024, 1024), 180)
+        if out == 'road':
+            # the game's 6 m asphalt, as many times as it fits the road repeat (style.ROAD_M)
+            n = max(1, round(style.ROAD_M / 6))
+            sheet = Image.new('L', (1024 * n, 1024 * n))
+            for i in range(n):
+                for j in range(n):
+                    sheet.paste(rough, (1024 * i, 1024 * j))
+            rough = sheet.resize((1024, 1024), Image.LANCZOS)
         ra = np.asarray(rough, np.float32) / 255
         pud = np.asarray(Image.fromarray(photo._noise(31 if out == 'road' else 37, 7) * .6 + photo._noise(5, 18) * .4)
                          .resize((1024, 1024)), np.float32)

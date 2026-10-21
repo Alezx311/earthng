@@ -16,8 +16,11 @@ from PIL import Image
 
 
 def _565(c):
-    c = np.clip(np.rint(c), 0, 255).astype(np.uint32)
-    return ((c[..., 0] >> 3) << 11) | ((c[..., 1] >> 2) << 5) | (c[..., 2] >> 3)
+    # rounded to the nearest 5/6-bit level: truncating took red and blue up to 8 levels down and
+    # green up to 4, a tint that a detail map's amplification showed as purple and green (park-vis-02)
+    c = np.clip(c, 0, 255)
+    r, g, b = (np.rint(c[..., k] * n / 255).astype(np.uint32) for k, n in ((0, 31), (1, 63), (2, 31)))
+    return (r << 11) | (g << 5) | b
 
 
 def _unpack(v):

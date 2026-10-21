@@ -90,6 +90,19 @@ class RoadDecalTests(unittest.TestCase):
         maps = {p[:-4] + '.dds' for kind in style.EDGES for p in style.TEXTURES[kind].values()}
         self.assertEqual(checked, maps)
 
+    def test_asphalt_repeat_matches_the_generator(self):
+        # the aerial base spans the generator's road repeat; the detail tiles it ROAD_M / DETAIL_M times
+        source = (ROOT / 'mod/lua/ge/extensions/e2r/generator.lua').read_text(encoding='utf8')
+        for kind in ('road', 'road_major', 'road_worn', 'footway_asphalt'):
+            self.assertIn(f'{kind} = {style.ROAD_M:g}', source)
+            self.assertEqual(style.KINDS[kind][3], style.ROAD_M)
+            stage = style.MATERIALS['e2rf_' + kind]['Stages'][0]
+            self.assertEqual(stage['detailScale'], [style.ROAD_M / style.DETAIL_M] * 2)
+            self.assertTrue(stage['detailNormalMap'].endswith('.dds'))
+        real = art.pack_fields('real', '/e2r_stream/fast-art/' + art.VERSION)
+        self.assertEqual(real['e2rf_road']['detailScale'], '15.0 15.0')
+        self.assertEqual(art.pack_fields('toon', '/e2r_stream/fast-art/' + art.VERSION)['e2rf_road']['detailMap'], '')
+
     def test_decal_kinds_fall_back_to_their_old_look(self):
         decal_paths = ('/assets/materials/decalroad/', '/assets/materials/trim/')
         for kind, old in style.DECAL_FALLBACK.items():
@@ -282,7 +295,10 @@ class TransitionTests(unittest.TestCase):
         for kind in ('mark', 'edge_grass', 'curb'):
             material = lua.table_from(lua_table(lua, style.MATERIALS['e2rf_' + kind]))
             loaded = lua.globals().materialFor(material)
-            if kind == 'curb':
+            if kind == 'mark':
+                # the line paint ships with the planet: no older game lacks it
+                self.assertTrue(str(loaded.Stages[1].baseColorMap).startswith('/e2r_stream/fast-art/'))
+            elif kind == 'curb':
                 # every trim map is there (the colour map as its .dds): the decal look stays
                 self.assertTrue(str(loaded.Stages[1].baseColorMap).endswith('_curb_trim_01_b.color.png'))
             else:
@@ -290,7 +306,7 @@ class TransitionTests(unittest.TestCase):
                 self.assertIsNone(loaded.Stages[1].baseColorMap, kind)
             self.assertIsNone(loaded.e2rFallback)
         road = lua.globals().materialFor(lua.table_from(lua_table(lua, style.MATERIALS['e2rf_road'])))
-        self.assertTrue(str(road.Stages[1].baseColorMap).startswith('/assets/materials/tileable/road/'))
+        self.assertTrue(str(road.Stages[1].baseColorMap).startswith('/e2r_stream/fast-art/'))
         fields = lua_table(lua, {'e2rf_mark': dict(style.TEXTURES['line_worn'], baseColorFactor='1 1 1 1'),
                                  'e2rf_pk_real_mark': {'Stages': [dict(style.TEXTURES['line_worn'])]}})
         cleared = lua.globals().dropMissingMaps(lua.table_from(fields))

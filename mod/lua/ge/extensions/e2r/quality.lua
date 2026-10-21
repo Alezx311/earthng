@@ -16,7 +16,8 @@ end
 M.number = number
 function M.preset(detail, distance)
   detail, distance = number(detail, 50, 0, 100), number(distance, detail, 0, 100)
-  local out = {quality=detail, detail=detail, distance=distance, groundTrees=true}
+  -- parkedCars: the game's parked cars kept round the player (parking.lua); 0 draws the box cars
+  local out = {quality=detail, detail=detail, distance=distance, groundTrees=true, parkedCars=8}
   for key in pairs(anchors[1]) do
     local q = (key == 'nearM' or key == 'farM' or key == 'grassM' or key == 'rockM') and distance or detail
     local a = q < 50 and 1 or 2
@@ -30,7 +31,7 @@ function M.clamp(tune)
   local limits = {nearM={400,4000}, farM={800,8000}, maxTrees={0,2400}, maxFarTrees={0,1200},
     maxGrass={0,4800}, maxRocks={0,200}, forestSpacing={4,24}, groundSpacing={4,30},
     grassM={0,220}, rockM={0,900}, grassBudget={0,6000}, rockBudget={0,1600},
-    quality={0,100}, detail={0,100}, distance={0,100}}
+    quality={0,100}, detail={0,100}, distance={0,100}, parkedCars={0,24}}
   for key, range in pairs(limits) do out[key] = number(t[key], out[key], range[1], range[2]) end
   out.groundTrees = t.groundTrees ~= false and t.groundTrees ~= 0
   out.farM = math.max(out.nearM, out.farM)

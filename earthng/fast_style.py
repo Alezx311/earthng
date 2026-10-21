@@ -166,6 +166,28 @@ for w in WALLS:
 TEXTURES['paving'] = {'baseColorMap': f'{ART}/real/paving.color.png', 'normalMap': f'{ART}/real/paving.normal.png'}
 TEXTURES['trodden'] = {'baseColorMap': f'{ART}/real/trodden.color.png', 'normalMap': f'{ART}/real/trodden.normal.png'}
 TEXTURES['fence_po2'] = {'baseColorMap': f'{ART}/real/fence_po2.color.png'}
+# Asphalt and line paint from CC0 photos (fast_art.road_sheets). Every asphalt has the same base,
+# Poly Haven's 30 m aerial photo of a street over the road's repeat (ROAD_M, generator.lua
+# COVER_SCALE), and its own detail over DETAIL_M: Poly Haven asphalt_01 in town, ambientCG
+# Asphalt026C worn, Asphalt025C fresh. The game adds the detail maps to the base, linear (base +
+# (2 * detail - 1) * strength); detailScale is the detail's UVs over the base's.
+ROAD_M, DETAIL_M = 30.0, 2.0
+_BASE = {'baseColorMap': f'{ART}/real/road_base.color.png', 'normalMap': f'{ART}/real/road_base.normal.png',
+         'roughnessMap': f'{ART}/real/road_base.data.png', 'ambientOcclusionMap': f'{ART}/real/road_base_ao.data.png',
+         'detailScale': [ROAD_M / DETAIL_M] * 2, 'detailNormalMapStrength': 1.0, 'detailRoughnessMapStrength': .15}
+# grain strength: at .12 in town the stones speckled white a metre from the camera (park-vis-03)
+for _name, _grain in (('road_city', .08), ('road_worn', .10), ('road_fresh', .05)):
+    TEXTURES[_name] = {**_BASE, 'detailMap': f'{ART}/real/{_name}_dc.data.png', 'detailBaseColorMapStrength': _grain,
+                       'detailNormalMap': f'{ART}/real/{_name}_dn.normal.png',
+                       'roughnessDetailMap': f'{ART}/real/{_name}_dr.data.png'}
+TEXTURES['line_paint'] = {'baseColorMap': f'{ART}/real/line.color.png', 'normalMap': f'{ART}/real/line.normal.png',
+                          'roughnessMap': f'{ART}/real/line.data.png', 'opacityMap': f'{ART}/real/line_o.data.png'}
+for _kind, _tex in (('road', 'road_city'), ('road_major', 'road_fresh'), ('mark', 'line_paint'),
+                    ('mark_yellow', 'line_paint')):
+    KINDS[_kind] = (_tex,) + KINDS[_kind][1:]
+# the lines are our own art now: no older game lacks them
+for _kind in ('mark', 'mark_yellow'):
+    DECAL_FALLBACK.pop(_kind)
 TEXTURES['fence_mesh'] = {
     'baseColorMap': '/assets/materials/tileable/metal/chainlink/t_chainlink_fence_b.color.png',
     'normalMap': '/assets/materials/tileable/metal/chainlink/t_chainlink_fence_nm.normal.png',
@@ -263,7 +285,7 @@ BUILDING_FALLBACK['plinth_brown'] = 'concrete'
 FALLBACK.update(BUILDING_FALLBACK)
 # footpaths and fences (decoration, no collision)
 KINDS['footway'] = ('paving', [.50, .48, .46, 1], 'ASPHALT', 2.0, 'plan')
-KINDS['footway_asphalt'] = ('asphalt', [.20, .21, .22, 1], 'ASPHALT', 6.0, 'plan')
+KINDS['footway_asphalt'] = ('road_city', [.20, .21, .22, 1], 'ASPHALT', 6.0, 'plan')
 KINDS['trodden'] = ('trodden', [.42, .36, .28, 1], 'DIRT', 3.0, 'plan')
 KINDS['fence_wall'] = ('fence_po2', [.62, .62, .60, 1], 'ROCK', 2.5, 'wall')
 KINDS['fence_mesh'] = ('fence_mesh', [.30, .32, .30, 1], 'METAL', 2.0, 'wall')
@@ -342,7 +364,7 @@ for _kind, _tex, _tint, _ground, _scale in (
 
 # Country carriageways, worst last. groundType is what the tyres feel.
 for _kind, _tex, _tint, _ground, _scale in (
-    ('road_worn', 'asphalt', [.55, .52, .46, 1], 'ASPHALT', 6),
+    ('road_worn', 'road_worn', [1, 1, 1, 1], 'ASPHALT', 6),
     ('road_gravel', 'scree', [.78, .74, .68, 1], 'GRAVEL', 4),
     ('road_dirt', 'dirt', [.70, .58, .40, 1], 'DIRT', 4),
     ('road_broken', 'dirt', [.58, .52, .36, 1], 'DIRT', 3),
@@ -350,6 +372,12 @@ for _kind, _tex, _tint, _ground, _scale in (
 ):
     KINDS[_kind] = (_tex, _tint, _ground, _scale, 'plan')
     TINT[_kind] = _tint
+# Asphalt over the one aerial base (linear mean .12, fast_art.BASE_MEAN): a town street of grey
+# aged asphalt, a worn one lighter and warmer, a fresh one dark.
+for _kind, _srgb in (('road', (83, 83, 82)), ('footway_asphalt', (83, 83, 82)), ('road_worn', (99, 97, 92)),
+                     ('road_major', (62, 62, 63))):
+    KINDS[_kind] = KINDS[_kind][:3] + (ROAD_M,) + KINDS[_kind][4:]
+    TINT[_kind] = _factor(_srgb, .12)
 
 # OSM areas that change the ground under them (anything else stays grass)
 PAVED = {'industrial', 'commercial', 'retail', 'railway', 'garages', 'construction', 'depot'}

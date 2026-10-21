@@ -159,7 +159,8 @@ def fields(base):
     import fast_packs
     out = {}
     for kind in style.KINDS:
-        f = {key: '' for key in ('baseColorMap', 'normalMap', 'roughnessMap', 'ambientOcclusionMap', 'emissiveMap', 'opacityMap')}
+        f = {key: '' for key in ('baseColorMap', 'normalMap', 'roughnessMap', 'ambientOcclusionMap', 'emissiveMap', 'opacityMap',
+                                 'detailMap', 'detailNormalMap', 'roughnessDetailMap')}
         # New nature classes reuse authored pixel surfaces. Never reference an
         # image that build() does not generate (including existing art caches).
         texture = {'meadow': 'ground', 'orchard': 'park', 'scrub': 'forest', 'heath': 'ground',
