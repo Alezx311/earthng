@@ -78,3 +78,21 @@ thousands of street assets per tile on a separate branch, with measured performa
   out/overnight/bridge-baseline/mod/earthng_planet.zip.
 - Useful crossings: Ivanska 48.1707504,17.1859580 (new headroom 4.497 m vs 1.072 m);
   stacked Panonska 48.1290392,17.1050696 (4.307 m vs 2.442 m).
+
+## Checkpoint — 01:20 Kyiv (Claude Code took over after Codex hit its limit)
+
+- #4 MapBuilder: reviewed Claude worker's launcher, fixed the retry after Setup.bat to use
+  .venv even when python\ exists, README troubleshooting line. Full suite 263 OK; real
+  `MapBuilder.bat` start from this checkout: window shown in ~1 s, startup.log written.
+  Committed 839a6f0. Reporter's exact trigger still unknown (their startup.log will say).
+- #2 bridges, real game: `out/overnight/bridge-drive` (autopilot under Ivanska crossing,
+  Bratislava test pack) drove 197 m at a steady 9.6-9.7 m/s through the bridge point with no
+  height change: functional pass. Its frame >100 ms failure is the spawn phase. The separate
+  `drive_under_bridge.lua` probe never moved the car (inputs, not the bridge).
+  Stacked Panonska views `out/overnight/bridge-stack*/e2r-v-*.png`: two decks at different
+  heights, parapets on both; the bare concrete band seen from above is the median between
+  the parallel carriageways. No defect found; not a drive test.
+- Street props experiment on `codex/street-assets-experiments` (a8e624f), report
+  `docs/STREET_PROPS.md` there: Forest with collidable kinds beats TSStatic (spawn 8-12x,
+  collision rebuild +0.8 ms vs +22 ms per 6000). Kyiv route: 37-72k props cost +0.5-0.7 ms
+  mean frame, +1.5-3 ms p99, no extra >100 ms frames. Not merged, not pushed.
