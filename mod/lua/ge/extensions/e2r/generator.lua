@@ -1644,9 +1644,9 @@ end
 
 -- spacing: metres between props along each sidewalk and footway; put(name, shape, x, y, z, yaw)
 -- emits one. A sidewalk prop keeps 6 m from its strip's ends (the junction); every prop keeps off
--- the carriageways. Footways (most of central Kyiv's sidewalks are mapped as their own ways) get
--- them just beside the paving, on the ground.
-function VEG.streetProps(strips, lines, segmentBins, rect, spacing, lift, walkWidth, ground, put, pause)
+-- the carriageways and the buildings. Footways (most of central Kyiv's sidewalks are mapped as
+-- their own ways) get them just beside the paving, on the ground.
+function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, lift, walkWidth, ground, put, pause)
   if not spacing or spacing <= 0 then return 0 end
   -- the props this game has (all of them outside the game, where FS is absent)
   if not VEG.propsHave then
@@ -1660,6 +1660,28 @@ function VEG.streetProps(strips, lines, segmentBins, rect, spacing, lift, walkWi
   local total = 0
   for _, p in ipairs(props) do total = total + p[2] end
   local count = 0
+  -- the tile's buildings in 50 m bins, 0.6 m out from the walls (a footway along a wall)
+  local walls = {}
+  for _, building in ipairs(buildings) do
+    if ringsTouch(building.rings, rect) then
+      local b = ringBounds(building.rings)
+      local entry = {rings = building.rings, bounds = b}
+      for by = math.floor((b[2] - 1) / 50), math.floor((b[4] + 1) / 50) do
+        for bx = math.floor((b[1] - 1) / 50), math.floor((b[3] + 1) / 50) do
+          local bin = walls[bx * 65536 + by] or {}
+          walls[bx * 65536 + by], bin[#bin + 1] = bin, entry
+        end
+      end
+    end
+  end
+  local function inWall(x, y)
+    for _, w in ipairs(walls[math.floor(x / 50) * 65536 + math.floor(y / 50)] or NONE) do
+      local b = w.bounds
+      if x >= b[1] - .6 and y >= b[2] - .6 and x <= b[3] + .6 and y <= b[4] + .6
+          and (inside(w.rings, x, y) or nearEdge(w.rings, x, y, .6)) then return true end
+    end
+    return false
+  end
   -- one prop at distance d of a polyline segment a-b (unit ux, uy), `side` of it
   local function place(seed, d, length, ends, a, b, t, ux, uy, side, offset, z, name)
     local h = ihash(seed, math.floor(d * 10), side + 2, 7)
@@ -1673,7 +1695,7 @@ function VEG.streetProps(strips, lines, segmentBins, rect, spacing, lift, walkWi
     local off = offset(prop)
     local x = a[1] + ux * t - uy * off * side
     local y = a[2] + uy * t + ux * off * side
-    if x < rect[1] or x >= rect[3] or y < rect[2] or y >= rect[4] then return end
+    if x < rect[1] or x >= rect[3] or y < rect[2] or y >= rect[4] or inWall(x, y) then return end
     for _, segment in ipairs(segmentBins[(math.floor(x / 50) + 32768) * 65536 + math.floor(y / 50) + 32768] or NONE) do
       local sa = segment.a
       local q = math.max(0, math.min(1, ((x - sa[1]) * segment.dx + (y - sa[2]) * segment.dy) / segment.len2))
@@ -4431,7 +4453,7 @@ local function build(cells, i, j, options)
     end
   end
   if wantLamps and not distant and (options.propSpacing or 0) > 0 then
-    VEG.streetProps(strips, lists.lines, segmentBins, rect, options.propSpacing, lift, tune.sidewalk, ground, function(name, shape, x, y, z, yaw)
+    VEG.streetProps(strips, lists.lines, lists.buildings, segmentBins, rect, options.propSpacing, lift, tune.sidewalk, ground, function(name, shape, x, y, z, yaw)
       static(name, shape, x, y, z, yaw)
       local it = scene.items[#scene.items]
       it.prop, it.collision = true, 'Collision Mesh'

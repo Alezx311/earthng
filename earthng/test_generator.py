@@ -515,9 +515,11 @@ class GeneratorTests(unittest.TestCase):
                   'points': [[250, 250, 10], end]}
                  for arm, end in (('n', [250, 500, 10]), ('s', [250, 0, 10]), ('e', [500, 250, 10]), ('w', [0, 250, 10]))]
         lines = [{'id': 'walk', 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[50, 50, 10], [50, 200, 10]]}]
+        # a house wall 1.8 m east of the footway's axis, 0.4 m behind where a prop would stand
+        house = {'id': 'house', 'height': 9, 'rings': [[[51.8, 100], [70, 100], [70, 140], [51.8, 140]]]}
 
         def props(**options):
-            scene = self.build([{'roads': roads, 'lines': lines}], terrainStep=100, **options)[1]
+            scene = self.build([{'roads': roads, 'lines': lines, 'buildings': [house]}], terrainStep=100, **options)[1]
             return [item for item in scene['items'].values() if item.prop]
 
         placed = props(propSpacing=6)
@@ -530,6 +532,8 @@ class GeneratorTests(unittest.TestCase):
         walk = [item for item in placed if abs(item.pos[1] - 50) < 3 and item.pos[2] < 210]
         self.assertTrue(walk)
         self.assertTrue(all(abs(abs(item.pos[1] - 50) - 1.4) < 1e-6 for item in walk))
+        self.assertFalse([item for item in walk if item.pos[1] > 50 and 99 <= item.pos[2] <= 141])
+        self.assertTrue([item for item in walk if item.pos[1] < 50 and 99 <= item.pos[2] <= 141])
         # junction mouths stay clear
         self.assertFalse([item for item in placed if abs(item.pos[1] - 250) < 10 and abs(item.pos[2] - 250) < 10])
         self.assertEqual(props(propSpacing=0), [])

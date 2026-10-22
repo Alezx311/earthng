@@ -44,7 +44,8 @@ def runtime(pack):
         return data
 
     g = lua.globals()
-    g.py_exists = lambda p: p in names
+    # the game's own content (stock trees, props) counts as present, as in the game
+    g.py_exists = lambda p: p in names or p.startswith(('/levels/', '/art/', '/assets/'))
     g.clock = time.perf_counter
     g.py_json = lambda p: convert(json.loads(archive.read(p[1:]))) if p in names else None
     g.py_bytes = read_bytes
