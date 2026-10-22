@@ -938,13 +938,298 @@ end
 function ROADS.tunnel(tags)
   return tags.tunnel ~= nil and tags.tunnel ~= 'no' and tags.tunnel ~= 'building_passage'
 end
--- a deck's concrete: its edge face reaches depth under the road, a parapet height over it
-ROADS.deck = {depth = 1, parapet = .9, thick = .3, repeatU = 2.5}
--- Paved shoulder (m) outside the edge lines, left and right of the node order, where the way has
--- no width tag: the pack widened the carriageway by it (fast_sources.shoulder, same table).
+-- a deck's concrete: its edge face reaches depth under the road, a parapet height over it.
+-- Piers: a wall every `every` m of a bridge at least `min` long, `across` of the half width,
+-- `thick` along the road, kept `clear` m off any road under it; abutments `thick` deep.
+ROADS.deck = {depth = 1, parapet = .9, thick = .3, repeatU = 2.5,
+  pier = {every = 25, min = 16, across = .85, thick = 1.6, clear = 1.5, gap = 1, sink = .5}}
+-- main roads' decks are girders deeper than a street's slab (fast_profile.CLEARANCE leaves
+-- 4.5 m under the deepest)
+function ROADS.deckDepth(tags)
+  local rank = ROADS.rankOf(tags)
+  return rank >= 4.5 and 1.5 or rank >= 2.5 and 1.2 or ROADS.deck.depth
+end
+-- Guard rail (OSM barrier=guard_rail, and 40 m of a main road's approach to a bridge): a
+-- galvanised beam `beam` m tall whose top is `height` over the base, on posts every `posts` m.
+ROADS.rail = {height = .75, beam = .32, thick = .1, post = .14, step = 2, posts = 4, sink = .3,
+  approach = 40, offset = .5, rank = 4.5, material = 'clad_metal'}
+-- A quad turned to face (ox, oy, oz) by Newell's normal, through polygon(material, poly, up).
+function ROADS.orient(polygon, material, poly, ox, oy, oz)
+  local nx, ny, nz = 0, 0, 0
+  for k = 1, #poly do
+    local a, b = poly[k], poly[k % #poly + 1]
+    nx, ny, nz = nx + (a[2] - b[2]) * (a[3] + b[3]), ny + (a[3] - b[3]) * (a[1] + b[1]), nz + (a[1] - b[1]) * (a[2] + b[2])
+  end
+  if nx * ox + ny * oy + nz * oz < 0 then
+    local flipped = {}
+    for k = #poly, 1, -1 do flipped[#flipped + 1] = poly[k] end
+    poly = flipped
+  end
+  polygon(material, poly, false)
+end
+
+-- A box's four sides round (x, y): `across` half width along the normal of (tx, ty), `along`
+-- half length along it, from zb up to zt. Its top and bottom are never seen.
+function ROADS.box(face, material, x, y, tx, ty, across, along, zb, zt, repeatU)
+  local nx, ny = -ty, tx
+  local function c(sa, sb, z, u, v)
+    return {x + nx * across * sa + tx * along * sb, y + ny * across * sa + ty * along * sb, z, u, v}
+  end
+  local h, wa, wb = (zt - zb) / repeatU, 2 * across / repeatU, 2 * along / repeatU
+  for _, s in ipairs({1, -1}) do
+    face({c(-1, s, zt, 0, 0), c(1, s, zt, wa, 0), c(1, s, zb, wa, h), c(-1, s, zb, 0, h)}, tx * s, ty * s, 0, material)
+    face({c(s, -1, zt, 0, 0), c(s, 1, zt, wb, 0), c(s, 1, zb, wb, h), c(s, -1, zb, 0, h)}, nx * s, ny * s, 0, material)
+  end
+end
+
+-- A guard rail along path ({x, y, z}, z its base, or ctx.ground(x, y)): the beam's two faces and its top every
+-- rail.step metres, a post every rail.posts metres on the `behind` side (+1 left of the path's
+-- direction, -1 right). Only segments whose midpoint lies in ctx.rect: the tile that owns them,
+-- so a rail across a tile edge is drawn once.
+function ROADS.guardRail(ctx, path)
+  local rail, rect, face = ROADS.rail, ctx.rect, ctx.face
+  local behind = ctx.behind or 1
+  local pts, along = {}, {}
+  for k = 1, #path - 1 do
+    local a, b = path[k], path[k + 1]
+    local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+    if length > EPS then
+      local n = math.max(1, math.ceil(length / rail.step))
+      for i = #pts == 0 and 0 or 1, n do
+        local t = i / n
+        local x, y = a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t
+        -- ctx.ground: an OSM rail follows the drawn ground between its nodes too
+        pts[#pts + 1] = {x, y, ctx.ground and ctx.ground(x, y) or a[3] + (b[3] - a[3]) * t}
+        along[#pts] = #pts > 1 and along[#pts - 1] + length / n or 0
+      end
+    end
+  end
+  local half, top, low = rail.thick / 2, rail.height, rail.height - rail.beam
+  local post = 0
+  for k = 1, #pts - 1 do
+    local a, b = pts[k], pts[k + 1]
+    local dx, dy = b[1] - a[1], b[2] - a[2]
+    local l = math.max(EPS, math.sqrt(dx * dx + dy * dy))
+    local tx, ty = dx / l, dy / l
+    local mx, my = (a[1] + b[1]) / 2, (a[2] + b[2]) / 2
+    local mine = mx >= rect[1] and mx < rect[3] and my >= rect[2] and my < rect[4]
+    if mine then
+      local nx, ny = -ty * half, tx * half
+      local u0, u1 = along[k] / 4, along[k + 1] / 4
+      local function at(p, s, z, u, v) return {p[1] + nx * s, p[2] + ny * s, p[3] + z, u, v} end
+      for _, s in ipairs({1, -1}) do
+        face({at(a, s, top, u0, 0), at(b, s, top, u1, 0), at(b, s, low, u1, .25), at(a, s, low, u0, .25)}, -ty * s, tx * s, 0, rail.material)
+      end
+      face({at(a, 1, top, u0, 0), at(b, 1, top, u1, 0), at(b, -1, top, u1, .05), at(a, -1, top, u0, .05)}, 0, 0, 1, rail.material)
+    end
+    -- posts at 0, posts, 2 * posts, ... metres along the rail, each in the segment holding it
+    while post <= along[k + 1] + EPS do
+      if mine then
+        local t = math.max(0, math.min(1, (post - along[k]) / math.max(EPS, along[k + 1] - along[k])))
+        local off = (half + rail.post / 2) * behind
+        ROADS.box(face, rail.material, a[1] + dx * t - ty * off, a[2] + dy * t + tx * off, tx, ty,
+          rail.post / 2, rail.post / 2, a[3] + (b[3] - a[3]) * t - rail.sink, a[3] + (b[3] - a[3]) * t + top - .02, 1)
+      end
+      post = post + rail.posts
+    end
+  end
+end
+
+-- OSM maps a bridge's railings and guard rails as plain barrier ways beside the deck; drawn on
+-- the ground they cross whatever passes under it. The deck's parapets stand in for them: a
+-- barrier's stretches within `reach` m of a bridge's edge and running with it are dropped.
+ROADS.onDeck = {reach = 3, parallel = .85, step = 2}
+-- the runs of points ({x, y, ...}) off every bridge deck in strips; nil when none is near
+function ROADS.offDecks(strips, points)
+  local od, decks = ROADS.onDeck, nil
+  local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+  for _, p in ipairs(points) do
+    x0, y0, x1, y1 = math.min(x0, p[1]), math.min(y0, p[2]), math.max(x1, p[1]), math.max(y1, p[2])
+  end
+  for _, strip in ipairs(strips) do
+    if ROADS.bridge(strip.tags) then
+      local ps, r = strip.points, strip.hw + od.reach
+      for k = 1, #ps - 1 do
+        local a, b = ps[k], ps[k + 1]
+        if math.max(a[1], b[1]) + r > x0 and math.min(a[1], b[1]) - r < x1
+          and math.max(a[2], b[2]) + r > y0 and math.min(a[2], b[2]) - r < y1 then
+          decks = decks or {}
+          decks[#decks + 1] = {a[1], a[2], b[1], b[2], r}
+        end
+      end
+    end
+  end
+  if not decks then return nil end
+  local function onDeck(ax, ay, bx, by)
+    local dx, dy = bx - ax, by - ay
+    local l = math.sqrt(dx * dx + dy * dy)
+    if l < EPS then return false end
+    local mx, my = (ax + bx) / 2, (ay + by) / 2
+    for _, s in ipairs(decks) do
+      local sx, sy = s[3] - s[1], s[4] - s[2]
+      local l2 = sx * sx + sy * sy
+      if l2 > EPS and math.abs(dx * sx + dy * sy) / (l * math.sqrt(l2)) >= od.parallel then
+        local t = math.max(0, math.min(1, ((mx - s[1]) * sx + (my - s[2]) * sy) / l2))
+        if (mx - s[1] - t * sx) ^ 2 + (my - s[2] - t * sy) ^ 2 < s[5] * s[5] then return true end
+      end
+    end
+    return false
+  end
+  local runs, run = {}, nil
+  for k = 1, #points - 1 do
+    local a, b = points[k], points[k + 1]
+    local n = math.max(1, math.ceil(math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2) / od.step))
+    for i = 1, n do
+      local p = {a[1] + (b[1] - a[1]) * (i - 1) / n, a[2] + (b[2] - a[2]) * (i - 1) / n}
+      local q = i == n and {b[1], b[2]} or {a[1] + (b[1] - a[1]) * i / n, a[2] + (b[2] - a[2]) * i / n}
+      if onDeck(p[1], p[2], q[1], q[2]) then
+        run = nil
+      else
+        if not run then run = {p}; runs[#runs + 1] = run end
+        run[#run + 1] = q
+      end
+    end
+  end
+  return runs
+end
+
+-- Under the decks: a wall pier every deck.pier.every metres of a bridge (none where a road
+-- passes under it or the ground is within deck.pier.gap of the soffit), an abutment under each
+-- end that is no other bridge's end, and guard rails on the first rail.approach metres of a
+-- main road's plain approach to a bridge, both sides (none on a way tagged e2r:rails=register:
+-- the road register's rails are its own barrier=guard_rail ways). ctx: strips, rect, ground(x, y), face,
+-- pause, sidewalk (m).
+function ROADS.substructure(ctx)
+  local deck, pier, rail, rect, ground, face = ROADS.deck, ROADS.deck.pier, ROADS.rail, ctx.rect, ctx.ground, ctx.face
+  local function owns(x, y) return x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] end
+  local bridgeEnds, ends = {}, {}
+  for _, strip in ipairs(ctx.strips) do
+    local nodes = strip.road and strip.road.nodes or NONE
+    for e = 1, 2 do
+      local id = nodes[e] ~= nil and tostring(nodes[e])
+      if id then
+        ends[id] = (ends[id] or 0) + 1
+        if ROADS.bridge(strip.tags) then bridgeEnds[id] = (bridgeEnds[id] or 0) + 1 end
+      end
+    end
+  end
+  if not next(bridgeEnds) then return end
+  local below
+  local function roadUnder(x, y)
+    if not below then
+      below = {}
+      for _, other in ipairs(ctx.strips) do
+        if not ROADS.bridge(other.tags) then
+          local ps = other.points
+          for k = 1, #ps - 1 do
+            below[#below + 1] = {ps[k][1], ps[k][2], ps[k + 1][1], ps[k + 1][2], other.hw + pier.clear}
+          end
+        end
+      end
+    end
+    for _, s in ipairs(below) do
+      local ax, ay, bx, by, r = s[1], s[2], s[3], s[4], s[5]
+      if x > math.min(ax, bx) - r and x < math.max(ax, bx) + r and y > math.min(ay, by) - r and y < math.max(ay, by) + r then
+        local dx, dy = bx - ax, by - ay
+        local l2 = dx * dx + dy * dy
+        local t = l2 > EPS and math.max(0, math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2)) or 0
+        if (x - ax - t * dx) ^ 2 + (y - ay - t * dy) ^ 2 < r * r then return true end
+      end
+    end
+    return false
+  end
+  for _, strip in ipairs(ctx.strips) do
+    local points, dist, edge, hw = strip.points, strip.dist, strip.edge, strip.hw
+    local n = #points
+    local nodes = strip.road and strip.road.nodes or NONE
+    local function wide(k, sign)
+      local walk = strip.walk[math.max(1, math.min(k, n - 1))] or NONE
+      if sign then return hw + (walk[sign] and ctx.sidewalk or 0) end
+      return hw + ((walk[1] or walk[-1]) and ctx.sidewalk or 0)
+    end
+    if ROADS.bridge(strip.tags) and n >= 2 then
+      local depth = ROADS.deckDepth(strip.tags)
+      -- centre, tangent and soffit height at s metres along the strip
+      local function at(s)
+        local k = 1
+        while k < n - 1 and dist[k + 1] < s do k = k + 1 end
+        local t = math.max(0, math.min(1, (s - dist[k]) / math.max(EPS, dist[k + 1] - dist[k])))
+        local a, b = edge(k, 0, -depth), edge(k + 1, 0, -depth)
+        local dx, dy = b[1] - a[1], b[2] - a[2]
+        local l = math.max(EPS, math.sqrt(dx * dx + dy * dy))
+        return a[1] + dx * t, a[2] + dy * t, a[3] + (b[3] - a[3]) * t, dx / l, dy / l, k
+      end
+      local first, length = dist[1], dist[n] - dist[1]
+      if length >= pier.min then
+        local count = math.max(2, math.ceil(length / pier.every))
+        for i = 1, count - 1 do
+          local x, y, z, tx, ty, k = at(first + length * i / count)
+          if owns(x, y) then
+            local across = wide(k) * pier.across
+            local zg = ground(x, y)
+            local clear = z - zg >= pier.gap
+            for _, f in ipairs({-1, -.5, 0, .5, 1}) do
+              if clear and roadUnder(x - ty * across * f, y + tx * across * f) then clear = false end
+            end
+            if clear then
+              ROADS.box(face, 'fence_wall', x, y, tx, ty, across, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU)
+            end
+          end
+        end
+      end
+      for e = 1, 2 do
+        local id = nodes[e] ~= nil and tostring(nodes[e])
+        if id and bridgeEnds[id] == 1 then
+          local x, y, z, tx, ty, k = at(e == 1 and first + pier.thick / 2 or dist[n] - pier.thick / 2)
+          local zg = ground(x, y)
+          if owns(x, y) and z - zg > .1 then
+            ROADS.box(face, 'fence_wall', x, y, tx, ty, wide(k) + deck.thick, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU)
+          end
+        end
+      end
+    elseif not ROADS.tunnel(strip.tags) and ROADS.rankOf(strip.tags) >= rail.rank and n >= 2
+      and strip.tags['e2r:rails'] ~= 'register' then
+      for e = 1, 2 do
+        local id = nodes[e] ~= nil and tostring(nodes[e])
+        -- only a plain approach: the bridge and this road meet there and nothing else does
+        if id and bridgeEnds[id] == 1 and ends[id] == 2 then
+          local from = e == 1 and dist[1] or dist[n]
+          local k0, k1, step = e == 1 and 1 or n, e == 1 and n or 1, e == 1 and 1 or -1
+          for _, sign in ipairs({1, -1}) do
+            local path = {}
+            for k = k0, k1, step do
+              local offset = (wide(k, sign) + rail.offset) * sign
+              local gone = math.abs(dist[k] - from)
+              if gone <= rail.approach then
+                path[#path + 1] = edge(k, offset, 0)
+              else
+                local prev = k - step
+                local t = (rail.approach - math.abs(dist[prev] - from)) / math.max(EPS, math.abs(dist[k] - dist[prev]))
+                local a, b = edge(prev, offset, 0), edge(k, offset, 0)
+                path[#path + 1] = {a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t}
+                break
+              end
+            end
+            -- the path runs away from the bridge: walking from the start end the road's left
+            -- (+ side) is the path's left; from the far end it is the path's right. Posts stand
+            -- away from the road.
+            local behind = sign * step
+            if #path >= 2 then ROADS.guardRail({rect = rect, face = face, behind = behind}, path) end
+          end
+        end
+      end
+    end
+    if ctx.pause then ctx.pause() end
+  end
+end
+-- Paved shoulder (m) outside the edge lines, left and right of the node order: tagged
+-- (shoulder:left:width and shoulder:right:width, from the road register), else by class where the
+-- way has no width tag: the pack widened the carriageway by it (fast_sources.shoulder, same rule).
 ROADS.shoulders = {motorway = {.75, 2.5}, trunk = {1, 1}, primary = {.5, .5}, secondary = {.25, .25}}
 ROADS.shouldersOneway = {trunk = {.5, 1.5}, primary = {.25, .75}}
 function ROADS.shoulder(tags)
+  local tagLeft, tagRight = tonumber(tags['shoulder:left:width']), tonumber(tags['shoulder:right:width'])
+  if tagLeft and tagRight then return tagLeft, tagRight end
   local highway = tags.highway or ''
   if tags.width ~= nil or ROADS.ring(tags) then return 0, 0 end
   local oneway, flip = ROADS.oneway(tags)
@@ -2377,7 +2662,7 @@ local function build(cells, i, j, options)
   -- its segment, clipped to the tile like the fences.
   if visualRoads then
     local deck = ROADS.deck
-    local function face(poly, ox, oy, oz)
+    local function face(poly, ox, oy, oz, material)
       -- turned to face (ox, oy, oz): Newell's normal of the quad
       local nx, ny, nz = 0, 0, 0
       for k = 1, #poly do
@@ -2389,11 +2674,12 @@ local function build(cells, i, j, options)
         for k = #poly, 1, -1 do flipped[#flipped + 1] = poly[k] end
         poly = flipped
       end
-      scene.polygon('fence_wall', poly, false)
+      scene.polygon(material or 'fence_wall', poly, false)
     end
     for _, strip in ipairs(strips) do
       if ROADS.bridge(strip.tags) then
         local points, edge, hw = strip.points, strip.edge, strip.hw
+        local depth = ROADS.deckDepth(strip.tags)
         for k = 1, #points - 1 do
           local box = ringBounds({{points[k], points[k + 1]}})
           if boundsTouch(rect, box, hw + tune.sidewalk + 1) then
@@ -2409,7 +2695,7 @@ local function build(cells, i, j, options)
               local inner = outer - deck.thick * sign
               local ox, oy = -dy * sign, dx * sign
               -- the edge face, outside, from the parapet's top to the soffit
-              local top, low = deck.parapet, -deck.depth
+              local top, low = deck.parapet, -depth
               face({at(k, outer, top, u0, 0), at(k + 1, outer, top, u1, 0),
                 at(k + 1, outer, low, u1, (top - low) / deck.repeatU), at(k, outer, low, u0, (top - low) / deck.repeatU)}, ox, oy, 0)
               -- the parapet's inner face and its top
@@ -2421,13 +2707,14 @@ local function build(cells, i, j, options)
             -- the soffit, seen from the road under the bridge
             local l = (hw + (strip.walk[k][1] and tune.sidewalk or 0))
             local r = -(hw + (strip.walk[k][-1] and tune.sidewalk or 0))
-            face({at(k, l, -deck.depth, u0, 0), at(k + 1, l, -deck.depth, u1, 0),
-              at(k + 1, r, -deck.depth, u1, (l - r) / deck.repeatU), at(k, r, -deck.depth, u0, (l - r) / deck.repeatU)}, 0, 0, -1)
+            face({at(k, l, -depth, u0, 0), at(k + 1, l, -depth, u1, 0),
+              at(k + 1, r, -depth, u1, (l - r) / deck.repeatU), at(k, r, -depth, u0, (l - r) / deck.repeatU)}, 0, 0, -1)
           end
           if k % 32 == 0 then pause() end
         end
       end
     end
+    ROADS.substructure({strips = strips, rect = rect, ground = ground, face = face, pause = pause, sidewalk = tune.sidewalk})
   end
   mark('strips')
   -- Strip ends of streets with sidewalks, by the metre: a junction with one of them at a mouth
@@ -3417,7 +3704,19 @@ local function build(cells, i, j, options)
   -- Horizon draws neither.
   for _, line in ipairs(options.horizon and NONE or lists.lines) do
     local points, tags = line.points or {}, line.tags or {}
-    if line.kind == 'fence' then fence(line) end
+    local barrier = (line.kind == 'fence' or line.kind == 'guard_rail') and #points >= 2
+    for _, run in ipairs(barrier and (ROADS.offDecks(strips, points) or {points}) or NONE) do
+      if #run >= 2 and line.kind == 'fence' then
+        fence(run == points and line or {tags = line.tags, points = run})
+      elseif #run >= 2 then
+        local path = {}
+        for k, p in ipairs(run) do path[k] = {p[1], p[2], 0} end
+        ROADS.guardRail({rect = rect, ground = ground, face = function(poly, ox, oy, oz, material)
+          ROADS.orient(scene.polygon, material, poly, ox, oy, oz)
+        end}, path)
+        pause()
+      end
+    end
     if not distant then
       for index = 1, #points - 1 do
         local a, b = points[index], points[index + 1]

@@ -17,6 +17,10 @@ from lupa.luajit21 import LuaRuntime
 
 
 class AssetTests(unittest.TestCase):
+    def test_guard_rails_are_lines(self):
+        self.assertEqual(style.line_kind({'barrier': 'guard_rail'}), 'guard_rail')
+        self.assertEqual(style.line_kind({'barrier': 'fence'}), 'fence')
+
     def test_road_detail_nodes_have_kinds(self):
         kind = style.point_kind
         self.assertEqual(kind({'highway': 'crossing', 'crossing': 'uncontrolled'}), 'crossing')

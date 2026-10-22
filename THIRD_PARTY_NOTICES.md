@@ -14,6 +14,10 @@ of the following data and assets:
   Development Board (Maa- ja Ruumiamet), under its open data licence:
   https://geoportaal.maaruum.ee/opendata-licence . State the extraction year
   when redistributing packs built with it.
+- Estonian state roads (`--road-register`): Transpordiamet, Teeregister
+  (https://teeregister.mnt.ee/), listed as CC BY 4.0 on https://andmed.eesti.ee/ .
+  The road register's own terms for redistributing derived packs are not yet
+  confirmed; keep packs built with it for local use until they are.
 - Natural Earth: public-domain map data. https://www.naturalearthdata.com/about/terms-of-use/
 - Panelka pack by kureca, ambientCG and Poly Haven textures: CC0, as recorded in
   the texture source manifest distributed with the developer assets. Road surfaces

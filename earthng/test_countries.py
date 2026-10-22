@@ -81,6 +81,52 @@ class CountryCatalogTests(unittest.TestCase):
         self.assertEqual([call[i] for i in range(1, 6)],
                          ['/earthng/countries/', 'manifest.json', -1, True, False])
 
+    def mount_sections(self, manifests, sections):
+        self.mount(manifests)
+        docs, files = dict(self.lua.globals().documents), dict(self.lua.globals().files)
+        paths = list(self.lua.globals().mounted.values())
+        for country_id, section_id, box in sections:
+            region_path = f'/earthng/countries/{country_id}/regions/{section_id}/manifest.json'
+            path = f'/earthng/countries/{country_id}/sections/{section_id}/section.json'
+            doc = country(country_id, 'native', [box])
+            del doc['regions']
+            doc.update(kind='earthng-section', country=country_id, id=section_id, sourceFormat='x',
+                       region={'id': section_id, 'title': section_id.title(), 'manifest': region_path,
+                               'coverage': [box]})
+            docs[path], files[region_path] = self.table(doc), True
+            paths.append(path)
+        self.lua.globals().documents = self.lua.table_from(docs)
+        self.lua.globals().files = self.lua.table_from(files)
+        self.lua.globals().mounted = self.lua.table_from(paths)
+
+    def test_sections_make_one_country_and_join_its_manifest(self):
+        self.mount_sections([], [('estonia', 'tartu', [26, 58, 27.5, 58.8]),
+                                 ('estonia', 'harju', [23.5, 59, 26, 59.8])])
+        found, errors = self.mod.scan()
+        self.assertEqual(len(errors), 0)
+        self.assertEqual([entry.id for entry in found.values()], ['estonia'])
+        self.assertEqual([r.id for r in found[1].regions.values()], ['harju', 'tartu'])
+        self.assertEqual(found[1].kind, 'earthng-country')
+        self.assertEqual(found[1].manifest, '/earthng/countries/estonia/manifest.json')
+        self.assertEqual(len(found[1].coverage), 2)
+        self.assertEqual((self.mod.at(59.4, 24.7)[1].id, self.mod.at(58.4, 26.7)[1].id), ('harju', 'tartu'))
+        self.assertIsNone(self.mod.at(57.7, 22.5))   # Saaremaa not installed
+        self.mount_sections([country()], [('ukraine', 'lviv', [23, 49, 25, 50]),
+                                          ('ukraine', 'obolon', [30.4, 50.4, 30.6, 50.6])])
+        found, errors = self.mod.scan()
+        self.assertEqual(len(errors), 0)
+        self.assertEqual([r.id for r in found[1].regions.values()], ['lviv', 'obolon', 'kyiv'])
+        self.assertEqual(self.mod.at(49.5, 24)[1].id, 'lviv')
+        self.assertEqual(self.mod.at(50.5, 30.5)[1].id, 'obolon')   # a section wins over the country's regions
+        self.assertEqual(self.mod.at(50.9, 30.9)[1].id, 'kyiv')
+
+    def test_a_section_of_another_country_is_rejected(self):
+        self.mount_sections([], [('estonia', 'harju', [23.5, 59, 26, 59.8])])
+        path = '/earthng/countries/estonia/sections/harju/section.json'
+        self.lua.execute(f"documents['{path}'].country = 'latvia'")
+        found, errors = self.mod.scan()
+        self.assertEqual((len(found), errors[1].code), (0, 'invalid'))
+
     def test_refresh_drops_deactivated_mods(self):
         self.mount([country()])
         self.mod.scan()

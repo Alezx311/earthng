@@ -231,21 +231,97 @@ class GeneratorTests(unittest.TestCase):
             self.assertAlmostEqual(math.hypot(cx - 250, cy - 250), 2, delta=.35)
 
     def test_a_bridge_deck_has_edges_a_soffit_and_parapets(self):
-        def walls(tags):
-            road = {'id': 'b', 'nodes': ['a', 'b'], 'width': 8, 'tags': dict(tags, highway='trunk', sidewalk='no'),
+        def walls(tags, highway='trunk'):
+            road = {'id': 'b', 'nodes': ['a', 'b'], 'width': 8, 'tags': dict(tags, highway=highway, sidewalk='no'),
                     'points': [[0, 250, 20], [500, 250, 20]]}
             return list(self.triangles(self.build([{'roads': [road]}])[1], 'e2rf_fence_wall'))
         self.assertEqual(walls({}), [])
         deck = walls({'bridge': 'viaduct', 'layer': '1'})
         self.assertTrue(deck)
+        lift = 20 + .1                                                # ROAD_LIFT
+        flat = [t for t in deck if max(p[2] for p in t) - min(p[2] for p in t) < 1e-6]
+        # the soffit: a main road's girder deck 1.5 m deep; a street's slab 1.2 m
+        self.assertAlmostEqual(min(p[2] for t in flat for p in t), lift - 1.5, places=2)
+        street = walls({'bridge': 'yes'}, 'tertiary')
+        self.assertAlmostEqual(min(p[2] for t in street for p in t if p[2] > 15), lift - 1.2, places=2)
         zs = [p[2] for t in deck for p in t]
         ys = [p[1] for t in deck for p in t]
-        lift = 20 + .1                                                # ROAD_LIFT
-        self.assertAlmostEqual(min(zs), lift - 1, places=2)          # the soffit, 1 m under
         self.assertAlmostEqual(max(zs), lift + .9, places=2)         # the parapet's top
-        self.assertAlmostEqual(max(ys), 254, places=3)               # flush with the deck edge
-        self.assertAlmostEqual(min(ys), 246, places=3)
+        self.assertLess(min(zs), 0)                                   # piers down into the ground
+        self.assertAlmostEqual(max(ys), 254 + .3, places=3)          # the abutments, a parapet wider
+        self.assertAlmostEqual(min(ys), 246 - .3, places=3)
         self.assertEqual(walls({'tunnel': 'building_passage'}), [])
+
+    def test_piers_stand_every_25_m_but_never_on_a_road_under_the_bridge(self):
+        bridge = {'id': 'b', 'nodes': ['a', 'b'], 'width': 8, 'points': [[0, 250, 20], [500, 250, 20]],
+                  'tags': {'highway': 'trunk', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'}}
+        under = {'id': 'u', 'nodes': ['s', 'n'], 'width': 7, 'points': [[250, 0, 10], [250, 500, 10]],
+                 'tags': {'highway': 'residential', 'sidewalk': 'no'}}
+
+        def piers(roads):
+            walls = self.triangles(self.build([{'roads': roads}])[1], 'e2rf_fence_wall')
+            low = [t for t in walls if min(p[2] for p in t) < 15]       # under the soffit
+            return sorted({round(sum(p[0] for p in t) / 3 / 5) * 5 for t in low})
+        alone = piers([bridge])
+        self.assertIn(250, alone)
+        self.assertIn(25, alone)
+        self.assertIn(0, alone)                                       # an abutment at each end
+        crossed = piers([bridge, under])
+        self.assertNotIn(250, crossed)
+        self.assertEqual(set(alone) - set(crossed), {250})
+
+    def test_main_road_approaches_to_a_bridge_get_guard_rails(self):
+        def rails(highway, lines=(), register=False):
+            bridge = {'id': 'b', 'nodes': ['a', 'b'], 'width': 8, 'points': [[250, 250, 10], [500, 250, 10]],
+                      'tags': {'highway': highway, 'bridge': 'yes', 'sidewalk': 'no'}}
+            approach = {'id': 'r', 'nodes': ['c', 'a'], 'width': 8, 'points': [[100, 250, 10], [250, 250, 10]],
+                        'tags': {'highway': highway, 'sidewalk': 'no', **({'e2r:rails': 'register'} if register else {})}}
+            cells = [{'roads': [bridge, approach], 'lines': list(lines)}]
+            return list(self.triangles(self.build(cells)[1], 'e2rf_clad_metal'))
+        metal = rails('trunk')
+        self.assertTrue(metal)
+        xs = [p[0] for t in metal for p in t]
+        ys = [abs(p[1] - 250) for t in metal for p in t]
+        zs = [p[2] for t in metal for p in t]
+        self.assertAlmostEqual(min(xs), 210, delta=.2)                # 40 m of the approach
+        self.assertAlmostEqual(max(xs), 250, delta=.2)
+        self.assertGreater(min(ys), 4.4)                              # outside the road's edge
+        self.assertLess(max(ys), 4.85)                                # posts behind the beam
+        self.assertAlmostEqual(max(zs), 10 + .1 + .75, places=2)
+        self.assertEqual(rails('residential'), [])
+        self.assertEqual(rails('trunk', register=True), [])           # the register's own rails stand
+        osm = {'id': 'g', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'}, 'points': [[0, 100, 0], [100, 100, 0]]}
+        metal = rails('residential', [osm])
+        self.assertTrue(metal)
+        zs = [p[2] for t in metal for p in t]
+        self.assertAlmostEqual(max(zs) - min(zs), .75 + .3, places=2)  # the beam's top over the posts' feet
+        self.assertAlmostEqual(max(p[0] for t in metal for p in t), 100, delta=.2)
+
+    def test_barriers_mapped_beside_a_deck_are_not_drawn_on_the_road_under_it(self):
+        bridge = {'id': 'b', 'nodes': ['a', 'b'], 'width': 8, 'points': [[200, 250, 20], [300, 250, 20]],
+                  'tags': {'highway': 'tertiary', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'}}
+        under = {'id': 'u', 'nodes': ['s', 'n'], 'width': 8, 'points': [[250, 0, 10], [250, 500, 10]],
+                 'tags': {'highway': 'trunk', 'sidewalk': 'no'}}
+        # OSM: a guard rail and a railing along the deck's edges, a rail beside the road under it
+        deck_rail = {'id': 'g', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'},
+                     'points': [[180, 254.5, 0], [320, 254.5, 0]]}
+        railing = {'id': 'f', 'kind': 'fence', 'tags': {'barrier': 'fence', 'fence_type': 'railing'},
+                   'points': [[190, 245.5, 0], [310, 245.5, 0]]}
+        low_rail = {'id': 'l', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'},
+                    'points': [[254.5, 150, 0], [254.5, 350, 0]]}
+        scene = self.build([{'roads': [bridge, under], 'lines': [deck_rail, railing, low_rail]}])[1]
+        metal = list(self.triangles(scene, 'e2rf_clad_metal'))
+        mesh = list(self.triangles(scene, 'e2rf_fence_mesh'))
+
+        def across_the_road(tris):    # over the lower road's asphalt, off its own rail
+            return [t for t in tris if all(abs(p[0] - 250) < 4 for p in t) and all(abs(p[1] - 250) > 1 for p in t)
+                    and not all(abs(p[0] - 254.5) < .6 for p in t)]
+        self.assertEqual(across_the_road(metal), [])
+        self.assertEqual(across_the_road(mesh), [])
+        # the lower road's rail runs on under the deck; the deck's ones go on past its ends
+        self.assertTrue([t for t in metal if all(abs(p[0] - 254.5) < .6 and abs(p[1] - 250) < 3 for p in t)])
+        self.assertTrue([t for t in metal if all(p[0] < 195 and abs(p[1] - 254.5) < .6 for p in t)])
+        self.assertTrue([t for t in mesh if all(p[0] > 300 for p in t)])
 
     def test_per_side_sidewalk_tags_win(self):
         def sides(tags):
@@ -358,6 +434,9 @@ class GeneratorTests(unittest.TestCase):
         # a measured width has no assumed shoulder
         self.assertEqual(lines({'highway': 'trunk', 'oneway': 'yes', 'lanes': '2', 'width': '9'}, 9),
                          {14.2, 10.0, 5.8})
+        # the road register's shoulders: 1 m left, 0.5 m right of the node order
+        self.assertEqual(lines({'highway': 'trunk', 'oneway': 'yes', 'lanes': '2', 'width': '9',
+                                'shoulder:left:width': '1', 'shoulder:right:width': '.5'}, 9), {13.4, 9.8, 6.1})
 
     def test_a_gentle_bend_between_two_ways_is_joined_without_a_star(self):
         # a way split at node 'n' with a 30 degree turn: one carriageway, no wedge at the seam

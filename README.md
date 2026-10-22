@@ -123,6 +123,18 @@ original tiles in `out/world/cache/terrain/12.orig`, and
 `.venv\Scripts\python.exe earthng/est_dem.py --cache out/world/cache --restore` puts
 them back.
 
+`--road-register` (Estonia) takes the state roads' carriageway widths and shoulders and
+their guard rails from the Transpordiamet road register (teeregister.mnt.ee WFS, cached
+under `out/world/cache`). Its terms for redistributing derived packs are not yet
+confirmed: keep register-built packs for local use until they are.
+
+A large country can be built and improved in sections, one administrative area at a time:
+`country_fetch.py sections --place estonia` lists them, and
+`country_fetch.py build --place estonia --section harju-maakond ...` writes
+`earthng_estonia_harju-maakond.zip`. The game joins every installed section into the one
+country, and where a section overlaps the whole-country pack the section answers, so a
+rebuilt county replaces just that area.
+
 Data downloads/cache live under `data`, intermediates under `out`; neither is
 committed. The default build uses at most four worker processes. Linux/macOS
 country building has not been validated for this release.

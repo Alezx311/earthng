@@ -30,8 +30,9 @@ JUNCTION_FLAT = 10.0
 # a street) are tied to one height: on Khreshchatyk the carriageways overlapped by 1 m with
 # profiles up to 1.02 m apart.
 COUPLE = 1000.0
-# A deck over a road: 4.5 m headroom + 1 m of deck (the generator draws it 1 m deep), per layer.
-CLEARANCE, CLEAR_WEIGHT, CLEAR_PASSES = 5.5, 1e4, 4
+# A deck over a road: 4.5 m headroom + 1.5 m of deck (the generator's deepest,
+# ROADS.deckDepth of a main road), per layer.
+CLEARANCE, CLEAR_WEIGHT, CLEAR_PASSES = 6.0, 1e4, 4
 
 
 def crossings(pos, seg_of, same, upper, lower):

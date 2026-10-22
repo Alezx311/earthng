@@ -225,7 +225,7 @@ def keep_scenery(kind, include):
         return bool(include.get('buildings', True))
     if kind == 'water':
         return bool(include.get('water', True))
-    if kind in ('fence', 'wall'):
+    if kind in ('fence', 'wall', 'guard_rail'):
         return bool(include.get('barriers', True))
     if kind == 'tree_row':
         return bool(include.get('treeRows', True))

@@ -141,18 +141,19 @@ def download(url, dest, emit=print, cancel=None):
     return dest
 
 
-def install_zip(source, mods, slug_id):
-    """Copy a country zip into the BeamNG mods folder."""
+def install_zip(source, mods, slug_id, section=None):
+    """Copy a country zip, or one section of it, into the BeamNG mods folder."""
     source = Path(source)
     if not source.is_file():
         raise FileNotFoundError(source)
     with zipfile.ZipFile(source) as archive:
-        marker = f'earthng/countries/{slug_id}/manifest.json'
+        marker = (f'earthng/countries/{slug_id}/manifest.json' if section is None
+                  else f'earthng/countries/{slug_id}/sections/{section}/section.json')
         if marker not in archive.namelist():
             raise ValueError(f'{source.name} does not contain {marker}')
     target_dir = Path(mods) / 'mods'
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f'earthng_{slug_id}.zip'
+    target = target_dir / (f'earthng_{slug_id}.zip' if section is None else f'earthng_{slug_id}_{section}.zip')
     temporary = target.with_suffix('.zip.part')
     shutil.copyfile(source, temporary)
     os.replace(temporary, target)
@@ -240,9 +241,14 @@ def fetch_dem(index, dem, emit=print, cancel=None):
 
 
 def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=None,
-                landing=None, by_id=None, emit=print, cancel=None, progress=None, local_dem=False):
+                landing=None, by_id=None, emit=print, cancel=None, progress=None, local_dem=False,
+                road_register=False, section=None):
     """Download sources if needed and write the country zip, then copy it into mods.
-    local_dem: burn the Estonian Land Board's 10 m LiDAR terrain into the elevation tiles."""
+    local_dem: burn the Estonian Land Board's 10 m LiDAR terrain into the elevation tiles.
+    road_register: join Transpordiamet's road register (state road widths, shoulders, guard
+    rails) onto the source tiles.
+    section: a sections.find() entry: build only that administrative area, as one region in its
+    own zip (earthng_<country>_<section>.zip); the game joins the installed sections."""
     import build_country
 
     slug_id = places.slug(place['id'])
@@ -251,6 +257,11 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     look = looks.canonical(look or looks.recommended(place['id'], known))
     include = looks.canonical_include(include if include is not None else {})
     jobs = jobs or min(4, max(1, (os.cpu_count() or 2) - 1))
+    if section is not None:
+        import sections
+        if box is not None:
+            raise ValueError('a section build has its own box')
+        box = sections.box(section)
     if box is not None:
         from builder_estimate import validate_box
         box = validate_box(box)
@@ -283,6 +294,11 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
             if box:
                 command += ['--package-box', *(str(v) for v in box)]
             run_step(command, emit, cancel)
+    if road_register:
+        with stage('Road register'):
+            import est_roads
+            box_of = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))['package_box']
+            tiles = est_roads.enrich(tiles, est_roads.fetch(box_of, Path(root) / 'data', emit), emit)
     index = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))
     dem = Path(root) / 'out' / 'world' / 'cache'
     with stage('Elevation'):
@@ -296,10 +312,16 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     work = Path(root) / 'out' / 'world'
     emit('region index')
     with stage('Region index'):
-        regions = build_country.grid_regions(tiles, dem, work, emit=emit, cancel=cancel)
+        if section is None:
+            regions = build_country.grid_regions(tiles, dem, work, emit=emit, cancel=cancel)
+        else:
+            regions = [build_country.section_region(tiles, dem, work, section['box'], section['id'],
+                                                    sections.shape(section), emit=emit)]
     out = Path(root) / 'out' / 'country-setup'
     map_data = tiles / 'map'
-    if not (map_data / 'index.json').is_file():
+    if section is not None:
+        map_data = None       # the offline map is the country's: the country pack carries it
+    elif not (map_data / 'index.json').is_file():
         if pbf.is_file():
             # A separate worker keeps this cancellable, just like source extraction.
             map_data = Path(root) / 'out' / 'map-data' / slug_id
@@ -308,15 +330,17 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
         else:
             emit('No original PBF/map sidecar in this cache: using base map labels and close-up roads.')
             map_data = None
-    emit(f"building earthng_{slug_id}.zip, block {look['block']}")
+    part = f"_{section['id']}" if section else ''
+    emit(f"building earthng_{slug_id}{part}.zip, block {look['block']}")
     with stage('Export'):
         archive = build_country.build_country(
             slug_id, place['name'], '0.4.0', regions, out, emit=emit, jobs=jobs,
-            landing=landing, look=look, include=include, cancel=cancel, map_data=map_data)
+            landing=landing, look=look, include=include, cancel=cancel, map_data=map_data,
+            section=section and {'id': section['id'], 'title': section['name']})
     if cancel is not None and cancel.is_set():
         raise InterruptedError('build stopped; completed ZIP retained, not installed')
     with stage('Install'):
-        installed = install_zip(archive, mods, slug_id)
+        installed = install_zip(archive, mods, slug_id, section and section['id'])
     emit(f'installed {installed}')
     return installed
 
@@ -392,7 +416,7 @@ def refresh_planet(mods, emit=print):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('command', choices=('places', 'build', 'install', 'refresh-planet'))
+    parser.add_argument('command', choices=('places', 'sections', 'build', 'install', 'refresh-planet'))
     parser.add_argument('--query', default='')
     parser.add_argument('--place', help='Geofabrik extract id, for example ukraine or berlin')
     parser.add_argument('--mods', type=Path, default=default_mods())
@@ -404,6 +428,10 @@ def main():
     parser.add_argument('--refresh-index', action='store_true')
     parser.add_argument('--local-dem', action='store_true',
                         help='Estonia: refine the elevation with the Land Board 10 m LiDAR terrain')
+    parser.add_argument('--section', help='build one administrative area (county, city) of the place '
+                        'as its own zip; list them with the sections command')
+    parser.add_argument('--road-register', action='store_true',
+                        help='Estonia: state road widths, shoulders and guard rails from the road register')
     for slot in looks.SLOTS:
         parser.add_argument(f'--{slot}', default='')
     for key, _label, _default in looks.LAYERS:
@@ -420,14 +448,30 @@ def main():
     if args.command == 'install':
         if not args.place or not args.zip:
             parser.error('install needs --place and --zip')
-        print(install_zip(args.zip, args.mods, places.slug(args.place)))
+        print(install_zip(args.zip, args.mods, places.slug(args.place), args.section))
         return
     if not args.place:
-        parser.error('build needs --place')
+        parser.error(f'{args.command} needs --place')
     index = places.by_id(places.load_index(ROOT, args.refresh_index))
     place = index.get(args.place)
     if place is None:
         parser.error(f'unknown extract {args.place}')
+    section = None
+    if args.command == 'sections' or args.section:
+        import sections
+        pbf = pbf_path(ROOT, places.slug(place['id']))
+        if not pbf.is_file():
+            download(place['pbf'], pbf)
+        found = sections.load(pbf, ROOT / 'data' / 'sections')
+        if args.command == 'sections':
+            for entry in found:
+                print(f"{entry['id']}	{entry['name']}	level {entry['level']}	{entry['box']}")
+            return
+        try:
+            section = sections.find(found, args.section)
+            sections.box(section)
+        except ValueError as exc:
+            parser.error(str(exc))
     base = looks.recommended(place['id'], index)
     if args.block:
         block = looks.BLOCK_BY_ID.get(args.block)
@@ -442,7 +486,7 @@ def main():
     built = build_place(place, args.mods, look=looks.canonical(base), include=include,
                         box=args.box, jobs=args.jobs or None, by_id=index,
                         landing=tuple(args.landing) if args.landing else None,
-                        local_dem=args.local_dem)
+                        local_dem=args.local_dem, road_register=args.road_register, section=section)
     print(built)
 
 

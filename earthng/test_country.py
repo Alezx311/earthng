@@ -77,6 +77,36 @@ class CountryTests(unittest.TestCase):
             return country.build_country('ua', 'Україна', '0.1.0', [self.region],
                                          self.root / 'mods', bbox, emit=lambda _: None)
 
+    def test_a_section_zip_holds_one_region_and_no_country_manifest(self):
+        import shapely
+        region = {'dir': self.region, 'core': None, 'id': 'kyiv'}
+        outline = shapely.box(*self.store.frame.geo_bbox([0, 0, 900, 900]))
+        with patch.object(sources, 'Store', return_value=self.store):
+            whole = country.build_country('ua', 'Україна', '0.1.0', [region], self.root / 'mods',
+                                          (-1000, 0, 2000, 1000), emit=lambda _: None,
+                                          section={'id': 'kyiv', 'title': 'Kyiv'})
+            cut = country.build_country('ua', 'Україна', '0.1.0', [dict(region, shape=outline)],
+                                        self.root / 'cut', (-1000, 0, 2000, 1000), emit=lambda _: None,
+                                        section={'id': 'kyiv', 'title': 'Kyiv'})
+        self.assertEqual(whole.name, 'earthng_ua_kyiv.zip')
+        with zipfile.ZipFile(whole) as archive:
+            names = archive.namelist()
+            self.assertNotIn('earthng/countries/ua/manifest.json', names)
+            section = json.loads(archive.read('earthng/countries/ua/sections/kyiv/section.json'))
+            self.assertEqual((section['kind'], section['country'], section['id']), ('earthng-section', 'ua', 'kyiv'))
+            self.assertEqual((section['title'], section['sectionTitle']), ('Україна', 'Kyiv'))
+            self.assertNotIn('regions', section)
+            self.assertEqual((section['region']['id'], section['region']['title']), ('kyiv', 'Kyiv'))
+            data = json.loads(archive.read(section['region']['manifest'].lstrip('/')))
+            self.assertEqual(data['cellCount'], 2)
+        with zipfile.ZipFile(cut) as archive:
+            section = json.loads(archive.read('earthng/countries/ua/sections/kyiv/section.json'))
+            data = json.loads(archive.read(section['region']['manifest'].lstrip('/')))
+            self.assertEqual(data['cellCount'], 1)  # the outline holds only cell 0_0
+        with self.assertRaises(ValueError):
+            country.build_country('ua', 'Україна', '0.1.0', [region], self.root / 'bad', emit=lambda _: None,
+                                  section={'id': 'other', 'title': 'Other'})
+
     def test_sources_only_country_zip_and_exact_export_coverage(self):
         result = self.build()
         with zipfile.ZipFile(result) as archive:

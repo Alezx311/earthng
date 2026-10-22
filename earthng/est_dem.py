@@ -87,7 +87,7 @@ def fetch_sheet(code, cache, kind=KIND):
     if data[:4] not in (b'II*\x00', b'MM\x00*'):      # an HTML page: "no sheet with this number"
         none.write_bytes(b'')
         return None
-    part = path.with_suffix('.tif.part')
+    part = path.with_suffix(f'.{os.getpid()}.tif.part')   # builds running side by side
     part.write_bytes(data)
     import rasterio
     with rasterio.open(part) as source:
@@ -208,7 +208,7 @@ def refine(tiles, cache, emit=print, kind=KIND, fetch=fetch_sheet):
         if heights is None:
             continue
         from PIL import Image
-        part = path.with_suffix('.png.part')
+        part = path.with_suffix(f'.{os.getpid()}.png.part')
         Image.fromarray(encode(heights), 'RGB').save(part, format='PNG')
         os.replace(part, path)
         burnt[f'{x}/{y}'] = stamp

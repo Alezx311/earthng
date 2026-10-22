@@ -406,7 +406,7 @@ UNPAVED = {'unpaved', 'dirt', 'ground', 'earth', 'grass', 'sand', 'gravel', 'fin
 
 
 def line_kind(tags):
-    """'path', 'fence' or 'tree_row' for an OSM way drawn as a line, 'coastline' for the shore
+    """'path', 'fence', 'guard_rail' or 'tree_row' for an OSM way drawn as a line, 'coastline' for the shore
     the exporter fixes the DEM with (never drawn), else None."""
     if tags.get('natural') == 'coastline':
         return 'coastline'
@@ -417,6 +417,8 @@ def line_kind(tags):
         return 'tree_row'
     if tags.get('barrier') in ('fence', 'wall'):
         return 'fence'
+    if tags.get('barrier') == 'guard_rail':
+        return 'guard_rail'
     return None
 
 

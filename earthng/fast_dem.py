@@ -32,7 +32,7 @@ def fetch(path):
     with urllib.request.urlopen(req,timeout=45) as response:
         data=response.read()
     path.parent.mkdir(parents=True,exist_ok=True)
-    tmp=path.with_suffix('.png.part'); tmp.write_bytes(data)
+    tmp=path.with_suffix(f'.{os.getpid()}.png.part'); tmp.write_bytes(data)   # builds side by side
     with Image.open(tmp) as image:
         if image.size!=(256,256):
             raise ValueError(f'invalid DEM {url}')

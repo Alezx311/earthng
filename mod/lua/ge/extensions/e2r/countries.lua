@@ -111,7 +111,11 @@ local function validate(manifest, path)
     entry.manifest, entry.coverage = regionPath, regionCoverage
     regions[#regions + 1] = entry
   end
-  table.sort(regions, function(a, b) return a.id < b.id end)
+  -- sections first: a rebuilt county answers landings over the whole-country regions
+  table.sort(regions, function(a, b)
+    if (a.section == true) ~= (b.section == true) then return a.section == true end
+    return a.id < b.id
+  end)
   if manifest.runtime ~= 'source' and #regions == 0 then return nil, 'playable countries require at least one region' end
   local entry = copy(manifest)
   if manifest.entrypoint ~= nil then
@@ -134,28 +138,110 @@ local function appendCoverage(box)
   end
 end
 
-local function scan()
-  catalog, issues, landingCoverage = {}, {}, {}
-  local ok, paths = pcall(function() return FS:findFiles(ROOT, 'manifest.json', -1, true, false) end)
-  if not ok or type(paths) ~= 'table' then
-    addIssue(ROOT, 'discovery', 'mounted country discovery failed')
-    return catalog, issues
-  end
+-- Mounted files named name whose paths match pattern, each once; a path mounted twice (two
+-- archives with the same file) is reported and dropped.
+local function mountedFiles(name, pattern)
+  local ok, paths = pcall(function() return FS:findFiles(ROOT, name, -1, true, false) end)
+  if not ok or type(paths) ~= 'table' then return nil end
   local sorted, repeated = {}, {}
   for _, path in ipairs(paths) do
-    -- Region directories may also contain manifest.json; only direct country manifests
-    -- define packages, and no path outside ROOT may enter through a faulty FS response.
-    if type(path) == 'string' and path:match('^/earthng/countries/[^/]+/manifest%.json$') then
+    if type(path) == 'string' and path:match(pattern) then
       if repeated[path] ~= nil then repeated[path] = true else repeated[path] = false; sorted[#sorted + 1] = path end
     end
   end
   table.sort(sorted)
-  local ids, conflicted = {}, {}
+  local unique = {}
   for _, path in ipairs(sorted) do
     if repeated[path] then
       addIssue(path, 'duplicate', 'multiple mounted manifests resolve to the same country path')
     else
-      local readOk, manifest = pcall(jsonReadFile, path)
+      unique[#unique + 1] = path
+    end
+  end
+  return unique
+end
+
+-- A country built in sections (one zip per county while it is improved) mounts
+-- sections/<id>/section.json files: each one region of the country with the country's own
+-- fields. They join the country's manifest.json when one is mounted, else they make the country.
+local function sectionsOf()
+  local bySlug, order = {}, {}
+  for _, path in ipairs(mountedFiles('section.json', '^/earthng/countries/[^/]+/sections/[^/]+/section%.json$') or {}) do
+    local country, id = path:match('^/earthng/countries/([^/]+)/sections/([^/]+)/section%.json$')
+    local readOk, section = pcall(jsonReadFile, path)
+    if not readOk or type(section) ~= 'table' then
+      addIssue(path, 'json', 'section manifest cannot be read as JSON', country)
+    elseif section.kind ~= 'earthng-section' or section.country ~= country or section.id ~= id
+      or type(section.region) ~= 'table' then
+      addIssue(path, 'invalid', 'section must be kind earthng-section with its country, id and region', country)
+    else
+      if not bySlug[country] then bySlug[country] = {}; order[#order + 1] = country end
+      local list = bySlug[country]
+      list[#list + 1] = section
+    end
+  end
+  return bySlug, order
+end
+
+local function withSections(manifest, list)
+  local merged = copy(manifest)
+  merged.regions, merged.coverage = {}, {}
+  for _, region in ipairs(manifest.regions or {}) do merged.regions[#merged.regions + 1] = region end
+  for _, box in ipairs(manifest.coverage or {}) do merged.coverage[#merged.coverage + 1] = box end
+  for _, section in ipairs(list) do
+    local region = copy(section.region)
+    region.section = true
+    merged.regions[#merged.regions + 1] = region
+    for _, box in ipairs(type(section.coverage) == 'table' and section.coverage or {}) do
+      merged.coverage[#merged.coverage + 1] = box
+    end
+  end
+  return merged
+end
+
+local function fromSections(list)
+  -- The country's fields from its first section (by id) which names a landing, else its first.
+  local first = list[1]
+  for _, section in ipairs(list) do
+    if type(section.landing) == 'table' then first = section; break end
+  end
+  local manifest = copy(first)
+  manifest.kind, manifest.id, manifest.regions = 'earthng-country', first.country, nil
+  manifest.country, manifest.region, manifest.sectionTitle = nil, nil, nil
+  manifest.coverage = nil
+  return withSections(manifest, list)
+end
+
+local function scan()
+  catalog, issues, landingCoverage = {}, {}, {}
+  -- Region directories may also contain manifest.json; only direct country manifests
+  -- define packages, and no path outside ROOT may enter through a faulty FS response.
+  local sorted = mountedFiles('manifest.json', '^/earthng/countries/[^/]+/manifest%.json$')
+  if not sorted then
+    addIssue(ROOT, 'discovery', 'mounted country discovery failed')
+    return catalog, issues
+  end
+  local sections, sectionOrder = sectionsOf()
+  local mounted = {}
+  for _, path in ipairs(sorted) do mounted[path] = true end
+  for _, country in ipairs(sectionOrder) do
+    table.sort(sections[country], function(a, b) return a.id < b.id end)
+    local path = ROOT .. country .. '/manifest.json'
+    if not mounted[path] then sorted[#sorted + 1] = path end
+  end
+  table.sort(sorted)
+  local ids, conflicted = {}, {}
+  for _, path in ipairs(sorted) do
+    do
+      local country = path:match('^/earthng/countries/([^/]+)/manifest%.json$')
+      local list = sections[country]
+      local readOk, manifest
+      if list and not mounted[path] then
+        readOk, manifest = true, fromSections(list)
+      else
+        readOk, manifest = pcall(jsonReadFile, path)
+        if readOk and type(manifest) == 'table' and list then manifest = withSections(manifest, list) end
+      end
       if not readOk or type(manifest) ~= 'table' then
         addIssue(path, 'json', 'country manifest cannot be read as JSON')
       else

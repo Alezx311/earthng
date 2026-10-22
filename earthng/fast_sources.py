@@ -20,7 +20,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point, shape
 from shapely.ops import transform
 
-VERSION = 'fast-11'         # source index format (keys fast-index/<id>); 9: frame per landing; 10: class widths; 11: shoulders
+VERSION = 'fast-13'         # source index format (keys fast-index/<id>); 9: frame per landing; 10: class widths; 11: shoulders; 12: guard rails, deeper decks; 13: tagged shoulders
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -63,7 +63,12 @@ def oneway(tags):
 
 
 def shoulder(tags):
-    """(left, right) paved shoulder of a way without a width tag; roundabouts have none."""
+    """(left, right) paved shoulder: tagged (shoulder:left:width and shoulder:right:width, left and
+    right of the node order: est_roads writes them), else by class for a way without a width tag;
+    roundabouts have none."""
+    tagged = number(tags.get('shoulder:left:width'), None), number(tags.get('shoulder:right:width'), None)
+    if None not in tagged:
+        return tagged
     highway = tags.get('highway', '')
     if tags.get('width') is not None or tags.get('junction') in ('roundabout', 'circular'):
         return 0., 0.

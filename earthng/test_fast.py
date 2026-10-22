@@ -23,6 +23,9 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(w({'highway': 'trunk'}), 9.0)                # two lanes, 1 m shoulders
         self.assertEqual(sources.shoulder({'highway': 'trunk', 'oneway': 'yes'}), (.5, 1.5))
         self.assertEqual(sources.shoulder({'highway': 'trunk', 'width': '8'}), (0., 0.))
+        # the road register's shoulders (est_roads) win over the class, width tag or not
+        self.assertEqual(sources.shoulder({'highway': 'tertiary', 'width': '8', 'shoulder:left:width': '0.5',
+                                           'shoulder:right:width': '1'}), (.5, 1.))
         self.assertEqual(w({'highway': 'primary_link', 'oneway': 'yes'}), 3.5)
         ring = w({'highway': 'tertiary', 'junction': 'roundabout'})  # implied one-way, one lane
         self.assertGreaterEqual(ring, 5.5)

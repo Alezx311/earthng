@@ -254,12 +254,10 @@ local function refresh()
         if ok then
           regions[#regions + 1] = r
           accepted = accepted + 1
-          if not country.landing then
-            local lon, lat = geographic(r, r.landing[1], r.landing[2])
-            country.landing = {lat = lat, lon = lon}
-          end
+          local lon, lat = geographic(r, r.landing[1], r.landing[2])
+          if not country.landing then country.landing = {lat = lat, lon = lon} end
           state.regions[#state.regions + 1] = {id = descriptor.id, country = country.id, title = descriptor.title or country.title,
-            bounds = r.data.bounds, coverage = r.coverage}
+            bounds = r.data.bounds, coverage = r.coverage, landing = {lat = lat, lon = lon}}
           for _, box in ipairs(r.coverage) do
             state.coverage[#state.coverage + 1] = box
             local b = state.packageBox

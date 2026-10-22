@@ -554,10 +554,18 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
             local = _local_bbox(frame, meta['bbox'])
         _bounds(local, 'local export bbox')
         base = f'earthng/countries/{country_id}/regions/{region_id}'
+        outline = region.get('shape') if isinstance(region, dict) else None
+        if outline is not None:
+            import shapely
+            shapely.prepare(outline)
         blocks = {}
         for j in range(math.floor(local[1]/CELL), math.ceil(local[3]/CELL)):
             for i in range(math.floor(local[0]/CELL), math.ceil(local[2]/CELL)):
-                if store.covered([i*CELL, j*CELL, (i+1)*CELL, (j+1)*CELL]):
+                rect = [i*CELL, j*CELL, (i+1)*CELL, (j+1)*CELL]
+                # a section exports the cells of its outline, not of its whole box
+                if outline is not None and not outline.intersects(shapely.box(*frame.geo_bbox(rect))):
+                    continue
+                if store.covered(rect):
                     blocks.setdefault((i // binary.BLOCK, j // binary.BLOCK), []).append((i, j))
         if not blocks:
             raise ValueError(f'{region_id}: export contains no fully covered source cells')
@@ -657,8 +665,11 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
 
 
 def build_country(country_id, title, version, regions, out, bbox=None, emit=print, jobs=1, landing=None, landcover=(), vegetation=None,
-                  look=None, include=None, cancel=None, map_data=None):
-    """Stream source blocks to ZIP64 and atomically replace the completed archive."""
+                  look=None, include=None, cancel=None, map_data=None, section=None):
+    """Stream source blocks to ZIP64 and atomically replace the completed archive.
+    section: {'id', 'title'}: one region, written as a section of the country
+    (earthng_<country>_<section>.zip with sections/<id>/section.json and no country manifest),
+    which the game joins with the country's other mounted sections."""
     _identifier(country_id, 'country id')
     if not isinstance(title, str) or not title.strip() or not isinstance(version, str) or not version.strip():
         raise ValueError('country title and version must be nonempty strings')
@@ -684,9 +695,13 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
         identifiers.append(given or _source_meta(directory)['id'].replace('_', '-'))
     if len(identifiers) != len(set(identifiers)):
         raise ValueError('duplicate region id after slug normalization')
+    if section is not None:
+        _identifier(section['id'], 'section id')
+        if len(regions) != 1 or identifiers[0] != section['id']:
+            raise ValueError('a section is one region with the section id')
     output = Path(out)
     output.mkdir(parents=True, exist_ok=True)
-    target = output / f'earthng_{country_id}.zip'
+    target = output / (f'earthng_{country_id}.zip' if section is None else f"earthng_{country_id}_{section['id']}.zip")
     handle, temporary = tempfile.mkstemp(prefix=target.stem + '-', suffix='.zip.tmp', dir=output)
     os.close(handle)
     try:
@@ -724,14 +739,33 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
                 manifest['look'] = look
             if include:
                 manifest['include'] = include
-            _write_json(archive, f'earthng/countries/{country_id}/manifest.json', manifest)
-            if map_data is not None:
+            if section is None:
+                _write_json(archive, f'earthng/countries/{country_id}/manifest.json', manifest)
+            else:
+                region = dict(entries[0], title=section['title'])
+                manifest.update(kind='earthng-section', country=country_id, id=section['id'],
+                                sectionTitle=section['title'], region=region)
+                del manifest['regions']
+                _write_json(archive, f"earthng/countries/{country_id}/sections/{section['id']}/section.json", manifest)
+            # the offline map is the country's: a section's zip leaves it to the country pack
+            if map_data is not None and section is None:
                 from build_map import write_archive
                 write_archive(archive, map_data, f'earthng/countries/{country_id}/map')
         os.replace(temporary, target)
     finally:
         Path(temporary).unlink(missing_ok=True)
     return target
+
+
+def section_region(source, dem, work, core, region_id, outline=None, emit=print):
+    """One region answering landings in core (a section's lon/lat box), however many tiles it
+    holds; outline (lon/lat shape) limits the cells it exports."""
+    window = [core[0]-PAD[0], core[1]-PAD[1], core[2]+PAD[0], core[3]+PAD[1]]
+    directory, _ = sources.prepare(source, Path(work) / 'fast-index', dem, emit=emit, box=window)
+    region = {'dir': directory, 'core': list(core), 'id': region_id}
+    if outline is not None:
+        region['shape'] = outline
+    return region
 
 
 def grid_regions(source, dem, work, step=None, emit=print, cancel=None):
