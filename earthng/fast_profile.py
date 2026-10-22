@@ -104,8 +104,9 @@ def close_pairs(pos, seg_of, width, ground, same):
 
 def layer(tags):
     try:
-        return abs(float(str(tags.get('layer', 1)).split(';')[0]))
-    except ValueError:
+        value = abs(float(str(tags.get('layer', 1)).split(';')[0]))
+        return value if math.isfinite(value) else 1.
+    except (TypeError, ValueError):
         return 1.
 
 
@@ -203,16 +204,20 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     cols = [np.arange(nvar), ea, eb, eb, ea]
     vals = [mw, ce, ce, -ce, -ce]
     # a bridge over a road: (1-u) h_a + u h_a' - (1-t) h_b - t h_b' = clear, weight CLEAR_WEIGHT
-    xa, xb, xu, xt = crossings(pos_st, seg_of, same, k_st > 0, k_st <= 0)
+    # A lower road may itself be a bridge (stacked motorway interchanges).
+    # Compare vertical levels, not just bridge versus non-bridge: short spans
+    # have no interior station and their soft DEM offset alone can be zero.
+    levels = kinds * layers
+    xa, xb, xu, xt = crossings(pos_st, seg_of, same, k_st > 0, np.ones(len(k_st), bool))
     xv = (ids[xa], ids[xa + 1], ids[xb], ids[xb + 1])
-    apart = np.ones(len(xa), bool)
+    apart = levels[seg_of[xa]] > levels[seg_of[xb]]
     for i in range(2):
         for j in range(2, 4):
             apart &= xv[i] != xv[j]                # not a ramp leaving the bridge's own node
     xa, xb, xu, xt = xa[apart], xb[apart], xu[apart], xt[apart]
     xv = tuple(v[apart] for v in xv)
     xc = (1 - xu, xu, -(1 - xt), -xt)
-    clear = CLEARANCE * layers[seg_of[xa]]
+    clear = CLEARANCE * (levels[seg_of[xa]] - levels[seg_of[xb]])
     # the road under a bridge passes close to the bridge's approaches in plan: they are not
     # one surface, so no coupling ties them (it dragged the trunk down to the underpass)
     if len(xa):
