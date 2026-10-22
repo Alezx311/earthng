@@ -63,6 +63,39 @@ Detail and measurements: `docs/NATURE.md` (22.10).
   plane at the lowest ground; European tree line lowered (45 deg 2050 m, 50 deg 1500 m). Frames:
   Las Vegas 18.4 -> 14.7 ms, Zanzibar 12.5 -> 10.7 ms against the planet before biomes.
 
+## 2026-10-21: road quality by class, junction details, bridges that clear
+
+Tested on an 8 x 8 km Map Builder selection south-east of Tallinn (Jüri, Assaku, Kurna, Vaida):
+road 2/E263 trunk, its ring road and roundabouts.
+
+- Export: a selection now cuts whole cells around it (`osm_tiles.source_box`); before, only the
+  tiles wholly inside the selection survived (3 of 18 here), so most roads were missing.
+- Widths by class (`fast_sources.road_width`, index `fast-11`): lane width per class (motorway
+  3.75 ... residential 2.75), implied oneway for motorways and roundabouts (one lane by default),
+  roundabouts at least 5.5 m, paved shoulders on motorway/trunk/primary/secondary. Every 2-lane
+  class used to be 6.6 m.
+- Generator `ROADS`: oneway (implied too), rank, material by rank (links follow their class),
+  markings by class and surface: none on gravel or under 4.5 m, lane lines share the carriageway
+  between the shoulders, edge lines on the main classes, a double solid centre on 4+ lane roads.
+  Markings follow the trimmed strips, so they stop at a junction's mouth.
+- Junctions: two ways meeting in a gentle bend (<= 60 degrees) join with a mitred edge, no star;
+  a junction's fan takes the majority material of its mouths (a worn look had dark patches).
+  Per-side `sidewalk:*` tags win.
+- Junction details from OSM nodes (`fast_style.ROAD_DETAILS`, kept 30 m past a cell): zebra
+  crossings across the carriageway, give-way teeth and stop bars at the junction mouth on the
+  approach's right half, turning circles as round bulbs, mini-roundabout rings.
+- Bridges: the height solve holds a bridge 5.5 m (per layer) over a road it crosses in plan
+  (`fast_profile.crossings`, an active-set lower bound: decks already high stay where they are),
+  and the road under a bridge end is no longer coupled to the bridge's approach (it dragged
+  the trunk into an underpass: 43% grade). 33 crossings, 0 short; steepest ground road 5.7%.
+  Lua draws deck edges, a soffit and parapets. Bridge/tunnel tests match `fast_profile.kind`.
+- Estonia (`country_fetch.py build --local-dem`, `earthng/est_dem.py`): the Land Board's 10 m
+  LiDAR DTM (19 sheets, no login) is burnt into the cached Terrarium z12 tiles, feathered over
+  500 m at the survey's edge; originals kept in `terrain/12.orig`, `--restore` puts them back.
+  Terrarium stood 3-10 m high under forest and towns (Jüri 61.7 -> 52.8 m).
+- Bench (`road_quality.py`, 78 tiles): curb on road 0.5 -> 0.4, ground on road 5.64 -> 5.42,
+  holes 5.78 -> 5.56 m2/km; no metric worse. 231 unit tests.
+
 ## 2026-10-18 (day): collision only where something can reach it, generator pauses
 
 Detail and measurements: `docs/PERFORMANCE.md`.

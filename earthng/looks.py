@@ -231,6 +231,8 @@ def keep_scenery(kind, include):
         return bool(include.get('treeRows', True))
     if kind == 'stop':
         return bool(include.get('stops', True))
-    if kind in ('path', 'signal', 'road', 'junction'):
+    # road details (fast_style.ROAD_DETAILS) belong to the road
+    if kind in ('path', 'signal', 'road', 'junction', 'crossing', 'give_way', 'stop_sign',
+                'mini_roundabout', 'turning_circle'):
         return True
     return bool(include.get('cover', True))

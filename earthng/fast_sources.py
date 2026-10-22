@@ -20,7 +20,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point, shape
 from shapely.ops import transform
 
-VERSION = 'fast-9'          # source index format (keys fast-index/<id>); 9: frame per landing
+VERSION = 'fast-11'         # source index format (keys fast-index/<id>); 9: frame per landing; 10: class widths; 11: shoulders
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -38,10 +38,56 @@ def number(value, default):
         return default
 
 
+# Lane width (m) by highway class when a way has no width tag. One 3.3 m lane for every class
+# made a residential street as wide as a primary road (6.6 m) and the classes indistinguishable.
+LANE_WIDTH = {'motorway': 3.75, 'trunk': 3.5, 'primary': 3.5, 'secondary': 3.25, 'tertiary': 3.0,
+              'unclassified': 2.75, 'residential': 2.75, 'road': 3.0}
+NARROW = {'living_street': 4.5, 'service': 4.0}       # whole carriageway, any lane count
+DRIVEWAY = 3.0                                        # service=driveway / alley
+# Paved shoulder (m) outside the edge line, (left, right) of the direction, where a way has no
+# width tag. The generator's ROADS.shoulder holds the same rule and paints the edge lines
+# inside it.
+SHOULDER = {'motorway': (.75, 2.5), 'trunk': (1., 1.), 'primary': (.5, .5), 'secondary': (.25, .25)}
+SHOULDER_ONEWAY = {'trunk': (.5, 1.5), 'primary': (.25, .75)}
+SHOULDER_LINK = (.25, 1.)                             # motorway and trunk ramps
+
+
+def oneway(tags):
+    """OSM's explicit or implied one-way: motorways and roundabouts are one-way unless tagged no."""
+    value = str(tags.get('oneway', '')).lower()
+    if value in ('yes', '1', '-1', 'true'):
+        return True
+    if value in ('no', 'false', '0', 'reversible', 'alternating'):
+        return False
+    return tags.get('highway') == 'motorway' or tags.get('junction') in ('roundabout', 'circular')
+
+
+def shoulder(tags):
+    """(left, right) paved shoulder of a way without a width tag; roundabouts have none."""
+    highway = tags.get('highway', '')
+    if tags.get('width') is not None or tags.get('junction') in ('roundabout', 'circular'):
+        return 0., 0.
+    if highway in ('motorway_link', 'trunk_link'):
+        return SHOULDER_LINK
+    if oneway(tags) and highway in SHOULDER_ONEWAY:
+        return SHOULDER_ONEWAY[highway]
+    return SHOULDER.get(highway, (0., 0.))
+
+
 def road_width(tags):
     klass = tags.get('highway', '').replace('_link', '')
-    lanes = number(tags.get('lanes'), 1 if tags.get('oneway') in ('yes', '1', '-1') else 2)
-    fallback = 4 if klass in ('service', 'living_street') else max(3.2, lanes * 3.3)
+    one = oneway(tags)
+    if klass in NARROW and tags.get('lanes') is None:
+        fallback = DRIVEWAY if tags.get('service') in ('driveway', 'alley') else NARROW[klass]
+    else:
+        motorway = tags.get('highway') == 'motorway'
+        lanes = max(1., number(tags.get('lanes'), 2 if motorway or not one else 1))
+        lane = LANE_WIDTH.get(klass, 3.3)
+        fallback = lanes * lane
+        if tags.get('junction') in ('roundabout', 'circular'):
+            # a circulating carriageway is wider than its lanes: long vehicles track inside it
+            fallback = max(5.5, lanes * 4.)
+        fallback = max(3.2, fallback) + sum(shoulder(tags))
     return min(35., max(2.5, number(tags.get('width'), fallback)))
 
 

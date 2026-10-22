@@ -50,3 +50,28 @@ class MaskTests(unittest.TestCase):
         mask = (1 << 0) | (1 << 2) | (1 << 80)
         self.assertEqual(list(osm_tiles._mask_keys(mask, order)), [(0, 0), (2, 2), (80, 80)])
         self.assertEqual(list(osm_tiles._mask_keys(0, order)), [])
+
+
+class SourceBoxTests(unittest.TestCase):
+    def tiles_kept(self, package_box):
+        """The cells osm_tiles.cut keeps for a package box (its coverage-inside rule)."""
+        w, s, e, n = package_box
+        return {(x, y) for x in range(int(w // osm_tiles.CELL) - 1, int(e // osm_tiles.CELL) + 2)
+                for y in range(int(s // osm_tiles.CELL) - 1, int(n // osm_tiles.CELL) + 2)
+                if w <= osm_tiles.coverage((x, y))[0] and osm_tiles.coverage((x, y))[2] <= e
+                and s <= osm_tiles.coverage((x, y))[1] and osm_tiles.coverage((x, y))[3] <= n}
+
+    def test_every_cell_under_a_selection_is_cut(self):
+        # Map Builder selection south-east of Tallinn: the raw box kept 3 cells and lost
+        # Assaku (59.3726 N) and Kurna (24.8405 E), both inside the selection.
+        selection = [24.793289, 59.274507, 25.016449, 59.374695]
+        self.assertEqual(len(self.tiles_kept(selection)), 3)
+        kept = self.tiles_kept(osm_tiles.source_box(selection))
+        self.assertEqual(kept, {(x, y) for x in range(495, 501) for y in range(1185, 1188)})
+        for lon, lat in [(24.8418, 59.3726), (24.8405, 59.3411), (24.9752, 59.2882)]:
+            self.assertIn((int(lon // osm_tiles.CELL), int(lat // osm_tiles.CELL)), kept)
+
+    def test_the_extract_box_still_limits_the_cut(self):
+        box = osm_tiles.source_box([24.793, 59.274, 25.016, 59.374], extract=[24.8, 59.0, 26.0, 60.0])
+        self.assertEqual(box[0], 24.8)
+        self.assertNotIn(495, {x for x, _ in self.tiles_kept(box)})

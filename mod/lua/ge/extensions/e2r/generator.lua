@@ -902,6 +902,95 @@ local function collector(rect, key, layer, pause, mixed)
   return {items = items, used = used, polygon = polygon, triangle = triangle, finish = flush}
 end
 
+-- Road semantics shared by the strips, junctions, markings, sidewalks and navgraph (one table:
+-- build() is near LuaJIT's 60 upvalues).
+local ROADS = {
+  noOneway = {no = true, ['false'] = true, ['0'] = true, reversible = true, alternating = true},
+  -- importance of a class; a link a little under its road
+  rank = {motorway = 7, trunk = 6, primary = 5, secondary = 4, tertiary = 3, unclassified = 2,
+    residential = 2, living_street = 1, service = 1, road = 1},
+  -- classes with edge lines; tertiary only when wide enough for them (ROADS.marks)
+  edged = {motorway = true, trunk = true, primary = true, secondary = true},
+  -- classes with a centre line at all (an Estonian or Ukrainian residential street has none)
+  centred = {motorway = true, trunk = true, primary = true, secondary = true, tertiary = true},
+}
+-- OSM's explicit or implied one-way, and whether the way runs against its node order.
+function ROADS.oneway(tags)
+  local one = tostring(tags.oneway or ''):lower()
+  if one == '-1' then return true, true end
+  if one == 'yes' or one == '1' or one == 'true' then return true, false end
+  if ROADS.noOneway[one] then return false, false end
+  return tags.highway == 'motorway' or tags.junction == 'roundabout' or tags.junction == 'circular', false
+end
+function ROADS.rankOf(tags)
+  local highway = tags.highway or ''
+  local base = highway:gsub('_link$', '')
+  return (ROADS.rank[base] or 0) - (base ~= highway and .5 or 0)
+end
+function ROADS.ring(tags)
+  return tags.junction == 'roundabout' or tags.junction == 'circular'
+end
+-- the pack's height solve's test (fast_profile.kind): any bridge value but no; a tunnel but no
+-- or an arch through a house. A layer tag alone is a ground road there and here.
+function ROADS.bridge(tags)
+  return tags.bridge ~= nil and tags.bridge ~= 'no'
+end
+function ROADS.tunnel(tags)
+  return tags.tunnel ~= nil and tags.tunnel ~= 'no' and tags.tunnel ~= 'building_passage'
+end
+-- a deck's concrete: its edge face reaches depth under the road, a parapet height over it
+ROADS.deck = {depth = 1, parapet = .9, thick = .3, repeatU = 2.5}
+-- Paved shoulder (m) outside the edge lines, left and right of the node order, where the way has
+-- no width tag: the pack widened the carriageway by it (fast_sources.shoulder, same table).
+ROADS.shoulders = {motorway = {.75, 2.5}, trunk = {1, 1}, primary = {.5, .5}, secondary = {.25, .25}}
+ROADS.shouldersOneway = {trunk = {.5, 1.5}, primary = {.25, .75}}
+function ROADS.shoulder(tags)
+  local highway = tags.highway or ''
+  if tags.width ~= nil or ROADS.ring(tags) then return 0, 0 end
+  local oneway, flip = ROADS.oneway(tags)
+  local s = (highway == 'motorway_link' or highway == 'trunk_link') and {.25, 1}
+    or oneway and ROADS.shouldersOneway[highway] or ROADS.shoulders[highway]
+  if not s then return 0, 0 end
+  if flip then return s[2], s[1] end
+  return s[1], s[2]
+end
+-- The painted lines of a strip by class, lanes and surface: {offset, width, dashed, double}.
+-- Gravel, dirt and broken roads have none; minor streets have none unless tagged with lanes.
+function ROADS.marks(tags, width, grade)
+  local marks = {}
+  local paint = tostring(tags.lane_markings or '')
+  if grade >= 2 or paint == 'no' or width < 4.5 then return marks end
+  local class = (tags.highway or ''):gsub('_link$', '')
+  local oneway = ROADS.oneway(tags)
+  -- offsets are left of the node order; the lanes share the carriageway between the shoulders
+  local left, right = ROADS.shoulder(tags)
+  if width - left - right < 3 then left, right = 0, 0 end
+  local carriage = width - left - right
+  local lanes = math.max(1, math.min(math.floor(carriage / 2.5),
+    math.floor(number(tags.lanes, ROADS.ring(tags) and math.floor(carriage / 4 + .1)
+      or oneway and math.floor(carriage / 3.3 + .5) or 2))))
+  local painted = ROADS.centred[class] or tags.lanes ~= nil or paint == 'yes'
+  if painted and lanes >= 2 then
+    for lane = 1, lanes - 1 do
+      local centre = not oneway and math.abs(lane - lanes / 2) < .01
+      local at = -width / 2 + right + lane * carriage / lanes
+      -- a four-lane two-way road: a solid double centre line
+      if centre and lanes >= 4 then
+        marks[#marks + 1] = {offset = at - .1, width = .12}
+        marks[#marks + 1] = {offset = at + .1, width = .12}
+      else
+        marks[#marks + 1] = {offset = at, width = .12, dashed = true}
+      end
+    end
+  end
+  if ROADS.edged[class] or (class == 'tertiary' and width >= 6) or (paint == 'yes' and width >= 6) then
+    -- on the carriageway's edge where there is a shoulder, else a little inside the asphalt
+    local l, r = left > 0 and left + .1 or .3, right > 0 and right + .1 or .3
+    marks[#marks + 1], marks[#marks + 2] = {offset = width / 2 - l, width = .15}, {offset = -width / 2 + r, width = .15}
+  end
+  return marks
+end
+
 local SPEED = {motorway = 110, trunk = 90, primary = 60, secondary = 60, tertiary = 50,
   unclassified = 50, residential = 40, living_street = 20}
 local DRIVE = {motorway = 1, trunk = 1, primary = 1, secondary = 1, tertiary = .9,
@@ -912,11 +1001,9 @@ local function navSegment(road)
   local highway = (tags.highway or 'residential'):gsub('_link$', '')
   if not SPEED[highway] or tags.access == 'private' or tags.access == 'no' or tags.area == 'yes' or #points < 2 then return nil end
   local total = math.max(1, math.min(8, math.floor(number(tags.lanes, math.floor((road.width or 7) / 3.5 + .5)))))
-  local one = tostring(tags.oneway or ''):lower()
-  if (tags.junction == 'roundabout' or tags.junction == 'circular') and one ~= 'no' and one ~= '-1' then one = 'yes' end
-  local flip = one == '-1'
+  local oneway, flip = ROADS.oneway(tags)
   local lanes
-  if one == 'yes' or one == '1' or one == 'true' or flip then
+  if oneway then
     lanes = string.rep('+', math.min(4, total))
   else
     local back = number(tags['lanes:backward'], math.max(1, math.floor(total / 2)))
@@ -965,7 +1052,17 @@ local function walkSides(tags)
   if roadGrade(tags) >= 2 then return {} end
   if not WALKS[tags.highway] then return {} end
   local v = tags.sidewalk
-  if v == nil and (tags.oneway == 'yes' or tags.oneway == '1') then return {[-1] = true} end
+  local both, left, right = tags['sidewalk:both'], tags['sidewalk:left'], tags['sidewalk:right']
+  if both or left or right then
+    -- per-side tags win; 'separate' is a footway mapped beside the road, which is not drawn
+    local function on(side) return side ~= nil and side ~= 'no' and side ~= 'none' end
+    local base = v == 'both' or v == 'yes' or v == 'separate'
+    local sides = {}
+    if on(left or both) or (left == nil and both == nil and (base or v == 'left')) then sides[1] = true end
+    if on(right or both) or (right == nil and both == nil and (base or v == 'right')) then sides[-1] = true end
+    return sides
+  end
+  if v == nil and ROADS.oneway(tags) then return {[-1] = true} end
   if v == 'no' or v == 'none' then return {} end
   if v == 'left' then return {[1] = true} end
   if v == 'right' then return {[-1] = true} end
@@ -982,9 +1079,210 @@ end
 local WALK_MAIN, WALK_STREET = .04, .12
 local MAIN_ROADS = {primary = true, secondary = true, tertiary = true}
 local function walkAt(tags, sides, a, b, builtAt)
-  if tags.sidewalk ~= nil or not next(sides) then return sides end
+  if tags.sidewalk ~= nil or tags['sidewalk:both'] ~= nil or tags['sidewalk:left'] ~= nil
+      or tags['sidewalk:right'] ~= nil or not next(sides) then return sides end
   local least = MAIN_ROADS[tags.highway] and WALK_MAIN or WALK_STREET
   return builtAt((a[1] + b[1]) / 2, (a[2] + b[2]) / 2) >= least and sides or NONE
+end
+
+-- Road details at OSM way nodes (fast_style.ROAD_DETAILS, kept 30 m round the tile by the cell
+-- decoder): turning circles widen a dead end into a round plate (the junction builder), zebra
+-- crossings, stop and give-way lines and mini-roundabout rings are painted (DETAIL.paint). A
+-- node sits on a vertex of its road, and the road's points follow the way, so the node finds
+-- its road and the way's direction without any heading in the pack.
+local DETAIL = {near = .5, zebra = 3, stripe = .5, gap = .5, bar = .4, tooth = {.5, .6, .4}, ring = {2, .3},
+  kinds = {crossing = true, give_way = true, stop_sign = true, mini_roundabout = true}}
+-- {[bucket] = {point...}} of the points of the given kinds, by the metre
+function DETAIL.index(points, kinds)
+  local bins = {}
+  for _, point in ipairs(points) do
+    local p = point.pos
+    if p and kinds[point.kind] then
+      local key = (floor(p[1]) + 65536) * 131072 + floor(p[2]) + 65536
+      local bin = bins[key] or {}
+      bins[key], bin[#bin + 1] = bin, point
+    end
+  end
+  return bins
+end
+function DETAIL.at(bins, x, y, kind)
+  for dx = -1, 1 do
+    for dy = -1, 1 do
+      for _, point in ipairs(bins[(floor(x) + dx + 65536) * 131072 + floor(y) + dy + 65536] or NONE) do
+        local p = point.pos
+        if (not kind or point.kind == kind) and (p[1] - x) ^ 2 + (p[2] - y) ^ 2 < DETAIL.near ^ 2 then return point end
+      end
+    end
+  end
+end
+-- The round end of a dead end: points at radius r round the node outside the mouth's two corners
+-- (cut along the road from the node, half a width aside), in the node's ground height.
+function DETAIL.bulb(node, dx, dy, hw, cut, r)
+  local out, base = {}, math.atan2(dy, dx)
+  local open = math.atan2(hw, math.max(cut, EPS)) + .05
+  local n = 20
+  for k = 0, n do
+    local a = base + open + (2 * math.pi - 2 * open) * k / n
+    out[#out + 1] = {node[1] + math.cos(a) * r, node[2] + math.sin(a) * r, node[3] or 0}
+  end
+  return out
+end
+function DETAIL.bulbRadius(width)
+  return math.max(6, math.min(12, width / 2 + 3))
+end
+-- a quad round centre c (x, y, z) along the unit axis (ax, ay): length along it, width across;
+-- u across the paint, v along it (the mark texture's line runs along v)
+local function paintQuad(emit, c, ax, ay, length, width, z0, z1)
+  local nx, ny, hl, hw = -ay, ax, length / 2, width * DECAL.markSpread / 2
+  emit({{c[1] - ax * hl + nx * hw, c[2] - ay * hl + ny * hw, z0, 0, 0},
+    {c[1] - ax * hl - nx * hw, c[2] - ay * hl - ny * hw, z0, 1, 0},
+    {c[1] + ax * hl - nx * hw, c[2] + ay * hl - ny * hw, z1 or z0, 1, length / DECAL.markRepeat},
+    {c[1] + ax * hl + nx * hw, c[2] + ay * hl + ny * hw, z1 or z0, 0, length / DECAL.markRepeat}})
+end
+-- where along a polyline s falls: the point (with z) and the unit direction there
+local function alongLine(points, dist, s)
+  local n = #points
+  for k = 1, n - 1 do
+    if s <= dist[k + 1] or k == n - 1 then
+      local a, b = points[k], points[k + 1]
+      local l = math.max(EPS, dist[k + 1] - dist[k])
+      local t = math.max(0, math.min(1, (s - dist[k]) / l))
+      return lerp(a, b, t), (b[1] - a[1]) / l, (b[2] - a[2]) / l
+    end
+  end
+  return points[1], 1, 0
+end
+-- ctx: roads, points, stars, cutsOf, rect, z (paint over the profile), emit(poly), pause
+function DETAIL.paint(ctx)
+  local wanted = {}
+  local rect = ctx.rect
+  for _, point in ipairs(ctx.points) do
+    local p = point.pos
+    if p and point.kind ~= 'turning_circle' and ctx.kinds[point.kind]
+        and boundsTouch(rect, {p[1], p[2], p[1], p[2]}, 15) then
+      wanted[#wanted + 1] = point
+    end
+  end
+  if #wanted == 0 then return 0 end
+  -- the raw road vertices round the tile, by the metre
+  local vertices = {}
+  for index, road in ipairs(ctx.roads) do
+    local points = road.points or NONE
+    if #points >= 2 then
+      for k, p in ipairs(points) do
+        if boundsTouch(rect, {p[1], p[2], p[1], p[2]}, 20) then
+          local key = (floor(p[1]) + 65536) * 131072 + floor(p[2]) + 65536
+          local bin = vertices[key] or {}
+          vertices[key], bin[#bin + 1] = bin, {road, k}
+        end
+      end
+    end
+    if index % 256 == 0 then ctx.pause() end
+  end
+  local painted = 0
+  for _, point in ipairs(wanted) do
+    local p, tags = point.pos, point.tags or NONE
+    if point.kind == 'mini_roundabout' then
+      for _, star in ipairs(ctx.stars) do
+        if (star.node[1] - p[1]) ^ 2 + (star.node[2] - p[2]) ^ 2 < 1 then
+          local r, w, n = DETAIL.ring[1], DETAIL.ring[2], 24
+          for k = 1, n do
+            local a, b = 2 * math.pi * (k - 1) / n, 2 * math.pi * k / n
+            local ca, cb = {star.node[1] + math.cos(a) * r, star.node[2] + math.sin(a) * r},
+              {star.node[1] + math.cos(b) * r, star.node[2] + math.sin(b) * r}
+            local ax, ay = cb[1] - ca[1], cb[2] - ca[2]
+            local l = math.sqrt(ax * ax + ay * ay)
+            paintQuad(ctx.emit, {(ca[1] + cb[1]) / 2, (ca[2] + cb[2]) / 2}, ax / l, ay / l, l + .02, w,
+              star.height + ctx.z + .005)
+          end
+          painted = painted + 1
+          break
+        end
+      end
+    else
+      local found
+      for dx = -1, 1 do
+        for dy = -1, 1 do
+          for _, v in ipairs(vertices[(floor(p[1]) + dx + 65536) * 131072 + floor(p[2]) + dy + 65536] or NONE) do
+            local q = v[1].points[v[2]]
+            local d = (q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2
+            if d < DETAIL.near ^ 2 and (not found or d < found[3]) then found = {v[1], v[2], d} end
+          end
+        end
+      end
+      if found then
+        local road, k = found[1], found[2]
+        local rtags, points = road.tags or NONE, road.points
+        local dist = {0}
+        for i = 2, #points do
+          dist[i] = dist[i - 1] + math.sqrt((points[i][1] - points[i - 1][1]) ^ 2 + (points[i][2] - points[i - 1][2]) ^ 2)
+        end
+        local length, s = dist[#points], dist[k]
+        local width = math.max(.5, math.min(80, road.width or 7))
+        local left, right = ROADS.shoulder(rtags)
+        if width - left - right < 3 then left, right = 0, 0 end
+        -- the carriageway between the shoulders, as offsets left of the node order
+        local lo, hi = -width / 2 + right, width / 2 - left
+        if point.kind == 'crossing' then
+          local c, tx, ty = alongLine(points, dist, s)
+          local zebra = (hi - lo) < 5 and DETAIL.zebra - .5 or DETAIL.zebra
+          local z0 = (alongLine(points, dist, s - zebra / 2)[3] or 0) + ctx.z
+          local z1 = (alongLine(points, dist, s + zebra / 2)[3] or 0) + ctx.z
+          local pitch = DETAIL.stripe + DETAIL.gap
+          local count = math.max(1, math.floor((hi - lo + DETAIL.gap) / pitch))
+          local first = (lo + hi) / 2 - (count - 1) * pitch / 2
+          for n = 0, count - 1 do
+            local o = first + n * pitch
+            paintQuad(ctx.emit, {c[1] - ty * o, c[2] + tx * o}, tx, ty, zebra, DETAIL.stripe, z0, z1)
+          end
+          painted = painted + 1
+        else
+          -- the approach: the tagged direction, else towards the nearer road end
+          local direction = tostring(tags.direction or '')
+          local forward
+          if direction == 'forward' then forward = true
+          elseif direction == 'backward' then forward = false
+          else forward = (length - s) <= s end
+          -- by a junction the line goes to its mouth, where the strip stops
+          local cuts = ctx.cutsOf[road] or NONE
+          local cut = forward and (cuts[2] or 0) or (cuts[1] or 0)
+          local toEnd = forward and (length - s) or s
+          local at = s
+          if cut > 0 and toEnd <= cut + 6 then at = forward and length - cut - .3 or cut + .3 end
+          local c, tx, ty = alongLine(points, dist, at)
+          local sx, sy = forward and tx or -tx, forward and ty or -ty   -- the travel direction
+          local oneway = ROADS.oneway(rtags)
+          local mid = (lo + hi) / 2
+          -- right-hand traffic: the approach lanes are right of the travel direction
+          local a, b = lo, hi
+          if not oneway then
+            if forward then a, b = lo, mid else a, b = mid, hi end
+          end
+          local z = (c[3] or 0) + ctx.z
+          if point.kind == 'stop_sign' then
+            local o = (a + b) / 2
+            local back = DETAIL.bar / 2
+            paintQuad(ctx.emit, {c[1] - ty * o - sx * back, c[2] + tx * o - sy * back}, -ty, tx, b - a, DETAIL.bar, z)
+          else
+            local base, height, gap = DETAIL.tooth[1], DETAIL.tooth[2], DETAIL.tooth[3]
+            local count = math.max(1, math.floor((b - a + gap) / (base + gap)))
+            local first = (a + b) / 2 - (count - 1) * (base + gap) / 2
+            for n = 0, count - 1 do
+              local o = first + n * (base + gap)
+              local bx, by = c[1] - ty * o, c[2] + tx * o
+              -- the base on the line, the point towards the driver coming up to it
+              ctx.emit({{bx - ty * base / 2, by + tx * base / 2, z, 0, 0},
+                {bx - sx * height, by - sy * height, z, .5, height / DECAL.markRepeat},
+                {bx + ty * base / 2, by - tx * base / 2, z, 1, 0}})
+            end
+          end
+          painted = painted + 1
+        end
+      end
+    end
+    ctx.pause()
+  end
+  return painted
 end
 
 -- Building rules in one table (build() is near LuaJIT's 60 upvalues).
@@ -1309,7 +1607,7 @@ local function collect(cells, pause)
   for _, line in ipairs(lists.lines) do
     local tags = line.tags or {}
     local highway = (tags.highway or ''):gsub('_link$', '')
-    if line.kind == 'path' and highway == 'track' and tags.bridge ~= 'yes' and tags.tunnel ~= 'yes' and tags.area ~= 'yes' then
+    if line.kind == 'path' and highway == 'track' and not ROADS.bridge(tags) and not ROADS.tunnel(tags) and tags.area ~= 'yes' then
       local grade = roadGrade(tags)
       lists.roads[#lists.roads + 1] = {id = 'track:' .. tostring(line.id), points = line.points,
         width = number(tags.width, TRACK_WIDTH[grade + 1] or 3.2), tags = tags}
@@ -1361,6 +1659,13 @@ local function build(cells, i, j, options)
   local minorRoad, majorRoad = 'road', 'road_major'
   if asphalt == 'worn' then minorRoad, majorRoad = 'road_worn', 'road'
   elseif asphalt == 'fresh' then minorRoad, majorRoad = 'road_major', 'road_major' end
+  -- a carriageway's material: graded surfaces by grade, asphalt by class (links with their road);
+  -- a junction takes the material of its most important road
+  local function roadMaterial(tags)
+    local grade = roadGrade(tags)
+    if grade ~= 0 then return ROAD_GRADE_MAT[grade], grade end
+    return ROADS.rankOf(tags) >= 4.5 and majorRoad or minorRoad, grade
+  end
   local vergeKind = 'ground'
   local vergeChoice = lookOf('verge')
   if vergeChoice == 'dirt' then vergeKind = 'bare_ground'
@@ -1392,7 +1697,7 @@ local function build(cells, i, j, options)
         local bounds = {math.min(a[1], b[1]), math.min(a[2], b[2]), math.max(a[1], b[1]), math.max(a[2], b[2])}
         if boundsTouch(rect, bounds, width / 2 + reach) then
           local segment = {a = a, b = b, dx = dx, dy = dy, len2 = length * length, width = width,
-            surface = tags.bridge ~= 'yes' and tags.tunnel ~= 'yes' and tags.layer ~= '-1'}
+            surface = not ROADS.bridge(tags) and not ROADS.tunnel(tags)}
           segments[#segments + 1] = segment
           local margin = width / 2 + tune.pullZero
           for by = math.floor((bounds[2] - margin) / 50), math.floor((bounds[4] + margin) / 50) do
@@ -1840,7 +2145,10 @@ local function build(cells, i, j, options)
   -- two corners at that distance, half a width either side (the direction over +-0.25 m), at the
   -- road's profile height; the corners in angle order round the node make its star. Every road
   -- touching a node near the tile is in the tile's cells, so neighbouring tiles agree.
-  local cutsOf, stars = {}, {}
+  -- Two mouths meeting at a gentle angle (a way split by a tag change, a closed ring's seam, a
+  -- roundabout arc) are one carriageway: no star, the strips share a mitred end (jointsOf).
+  local cutsOf, stars, jointsOf = {}, {}, {}
+  local details = DETAIL.index(distant and NONE or lists.points, {turning_circle = true})
   local function along(points, dist, s)
     for k = 1, #points - 1 do
       if s <= dist[k + 1] or k == #points - 1 then
@@ -1871,17 +2179,60 @@ local function build(cells, i, j, options)
         end
       end
     end
+    -- the unit direction from the node into a mouth's road, over its first 2 m
+    local function into(m)
+      local points, dist = m.road.points, m.dist
+      local length = dist[#points]
+      local s = math.min(2, length)
+      local node = along(points, dist, m.e == 1 and 0 or length)
+      local p = along(points, dist, m.e == 1 and s or length - s)
+      local dx, dy = p[1] - node[1], p[2] - node[2]
+      local l = math.max(EPS, math.sqrt(dx * dx + dy * dy))
+      return dx / l, dy / l
+    end
     for index, id in ipairs(order) do
       if index % 32 == 0 then pause() end
       local list = mouths[id]
-      if #list > 1 then
-        local radius = 0
+      local joined = false
+      if #list == 2 then
+        local ax, ay = into(list[1])
+        local bx, by = into(list[2])
+        -- at most a 60 degree turn: the mitre is at most 1 / cos 30 = 1.15 of the half width
+        if ax * bx + ay * by < -.5 then
+          joined = true
+          local tx, ty = bx - ax, by - ay
+          local l = math.max(EPS, math.sqrt(tx * tx + ty * ty))
+          tx, ty = tx / l, ty / l
+          for k, m in ipairs(list) do
+            -- the strip's own direction at this end runs into the road at its start, to the
+            -- node at its end; the joint's tangent turned the same way
+            local dx, dy = (k == 1 and ax or bx), (k == 1 and ay or by)
+            if m.e == 2 then dx, dy = -dx, -dy end
+            local sign = (tx * dx + ty * dy) >= 0 and 1 or -1
+            local mitre = 1 / math.max(.5, math.abs(tx * dx + ty * dy))
+            local joints = jointsOf[m.road] or {}
+            jointsOf[m.road], joints[m.e] = joints, {tx * sign, ty * sign, mitre}
+          end
+        end
+      end
+      local first = list[1]
+      local fp = first.road.points
+      local node = first.e == 1 and fp[1] or fp[#fp]
+      -- a dead end mapped as a turning circle: a one-mouth star with a round far side
+      local bulb = #list == 1 and DETAIL.at(details, node[1], node[2], 'turning_circle')
+        and DETAIL.bulbRadius(first.width) or nil
+      if (#list > 1 and not joined) or bulb then
+        local radius = bulb or 0
         for _, m in ipairs(list) do radius = math.max(radius, m.width * .8) end
-        local first = list[1]
-        local fp = first.road.points
-        local node = first.e == 1 and fp[1] or fp[#fp]
-        local corners, raised = {}, false
+        -- the fan's material: the one most of its mouths have (a roundabout's entry keeps the
+        -- ring's), on a tie the more important road's
+        local corners, raised, votes, material, top = {}, false, {}, nil, -1
         for _, m in ipairs(list) do
+          local mat = roadMaterial(m.road.tags or NONE)
+          local vote = votes[mat] or {n = 0, rank = -1}
+          votes[mat], vote.n = vote, vote.n + 1
+          vote.rank = math.max(vote.rank, ROADS.rankOf(m.road.tags or NONE))
+          if vote.n * 100 + vote.rank > top then material, top = mat, vote.n * 100 + vote.rank end
           local points, dist = m.road.points, m.dist
           local length = dist[#points]
           local cut = math.min(radius, length * .25)
@@ -1895,13 +2246,18 @@ local function build(cells, i, j, options)
           local nx, ny = -dy / l * m.width / 2, dx / l * m.width / 2
           corners[#corners + 1] = {p[1] + nx, p[2] + ny, p[3] or 0}
           corners[#corners + 1] = {p[1] - nx, p[2] - ny, p[3] or 0}
-          local bridge = (m.road.tags or NONE).bridge
-          if bridge ~= nil and bridge ~= 'no' then raised = true end
+          if ROADS.bridge(m.road.tags or NONE) then raised = true end
+        end
+        if bulb then
+          local dx, dy = into(first)
+          local cut = (cutsOf[first.road] or NONE)[first.e] or 0
+          for _, q in ipairs(DETAIL.bulb(node, dx, dy, first.width / 2, cut, bulb)) do corners[#corners + 1] = q end
         end
         local angle = {}
         for _, c in ipairs(corners) do angle[c] = math.atan2(c[2] - node[2], c[1] - node[1]) end
         table.sort(corners, function(a, b) return angle[a] < angle[b] end)
-        stars[#stars + 1] = {node = {node[1], node[2]}, height = node[3] or 0, rings = {corners}, raised = raised}
+        stars[#stars + 1] = {node = {node[1], node[2]}, height = node[3] or 0, rings = {corners}, raised = raised,
+          material = material}
       end
     end
   end
@@ -1940,9 +2296,16 @@ local function build(cells, i, j, options)
         local mitre = math.min(tune.mitre, ends / l)
         normals[k] = {-ty / l * mitre, tx / l * mitre}
       end
-      local surfaceRoad = tags.bridge ~= 'yes' and tags.tunnel ~= 'yes' and tags.layer ~= '-1'
-      local major = tags.highway == 'motorway' or tags.highway == 'trunk' or tags.highway == 'primary'
-      local material = grade == 0 and (major and majorRoad or minorRoad) or ROAD_GRADE_MAT[grade]
+      -- a joined end: the two strips share the bisecting edge, no wedge between them
+      local joints = jointsOf[road]
+      if joints and #points >= 2 then
+        for e, k in ipairs({1, #points}) do
+          local j = joints[e]
+          if j then normals[k] = {-j[2] * j[3], j[1] * j[3]} end
+        end
+      end
+      local surfaceRoad = not ROADS.bridge(tags) and not ROADS.tunnel(tags)
+      local material = roadMaterial(tags)
       -- a grass track where the open ground is desert, dry grass, turf or snow is a dirt track
       -- (a green ribbon ran across the Owens Valley)
       if material == 'road_track' and bio.on and points[1] and surfaceKind(points[1][1], points[1][2], 'ground') ~= 'ground' then
@@ -2008,6 +2371,63 @@ local function build(cells, i, j, options)
       end
     end
     pause()
+  end
+  -- A bridge's deck: concrete edge faces from the road (or sidewalk) edge down to the soffit,
+  -- the soffit itself, and a parapet on either side, all solid. Every face is a whole quad of
+  -- its segment, clipped to the tile like the fences.
+  if visualRoads then
+    local deck = ROADS.deck
+    local function face(poly, ox, oy, oz)
+      -- turned to face (ox, oy, oz): Newell's normal of the quad
+      local nx, ny, nz = 0, 0, 0
+      for k = 1, #poly do
+        local a, b = poly[k], poly[k % #poly + 1]
+        nx, ny, nz = nx + (a[2] - b[2]) * (a[3] + b[3]), ny + (a[3] - b[3]) * (a[1] + b[1]), nz + (a[1] - b[1]) * (a[2] + b[2])
+      end
+      if nx * ox + ny * oy + nz * oz < 0 then
+        local flipped = {}
+        for k = #poly, 1, -1 do flipped[#flipped + 1] = poly[k] end
+        poly = flipped
+      end
+      scene.polygon('fence_wall', poly, false)
+    end
+    for _, strip in ipairs(strips) do
+      if ROADS.bridge(strip.tags) then
+        local points, edge, hw = strip.points, strip.edge, strip.hw
+        for k = 1, #points - 1 do
+          local box = ringBounds({{points[k], points[k + 1]}})
+          if boundsTouch(rect, box, hw + tune.sidewalk + 1) then
+            local u0, u1 = strip.dist[k] / deck.repeatU, strip.dist[k + 1] / deck.repeatU
+            local function at(i, offset, dz, u, v)
+              local p = edge(i, offset, dz)
+              p[4], p[5] = u, v
+              return p
+            end
+            local dx, dy = points[k + 1][1] - points[k][1], points[k + 1][2] - points[k][2]
+            for _, sign in ipairs({1, -1}) do
+              local outer = (hw + (strip.walk[k][sign] and tune.sidewalk or 0)) * sign
+              local inner = outer - deck.thick * sign
+              local ox, oy = -dy * sign, dx * sign
+              -- the edge face, outside, from the parapet's top to the soffit
+              local top, low = deck.parapet, -deck.depth
+              face({at(k, outer, top, u0, 0), at(k + 1, outer, top, u1, 0),
+                at(k + 1, outer, low, u1, (top - low) / deck.repeatU), at(k, outer, low, u0, (top - low) / deck.repeatU)}, ox, oy, 0)
+              -- the parapet's inner face and its top
+              face({at(k, inner, top, u0, 0), at(k + 1, inner, top, u1, 0),
+                at(k + 1, inner, 0, u1, top / deck.repeatU), at(k, inner, 0, u0, top / deck.repeatU)}, -ox, -oy, 0)
+              face({at(k, inner, top, u0, 0), at(k + 1, inner, top, u1, 0),
+                at(k + 1, outer, top, u1, deck.thick / deck.repeatU), at(k, outer, top, u0, deck.thick / deck.repeatU)}, 0, 0, 1)
+            end
+            -- the soffit, seen from the road under the bridge
+            local l = (hw + (strip.walk[k][1] and tune.sidewalk or 0))
+            local r = -(hw + (strip.walk[k][-1] and tune.sidewalk or 0))
+            face({at(k, l, -deck.depth, u0, 0), at(k + 1, l, -deck.depth, u1, 0),
+              at(k + 1, r, -deck.depth, u1, (l - r) / deck.repeatU), at(k, r, -deck.depth, u0, (l - r) / deck.repeatU)}, 0, 0, -1)
+          end
+          if k % 32 == 0 then pause() end
+        end
+      end
+    end
   end
   mark('strips')
   -- Strip ends of streets with sidewalks, by the metre: a junction with one of them at a mouth
@@ -2131,7 +2551,7 @@ local function build(cells, i, j, options)
       for k = 1, #corners do
         local tri = {{cx, cy, centre}, corners[k], corners[k % #corners + 1]}
         addAsphalt(tri, nil, nil)
-        if visualRoads and touches then roads.polygon('road', tri, 'flat') end
+        if visualRoads and touches then roads.polygon(junction.material or minorRoad, tri, 'flat') end
       end
       -- round a ground-level star (fast.junction_verge): a sidewalk ring when a street with
       -- sidewalks meets here, then the verge down to the ground, both away from the node
@@ -2543,21 +2963,13 @@ local function build(cells, i, j, options)
 
   mark('verges')
   if visualRoads and markKind then
-    for _, road in ipairs(lists.roads) do
-      local points, tags, width = road.points or {}, road.tags or {}, road.width or 7
-      local one = tostring(tags.oneway or '')
-      local oneway = one == 'yes' or one == '1' or one == '-1' or one == 'true'
-      local lanes = math.max(1, math.min(math.floor(width / 2.5), math.floor(number(tags.lanes, oneway and math.floor(width / 3.3 + .5) or 2))))
-      local marks = {}
-      if width >= 5 then
-        for lane = 1, lanes - 1 do marks[#marks + 1] = {offset = -width / 2 + lane * width / lanes, width = .12,
-          dashed = not (not oneway and lanes >= 4 and math.abs(lane - lanes / 2) < .01)} end
-        local major = (tags.highway or ''):gsub('_link$', '')
-        if width >= 7 and (major == 'motorway' or major == 'trunk' or major == 'primary' or major == 'secondary') then
-          marks[#marks + 1], marks[#marks + 2] = {offset = width / 2 - .3, width = .15}, {offset = -width / 2 + .3, width = .15}
-        end
-      end
-      local distance = 0
+    -- along the strips, so the paint stops at a junction's mouth instead of crossing its fan;
+    -- the dash phase keeps the source distance (the strip starts its cut into the road)
+    for _, strip in ipairs(strips) do
+      local road = strip.road
+      local points, tags, width = strip.points, strip.tags, math.max(.5, math.min(80, road.width or 7))
+      local marks = ROADS.marks(tags, width, strip.grade)
+      local distance = (cutsOf[road] or NONE)[1] or 0
       for index = 1, #points - 1 do
         local a, b = points[index], points[index + 1]
         local dx, dy = b[1] - a[1], b[2] - a[2]
@@ -2593,6 +3005,11 @@ local function build(cells, i, j, options)
     end
   end
 
+  if visualRoads and markKind and not distant then
+    DETAIL.paint({roads = lists.roads, points = lists.points, stars = stars, cutsOf = cutsOf, rect = rect,
+      kinds = DETAIL.kinds, z = lift + DECAL.markLift,
+      emit = function(poly) roadDecor.polygon(markKind, poly, 'flat') end, pause = pause})
+  end
   mark('marks')
   -- OSM has no sea polygons (only coastlines); the DEM's sea is flat at the region's seaLevel
   -- (0 m plus the world lift). Open water is a plane just above it over every ground quad that

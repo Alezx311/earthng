@@ -46,6 +46,21 @@ def coverage(key):
     return [round(w - BUFFER, 6), round(s - BUFFER, 6), round(e + BUFFER, 6), round(n + BUFFER, 6)]
 
 
+def source_box(selection, extract=None):
+    """The package box that cuts every tile under a selected area (west, south, east, north).
+
+    cut() keeps only tiles whose buffered coverage lies inside the package box. Used as is, a
+    custom selection kept just the cells wholly inside it: 12.7 x 11 km round Tallinn became
+    three cells (8.5 x 5.6 km). The selection grows to whole cells plus the buffer, clipped to
+    the extract's own box where the source has no data."""
+    w, s, e, n = selection
+    box = [round(math.floor(w / CELL) * CELL - BUFFER, 6), round(math.floor(s / CELL) * CELL - BUFFER, 6),
+           round((math.floor(e / CELL) + 1) * CELL + BUFFER, 6), round((math.floor(n / CELL) + 1) * CELL + BUFFER, 6)]
+    if extract is not None:
+        box = [max(box[0], extract[0]), max(box[1], extract[1]), min(box[2], extract[2]), min(box[3], extract[3])]
+    return box
+
+
 def cut(pbf, out, package_box=None):
     t0 = time.monotonic()
     out.mkdir(parents=True)
