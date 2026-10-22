@@ -158,6 +158,21 @@ class PackFileTests(unittest.TestCase):
                 self.assertIn(b'mark_yellow', archive.read('earthng/planet/materials.json'))
                 self.assertIn(b'e2rf_edge_grass', archive.read('e2r_stream/fast-art/v10/packs.json'))
 
+    def test_refresh_keeps_the_planet_language(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            mods = Path(folder) / 'profile'
+            planet = mods / 'mods' / 'earthng_planet.zip'
+            planet.parent.mkdir(parents=True)
+            with zipfile.ZipFile(planet, 'w') as archive:
+                archive.writestr('lua/ge/extensions/e2r/world.lua', "local x = 1\nlocal LANG = 'en'   -- built\n")
+            country_fetch.refresh_planet(mods, emit=lambda _text: None)
+            with zipfile.ZipFile(planet) as archive:
+                text = archive.read('lua/ge/extensions/e2r/world.lua').decode('utf-8')
+            self.assertIn("local LANG = 'en'", text)
+            self.assertNotIn("local LANG = 'uk'", text)
+            self.assertGreater(len(text), 1000)  # the repository's world.lua, not the old one
+
 
 if __name__ == '__main__':
     unittest.main()
