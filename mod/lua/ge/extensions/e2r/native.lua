@@ -838,7 +838,7 @@ local function buildTile(key, wanted)
       seaLevel = finite(r.data.seaLevel) and r.data.seaLevel or nil,
       maxTrees = tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = tune.maxGrass,
       maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
-      groundTrees = tune.groundTrees, parkedCars = tune.parkedCars})
+      groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = tune.propSpacing})
   if type(road) ~= 'table' or type(road.items) ~= 'table' or type(road.mats) ~= 'table'
     or type(scene) ~= 'table' or type(scene.items) ~= 'table' then error('generator returned an invalid tile manifest') end
   if wanted.far and (type(far) ~= 'table' or type(far.items) ~= 'table') then error('generator returned an invalid far manifest') end
@@ -1262,7 +1262,7 @@ local function setTune(tune)
   ensure()
   local out = clampTune(tune)
   local changed = false
-  for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees'}) do
+  for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees','propSpacing'}) do
     if out[key] ~= pendingTune[key] then changed = true end
   end
   -- the game's parked cars on or off: box cars come or go

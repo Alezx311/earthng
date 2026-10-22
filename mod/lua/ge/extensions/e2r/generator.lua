@@ -218,6 +218,23 @@ VEG.stockExtra = {
   [JRI .. 'trees/trees_tropical_2/'] = {JRI .. 'trees/trees_tropical_1/main.materials.json', JRI .. 'trees/vines_tropical/main.materials.json'},
   [JRI .. 'trees/bush_tropical_2/'] = {JRI .. 'trees/vines_tropical/main.materials.json'},
 }
+-- Street furniture on the sidewalks of near tiles (experiment): stock props, solid items of the
+-- level's Forest (world.lua), where a TSStatic cost ~8 times the spawn time and its collision
+-- ~4 ms a thousand in every rebuild (out/overnight/props). curb: stands at the curb, not at the
+-- sidewalk's outer edge; face: turned to the road. Weights per hundred.
+local WCO = WCA .. 'objects/'
+local ECA_CLUTTER = '/levels/east_coast_usa/art/shapes/clutter/'
+VEG.stock[WCO] = WCO .. 'main.materials.json'
+VEG.stockExtra[ECA_CLUTTER] = {'/levels/east_coast_usa/art/shapes/buildings/main.materials.json'}
+VEG.props = {
+  {WCO .. 'bollard_hoop_grey.dae', 18, curb = true},
+  {'/art/shapes/objects/bollard_yellow.dae', 8, curb = true},
+  {WCO .. 'garbage_bin_a.dae', 12}, {WCO .. 'garbage_bin_b.dae', 8},
+  {ECA_CLUTTER .. 'clutter_city_bench_wood.dae', 14, face = true},
+  {WCO .. 'planterbox.dae', 10}, {ECA_CLUTTER .. 'clutter_city_bike_stand.dae', 8, face = true},
+  {WCO .. 'hydrant1.dae', 8, curb = true}, {WCO .. 'postbox_blue.dae', 6, face = true},
+  {WCO .. 'sign_stop.dae', 4, curb = true, ends = true}, {WCO .. 'sign_yield.dae', 4, curb = true, ends = true},
+}
 VEG.used = {}
 VEG.biomeSets = {juniper = true, desertShrub = true, desertShrubHot = true, desertPlants = true, dryTufts = true, desertRocks = true,
   mountainRocks = true, oakWest = true, pineWest = true, eucalyptus = true, chaparralWest = true, med = true,
@@ -347,6 +364,7 @@ local function ihash(seed, a, b, c)
   h = (h * 48271 + 11) % HMOD
   return (h * 48271 + 7) % HMOD
 end
+
 -- An exact key of lattice point (gx, gy): namespace 0..3, lattice code 0..511.
 local function latticeKey(ns, gx, gy, code)
   return (((gx + 524288) * 1048576 + (gy + 524288)) * 512 + code) * 4 + ns
@@ -1622,6 +1640,98 @@ local function collect(cells, pause)
     table.sort(list, function(a, b) return ids[a] < ids[b] end)
   end
   return lists, terrain
+end
+
+-- spacing: metres between props along each sidewalk and footway; put(name, shape, x, y, z, yaw)
+-- emits one. A sidewalk prop keeps 6 m from its strip's ends (the junction); every prop keeps off
+-- the carriageways. Footways (most of central Kyiv's sidewalks are mapped as their own ways) get
+-- them just beside the paving, on the ground.
+function VEG.streetProps(strips, lines, segmentBins, rect, spacing, lift, walkWidth, ground, put, pause)
+  if not spacing or spacing <= 0 then return 0 end
+  -- the props this game has (all of them outside the game, where FS is absent)
+  if not VEG.propsHave then
+    VEG.propsHave = {}
+    for _, p in ipairs(VEG.props) do
+      if not FS or FS:fileExists(p[1]) then VEG.propsHave[#VEG.propsHave + 1] = p end
+    end
+  end
+  local props = VEG.propsHave
+  if #props == 0 then return 0 end
+  local total = 0
+  for _, p in ipairs(props) do total = total + p[2] end
+  local count = 0
+  -- one prop at distance d of a polyline segment a-b (unit ux, uy), `side` of it
+  local function place(seed, d, length, ends, a, b, t, ux, uy, side, offset, z, name)
+    local h = ihash(seed, math.floor(d * 10), side + 2, 7)
+    local pick, prop = h % total, props[1]
+    for _, p in ipairs(props) do
+      if pick < p[2] then prop = p; break end
+      pick = pick - p[2]
+    end
+    -- signs only near the junctions
+    if prop.ends and (not ends or (d > 18 and d < length - 18)) then prop = props[1] end
+    local off = offset(prop)
+    local x = a[1] + ux * t - uy * off * side
+    local y = a[2] + uy * t + ux * off * side
+    if x < rect[1] or x >= rect[3] or y < rect[2] or y >= rect[4] then return end
+    for _, segment in ipairs(segmentBins[(math.floor(x / 50) + 32768) * 65536 + math.floor(y / 50) + 32768] or NONE) do
+      local sa = segment.a
+      local q = math.max(0, math.min(1, ((x - sa[1]) * segment.dx + (y - sa[2]) * segment.dy) / segment.len2))
+      if (x - sa[1] - q * segment.dx) ^ 2 + (y - sa[2] - q * segment.dy) ^ 2 < (segment.width / 2 + .3) ^ 2 then return end
+    end
+    -- a bench or a stand across its sidewalk (the road's direction ± 90°), the rest at random
+    local yaw = prop.face and math.atan2(ux, uy) + side * math.pi / 2 or (h % 628) / 100
+    put(name, prop[1], x, y, z(x, y), yaw)
+    count = count + 1
+  end
+  local function walk(points, dist, seed, sides, ends, offset, z, prefix)
+    local length = dist[#dist] or 0
+    for k = 1, #points - 1 do
+      local a, b = points[k], points[k + 1]
+      local seg = dist[k + 1] - dist[k]
+      if seg > .5 then
+        local ux, uy = (b[1] - a[1]) / seg, (b[2] - a[2]) / seg
+        local d = math.ceil(dist[k] / spacing) * spacing
+        while d < dist[k + 1] do
+          if not ends or (d > 6 and d < length - 6) then
+            for _, side in ipairs({1, -1}) do
+              if sides(k, side) then
+                local t = d - dist[k]
+                place(seed, d, length, ends, a, b, t, ux, uy, side, offset,
+                  z or function() return (a[3] or 0) + t / seg * ((b[3] or 0) - (a[3] or 0)) + lift end,
+                  prefix .. '_' .. k .. '_' .. math.floor(d) .. '_' .. side)
+              end
+            end
+          end
+          d = d + spacing
+        end
+      end
+      if k % 16 == 0 then pause() end
+    end
+  end
+  for s, strip in ipairs(strips) do
+    if strip.surface and (strip.dist[#strip.dist] or 0) > 14 then
+      local hw = strip.hw
+      walk(strip.points, strip.dist, hash(tostring(strip.road.id or s)), function(k, side) return strip.walk[k][side] end, true,
+        function(prop) return hw + (prop.curb and .45 or walkWidth - .45) end, nil, 'prop_' .. s)
+    end
+    pause()
+  end
+  for l, line in ipairs(lines) do
+    local tags, points = line.tags or NONE, line.points or NONE
+    if line.kind == 'path' and (tags.highway == 'footway' or tags.highway == 'pedestrian') and #points > 1
+        and not ROADS.bridge(tags) and not ROADS.tunnel(tags) then
+      local dist = {0}
+      for k = 2, #points do
+        dist[k] = dist[k - 1] + math.sqrt((points[k][1] - points[k - 1][1]) ^ 2 + (points[k][2] - points[k - 1][2]) ^ 2)
+      end
+      local half = (tonumber(tags.width) or 2) / 2
+      walk(points, dist, hash(tostring(line.id or l)), function() return true end, false,
+        function() return half + .4 end, ground, 'walkprop_' .. l)
+    end
+    pause()
+  end
+  return count
 end
 
 local function build(cells, i, j, options)
@@ -4319,6 +4429,13 @@ local function build(cells, i, j, options)
       end
       pause()
     end
+  end
+  if wantLamps and not distant and (options.propSpacing or 0) > 0 then
+    VEG.streetProps(strips, lists.lines, segmentBins, rect, options.propSpacing, lift, tune.sidewalk, ground, function(name, shape, x, y, z, yaw)
+      static(name, shape, x, y, z, yaw)
+      local it = scene.items[#scene.items]
+      it.prop, it.collision = true, 'Collision Mesh'
+    end, pause)
   end
   mark('trees')
   local function manifest(collector, layer)

@@ -131,7 +131,7 @@ local test, result = nil, {status = 'waiting', shots = {}}
 local frameTimer = hptimer()
 -- Streaming limits; see the comments where each is used.
 local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128,
-  forestStep = 0.12, forestKind = 1.5, forestMax = 2500,
+  forestStep = 0.12, forestKind = 1.5, forestMax = 2500, propMax = 600,
   collisionWant = 200, collisionLead = 6, collisionMargin = 200, vehicleCollision = {100, 300}}
 -- Read-only view for the development probe (earthng/probe.py); nothing in the mod calls it.
 function M.dbg() return {S = S, result = result, native = native, detail = detailStream, test = test} end
@@ -345,6 +345,8 @@ local function setPlantField(obj, field, value)
   obj:setField(field, 0, value)
 end
 
+-- shape .. '#solid': a street prop, the same shape as a collidable kind (a rebuild takes 6000 of
+-- them for ~1 ms, out/overnight/props)
 local function plantDataFor(shape)
   if S.forestOff then return nil end
   local known = plantData[shape]
@@ -359,11 +361,13 @@ local function plantDataFor(shape)
       result.forest = 'static'
       return nil
     end
-    setPlantField(created, 'shapeFile', shape)
-    setPlantField(created, 'collidable', '0')
-    setPlantField(created, 'windScale', '0.35')
-    setPlantField(created, 'branchAmp', '0.08')
-    setPlantField(created, 'detailAmp', '0.15')
+    local file = shape:match('^(.-)#solid$')
+    setPlantField(created, 'shapeFile', file or shape)
+    setPlantField(created, 'collidable', file and '1' or '0')
+    -- props do not sway
+    setPlantField(created, 'windScale', file and '0' or '0.35')
+    setPlantField(created, 'branchAmp', file and '0' or '0.08')
+    setPlantField(created, 'detailAmp', file and '0' or '0.15')
     local registered = pcall(function() created:registerObject('') end)
       or pcall(function() created:registerObject(name) end)
     if not registered then
@@ -443,9 +447,11 @@ end
 
 local function spawnForestItem(it, tile)
   if S.forestOff or not tile or not MatrixF then return false end
-  local kind = forestFor(tile) and plantDataFor(it.shape)
+  local key = it.prop and it.shape .. '#solid' or it.shape
+  if it.prop then result.propsQueued = (result.propsQueued or 0) + 1 end
+  local kind = forestFor(tile) and plantDataFor(key)
   if not kind then return false end
-  local adds = forestQueue(it.shape).adds
+  local adds = forestQueue(key).adds
   adds[#adds + 1] = {it, tile, tile.forestGen or 0}
   return true
 end
@@ -505,7 +511,8 @@ local function forestCommit()
   end
   q.removes = {}
   local adds = q.adds
-  local count = math.min(#adds, LIMIT.forestMax)
+  -- 2500 solid props of one kind made a 19 ms commit (out/overnight/drive-p6)
+  local count = math.min(#adds, name:find('#solid', 1, true) and LIMIT.propMax or LIMIT.forestMax)
   local kind = data and plantDataFor(name)
   -- createNewItem copies the transform, so one matrix and two vectors serve every crown
   local m, euler, at = MatrixF(true), vec3(0, 0, 0), vec3(0, 0, 0)
@@ -586,7 +593,7 @@ local function spawnItem(it, group, pause, tile, layer)
     local ms = t:stop()
     if ms > (result.createMeshMs or 0) then result.createMeshMs, result.createMeshItem = ms, it.name end
   else
-    if tile and vegetationShape(it.shape) and spawnForestItem(it, tile) then return end
+    if tile and (it.prop or vegetationShape(it.shape)) and spawnForestItem(it, tile) then return end
     local obj = createObject('TSStatic')
     local itemName = it.name or ''
     if vegetationShape(it.shape) then result.staticTrees = (result.staticTrees or 0) + 1
@@ -654,7 +661,7 @@ local function queueItems(items, tile, key, layer)
   local count, batch = 0, nil
   for _, it in ipairs(items) do
     if not getDetailStream():add(tile, it) then
-      if it.kind ~= 'proc' and vegetationShape(it.shape) then
+      if it.kind ~= 'proc' and (it.prop or vegetationShape(it.shape)) then
         if not batch or #batch.items >= LIMIT.plantBatch then
           batch = {kind='plants', name='plants_' .. key, decor=true, items={}}
           S.queue[#S.queue+1] = {tile=tile, key=key, item=batch, scene=layer=='scene', far=layer=='far'}
@@ -3149,7 +3156,7 @@ local function applyTune()
   end
   local base = S.appliedTune or TUNE_DEFAULT
   local rebuild = false
-  for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees'}) do
+  for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees','propSpacing'}) do
     if S.tune[key] ~= base[key] then rebuild = true end
   end
   if ((S.tune.parkedCars or 0) > 0) ~= ((base.parkedCars or 0) > 0) then rebuild = true end
@@ -3523,11 +3530,12 @@ local function runTest()
     local busy = queued > 0 or building > 0 or loading > 0 or #S.queue > 0 or (S.reloadQueue and #S.reloadQueue > 0) or false
     return busy, string.format('%d/%d/%d/%d/%d/q%d', loaded, near, far, horizon, #S.queue, queued)
   end
-  if test.quality and not S.testQuality and S.state == 'pick' then
+  if (test.quality or test.propSpacing) and not S.testQuality and S.state == 'pick' then
     S.testQuality = true
-    S.tune = quality.preset(test.quality)
+    S.tune = quality.preset(test.quality or 50)
+    if test.propSpacing then S.tune.propSpacing = test.propSpacing end
     applyTune()
-    result.quality = test.quality
+    result.quality = test.quality or 50
   end
   if test.qualityCycle and S.testDone and not S.qualityCycleDone then
     local veh = getPlayerVehicle(0)

@@ -113,15 +113,16 @@ for di = -radius, radius do
         local pauses = 0
         local t1 = clock()
         local road, scene, farM = generator.build({cells[ck]}, i, j, {tileSize = 500, far = far,
-          pause = function() pauses = pauses + 1 end, seaLevel = d.seaLevel})
+          pause = function() pauses = pauses + 1 end, seaLevel = d.seaLevel, propSpacing = PROP_SPACING})
         local ms = (clock() - t1) * 1000
         local kb = collectgarbage('count') - kb0
         collectgarbage('restart')
-        local tris, verts, items, statics, tables = 0, 0, 0, 0, 0
+        local tris, verts, items, statics, tables, props = 0, 0, 0, 0, 0, 0
         for _, m in ipairs({road, scene, farM}) do
           for _, it in ipairs(m and m.items or {}) do
             items = items + 1
             if it.kind == 'static' then statics = statics + 1 end
+            if it.prop then props = props + 1 end
             for _, mesh in ipairs(it.meshes or {}) do
               verts = verts + #mesh.verts; tris = tris + #mesh.faces / 3
               local seen, n = {}, 0
@@ -131,7 +132,7 @@ for di = -radius, radius do
           end
         end
         out[#out + 1] = {key = i .. '_' .. j, far = far, ms = ms, decodeMs = far and 0 or decodeMs, decodeKb = far and 0 or decodeKb, kb = kb,
-          tris = tris, verts = verts, tables = tables, items = items, statics = statics, pauses = pauses}
+          tris = tris, verts = verts, tables = tables, items = items, statics = statics, props = props, pauses = pauses}
       end
     end
   end
@@ -214,8 +215,10 @@ def main():
     p.add_argument('--speed', type=float, default=0, help='m/s along +x after the landing (stream part)')
     p.add_argument('--skip-tiles', action='store_true')
     p.add_argument('--json', type=Path)
+    p.add_argument('--prop-spacing', type=float, default=0, help='street props every this many metres of sidewalk (0: none)')
     a = p.parse_args()
     lua, mods, io_stats = runtime(a.pack)
+    lua.globals().PROP_SPACING = a.prop_spacing or None
     native = mods['native']
     st = native.refresh()
     country = next(c for c in st.countries.values() if c.available)
@@ -232,10 +235,10 @@ def main():
         rows = [{k: v for k, v in r.items()} for r in rows]
         near = [r for r in rows if not r['far']]
         far = [r for r in rows if r['far']]
-        print(f'{"tile":>10} {"layer":>5} {"ms":>8} {"decode":>7} {"tris":>7} {"verts":>7} {"tables":>7} {"items":>5} {"stat":>4} {"KB":>8} {"pause":>6}')
+        print(f'{"tile":>10} {"layer":>5} {"ms":>8} {"decode":>7} {"tris":>7} {"verts":>7} {"tables":>7} {"items":>5} {"stat":>4} {"prop":>5} {"KB":>8} {"pause":>6}')
         for r in rows:
             print(f'{r["key"]:>10} {"far" if r["far"] else "near":>5} {r["ms"]:8.1f} {r["decodeMs"]:7.1f} {int(r["tris"]):7d} '
-                  f'{int(r["verts"]):7d} {int(r["tables"]):7d} {int(r["items"]):5d} {int(r["statics"]):4d} {r["kb"]:8.0f} {int(r["pauses"]):6d}')
+                  f'{int(r["verts"]):7d} {int(r["tables"]):7d} {int(r["items"]):5d} {int(r["statics"]):4d} {int(r["props"]):5d} {r["kb"]:8.0f} {int(r["pauses"]):6d}')
         for name, group in (('near', near), ('far', far)):
             if group:
                 print(f'{name}: tiles {len(group)}, ms mean {sum(r["ms"] for r in group) / len(group):.1f} '

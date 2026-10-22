@@ -111,6 +111,7 @@ def main():
     p.add_argument('--native', action='store_true', default=True, help='native mode (default; retained for existing commands)')
     p.add_argument('--planet', type=Path, help='test an existing planet ZIP (for repeatable before/after runs)')
     p.add_argument('--quality', type=int, choices=range(101), metavar='0..100', help='native world quality preset')
+    p.add_argument('--prop-spacing', type=float, help='street props every this many metres of sidewalk (0: none)')
     p.add_argument('--quality-cycle', action='store_true', help='after driving, verify Potato/OASIS changes keep the road')
     p.add_argument('--picker-only', action='store_true', help='verify native picker without landing')
     p.add_argument('--expected-countries', type=int, default=0, help='country count for --picker-only')
@@ -160,6 +161,8 @@ def main():
     test = {'lat': a.lat, 'lon': a.lon, 'driveSeconds': a.drive_seconds, 'skipMap': True, 'minDistance': a.min_distance}
     if a.quality is not None:
         test['quality'] = a.quality
+    if a.prop_spacing is not None:
+        test['propSpacing'] = a.prop_spacing
     if a.quality_cycle:
         test['qualityCycle'] = [0, 100]
     if a.picker_only:

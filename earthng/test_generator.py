@@ -509,6 +509,32 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(all(item.shape == '/art/shapes/objects/lamp1.dae' for item in lamps))
         self.assertTrue(all(item.decor and abs(item.pos[3] - 10.2) < 1e-8 for item in lamps))
 
+    def test_street_props_line_sidewalks_and_footways_but_not_carriageways(self):
+        # four arms meeting at a junction node (250, 250)
+        roads = [{'id': arm, 'nodes': ['j', arm], 'width': 8, 'tags': {'highway': 'residential', 'sidewalk': 'both'},
+                  'points': [[250, 250, 10], end]}
+                 for arm, end in (('n', [250, 500, 10]), ('s', [250, 0, 10]), ('e', [500, 250, 10]), ('w', [0, 250, 10]))]
+        lines = [{'id': 'walk', 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[50, 50, 10], [50, 200, 10]]}]
+
+        def props(**options):
+            scene = self.build([{'roads': roads, 'lines': lines}], terrainStep=100, **options)[1]
+            return [item for item in scene['items'].values() if item.prop]
+
+        placed = props(propSpacing=6)
+        self.assertGreater(len(placed), 250)
+        self.assertTrue(all(item.kind == 'static' and item.collision == 'Collision Mesh' for item in placed))
+        for item in placed:
+            x, y = item.pos[1], item.pos[2]
+            # off both carriageways
+            self.assertFalse(abs(x - 250) < 4.2 and 0 <= y <= 500 or abs(y - 250) < 4.2 and 0 <= x <= 500, (x, y))
+        walk = [item for item in placed if abs(item.pos[1] - 50) < 3 and item.pos[2] < 210]
+        self.assertTrue(walk)
+        self.assertTrue(all(abs(abs(item.pos[1] - 50) - 1.4) < 1e-6 for item in walk))
+        # junction mouths stay clear
+        self.assertFalse([item for item in placed if abs(item.pos[1] - 250) < 10 and abs(item.pos[2] - 250) < 10])
+        self.assertEqual(props(propSpacing=0), [])
+        self.assertEqual(props(propSpacing=6, look={'statics': 'sparse'}), [])
+
     def test_country_look_selects_worn_asphalt_brick_and_skips_lamps(self):
         road = {'id': 'street', 'width': 7, 'points': [[0, 250, 10], [500, 250, 10]],
                 'tags': {'highway': 'residential', 'lit': 'yes', 'sidewalk': 'no'}}
