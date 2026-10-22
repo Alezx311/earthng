@@ -3440,9 +3440,21 @@ local function build(cells, i, j, options)
       local z = p[3] + (up and height + .1 or 0)
       return {p[1] + n[1] * side, p[2] + n[2] * side, z, along[k] / scale, (z - p[3]) / scale}
     end
+    -- A piece over a carriageway or a deck is left out: OSM fences cross a road at a gate or pass
+    -- under a bridge, and on the ground lattice (24 m DEM) a yard's wall stood 2 m high across the
+    -- Povitrianykh Syl overpass in Kyiv.
+    local function overRoad(k)
+      local x, y = (pts[k][1] + pts[k + 1][1]) / 2, (pts[k][2] + pts[k + 1][2]) / 2
+      for _, segment in ipairs(segmentBins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE) do
+        local a = segment.a
+        local t = math.max(0, math.min(1, ((x - a[1]) * segment.dx + (y - a[2]) * segment.dy) / segment.len2))
+        if (x - a[1] - t * segment.dx) ^ 2 + (y - a[2] - t * segment.dy) ^ 2 < (segment.width / 2 + .5) ^ 2 then return true end
+      end
+      return false
+    end
     for k = 1, #pts - 1 do
       local box = ringBounds({{pts[k], pts[k + 1]}})
-      if boundsTouch(rect, box, half * 2 + .5) then
+      if boundsTouch(rect, box, half * 2 + .5) and not overRoad(k) then
         scene.polygon(kind, {corner(k + 1, 1), corner(k, 1), corner(k, 1, true), corner(k + 1, 1, true)}, false)
         scene.polygon(kind, {corner(k, -1), corner(k + 1, -1), corner(k + 1, -1, true), corner(k, -1, true)}, false)
         scene.polygon(kind, {corner(k, 1, true), corner(k, -1, true), corner(k + 1, -1, true), corner(k + 1, 1, true)}, true)

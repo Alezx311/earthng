@@ -404,6 +404,18 @@ class GeneratorTests(unittest.TestCase):
         corner = (500 + normal[0] * mitre, 250 + normal[1] * mitre)   # the inner edge, in tile 0
         self.assertTrue([p for t in asphalt for p in t if math.hypot(p[0] - corner[0], p[1] - corner[1]) < 1e-3])
 
+    def test_a_wall_leaves_a_gap_over_a_road_and_under_a_deck(self):
+        # Kyiv: a rail yard's wall crossed the Povitrianykh Syl overpass and stopped the car
+        wall = {'id': 'w', 'kind': 'fence', 'tags': {'barrier': 'wall'}, 'points': [[250, 20, 10], [250, 480, 10]]}
+        for tags in ({}, {'bridge': 'yes', 'layer': '1'}):
+            with self.subTest(tags=tags):
+                road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 10, 'points': [[0, 250, 10], [500, 250, 10]],
+                        'tags': dict(tags, highway='primary', sidewalk='no')}
+                scene = self.build([{'roads': [road], 'lines': [wall]}], terrainStep=100)[1]
+                ys = [p[1] for t in self.triangles(scene, 'e2rf_fence_wall') for p in t if abs(p[0] - 250) < .2]
+                self.assertTrue([y for y in ys if y < 200] and [y for y in ys if y > 300])
+                self.assertFalse([y for y in ys if 245 < y < 255], 'wall on the carriageway')
+
     def test_fences_follow_the_ground_and_have_thickness(self):
         # one 400 m wall over a 6 m hump: its ends alone on the ground buried the middle
         heights = [0, 0, 0, 6, 0, 0, 0, 0, 0]
