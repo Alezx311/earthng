@@ -185,6 +185,11 @@ def build(out, lang='en'):
             if src.is_file() and src.suffix in ('.png', '.json'):
                 z.write(src, 'earthng/planet/basemap/' + src.relative_to(base).as_posix(),
                         compress_type=zipfile.ZIP_STORED if src.suffix == '.png' else zipfile.ZIP_DEFLATED)
+        # Optional map-only updates for existing country packs (no geometry rebuild).
+        import build_map
+        for directory in sorted((HERE.parent / 'out/map-data').glob('*')):
+            if directory.is_dir() and (directory / 'index.json').is_file():
+                build_map.write_archive(z, directory, 'earthng/planet/maps/' + directory.name)
     temporary.replace(path)
     return path
 

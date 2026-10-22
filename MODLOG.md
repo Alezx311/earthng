@@ -1,5 +1,36 @@
 # EarthNG native mod migration
 
+## 2026-10-22: offline map detail, search, stock minimap
+
+- Route: existing GE Lua/ImGui APIs, no new loader. Read installed BeamNG
+  `lua/ge/extensions/ui/apps/minimap/roads.lua`: it reads `map.getMap().nodes` once
+  into a spatial tree, exposes `reset()`, and does not subscribe to navgraph reloads.
+  EarthNG now refreshes that cache after its graph changes, even with traffic off.
+  Stationary tile arrivals are batched every two seconds; old graph nodes are cleared
+  on landing changes, country removal and extension unload.
+- `build_map.py`: OSM settlement nodes (including villages/hamlets not attached to ways),
+  names/aliases and simplified main roads at three levels. Spatial JSON tiles are
+  generated offline, not decoded from driving blocks when zooming out. Original sources
+  stay outside Git; Ukraine source reused from the earlier Earth2Road data cache.
+- `mapCatalog.lua`: mounted-country filtering, lazy sidecars, bounded road cache.
+  Country `map/` takes priority over planet `maps/<id>/`, so existing country ZIPs can
+  gain detail through a planet update. Missing sidecars retain the original base map.
+  New Map Builder and spot builds include their own sidecars. An old tile-only cache
+  without its original PBF retains the fallback and reports the missing map source.
+- Search: countries and settlements, aliases in local/English/Ukrainian names,
+  exact/prefix matching before population, language/limit-aware cache, keyboard arrows,
+  Enter, Escape, clear button, fixed search field, result kind and country context.
+  Map has a car-centering control; overview roads continue below street zoom.
+- Initial live Albania picker passed but cost ~20 ms/frame / 1.2 MB garbage with
+  uncached line points. Reused projected ImVec2 objects and colors, capped point
+  preparation per frame; close-up driving uses existing local lanes instead of the overview.
+- Data prepared: Ukraine 35,985 settlement/district nodes, 165,208 main-road ways;
+  Albania 4,514 nodes, 14,696 ways. Detailed sidecars in this update cover these two
+  packs; global country/city search continues from Natural Earth.
+- Validation in progress: initial full suite 222 passed, additional traffic-off minimap
+  regression passed. Real game profiles and captures: `out/map-picker-01` and subsequent
+  `out/map-*` runs. Personal profile not used for testing.
+
 ## 2026-10-22: climate biomes, the vista from summits, Death Valley above the sea
 
 Detail and measurements: `docs/NATURE.md` (22.10).

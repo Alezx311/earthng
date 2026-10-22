@@ -4,6 +4,7 @@
 -- is drawn as lines instead.
 local M = {}
 local imguiUtils = require('ui/imguiUtils')
+local catalog = require('ge/extensions/e2r/mapCatalog')
 
 local ROOT = '/earthng/planet/basemap/'
 local TEX_MAX, LOADS_PER_FRAME = 400, 6
@@ -11,8 +12,10 @@ M.SEA = {170 / 255, 211 / 255, 223 / 255}
 
 local index        -- {maxZoom, tiles = {['z/x/y'] = file}} or false
 local labels       -- {places, countries} with buckets
+local baseLabels, labelRevision = nil, -1
 local tex, texN, frame, loads = {}, 0, 0, 0
 local coast
+local roadTex, roadFrame, roadRevision = {}, 0, -1
 
 -- --- tiles ---------------------------------------------------------------------------------------
 local function loadIndex()
@@ -136,23 +139,31 @@ local BUCKET = 5
 local function bucketKey(lat, lon) return math.floor(lat / BUCKET) * 1000 + math.floor(lon / BUCKET) end
 
 local function loadLabels()
-  if labels ~= nil then return labels end
-  labels = false
-  if FS:fileExists(ROOT .. 'labels.json') then
+  if labels and labelRevision == catalog.revision then return labels end
+  if not baseLabels and FS:fileExists(ROOT .. 'labels.json') then
     local ok, d = pcall(jsonReadFile, ROOT .. 'labels.json')
-    if ok and type(d) == 'table' then
-      local buckets = {}
-      for k, p in ipairs(d.places or {}) do
-        p.order = k
-        local key = bucketKey(p[1], p[2])
-        buckets[key] = buckets[key] or {}
-        table.insert(buckets[key], p)
-      end
-      labels = {places = d.places or {}, countries = d.countries or {}, buckets = buckets}
-    end
+    if ok and type(d) == 'table' then baseLabels = d end
   end
+  baseLabels = baseLabels or {places = {}, countries = {}}
+  local places, buckets = catalog.places(), {}
+  for _, p in ipairs(baseLabels.places or {}) do places[#places + 1] = p end
+  table.sort(places, function(a, b)
+    if a[3] ~= b[3] then return a[3] < b[3] end
+    return (a[7] or 0) > (b[7] or 0)
+  end)
+  for k, p in ipairs(places) do
+    p.order = k
+    local key = bucketKey(p[1], p[2])
+    buckets[key] = buckets[key] or {}
+    table.insert(buckets[key], p)
+  end
+  labels = {places = places, countries = baseLabels.countries or {}, buckets = buckets}
+  labelRevision = catalog.revision
   return labels
 end
+
+function M.update(countries) catalog.step(countries) end
+function M.revision() return catalog.revision end
 
 -- lower case for Latin and Cyrillic (string.lower knows ASCII only): А-Я, Ѐ-Џ (Є, І, Ї), Ґ
 local function cyrLower(c)
@@ -167,27 +178,132 @@ function M.lower(text)
   return (text:lower():gsub('[\208\210][\128-\191]', cyrLower))
 end
 
+local function normalize(text)
+  return M.lower(text or ''):gsub('’', "'"):gsub('ʼ', "'"):gsub('`', "'"):gsub('%s+', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+end
+
 -- places whose name contains the text (any case), the biggest first
 local lastQuery, lastFound
 function M.search(text, lang, limit)
   local l = loadLabels()
-  if not l or text == '' then return {} end
-  local needle = M.lower(text)
-  if needle == lastQuery then return lastFound end
+  local needle = normalize(text)
+  if needle == '' then return {} end
+  local key = needle .. ':' .. tostring(lang) .. ':' .. tostring(limit) .. ':' .. labelRevision
+  if key == lastQuery then return lastFound end
   if not l.lowered then
-    for _, p in ipairs(l.places) do p.en, p.uk = p[4]:lower(), M.lower(p[5]) end
+    for _, list in ipairs({l.places, l.countries}) do
+      for _, p in ipairs(list) do
+        p.en, p.uk, p.aliases = normalize(p[4]), normalize(p[5]), normalize(p[9])
+      end
+    end
     l.lowered = true
   end
   local out = {}
-  for _, p in ipairs(l.places) do
-    if p.uk:find(needle, 1, true) or p.en:find(needle, 1, true) then
-      out[#out + 1] = {name = lang == 'en' and p[4] or p[5], lat = p[1], lon = p[2], pop = p[7] or 0}
+  for kind, list in ipairs({l.places, l.countries}) do
+    for _, p in ipairs(list) do
+      local score
+      for _, value in ipairs({p.uk, p.en, p.aliases}) do
+        local at = value:find(needle, 1, true)
+        if at then score = math.min(score or 3, value == needle and 0 or at == 1 and 1 or 2) end
+      end
+      if score then
+        out[#out + 1] = {name = lang == 'en' and p[4] or p[5], lat = p[1], lon = p[2], pop = p[7] or 0,
+          kind = kind == 2 and 'country' or p[8] or 'city', context = p.context, score = score,
+          zoom = kind == 2 and math.max(3, math.min(7, math.floor(p[3] + 2))) or p[8] == 'city' and 12 or 14}
+      end
     end
   end
-  table.sort(out, function(a, b) return a.pop > b.pop end)
-  for k = #out, (limit or 20) + 1, -1 do out[k] = nil end
-  lastQuery, lastFound = needle, out
-  return out
+  table.sort(out, function(a, b)
+    if a.score ~= b.score then return a.score < b.score end
+    if (a.context ~= nil) ~= (b.context ~= nil) then return a.context ~= nil end
+    if a.pop ~= b.pop then return a.pop > b.pop end
+    if a.name ~= b.name then return a.name < b.name end
+    if a.lat ~= b.lat then return a.lat < b.lat end
+    return a.lon < b.lon
+  end)
+  local found = {}
+  for _, p in ipairs(out) do
+    local duplicate = false
+    for _, q in ipairs(found) do
+      if p.name == q.name and p.kind == q.kind and math.abs(p.lat - q.lat) < .08 and math.abs(p.lon - q.lon) < .08 then duplicate = true; break end
+    end
+    if not duplicate then found[#found + 1] = p end
+    if #found >= (limit or 20) then break end
+  end
+  lastQuery, lastFound = key, found
+  return found
+end
+
+-- Road overviews survive zooming out. Decode only two spatial tiles per frame and cap drawing;
+-- close-up streets continue to come from native.mapRoads, without reading a whole country.
+function M.drawRoads(im, dl, bounds, zoom, screen, col)
+  if zoom < 5 then return end
+  if roadRevision ~= catalog.revision then roadTex, roadRevision = {}, catalog.revision end
+  roadFrame = roadFrame + 1
+  local loads, white = 0, col(1,1,1)
+  for _, tile in ipairs(catalog.raster(bounds, zoom)) do
+    local t = roadTex[tile.path]
+    if not t and loads < 4 then
+      local ok, obj = pcall(imguiUtils.texObj, tile.path)
+      if ok and obj then roadTex[tile.path], t = obj, obj end
+      loads = loads + 1
+    end
+    if t then
+      t.used = roadFrame
+      local x,y = screen(tile.lat, tile.lon)
+      im.ImDrawList_AddImage(dl, t.texId, im.ImVec2(x,y), im.ImVec2(x+256,y+256), im.ImVec2(0,0), im.ImVec2(1,1), white)
+    end
+  end
+  local size = 0
+  for _ in pairs(roadTex) do size = size + 1 end
+  if size > 160 then
+    local old = {}
+    for path,t in pairs(roadTex) do old[#old+1] = {path,t.used} end
+    table.sort(old, function(a,b) return a[2]<b[2] end)
+    for k=1,#old-120 do roadTex[old[k][1]] = nil end
+  end
+  local groups = catalog.roads(bounds, zoom)
+  local count, prepared, seen = 0, 0, {}
+  local colors = {col(.80, .48, .15), col(.72, .60, .35), col(.65, .65, .61)}
+  for _, lines in ipairs(groups) do
+    for _, line in ipairs(lines) do
+      local b, g = line.box, line.geo
+      if b[1] <= bounds.n and b[3] >= bounds.s and b[2] <= bounds.e and b[4] >= bounds.w then
+        line.id = line.id or table.concat(g, ',')
+        if not seen[line.id] then
+          seen[line.id] = true
+          local ax, ay = screen(g[1], g[2])
+          local draw = line.draw
+          if (not draw or draw.zoom ~= zoom) and prepared < 700 then
+            local points, offsets, px, py = {im.ImVec2(ax, ay)}, {0, 0}, ax, ay
+            for k = 3, #g - 1, 2 do
+              local x, y = screen(g[k], g[k + 1])
+              if k == #g - 1 or (x - px)^2 + (y - py)^2 >= 9 then
+                points[#points + 1] = im.ImVec2(x, y)
+                offsets[#offsets + 1], offsets[#offsets + 2] = x - ax, y - ay
+                px, py = x, y
+              end
+            end
+            draw = {zoom = zoom, points = points, offsets = offsets, x = ax, y = ay}
+            line.draw, prepared = draw, prepared + #points
+          end
+          if draw and draw.zoom == zoom then
+            -- ImVec2 is an engine object. Reuse it, and the projected shape, until zoom changes.
+            if ax ~= draw.x or ay ~= draw.y then
+              for k, p in ipairs(draw.points) do p.x, p.y = ax + draw.offsets[2*k-1], ay + draw.offsets[2*k] end
+              draw.x, draw.y = ax, ay
+            end
+            local points = draw.points
+            for k = 2, #points do
+              im.ImDrawList_AddLine(dl, points[k - 1], points[k], colors[line.rank] or colors[3], line.rank == 1 and 2.2 or 1.3)
+              count = count + 1
+              if count >= 6000 then return end
+            end
+          end
+        end
+      end
+    end
+  end
 end
 
 local placed = {}

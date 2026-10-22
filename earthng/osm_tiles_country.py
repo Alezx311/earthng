@@ -194,6 +194,9 @@ def main():
             index['tiles'][key] = tile
     index['tiles'] = dict(sorted(index['tiles'].items()))
     index['seconds'] = round(time.monotonic() - t0, 1)
+    # Retain settlements and simplified roads before the original PBF may be removed.
+    from build_map import build as build_map
+    build_map(a.pbf, tmp / 'map')
     (tmp / 'index.json').write_text(json.dumps(index, indent=1), encoding='utf8')
     tmp.replace(a.out)
     shutil.rmtree(work)

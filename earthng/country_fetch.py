@@ -290,11 +290,21 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     with stage('Region index'):
         regions = build_country.grid_regions(tiles, dem, work, emit=emit, cancel=cancel)
     out = Path(root) / 'out' / 'country-setup'
+    map_data = tiles / 'map'
+    if not (map_data / 'index.json').is_file():
+        if pbf.is_file():
+            # A separate worker keeps this cancellable, just like source extraction.
+            map_data = Path(root) / 'out' / 'map-data' / slug_id
+            with stage('Map detail'):
+                run_step([_python(), str(HERE / 'build_map.py'), '--pbf', str(pbf), '--out', str(map_data)], emit, cancel)
+        else:
+            emit('No original PBF/map sidecar in this cache: using base map labels and close-up roads.')
+            map_data = None
     emit(f"building earthng_{slug_id}.zip, block {look['block']}")
     with stage('Export'):
         archive = build_country.build_country(
             slug_id, place['name'], '0.4.0', regions, out, emit=emit, jobs=jobs,
-            landing=landing, look=look, include=include, cancel=cancel)
+            landing=landing, look=look, include=include, cancel=cancel, map_data=map_data)
     if cancel is not None and cancel.is_set():
         raise InterruptedError('build stopped; completed ZIP retained, not installed')
     with stage('Install'):

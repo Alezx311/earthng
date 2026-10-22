@@ -75,8 +75,12 @@ def build_spot(spot_id, title, lat, lon, km, source, look, out, jobs=2, landing=
     dem = ROOT / 'out' / 'world' / 'cache'
     country_fetch.fetch_dem(index, dem, emit)
     regions = build_country.grid_regions(tiles, dem, ROOT / 'out' / 'world', emit=emit)
+    from build_map import build as build_map
+    map_data = tiles / 'map'
+    if not (map_data / 'index.json').exists():
+        map_data = build_map(pbf, ROOT / 'out/map-data' / country_id, emit=emit)
     return build_country.build_country(country_id, title, '0.4.0', regions, out, emit=emit, jobs=jobs,
-                                       landing=landing or (lat, lon), look=look)
+                                       landing=landing or (lat, lon), look=look, map_data=map_data)
 
 
 def main():

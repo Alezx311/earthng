@@ -1027,7 +1027,7 @@ end
 -- --- traffic -----------------------------------------------------------------------------------
 -- The game's AI drives on a navgraph built from DecalRoads; ours are ProceduralMesh, so the graph
 -- comes from the tiles (<key>.nav.json, fast.nav_segments) and goes to map.reset(nodes). Built
--- only while traffic runs, from the segments within NAV_R of the car, again once the car has gone
+-- also for the stock minimap, from the segments within NAV_R of the car, again once the car has gone
 -- NAV_MOVE m from the last build (a rebuild is one frame of ~30 us a node).
 local NAV_R, NAV_MOVE = 1000, 250
 -- Agent Traffic mod (if installed): its light EU cars instead of the game's full vehicles
@@ -1047,7 +1047,7 @@ local function navRead()
     if not seg then
       local n = (#s - 7) / 3
       local mid = 8 + 3 * math.floor((n - 1) / 2)
-      seg = {s = s, tiles = {}, x = s[mid], y = s[mid + 1]}
+      seg = {s = require('ge/extensions/e2r/navigation').simplify(s), tiles = {}, x = s[mid], y = s[mid + 1]}
       S.nav[s[1]] = seg
       S.navDirty = true
     end
@@ -1132,6 +1132,9 @@ local function navBuild()
     m.nodes = keep
   end
   S.navSerial = m.buildSerial
+  -- BeamNG 0.38+ caches a separate spatial tree for its stock minimap. map.reset does not
+  -- invalidate that tree. Do not load the app if it is disabled/absent on an older game.
+  if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
   S.navDirty, S.navAt, S.navPos = false, S.now, {p.x, p.y}
   S.navStats = {nodes = count, segments = segs, ms = t:stop(), luaMs = tLua}
   result.nav = S.navStats
@@ -1139,12 +1142,13 @@ end
 
 local function navStep()
   if #S.navPending > 0 then navRead() end
-  if not trafficRunning() and not S.trafficWanted then return end
+  if not S.stream or not map or not map.getMap then return end
   -- someone else (an editor tool, a mission) rebuilt the graph from the empty level: ours again
   local foreign = S.navSerial and map.getMap().buildSerial ~= S.navSerial
   local p = focus()
   local moved = p and (not S.navPos or (p.x - S.navPos[1]) ^ 2 + (p.y - S.navPos[2]) ^ 2 > NAV_MOVE * NAV_MOVE)
-  if foreign or (S.navDirty and moved) then navBuild() end
+  -- New tiles must appear even while parked. Batch updates instead of resetting per tile.
+  if (foreign or moved or S.navDirty) and S.now - (S.navAt or -10) >= 2 then navBuild() end
 end
 
 local function setTraffic(amount)
@@ -1240,6 +1244,7 @@ local function updateTiles()
       retireForest(tile)
       dropGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
       S.tiles[key] = nil
+      S.navDirty = true
       if NATIVE then native.unload(key) end
       tile.dropped = true
       S.collisionDirty = true
@@ -1974,6 +1979,9 @@ local function beginArrival(job)
   if trafficRunning() then gameplay_traffic.deleteVehicles() end
   if S.park then parking.clear(S.park) end
   S.nav, S.navPending, S.navDirty, S.trafficWanted = {}, {}, false, nil
+  S.navAt, S.navPos, S.navSerial = nil, nil, nil
+  map.reset({})
+  if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
   S.stream = {region = job.region, country = job.country, tile = job.tileSize, generator = job.generator}
   -- the level's TimeOfDay at the landing: the sun of the place (Kyiv's at Los Angeles was hours off)
   if job.lat and job.lon then pcall(function() core_environment.setTimeOfDay({latitude = job.lat, longitude = job.lon}) end) end
@@ -2523,6 +2531,9 @@ local function drawMap(width, height, view, pick)
       end
     end
   end
+  if NATIVE and (pick or z < 12) then
+    planetMap.drawRoads(im, dl, {w = west, s = south, e = east, n = north}, z, screen, col)
+  end
   -- streets of the installed country packs on the landing picker (no map download), OSM-like:
   -- main roads from z11 (wider views take more than MAP_BLOCKS 8 km blocks), the rest closer;
   -- while driving the minimap keeps to the loaded tiles' lanes below, every line costs a draw call
@@ -2548,7 +2559,7 @@ local function drawMap(width, height, view, pick)
       end
     end
   end
-  if NATIVE and S.stream then
+  if NATIVE and S.stream and z >= 12 then
     -- the loaded tiles' lanes: projected once per manifest, drawn only where the view is (all of
     -- them every frame, unculled, took 11 ms and 1 MB of garbage a frame in Stone Town)
     local seen, lane = {}, col(0.4, 0.43, 0.45)
@@ -2660,7 +2671,16 @@ local function drawMap(width, height, view, pick)
     local bx, size = r1.x - 38, 28
     local hIn, cIn = mapButton(dl, bx, r0.y + 10, size, '+', mouse, clicked)
     local hOut, cOut = mapButton(dl, bx, r0.y + 10 + size + 4, size, '-', mouse, clicked)
-    onControl = hIn or hOut
+    local hCar, cCar = false, false
+    if car then
+      hCar, cCar = mapButton(dl, bx, r0.y + 10 + (size + 4) * 2, size, '@', mouse, clicked)
+      if cCar then
+        view.center = {lat = car.lat, lon = car.lon}
+        if not pick then view.follow = true end
+      end
+      if hCar and hovered then im.SetTooltip(L('До авто', 'Center on car')) end
+    end
+    onControl = hIn or hOut or hCar
     if cIn then zoomTo = z + 1 elseif cOut then zoomTo = z - 1 end
   end
   drawScale(dl, r0.x + 10, r1.y - 8, view.center.lat, z)
@@ -2862,7 +2882,7 @@ local function packGroup(country)
   return 'asia'
 end
 
-local searchBuf = im.ArrayChar(64)
+local searchBuf = im.ArrayChar(192)
 local foundPlaces
 
 -- buttons that wrap to the next line when the row is full
@@ -2879,11 +2899,17 @@ local function flowButtons(items, onClick)
 end
 
 local function drawSidebar(mapW, mapH)
-  im.SetNextItemWidth(-1)
-  im.InputTextWithHint('##search', L('Пошук: пакет, місто...', 'Search: pack, city...'), searchBuf, 64)
+  im.SetNextItemWidth(-36)
+  local submitted = im.InputTextWithHint('##search', L('Місто, село, країна...', 'City, village, country...'), searchBuf, 192, im.InputTextFlags_EnterReturnsTrue)
+  local searchActive = im.IsItemActive()
+  im.SameLine()
+  if im.Button('X##clearSearch') then ffi.fill(searchBuf, 192); foundPlaces = nil end
+  if im.IsItemHovered() then im.SetTooltip(L('Очистити пошук', 'Clear search')) end
   local query = planetMap and planetMap.lower(ffi.string(searchBuf):gsub('^%s+', ''):gsub('%s+$', '')) or ''
+  if query ~= S.searchQuery then S.searchChoice, S.searchQuery = 1, query end
   local countries = NATIVE and S.status and S.status.countries or {}
   local info = packInfo()
+  im.BeginChild1('##searchResults', im.ImVec2(0, 0), false)
   if query ~= '' then
     local any = false
     for _, country in ipairs(countries) do
@@ -2893,8 +2919,8 @@ local function drawSidebar(mapW, mapH)
       end
     end
     -- the places of a query, with their pack check, once per query (native.at walks the boxes)
-    if not foundPlaces or foundPlaces.query ~= query or foundPlaces.status ~= S.status or foundPlaces.lang ~= lang then
-      local places = {query = query, status = S.status, lang = lang}
+    if not foundPlaces or foundPlaces.query ~= query or foundPlaces.status ~= S.status or foundPlaces.lang ~= lang or foundPlaces.revision ~= planetMap.revision() then
+      local places = {query = query, status = S.status, lang = lang, revision = planetMap.revision()}
       for _, p in ipairs(PRESETS) do
         local hit = planetMap.lower(p[1]):find(query, 1, true) or (p[5] and planetMap.lower(p[5]):find(query, 1, true))
         if hit and (not NATIVE or native.at(p[2], p[3])) then
@@ -2902,22 +2928,42 @@ local function drawSidebar(mapW, mapH)
         end
       end
       for _, p in ipairs(planetMap and planetMap.search(query, lang, 25) or {}) do
-        places[#places + 1] = {name = p.name, lat = p.lat, lon = p.lon, covered = not NATIVE or native.at(p.lat, p.lon) ~= nil}
+        p.covered = not NATIVE or native.at(p.lat, p.lon) ~= nil
+        places[#places + 1] = p
       end
       foundPlaces = places
     end
     local places = foundPlaces
+    if searchActive then
+      if im.IsKeyPressed(im.GetKeyIndex(im.Key_DownArrow)) then S.searchChoice = math.min(#places, S.searchChoice + 1) end
+      if im.IsKeyPressed(im.GetKeyIndex(im.Key_UpArrow)) then S.searchChoice = math.max(1, S.searchChoice - 1) end
+      if im.IsKeyPressed(im.GetKeyIndex(im.Key_Escape)) then ffi.fill(searchBuf, 192); foundPlaces = nil; return end
+    end
+    S.searchChoice = math.max(1, math.min(#places, S.searchChoice))
     if #places > 0 then
       im.Spacing()
       im.TextColored(theme.muted, L('Місця', 'Places'))
       for k, p in ipairs(places) do
-        if im.Selectable1(p.name .. (p.covered and '' or L('  (немає пакета)', '  (no pack)')) .. '##place' .. k) then
-          goTo(p.lat, p.lon, p.zoom or 12)
+        local suffix = p.kind == 'country' and L(' · країна', ' · country') or p.covered and '' or L('  (немає пакета)', '  (no pack)')
+        if im.Selectable1(p.name .. suffix .. '##place' .. k, k == S.searchChoice) or (submitted and k == S.searchChoice) then
+          S.searchChoice = k
+          if p.kind == 'country' then
+            S.center, S.zoom = {lat = p.lat, lon = p.lon}, p.zoom
+            S.marker, S.selectedPack = nil, nil
+          else goTo(p.lat, p.lon, p.zoom or 12) end
+        end
+        if p.context then
+          local kind = p.kind == 'village' and L('село', 'village') or p.kind == 'hamlet' and L('хутір', 'hamlet')
+            or p.kind == 'town' and L('містечко', 'town') or p.kind == 'city' and L('місто', 'city') or L('район', 'district')
+          im.TextColored(theme.muted, kind .. ' · ' .. p.context)
         end
       end
     elseif not any then
       im.TextColored(theme.muted, L('Нічого не знайдено', 'Nothing found'))
+      im.TextWrapped(L('Спробуйте місцеву або англійську назву. Села доступні з оновленими даними мапи.',
+        'Try a local or English name. Villages require updated map data.'))
     end
+    im.EndChild()
     return
   end
   if NATIVE then
@@ -2964,6 +3010,7 @@ local function drawSidebar(mapW, mapH)
     im.TextColored(theme.muted, L('Місця пакета', 'Places of the package'))
     flowButtons(shown, function(preset) goTo(preset[2], preset[3], 15) end)
   end
+  im.EndChild()
 end
 
 -- under the map: the point, the landing button, coordinates
@@ -3281,6 +3328,7 @@ end
 
 local function drawWindow()
   if test and test.clean then return end   -- a clean screen for recorded video
+  if NATIVE then planetMap.update(S.status and S.status.countries) end
   pushTheme()
   if S.widgetHidden then
     im.Begin('EarthNG##restore', nil, im.WindowFlags_AlwaysAutoResize)
@@ -3390,6 +3438,9 @@ local function refreshCountries()
     pcall(VISTA.plane, nil)
     dropLights()
     if trafficRunning() then gameplay_traffic.deleteVehicles() end
+    map.reset({})
+    if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
+    S.navAt, S.navPos, S.navSerial = nil, nil, nil
     S.stream, S.co, S.job, S.landing = nil, nil, nil, nil
     S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending = {}, {}, {}, {}, {}, {}
     S.collisionDirty, S.state, S.coll = true, 'off', nil
@@ -3431,6 +3482,10 @@ end
 function M.onExtensionUnloaded()
   restorePackState()
   if S.park then pcall(parking.clear, S.park) end
+  if S.navSerial and map.getMap().buildSerial == S.navSerial then
+    map.reset({})
+    if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
+  end
 end
 
 function M.onClientEndMission()

@@ -30,6 +30,12 @@ wrapper; keep each `earthng_<country>.zip` inside packed.
 2. Start BeamNG.drive and open **Freeroam → EarthNG - Planet**.
 3. Pick a point inside an installed country's coverage and land there.
 
+The widget searches cities, villages and countries in local, Ukrainian and English
+names. Use Enter or click a result, scroll to zoom and drag to pan. Main-road
+overviews remain visible when zooming out, and BeamNG's stock minimap shows nearby
+generated roads even with traffic off. Detailed village/overview data is currently
+included for Ukraine and Albania; see [map controls and data](docs/MAP.md).
+
 Use BeamNG's launcher to find your user folder; custom locations are supported.
 Restart the game after replacing a ZIP. Remove the old companion-era
 `earth2road_world.zip` if it is installed. Old all-in-one Python packages cannot

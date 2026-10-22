@@ -82,6 +82,8 @@ class WidgetTests(unittest.TestCase):
         lua.globals().py_exists = lambda path: path in files
         lua.globals().py_json = read_json
         lua.globals().planet_src = (root / 'mod/lua/ge/extensions/e2r/planetMap.lua').read_text(encoding='utf8')
+        lua.globals().catalog_src = (root / 'mod/lua/ge/extensions/e2r/mapCatalog.lua').read_text(encoding='utf8')
+        lua.globals().navigation_src = (root / 'mod/lua/ge/extensions/e2r/navigation.lua').read_text(encoding='utf8')
         lua.execute('''
           ui_imgui = setmetatable({ArrayChar=function(n) return require('ffi').new('char[?]', n) end,
             Button=function(label) return label == clicked end,
@@ -125,6 +127,8 @@ class WidgetTests(unittest.TestCase):
           require=function(name)
             if name == 'ge/extensions/e2r/native' then return fakeNative end
             if name == 'ge/extensions/e2r/planetMap' then return loadstring(planet_src)() end
+            if name == 'ge/extensions/e2r/mapCatalog' then return loadstring(catalog_src)() end
+            if name == 'ge/extensions/e2r/navigation' then return loadstring(navigation_src)() end
             if name == 'ui/imguiUtils' then return {texObj=function(path) return {texId=1, path=path} end} end
             if name == 'ffi' then return realRequire('ffi') end
             return {}
@@ -179,6 +183,39 @@ class WidgetTests(unittest.TestCase):
         first = lua.eval("planet.search('київ', 'uk', 5)[1]")
         self.assertAlmostEqual(first.lat, 50.43, places=1)
         self.assertEqual(lua.eval("planet.search('LVIV', 'en', 5)[1].name"), 'Lviv')
+
+    def test_stock_minimap_graph_updates_without_traffic_while_parked(self):
+        lua = self.native_widget(basemap=False)
+        lua.execute('''
+          step=up(mod.tick,'navStep'); build=up(step,'navBuild')
+          function replace(fn, name, value)
+            for i=1,200 do local n=debug.getupvalue(fn,i)
+              if n==name then debug.setupvalue(fn,i,value); return end
+            end
+            error('missing '..name)
+          end
+          car={x=0,y=0,z=0}
+          replace(build,'focus',function() return car end)
+          graph={nodes={},buildSerial=0}; resets=0; invalidations=0
+          map={getMap=function() return graph end, reset=function(nodes)
+            resets=resets+1; graph={nodes=nodes,buildSerial=resets} end}
+          ui_apps_minimap_roads={reset=function() invalidations=invalidations+1 end}
+          vec3=function(x,y,z) return {x=x,y=y,z=z} end
+          table.clear=function(t) for k in pairs(t) do t[k]=nil end end
+          S.stream={}; S.tiles={a={}}; S.nav={}; S.navPending={}
+          S.navPending[1]={key='a',data={segments={{1,10,11,'1-1',50,4,1,0,0,0,100,0,0}}}}
+          S.now=10; step()
+          assert(resets==1 and invalidations==1 and graph.nodes.e2r_n10)
+          local keep=graph.nodes
+          S.navPending[1]={key='a',data={segments={{2,11,12,'1-1',50,4,1,100,0,0,200,0,0}}}}
+          S.now=10.1; step(); assert(resets==1)
+          S.now=12.1; step()
+          assert(resets==2 and graph.nodes==keep and graph.nodes.e2r_n12)
+          assert(invalidations==2)
+          S.now=14.2; step(); assert(resets==2)
+          S.tiles={}; S.navDirty=true; S.now=16.3; step()
+          assert(resets==3 and next(graph.nodes)==nil)
+        ''')
 
     def map_ui_flow(self, lang, labels):
         lua = LuaRuntime()

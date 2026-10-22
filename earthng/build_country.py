@@ -657,7 +657,7 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
 
 
 def build_country(country_id, title, version, regions, out, bbox=None, emit=print, jobs=1, landing=None, landcover=(), vegetation=None,
-                  look=None, include=None, cancel=None):
+                  look=None, include=None, cancel=None, map_data=None):
     """Stream source blocks to ZIP64 and atomically replace the completed archive."""
     _identifier(country_id, 'country id')
     if not isinstance(title, str) or not title.strip() or not isinstance(version, str) or not version.strip():
@@ -725,6 +725,9 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
             if include:
                 manifest['include'] = include
             _write_json(archive, f'earthng/countries/{country_id}/manifest.json', manifest)
+            if map_data is not None:
+                from build_map import write_archive
+                write_archive(archive, map_data, f'earthng/countries/{country_id}/map')
         os.replace(temporary, target)
     finally:
         Path(temporary).unlink(missing_ok=True)
