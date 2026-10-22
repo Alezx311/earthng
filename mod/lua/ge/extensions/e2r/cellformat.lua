@@ -39,6 +39,10 @@ end
 -- edge (generator PULL), so roads are kept 120 m out (half of an 80 m road + 70 m + slack);
 -- everything else only matters inside the tile (parked cars reach 3 m past it).
 M.ROAD_MARGIN, M.MARGIN = 120, 5
+-- road details at a way node (fast_style.ROAD_DETAILS): a zebra or a turning circle reaches
+-- into the tile from up to this far outside it
+M.DETAIL_MARGIN = 30
+M.DETAILS = {crossing = true, give_way = true, stop_sign = true, mini_roundabout = true, turning_circle = true}
 
 -- One cell from data[first..last]; ox, oy: its south-west corner in region metres.
 -- keep (optional {x0, y0, x1, y1}): only features whose bounds reach it (with the margins above)
@@ -171,7 +175,7 @@ function M.cell(data, first, last, ox, oy, rect, pause, keep)
       else
         f.kind = ref(); f.tags = tags()
         read(1)
-        keepIt = wanted(M.MARGIN)
+        keepIt = wanted(M.DETAILS[f.kind] and M.DETAIL_MARGIN or M.MARGIN)
         if keepIt then f.pos = points(0, 1)[1] end
       end
       if keepIt then list[#list + 1] = f end

@@ -13,6 +13,27 @@ import fast_sources as sources
 class SourceTests(unittest.TestCase):
 
 
+    def test_road_width_follows_class_and_implied_oneway(self):
+        w = sources.road_width
+        self.assertGreater(w({'highway': 'primary'}), w({'highway': 'tertiary'}))
+        self.assertGreater(w({'highway': 'tertiary'}), w({'highway': 'residential'}))
+        # two lanes, implied one-way, shoulders 0.75 + 2.5 m
+        self.assertEqual(w({'highway': 'motorway'}), 10.75)
+        self.assertEqual(w({'highway': 'trunk', 'lanes': '2', 'oneway': 'yes'}), 9.0)
+        self.assertEqual(w({'highway': 'trunk'}), 9.0)                # two lanes, 1 m shoulders
+        self.assertEqual(sources.shoulder({'highway': 'trunk', 'oneway': 'yes'}), (.5, 1.5))
+        self.assertEqual(sources.shoulder({'highway': 'trunk', 'width': '8'}), (0., 0.))
+        self.assertEqual(w({'highway': 'primary_link', 'oneway': 'yes'}), 3.5)
+        ring = w({'highway': 'tertiary', 'junction': 'roundabout'})  # implied one-way, one lane
+        self.assertGreaterEqual(ring, 5.5)
+        self.assertLess(ring, w({'highway': 'tertiary'}) + 1)
+        self.assertEqual(w({'highway': 'trunk', 'junction': 'roundabout', 'lanes': '2'}), 8.0)
+        self.assertEqual(w({'highway': 'service', 'service': 'driveway'}), 3.0)
+        self.assertEqual(w({'highway': 'residential', 'width': '9'}), 9.0)  # a width tag wins
+        self.assertTrue(sources.oneway({'highway': 'motorway'}))
+        self.assertFalse(sources.oneway({'highway': 'motorway', 'oneway': 'no'}))
+        self.assertFalse(sources.oneway({'highway': 'primary'}))
+
     def test_dem_missing_is_error(self):
         with tempfile.TemporaryDirectory() as d:
             terrain=sources.Terrain(d)
@@ -118,6 +139,39 @@ class ProfileTests(unittest.TestCase):
         self.assertLess(grade.max(),.08)
         mid=h[np.argmin(np.abs(s-500))]
         self.assertGreater(mid,40-12+6)          # the deck stays well above the river
+
+    def test_an_overpass_clears_the_road_under_it(self):
+        # Juri: a 51 m trunk bridge over a ring road on flat ground (the DEM has no cutting)
+        flat=lambda xy: np.full(len(xy),40.)
+        over=self.chain([0,300,325,376,400,700],lambda k:{'bridge':'yes','layer':'1'} if k==2 else {})
+        under=[{'xy':[[350,-400],[350,400]],'nodes':[21,22],'tags':{}}]
+        prof,_=fast_profile.solve(over+under,flat)
+        deck=np.interp(25,prof[2][0],prof[2][1])
+        road=np.interp(400,prof[5][0],prof[5][1])
+        self.assertGreater(deck-road,fast_profile.CLEARANCE-.15)
+        self.assertGreater(deck,42)                       # both move: the deck rises ...
+        self.assertLess(road,39)                          # ... the road dips
+        for k,(s,h) in enumerate(prof):
+            # ramps a car can drive
+            self.assertLess(np.abs(np.diff(h)/np.maximum(np.diff(s),.5)).max(),.1,k)
+        # a deck already high over a valley road is left where it is (a lower bound)
+        valley=lambda xy: 40-12*(np.abs(np.asarray(xy)[:,0]-350)<20)
+        free,_=fast_profile.solve(over,valley)
+        held,_=fast_profile.solve(over+under,valley)
+        self.assertLess(abs(np.interp(25,free[2][0],free[2][1])-np.interp(25,held[2][0],held[2][1])),.05)
+
+    def test_a_road_under_the_bridge_end_is_not_tied_to_the_approach(self):
+        # Juri bensiinijaama tee passes 2 m from the end of a 14 m trunk bridge: in plan it
+        # touches the trunk's approach, which must not drag the trunk down into the underpass
+        flat = lambda xy: np.full(len(xy), 40.)
+        over = self.chain([0, 300, 343, 357, 400, 700], lambda k: {'bridge': 'yes', 'layer': '1'} if k == 2 else {})
+        under = [{'xy': [[355, -400], [355, 400]], 'nodes': [21, 22], 'tags': {}}]
+        prof, _ = fast_profile.solve(over + under, flat)
+        deck = np.interp(12, prof[2][0], prof[2][1])
+        road = np.interp(400, prof[5][0], prof[5][1])
+        self.assertGreater(deck - road, fast_profile.CLEARANCE - .15)
+        for k, (s, h) in enumerate(prof):
+            self.assertLess(np.abs(np.diff(h) / np.maximum(np.diff(s), .5)).max(), .1, k)
 
     def test_parallel_carriageways_share_height(self):
         # two oneway halves 12 m apart, 13 m wide (they overlap), over a DEM tilted across them

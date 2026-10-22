@@ -10,6 +10,10 @@ of the following data and assets:
   under the tile usage policy: https://operations.osmfoundation.org/policies/tiles/
 - Terrarium elevation tiles: https://registry.opendata.aws/terrain-tiles/
   See the source attribution and terms there when redistributing elevation data.
+- Estonian elevation (`--local-dem`): Map data: Republic of Estonia Land and Spatial
+  Development Board (Maa- ja Ruumiamet), under its open data licence:
+  https://geoportaal.maaruum.ee/opendata-licence . State the extraction year
+  when redistributing packs built with it.
 - Natural Earth: public-domain map data. https://www.naturalearthdata.com/about/terms-of-use/
 - Panelka pack by kureca and ambientCG textures: CC0, as recorded in the texture
   source manifest distributed with the developer assets.

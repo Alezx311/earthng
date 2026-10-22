@@ -392,8 +392,26 @@ def line_kind(tags):
     return None
 
 
+# Road details painted or shaped by the generator at a way node (it finds the road under the
+# node). 'stop_sign' because 'stop' is a bus stop: an older runtime skips unknown kinds.
+ROAD_DETAILS = ('crossing', 'give_way', 'stop_sign', 'mini_roundabout', 'turning_circle')
+UNMARKED = ('no', 'none', 'unmarked')
+
+
 def point_kind(tags):
-    """'stop' or 'signal' for an OSM node, else None."""
+    """'stop', 'signal' or one of ROAD_DETAILS for an OSM node, else None."""
+    highway = tags.get('highway')
+    if highway == 'crossing':
+        marked = tags.get('crossing:markings', tags.get('crossing'))
+        return None if marked in UNMARKED else 'crossing'
+    if highway == 'give_way':
+        return 'give_way'
+    if highway == 'stop':
+        return 'stop_sign'
+    if highway == 'mini_roundabout':
+        return 'mini_roundabout'
+    if highway in ('turning_circle', 'turning_loop'):
+        return 'turning_circle'
     # traffic signals: the game's trafficlight_city1.dae is a head without a pole (it lay at the
     # curb, vis-13-signals); placing is written (fast.add_street_points), off until a pole model
     if tags.get('highway') == 'traffic_signals' and SIGNALS:

@@ -108,10 +108,11 @@ def main():
     if abs(a.block / CELL - round(a.block / CELL)) > 1e-9:
         raise SystemExit(f'--block must be a multiple of {CELL}')
     t0 = time.monotonic()
-    package_box = a.package_box
+    box = osmium.io.Reader(str(a.pbf), osmium.osm.osm_entity_bits.NOTHING).header().box()
+    extract = [box.bottom_left.lon, box.bottom_left.lat, box.top_right.lon, box.top_right.lat] if box.valid() else None
+    package_box = extract if a.package_box is None else osm_tiles.source_box(a.package_box, extract)
     if package_box is None:
-        box = osmium.io.Reader(str(a.pbf), osmium.osm.osm_entity_bits.NOTHING).header().box()
-        package_box = [box.bottom_left.lon, box.bottom_left.lat, box.top_right.lon, box.top_right.lat]
+        raise SystemExit(f'{a.pbf} has no bounding box; pass --package-box')
     work = a.work or a.out.with_name(a.out.name + '.work')
     (work / 'blocks').mkdir(parents=True, exist_ok=True)
     (work / 'extracts').mkdir(exist_ok=True)
