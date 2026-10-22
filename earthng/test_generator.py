@@ -247,6 +247,27 @@ class GeneratorTests(unittest.TestCase):
         self.assertAlmostEqual(min(ys), 246, places=3)
         self.assertEqual(walls({'tunnel': 'building_passage'}), [])
 
+    def test_side_by_side_decks_keep_parapets_off_each_other(self):
+        # Kyiv, Povitrianykh Syl: two 11.5 m oneway decks 9.7 m apart overlap in plan; each one's
+        # parapet stood on the other's carriageway and stopped the car
+        def deck(way, y, step=0.):
+            return {'id': way, 'nodes': [way + 'a', way + 'b'], 'width': 11.5,
+                    'tags': {'highway': 'primary', 'oneway': 'yes', 'sidewalk': 'no', 'bridge': 'yes', 'layer': '1'},
+                    'points': [[0, y, 20 + step], [500, y, 20 + step]]}
+
+        def parapets(roads):
+            tops = [t for t in self.triangles(self.build([{'roads': roads}])[1], 'e2rf_fence_wall')
+                    if all(abs(p[2] - 21.0) < .02 for p in t)]                  # the parapet tops
+            return sorted({round(p[1], 1) for t in tops for p in t})
+        pair = parapets([deck('n', 254.85), deck('s', 245.15)])
+        self.assertTrue(pair)
+        # deck edges: 239.4 / 250.9 and 249.1 / 260.6; only the outer two keep a parapet
+        self.assertFalse([y for y in pair if 240 < y < 260], pair)
+        self.assertTrue([y for y in pair if y > 260] and [y for y in pair if y < 240], pair)
+        # a deck 5 m higher (a stacked bridge) is not the same surface: both keep their parapets
+        stacked = parapets([deck('n', 254.85), deck('s', 245.15, step=5)])
+        self.assertTrue([y for y in stacked if 245 < y < 255])
+
     def test_per_side_sidewalk_tags_win(self):
         def sides(tags):
             road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 7, 'points': [[0, 250, 10], [500, 250, 10]],
