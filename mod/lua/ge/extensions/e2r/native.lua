@@ -15,7 +15,18 @@ local BLOCK_LIMIT = 6
 -- is the one that is scheduled; 15 km and 30 km stay off until an in-game check.
 local HORIZON_RADIUS, HORIZON_TILE_LIMIT, HORIZON_TRIANGLE_LIMIT = 5000, 96, 250000
 local HORIZON_STEP, HORIZON_BLOCK = 100, 1000
+-- The vista: from a summit or a pass the land past 5 km is in view. When the camera stands
+-- VISTA_RELIEF over the lowest ground known round it and moves slower than VISTA_SPEED, the
+-- horizon runs on to VISTA_RADIUS in 4 km blocks of 400 m steps, read from the cells' elevation
+-- grids alone (cellformat.terrain). Driving never schedules it.
+local VISTA_RADIUS, VISTA_BLOCK, VISTA_STEP, VISTA_RELIEF, VISTA_SPEED = 24000, 4000, 400, 250, 15
 local FORMATS = {['earthng-features-v1'] = 1, ['earthng-features-v2'] = 2}
+-- the climate under the vista's far plane (generator.lua loads the same module)
+local okBiome, biomeModule = pcall(require, 'ge/extensions/e2r/biome')
+local BIOME = okBiome and type(biomeModule) == 'table' and type(biomeModule.at) == 'function' and biomeModule or nil
+local PLANE_GROUND = {desert = 'desert', steppe = 'steppe', mediterranean = 'dry_grass', savanna = 'dry_grass',
+  tundra = 'tundra', ice = 'snow'}
+local NONE_LIST = {}
 local state, regions, active
 
 local function finite(v)
@@ -338,8 +349,14 @@ local function loadCell(key, i, j, keep)
     local loaded = loadBlock(blockKey, block)
     local range = loaded.slots[i % b + (j % b) * b]
     if not range then error('source block lacks cell: ' .. key) end
-    return cellformat.cell(loaded.data, range[1], range[2], i * s, j * s,
+    local cell = cellformat.cell(loaded.data, range[1], range[2], i * s, j * s,
       {i * s, j * s, (i + 1) * s, (j + 1) * s}, active.pause, keep)
+    if not active.lows[key] then
+      local low = math.huge
+      for _, h in ipairs(cell.terrain.heights) do if h < low then low = h end end
+      active.lows[key] = low
+    end
+    return cell
   end
   local descriptor = d.cells[key]
   if not descriptor then error('missing source cell: ' .. key) end
@@ -381,6 +398,11 @@ local function loadCell(key, i, j, keep)
   end
   active.cells[key] = {data = cell, used = touch()}
   evict(active.cells, CELL_LIMIT)
+  if not active.lows[key] then
+    local low = math.huge
+    for _, h in ipairs(terrain.heights) do if h < low then low = h end end
+    active.lows[key] = low
+  end
   return cell
 end
 
@@ -441,6 +463,19 @@ local function completeLanding()
         end
       end
     end
+    -- No road within reach (a summit, a desert, the tundra): the car stands on the ground at the
+    -- point itself. Every tile's spawn there is that point on the DEM (its build centre is the
+    -- landing); a road nearby still wins.
+    if not best then
+      local t = active.region.data.tileSize
+      local key = keyOf(math.floor(land.x / t), math.floor(land.y / t))
+      local entry = active.tiles[key]
+      local sp = entry and entry.road and entry.road.spawn
+      if sp and vector(sp.pos, 3) and finite(sp.yaw) and land.required[key] then
+        best = {key = key, square = needSquare(active.region, sp.pos[1], sp.pos[2]) or {}}
+        entry.road.offRoad = true
+      end
+    end
     if not best then fail('no_drivable_spawn: no road with a complete source neighbourhood'); return end
     land.selected = best.key
     for key, ij in pairs(best.square) do land.required[key] = ij end
@@ -476,6 +511,7 @@ local function land(req)
   local country, descriptor, x, y, r = at(req.lat, req.lon)
   if not r then fail('no_data: this point has no complete mounted source neighbourhood'); return state.job end
   active = {region = r, cells = {}, blocks = {}, tiles = {}, horizon = {}, failed = {}, clock = 0, everBuilt = {}, desired = {}, evicted = {}, epoch = 1,
+    lows = {},   -- cell key -> its lowest ground (world z), for the vista's relief
     epochPoint = {x, y}, prioritiesDirty = true, startupPinned = true,
     manifests = setmetatable({}, {__mode = 'v'}),
     landing = {x = x, y = y, required = needSquare(r, x, y)}, pose = {x = x, y = y, vx = 0, vy = 0}}
@@ -535,37 +571,98 @@ local function priorities()
   end
   -- DEM-only horizon past the far ring. A 1000 m block is one mesh when all four of its
   -- 500 m quadrants sit in the annulus, so it shares edges with the far tiles and does not
-  -- cover them. A ragged quadrant is its own 500 m mesh. 15 km and 30 km are not scheduled.
-  st.horizonRadius = HORIZON_RADIUS
+  -- cover them. A ragged quadrant is its own 500 m mesh. Past 5 km only the vista (above).
   local function centreDistance(cx, cy)
     return math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
   end
-  local minX, maxX = p.x - HORIZON_RADIUS, p.x + HORIZON_RADIUS
-  local minY, maxY = p.y - HORIZON_RADIUS, p.y + HORIZON_RADIUS
+  -- The vista's relief: the camera over the lowest ground of the cells decoded within 5 km.
+  local outer = HORIZON_RADIUS
+  if p.z and speed < VISTA_SPEED then
+    local low, cs = math.huge, a.region.data.cellSize
+    for key, h in pairs(a.lows) do
+      local ci, cj = key:match('^(-?%d+)_(-?%d+)$')
+      ci, cj = tonumber(ci), tonumber(cj)
+      if ci and h < low and centreDistance((ci + .5) * cs, (cj + .5) * cs) <= HORIZON_RADIUS then low = h end
+    end
+    if p.z - low >= VISTA_RELIEF then outer = VISTA_RADIUS end
+  end
+  st.horizonRadius, st.vista = outer, outer > HORIZON_RADIUS and outer or nil
+  -- Past the vista the land is a plane at the lowest ground it has found, in that place's ground
+  -- (the sea where it is the sea), for world.lua to lay out under the haze
+  st.vistaLow, st.vistaGround = nil, nil
+  if st.vista then
+    local low, lowKey, cs = math.huge, nil, a.region.data.cellSize
+    for key, h in pairs(a.lows) do
+      local ci, cj = key:match('^(-?%d+)_(-?%d+)$')
+      ci, cj = tonumber(ci), tonumber(cj)
+      if ci and h < low and centreDistance((ci + .5) * cs, (cj + .5) * cs) <= outer then low, lowKey = h, {ci, cj} end
+    end
+    if lowKey then
+      local sea = finite(a.region.data.seaLevel) and a.region.data.seaLevel or 20
+      local cx, cy, geo = (lowKey[1] + .5) * cs, (lowKey[2] + .5) * cs, a.region.data.geo
+      local wet = low <= sea + .5 and not (BIOME and BIOME.inland(geo, cx, cy))
+      local place = BIOME and BIOME.available() and BIOME.at(geo, cx, cy)
+      st.vistaLow = wet and sea + .3 or low - 15
+      st.vistaGround = wet and 'water' or (place and PLANE_GROUND[place.group]) or 'forest'
+    end
+  end
+  -- 4 km vista blocks whose 500 m quadrants all lie past 5 km and within the vista
+  -- 4 km vista blocks: every 500 m quadrant past 5 km, the block reaching into the vista (the
+  -- outer edge goes out a little past VISTA_RADIUS in whole blocks: 1 km tiles there were ~600)
+  local vistaBlocks = {}
+  if outer > HORIZON_RADIUS then
+    local half = t / 2
+    for vi = math.floor((p.x - outer) / VISTA_BLOCK), math.floor((p.x + outer) / VISTA_BLOCK) do
+      for vj = math.floor((p.y - outer) / VISTA_BLOCK), math.floor((p.y + outer) / VISTA_BLOCK) do
+        local x0, y0 = vi * VISTA_BLOCK, vj * VISTA_BLOCK
+        -- the quadrant centre nearest the camera
+        local nx = math.max(x0 + half, math.min(x0 + VISTA_BLOCK - half, p.x))
+        local ny = math.max(y0 + half, math.min(y0 + VISTA_BLOCK - half, p.y))
+        local near = centreDistance(nx, ny)
+        if near > HORIZON_RADIUS and near <= outer and touchesCell(a.region, x0, y0, x0 + VISTA_BLOCK, y0 + VISTA_BLOCK) then
+          vistaBlocks[vi * 100000 + vj] = true
+          local cx, cy = x0 + VISTA_BLOCK / 2, y0 + VISTA_BLOCK / 2
+          out[string.format('v4000:%d_%d', vi, vj)] = {i = vi, j = vj, horizon = true, vista = true, far = true,
+            decor = false, size = VISTA_BLOCK, step = VISTA_STEP, priority = 3e6 + centreDistance(cx, cy), x = cx, y = cy}
+        end
+      end
+    end
+  end
+  -- Each 500 m quadrant outside the far ring is horizon to 5 km (full cells, as before) and vista
+  -- past it (elevation only): a 1 km block whose four quadrants are alike is one mesh, else one
+  -- mesh a quadrant. Quadrants inside a vista block are left to it.
+  local minX, maxX = p.x - outer, p.x + outer
+  local minY, maxY = p.y - outer, p.y + outer
   for bi = math.floor(minX / HORIZON_BLOCK), math.floor(maxX / HORIZON_BLOCK) do
     for bj = math.floor(minY / HORIZON_BLOCK), math.floor(maxY / HORIZON_BLOCK) do
+      local inVista = vistaBlocks[math.floor(bi * HORIZON_BLOCK / VISTA_BLOCK) * 100000 + math.floor(bj * HORIZON_BLOCK / VISTA_BLOCK)]
       local quads = {{2 * bi, 2 * bj}, {2 * bi + 1, 2 * bj}, {2 * bi, 2 * bj + 1}, {2 * bi + 1, 2 * bj + 1}}
-      local outside = {}
-      for _, q in ipairs(quads) do
+      local horizon, vista = {}, {}
+      for _, q in ipairs(inVista and NONE_LIST or quads) do
         local cx, cy = (q[1] + 0.5) * t, (q[2] + 0.5) * t
         local dist = centreDistance(cx, cy)
         if dist > farRadius and dist <= HORIZON_RADIUS then
-          outside[#outside + 1] = {i = q[1], j = q[2], d = dist, x = cx, y = cy}
+          horizon[#horizon + 1] = {i = q[1], j = q[2], d = dist, x = cx, y = cy}
+        elseif dist > HORIZON_RADIUS and dist <= outer then
+          vista[#vista + 1] = {i = q[1], j = q[2], d = dist, x = cx, y = cy}
         end
       end
-      if #outside == 4 then
-        local cx, cy = (bi + 0.5) * HORIZON_BLOCK, (bj + 0.5) * HORIZON_BLOCK
-        local x0, y0 = bi * HORIZON_BLOCK, bj * HORIZON_BLOCK
-        if touchesCell(a.region, x0, y0, x0 + HORIZON_BLOCK, y0 + HORIZON_BLOCK) then
-          out[string.format('h1000:%d_%d', bi, bj)] = {i = bi, j = bj, horizon = true, far = true, decor = false,
-            size = HORIZON_BLOCK, step = HORIZON_STEP, priority = 2e6 + centreDistance(cx, cy), x = cx, y = cy}
-        end
-      else
-        for _, q in ipairs(outside) do
-          local x0, y0 = q.i * t, q.j * t
-          if touchesCell(a.region, x0, y0, x0 + t, y0 + t) then
-            out[string.format('h500:%d_%d', q.i, q.j)] = {i = q.i, j = q.j, horizon = true, far = true, decor = false,
-              size = t, step = HORIZON_STEP, priority = 2e6 + q.d, x = q.x, y = q.y}
+      for _, set in ipairs({{horizon, 'h', 2e6, false, HORIZON_STEP}, {vista, 'v', 3e6, true, 200}}) do
+        local list, prefix, base, isVista, coarse = set[1], set[2], set[3], set[4], set[5]
+        if #list == 4 then
+          local cx, cy = (bi + 0.5) * HORIZON_BLOCK, (bj + 0.5) * HORIZON_BLOCK
+          local x0, y0 = bi * HORIZON_BLOCK, bj * HORIZON_BLOCK
+          if touchesCell(a.region, x0, y0, x0 + HORIZON_BLOCK, y0 + HORIZON_BLOCK) then
+            out[string.format('%s1000:%d_%d', prefix, bi, bj)] = {i = bi, j = bj, horizon = true, vista = isVista or nil,
+              far = true, decor = false, size = HORIZON_BLOCK, step = coarse, priority = base + centreDistance(cx, cy), x = cx, y = cy}
+          end
+        else
+          for _, q in ipairs(list) do
+            local x0, y0 = q.i * t, q.j * t
+            if touchesCell(a.region, x0, y0, x0 + t, y0 + t) then
+              out[string.format('%s500:%d_%d', prefix, q.i, q.j)] = {i = q.i, j = q.j, horizon = true, vista = isVista or nil,
+                far = true, decor = false, size = t, step = isVista and 100 or HORIZON_STEP, priority = base + q.d, x = q.x, y = q.y}
+            end
           end
         end
       end
@@ -578,11 +675,12 @@ local function priorities()
     end
   end
   st.wanted = {}
-  local tiles = 0
+  local tiles, horizons = 0, 0
   for key, wanted in pairs(out) do
     st.wanted[key] = wanted.priority
-    if not wanted.horizon then tiles = tiles + 1 end
+    if not wanted.horizon then tiles = tiles + 1 else horizons = horizons + 1 end
   end
+  a.horizonWanted = horizons
   -- The cache holds the whole wanted set. At OASIS (1.4 km near, 4 km far) that is ~230 tiles,
   -- over TILE_LIMIT: the far ring evicted itself, and a parked camera kept the holes for good
   -- (Innsbruck's Nordkette floated over the town as a ribbon of horizon).
@@ -668,7 +766,8 @@ local function trimHorizon()
   for _, entry in pairs(a.horizon) do
     count, triangles = count + 1, triangles + (entry.triangles or 0)
   end
-  while count > HORIZON_TILE_LIMIT or triangles > HORIZON_TRIANGLE_LIMIT do
+  local limit = math.max(HORIZON_TILE_LIMIT, (a.horizonWanted or 0) + 16)
+  while count > limit or triangles > HORIZON_TRIANGLE_LIMIT * (limit > HORIZON_TILE_LIMIT and 2 or 1) do
     local worst, worstPriority, oldest
     for key, entry in pairs(a.horizon) do
       local priority = a.desired[key] and a.desired[key].priority or 1e20
@@ -687,6 +786,20 @@ local function trimHorizon()
   st.horizonResident = st.horizonResident or 0
 end
 
+-- A cell's elevation grid alone, for a vista block (16 cells of 1 km): nothing else decoded.
+local function loadTerrain(key, i, j)
+  local d = active.region.data
+  if d.schemaVersion ~= 2 then return loadCell(key, i, j) end
+  local b, s = cellformat.BLOCK, d.cellSize
+  local blockKey = keyOf(math.floor(i / b), math.floor(j / b))
+  local loaded = loadBlock(blockKey, d.blocks[blockKey])
+  local range = loaded.slots[i % b + (j % b) * b]
+  if not range then error('source block lacks cell: ' .. key) end
+  local cell = cellformat.terrain(loaded.data, range[1], range[2], {i * s, j * s, (i + 1) * s, (j + 1) * s})
+  active.lows[key] = active.lows[key] or cell.low
+  return cell
+end
+
 local function buildTile(key, wanted)
   local r = active.region
   local size = wanted.size or r.data.tileSize
@@ -698,7 +811,7 @@ local function buildTile(key, wanted)
     local cellKey = keyOf(i, j)
     if seen[cellKey] then return end
     seen[cellKey] = true
-    cells[#cells + 1] = loadCell(cellKey, i, j, tileRect)
+    cells[#cells + 1] = wanted.vista and loadTerrain(cellKey, i, j) or loadCell(cellKey, i, j, tileRect)
     if yield then active.pause() end
   end
   for i = math.floor(x0 / s), math.ceil((x0 + size) / s) - 1 do
@@ -716,9 +829,11 @@ local function buildTile(key, wanted)
   local road, scene, far, nav = generator.build(cells, wanted.i, wanted.j,
     {tileSize = size, regionId = r.descriptor.id, center = center, pause = active.pause,
       materials = '/earthng/planet/materials.json', packs = '/e2r_stream/fast-art/v10/packs.json',
-      far = wanted.far, horizon = wanted.horizon, farDecor = wanted.decor and true or false,
+      far = wanted.far, horizon = wanted.horizon, vista = wanted.vista, farDecor = wanted.decor and true or false,
+      -- a vista block's edge at 100 m (4x faster, its skirts hide the seam with the 25 m horizon)
+      terrainStep = wanted.vista and 100 or nil,
       farStep = 100, horizonStep = wanted.step or 100,
-      latitude = r.data.geo and r.data.geo[4], nature = r.data.nature,
+      latitude = r.data.geo and r.data.geo[4], geo = r.data.geo, nature = r.data.nature,
       look = r.data.look, country = r.country and r.country.id,
       seaLevel = finite(r.data.seaLevel) and r.data.seaLevel or nil,
       maxTrees = tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = tune.maxGrass,
@@ -881,7 +996,7 @@ local function pose(p)
   if p.region and p.region ~= active.region.descriptor.id then return end
   if p.country and p.country ~= active.region.country.id then return end
   local old = active.pose
-  active.pose = {x = p.x, y = p.y,
+  active.pose = {x = p.x, y = p.y, z = finite(p.z) and p.z or nil,
     vx = finite(p.vx) and math.max(-10000, math.min(10000, p.vx)) or 0,
     vy = finite(p.vy) and math.max(-10000, math.min(10000, p.vy)) or 0}
   -- The wanted set depends on the car's tile, the look-ahead point's tile and the far switch;
@@ -891,8 +1006,9 @@ local function pose(p)
   local ahead = math.min(speed * 3, 2000)
   local ax = speed > 0 and p.x + active.pose.vx / speed * ahead or p.x
   local ay = speed > 0 and p.y + active.pose.vy / speed * ahead or p.y
-  local signature = string.format('%d_%d_%d_%d_%s', math.floor(p.x / t), math.floor(p.y / t),
-    math.floor(ax / t), math.floor(ay / t), tostring(speed <= state.stream.farFast))
+  local signature = string.format('%d_%d_%d_%d_%s_%s_%d', math.floor(p.x / t), math.floor(p.y / t),
+    math.floor(ax / t), math.floor(ay / t), tostring(speed <= state.stream.farFast), tostring(speed < VISTA_SPEED),
+    finite(p.z) and math.floor(p.z / 100) or 0)
   if signature ~= active.poseSignature then active.poseSignature, active.prioritiesDirty = signature, true end
   local ep = active.epochPoint
   if (p.x - ep[1]) ^ 2 + (p.y - ep[2]) ^ 2 >= 250 * 250 then

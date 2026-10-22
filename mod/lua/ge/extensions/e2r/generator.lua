@@ -23,7 +23,9 @@ local CLAIM = {paved = 1, water = 2, glacier = 3, bare_rock = 4, scree = 5, beac
 local COVER_SCALE = {ground = 24, forest = 24, park = 24, meadow = 24, orchard = 24,
   scrub = 24, heath = 24, glacier = 24, farmland = 12, vineyard = 12, bare_rock = 12,
   scree = 12, beach = 12, wetland = 12, bare_ground = 12,
-  road = 30, road_major = 30, road_worn = 30, footway_asphalt = 30}
+  road = 30, road_major = 30, road_worn = 30, footway_asphalt = 30,
+  -- the climate's open ground (biome.lua): photo sheets of fast_photo.GROUND_M
+  desert = 24, dune = 24, steppe = 24, dry_grass = 24, tundra = 24, alpine = 24, snow = 24, snow_edge = 24}
 local ABIN = 12.5      -- m: bins of asphalt pieces that sidewalks and verges are cut by
 local SEA_ABOVE = 0.3   -- the sea plane over the DEM's flat sea surface (no z-fighting)
 local ECA_TREE = '/levels/east_coast_usa/art/shapes/trees/'
@@ -112,7 +114,123 @@ local VEG = {
 -- gardenRamp (a village street reads .04-.14). Firs from firFrom m above the sea, fully at
 -- firFrom + firRamp: the Polissia and steppe pinewoods stay pine, the Carpathians turn fir.
 VEG.gardenFrom, VEG.gardenRamp, VEG.firFrom, VEG.firRamp = .004, .012, 450, 450
--- Every shape the generator may place, once, for world.lua's load-time warm-up
+
+-- Plants and stones of other climates (biome.lua), all from the player's own levels: Utah's
+-- junipers, sagebrush and boulders, Johnson Valley's desert shrubs, dry grass and rocks, West
+-- Coast USA's live oaks, Monterey pines, eucalyptus, fan palms and chaparral, Jungle Rock
+-- Island's coconut palms and rainforest, Italy's holm and cork oaks, olives, cypresses and
+-- maritime pines. Heights are the models' own (first LOD, measured from the .dae).
+local UT, JV, WCA = '/levels/Utah/art/shapes/', '/levels/johnson_valley/art/shapes/', '/levels/west_coast_usa/art/shapes/'
+local JRI, ITA = '/levels/jungle_rock_island/art/shapes/', '/levels/italy/art/shapes/'
+VEG.juniper = {UT .. 'trees/Juniper/Juniper_tree_01.dae', UT .. 'trees/Juniper/Juniper_tree_02.dae',   -- 4.5-7.5 m
+  UT .. 'trees/Juniper/Juniper_tree_03.dae', UT .. 'trees/Juniper/Juniper_tree_04.dae', UT .. 'trees/Juniper/Juniper_ancient_01.dae'}
+-- shrubs of the open desert and steppe, in the Forest (1.4-2.9 m) with the Spanish bayonet yucca
+VEG.desertShrub = {UT .. 'trees/Juniper/Juniper_bush_small_dry_01.dae', UT .. 'trees/Juniper/Juniper_bush_small_dry_02.dae',
+  UT .. 'trees/Juniper/Juniper_bush_small_01.dae', UT .. 'trees/Juniper/Juniper_bush_medium_01.dae',
+  JV .. 'trees/deserttrees/deserttree_bush_medium.dae', JV .. 'trees/deserttrees/deserttree_bush_medium_dead.dae',
+  WCA .. 'trees/spanishbayonet1.dae'}
+-- the hot deserts' creosote and mesquite stand-ins, Spanish bayonet and a dry juniper now and then
+VEG.desertShrubHot = {JV .. 'trees/deserttrees/deserttree_bush_medium.dae', JV .. 'trees/deserttrees/deserttree_bush_medium_dead.dae',
+  JV .. 'trees/deserttrees/deserttree_bush_medium.dae', WCA .. 'trees/spanishbayonet1.dae', WCA .. 'trees/spanishbayonet2.dae',
+  UT .. 'trees/Juniper/Juniper_bush_small_dry_02.dae'}
+-- sagebrush, creosote, dead bushes and dry plants (0.4-1 m): groundcover, so detail.lua streams
+-- them round the camera like the grass
+VEG.desertPlants = {UT .. 'groundcover/s_gc_utah_grey_bush_01.dae', UT .. 'groundcover/s_gc_utah_grey_bush_02.dae',
+  UT .. 'groundcover/s_gc_utah_grey_bush_03.dae', UT .. 'groundcover/s_gc_utah_grey_bush_04.dae',
+  JV .. 'groundcover/s_gc_jv_dry_bush_01.dae', JV .. 'groundcover/s_gc_jv_dry_bush_03.dae',
+  JV .. 'groundcover/s_gc_jv_dry_plant_01.dae', JV .. 'groundcover/s_gc_jv_dry_plant_02.dae',
+  UT .. 'groundcover/s_gc_dead_bush_01.dae'}
+VEG.dryTufts = {JV .. 'groundcover/s_gc_dry_grass_01.dae', JV .. 'groundcover/s_gc_dry_grass_02.dae',
+  JV .. 'groundcover/s_gc_dry_grass_03.dae', JV .. 'groundcover/s_gc_dry_grass_04.dae'}
+VEG.grassMesh[VEG.dryTufts[1]] = {span = .71, bottom = -.05}
+VEG.grassMesh[VEG.dryTufts[2]] = {span = 1.06, bottom = -.17}
+VEG.grassMesh[VEG.dryTufts[3]] = {span = .37, bottom = -.24}
+VEG.grassMesh[VEG.dryTufts[4]] = {span = .37, bottom = -.24}
+-- the last of a rock set is its big one (every fifth stone)
+-- mostly Johnson Valley's tan granite; Utah's red sandstone one stone in eight (a valley of red
+-- boulders read as Utah anywhere, the Owens Valley's granite too)
+VEG.desertRocks = {JV .. 'rocks/s_rocks_desert_small_01.dae', JV .. 'rocks/s_rocks_desert_small_03.dae',
+  JV .. 'rocks/s_rocks_desert_small_05.dae', JV .. 'rocks/s_rocks_desert_tiny_01.dae', JV .. 'rocks/s_rocks_desert_small_01.dae',
+  JV .. 'rocks/s_rocks_desert_tiny_01.dae', UT .. 'rocks/utah_rock_flat_a.dae', JV .. 'rocks/s_rocks_desert_medium_03.dae'}
+VEG.mountainRocks = {ROCKS[1], ROCKS[2], ROCKS[3], ROCKS[4], ITA .. 'rocks/italy_rockface_small_1.dae',
+  ITA .. 'rocks/italy_rockface_tiny_1.dae', '/levels/east_coast_usa/art/shapes/rocks/eca_rock_medium_2.dae',
+  ITA .. 'rocks/italy_rockface_boulder_1.dae'}
+VEG.oakWest = {WCA .. 'trees/trees_oak/oak_a.dae', WCA .. 'trees/trees_oak/oak_b.dae',             -- 7-10 m
+  WCA .. 'trees/trees_oak/oak_c.dae', WCA .. 'trees/trees_oak/oak_d.dae'}
+VEG.pineWest = {WCA .. 'trees/trees_conifer/pine_radiata_small.dae', WCA .. 'trees/trees_conifer/pine_radiata_forest.dae',
+  WCA .. 'trees/trees_conifer/pine_radiata_large.dae', WCA .. 'trees/trees_conifer/pine_radiata_weathered.dae'}
+VEG.eucalyptus = {WCA .. 'trees/trees_eucalyptus/eucalyptus_double.dae', WCA .. 'trees/trees_eucalyptus/eucalyptus_tall.dae'}
+VEG.chaparralWest = {WCA .. 'trees/trees_shrub/shrub_a.dae', WCA .. 'trees/trees_shrub/shrub_b.dae',   -- 3-5 m
+  WCA .. 'trees/trees_shrub/shrub_c.dae', WCA .. 'trees/trees_shrub/shrub_d.dae', WCA .. 'trees/trees_shrub/shrub_e.dae',
+  WCA .. 'trees/trees_shrub/shrub_f.dae', WCA .. 'trees/trees_shrub/shrub_g.dae', WCA .. 'trees/spanishbayonet1.dae'}
+VEG.med = {ITA .. 'trees/trees_italy/holm_oak.dae', ITA .. 'trees/trees_italy/holm_oak_city_small.dae',
+  ITA .. 'trees/trees_italy/cork_oak_medium.dae', ITA .. 'trees/trees_italy/cork_oak_large_1.dae',
+  ITA .. 'trees/trees_italy/olive.dae', ITA .. 'trees/trees_italy/cypress_tree.dae'}
+VEG.medPine = {ITA .. 'trees/trees_italy/maritime_pine.dae', ITA .. 'trees/trees_italy/maritime_pine_2.dae'}
+VEG.chaparral = {ITA .. 'trees/trees_italy/holm_oak_bush.dae', ITA .. 'trees/trees_italy/cork_oak_bush_medium.dae',
+  ITA .. 'trees/trees_italy/scraggly_bush.dae', ITA .. 'trees/trees_italy/maritime_pine_bush.dae',
+  ITA .. 'trees/trees_italy/generibush.dae', ITA .. 'trees/trees_italy/fluffy_bush.dae'}
+VEG.palmFan = {WCA .. 'trees/trees_palm/fanpalm_full.dae', WCA .. 'trees/trees_palm/fanpalm_short.dae',   -- 10-21 m
+  WCA .. 'trees/trees_palm/fanpalm_skirt.dae', WCA .. 'trees/trees_palm/fanpalm_slim.dae',
+  WCA .. 'trees/trees_palm/fanpalm_tall.dae', ITA .. 'trees/trees_italy/italy_palm_1.dae'}
+VEG.palmCoco = {JRI .. 'trees/trees_palm/palm_small.dae', JRI .. 'trees/trees_palm/palm_short.dae',   -- 9-25 m
+  JRI .. 'trees/trees_palm/palm_medium.dae', JRI .. 'trees/trees_palm/palm_tall.dae', JRI .. 'trees/trees_palm/palm_bend_sml.dae'}
+VEG.tropical = {JRI .. 'trees/trees_tropical_1/tro_tree_1_huge.dae', JRI .. 'trees/trees_tropical_1/tro_tree_1_filler_02.dae',
+  JRI .. 'trees/trees_tropical_2/tro_tree_2_medium.dae',
+  JRI .. 'trees/trees_tropical_2/tro_tree_2_filler.dae', JRI .. 'trees/trees_tropical_2/tro_tree_2_tiny.dae'}
+VEG.tropicalBush = {JRI .. 'trees/bush_tropical_1/tro_bush_huge.dae', JRI .. 'trees/bush_tropical_1/tro_bush_small.dae',
+  JRI .. 'trees/bush_tropical_1/tro_tree_1_bush_large.dae', JRI .. 'trees/bush_tropical_2/tro_bush_2_small.dae',
+  JRI .. 'trees/tropical_wide_leaves/tropical_plant_01_a.dae', JRI .. 'trees/tropical_wide_leaves/tropical_plant_02_a.dae',
+  JRI .. 'trees/tropical_wide_leaves/tropical_plant_03_a.dae', JRI .. 'trees/trees_tropical_2/tro_tree_2_bush_huge.dae'}
+-- dwarf shrubs of the tundra and the alpine belt; krummholz is the fir scaled down
+VEG.tundraShrub = {UT .. 'trees/Juniper/Juniper_bush_small_01.dae', UT .. 'trees/Juniper/Juniper_bush_small_02.dae',
+  ECA_TREE .. 'trees_douglasfir/tree_douglasfir_bush_a.dae', '/assets/meshes/foliage/bushes/generibush_small.dae'}
+-- the material files of every level folder above (world.lua loads one when a tile first names it)
+VEG.stock = {
+  [UT .. 'trees/Juniper/'] = UT .. 'trees/Juniper/main.materials.json',
+  [UT .. 'groundcover/'] = UT .. 'groundcover/main.materials.json', [UT .. 'rocks/'] = UT .. 'rocks/main.materials.json',
+  [JV .. 'trees/deserttrees/'] = JV .. 'trees/deserttrees/main.materials.json',
+  [JV .. 'groundcover/'] = JV .. 'groundcover/main.materials.json', [JV .. 'rocks/'] = JV .. 'rocks/main.materials.json',
+  [WCA .. 'trees/trees_oak/'] = WCA .. 'trees/trees_oak/main.materials.json',
+  [WCA .. 'trees/trees_conifer/'] = WCA .. 'trees/trees_conifer/main.materials.json',
+  [WCA .. 'trees/trees_eucalyptus/'] = WCA .. 'trees/trees_eucalyptus/main.materials.json',
+  [WCA .. 'trees/trees_shrub/'] = WCA .. 'trees/trees_shrub/main.materials.json',
+  [WCA .. 'trees/trees_palm/'] = WCA .. 'trees/trees_palm/main.materials.json',
+  [WCA .. 'trees/'] = WCA .. 'trees/main.materials.json',
+  [JRI .. 'trees/trees_palm/'] = JRI .. 'trees/trees_palm/main.materials.json',
+  [JRI .. 'trees/trees_tropical_1/'] = JRI .. 'trees/trees_tropical_1/main.materials.json',
+  [JRI .. 'trees/trees_tropical_2/'] = JRI .. 'trees/trees_tropical_2/main.materials.json',
+  [JRI .. 'trees/bush_tropical_1/'] = JRI .. 'trees/bush_tropical_1/main.materials.json',
+  [JRI .. 'trees/bush_tropical_2/'] = JRI .. 'trees/bush_tropical_2/main.materials.json',
+  [JRI .. 'trees/tropical_wide_leaves/'] = JRI .. 'trees/tropical_wide_leaves/main.materials.json',
+  [ITA .. 'trees/trees_italy/'] = ITA .. 'trees/trees_italy/main.materials.json',
+  [ITA .. 'rocks/'] = ITA .. 'rocks/main.materials.json',
+}
+-- A level's shared tree materials sit one folder up (JRI's leaves, West Coast's bark)
+VEG.stockParent = {[JRI .. 'trees/'] = JRI .. 'trees/main.materials.json', [UT .. 'trees/'] = UT .. 'trees/main.materials.json',
+  [WCA .. 'trees/'] = WCA .. 'trees/main.materials.json', [JV .. 'trees/'] = JV .. 'trees/main.materials.json'}
+-- Materials a folder's shapes take from another folder (a material audit of every set against the
+-- level files, 22.10): Jungle Rock's lianas, its second tropical tree's branches and leaves from the
+-- first. Zanzibar's trees hung with orange NO MATERIAL ribbons without them. (The thin-leaf physics
+-- material of Italy's generibush and the fir bush is the planet's own: fast_style.)
+VEG.stockExtra = {
+  [JRI .. 'trees/trees_tropical_1/'] = {JRI .. 'trees/vines_tropical/main.materials.json'},
+  [JRI .. 'trees/trees_tropical_2/'] = {JRI .. 'trees/trees_tropical_1/main.materials.json', JRI .. 'trees/vines_tropical/main.materials.json'},
+  [JRI .. 'trees/bush_tropical_2/'] = {JRI .. 'trees/vines_tropical/main.materials.json'},
+}
+VEG.used = {}
+VEG.biomeSets = {juniper = true, desertShrub = true, desertShrubHot = true, desertPlants = true, dryTufts = true, desertRocks = true,
+  mountainRocks = true, oakWest = true, pineWest = true, eucalyptus = true, chaparralWest = true, med = true,
+  medPine = true, chaparral = true, palmFan = true, palmCoco = true, tropical = true, tropicalBush = true, tundraShrub = true}
+-- A set, noted for the warm-up when it is another climate's
+function VEG.use(name)
+  if VEG.biomeSets[name] then VEG.used[name] = true end
+  return VEG.have(name)
+end
+local okBiome, biomeModule = pcall(require, 'ge/extensions/e2r/biome')
+VEG.biome = okBiome and type(biomeModule) == 'table' and biomeModule or nil
+-- Every shape the generator may place, once, for world.lua's load-time warm-up: the temperate
+-- sets always, another climate's sets once a tile has used them
 function VEG.warm(...)
   local out, seen = {}, {}
   local function add(shape) if shape and not seen[shape] then seen[shape] = true; out[#out + 1] = shape end end
@@ -120,7 +238,33 @@ function VEG.warm(...)
     for _, shape in ipairs(VEG.have(name)) do add(shape) end
   end
   add(VEG.grass[1]); add(VEG.grass[4]); add(VEG.rocks[1]); add(VEG.rocks[5])
+  local used = {}
+  for name in pairs(VEG.used) do used[#used + 1] = name end
+  table.sort(used)
+  for _, name in ipairs(used) do
+    local set = VEG.have(name)
+    add(set[1]); add(set[#set])
+  end
   for _, shape in ipairs({...}) do add(shape) end
+  return out
+end
+-- The stock material files a manifest's shapes need, sorted.
+function VEG.stockFor(items, shapes)
+  local files, out = {}, {}
+  local all = {}
+  for _, item in ipairs(items) do all[#all + 1] = item.shape end
+  for _, shape in ipairs(shapes or NONE) do all[#all + 1] = shape end
+  for _, shape in ipairs(all) do
+    if type(shape) == 'string' and shape:sub(1, 8) == '/levels/' then
+      local folder = shape:match('^(.*/)[^/]*$')
+      local file, parent = VEG.stock[folder], VEG.stockParent[folder and folder:match('^(.*/)[^/]*/$') or '']
+      if file then files[file] = true end
+      if parent and (file or VEG.stockExtra[folder]) then files[parent] = true end
+      for _, extra in ipairs(VEG.stockExtra[folder] or NONE) do files[extra] = true end
+    end
+  end
+  for file in pairs(files) do out[#out + 1] = file end
+  table.sort(out)
   return out
 end
 -- A set without the shapes this game lacks (FS absent, as outside the game: all of them); an
@@ -143,10 +287,15 @@ function VEG.have(name)
     end
     if found then out[#out + 1] = shape end
   end
-  if #out == 0 and name ~= 'forest' then out = VEG.have('forest') end
+  if #out == 0 and name ~= 'forest' then out = VEG.have(VEG.fallback[name] or 'forest') end
   VEG.ok[name] = out
   return out
 end
+-- What a set stands in with in a game without its level: shrubs for shrubs, stones for stones
+VEG.fallback = {desertShrub = 'bush', desertShrubHot = 'desertShrub', chaparral = 'bush', chaparralWest = 'chaparral', tundraShrub = 'bush',
+  tropicalBush = 'bush', desertPlants = 'grass', dryTufts = 'grass', desertRocks = 'rocks', mountainRocks = 'rocks',
+  oakWest = 'town', med = 'town', medPine = 'pine', pineWest = 'pine', juniper = 'pine', palmFan = 'palmCoco',
+  palmCoco = 'town', tropical = 'forest', eucalyptus = 'town'}
 -- Road decals (fast_style 'strip' kinds) carry their own UVs: u across, v along the road.
 -- The worn line's paint is the middle two thirds of its texture, so a quad is markSpread
 -- times the painted width. An edge decal is edgeWidth wide with the asphalt side at u = 0;
@@ -1478,9 +1627,120 @@ local function build(cells, i, j, options)
     end
     return best and best.kind or 'ground', best
   end
+  -- The climate (biome.lua), one place per 100 m bin, nil without the planet's climate grid or
+  -- the pack's geographic transform: the generator then does what it did before biomes.
+  -- One table, as build() is near LuaJIT's limits on locals and upvalues.
+  local bio = {bins = {}, on = VEG.biome ~= nil and type(options.geo) == 'table' and VEG.biome.available(),
+    sea = options.seaLevel or 20, config = type(options.nature) == 'table' and options.nature or NONE}
+  function bio.at(x, y)
+    if not bio.on then return nil end
+    local bx, by = floor(x / 100), floor(y / 100)
+    local k = (bx + 32768) * 65536 + by + 32768
+    local p = bio.bins[k]
+    if not p then
+      p = VEG.biome.at(options.geo, (bx + .5) * 100, (by + .5) * 100)
+      bio.bins[k] = p
+    end
+    return p
+  end
+  function bio.treeline(p) return tonumber(bio.config.treeLine) or p.treeline end
+  -- Smooth 0..1 noise with `size` m features (the decor's grove() is the same).
+  function bio.noise(x, y, size, seed)
+    local fx, fy = x / size, y / size
+    local gx, gy = floor(fx), floor(fy)
+    local tx, ty = fx - gx, fy - gy
+    tx, ty = tx * tx * (3 - 2 * tx), ty * ty * (3 - 2 * ty)
+    local v00, v10 = ihash(seed, gx, gy) % 1000 / 1000, ihash(seed, gx + 1, gy) % 1000 / 1000
+    local v01, v11 = ihash(seed, gx, gy + 1) % 1000 / 1000, ihash(seed, gx + 1, gy + 1) % 1000 / 1000
+    local a, b = v00 + (v10 - v00) * tx, v01 + (v11 - v01) * tx
+    return a + (b - a) * ty
+  end
+  -- Share of snow at a point: from 300 m under the snow line to 500 m over it, a slope facing
+  -- the pole holding it ~250 m lower and one facing the sun ~250 m higher. Nothing steeper than 60°.
+  function bio.snow(p, e, nx, ny, nz)
+    -- not steeper than 45 degrees: snow on a cliff face showed every jagged triangle (Whitney)
+    if nz < .7 then return 0 end
+    local flat = math.sqrt(math.max(0, 1 - nz * nz))
+    local pole = flat > .02 and (p.south and -ny or ny) / flat * math.min(1, flat * 3) or 0
+    local t = (e + 250 * pole - (p.snowline - 300)) / 800
+    if t <= 0 then return 0 end
+    t = math.min(1, t)
+    return t * t * (3 - 2 * t)
+  end
+  -- The open ground of a place: grass where it was (temperate, boreal, tropics), dry ground in
+  -- deserts and steppes, golden grass under the Mediterranean and savanna sun, moss in the
+  -- tundra; above the tree line alpine turf, scree and rock as it climbs.
+  function bio.ground(p, x, y, e, nz)
+    local treeline = bio.treeline(p)
+    -- patches of 150-200 m: at 45-60 m every 25 m ground triangle flipped between turf, scree
+    -- and rock, a camouflage of jagged triangles from a summit (Mount Whitney, in game)
+    local alpine = e - treeline - 120 + (bio.noise(x, y, 180, 51) - .5) * 160
+    if alpine > 0 and p.group ~= 'ice' then
+      if nz < .62 then return 'bare_rock' end
+      local high = alpine / math.max(300, p.snowline - treeline)
+      if nz < .8 or bio.noise(x, y, 160, 53) < high * 1.1 - .15 then return 'scree' end
+      if p.arid then return 'steppe' end
+      return p.group == 'tundra' and 'tundra' or 'alpine'
+    end
+    local group = p.group
+    if group == 'desert' then
+      if nz < .7 then return 'bare_rock' end
+      if nz < .88 then return 'scree' end
+      return 'desert'
+    elseif group == 'steppe' then
+      if nz < .64 then return 'bare_rock' end
+      if nz < .8 then return 'scree' end
+      return bio.noise(x, y, 140, 55) > .72 and 'desert' or 'steppe'
+    elseif group == 'mediterranean' or group == 'savanna' then
+      if nz < .62 then return 'bare_rock' end
+      return bio.noise(x, y, 120, 57) > (group == 'savanna' and .6 or .7) and 'ground' or 'dry_grass'
+    elseif group == 'tundra' then
+      if nz < .64 then return 'bare_rock' end
+      return bio.noise(x, y, 70, 59) > .76 and 'scree' or 'tundra'
+    elseif group == 'ice' then
+      return nz < .55 and 'bare_rock' or 'snow'
+    end
+    -- the vista past 5 km has no land cover (elevation alone): wooded hills, open lowlands
+    if options.vista and (nz < .93 or bio.noise(x, y, 1400, 65) > .55) then return 'forest' end
+    return 'ground'
+  end
+  -- The slope a biome reads: over 80 m, not one 25 m triangle, so neighbours agree on rock,
+  -- scree or turf (heightAt: the drawn ground; nil off the DEM falls back to the triangle's)
+  function bio.normal(x, y)
+    local d = 40
+    local e, w, n, s = heightAt(x + d, y), heightAt(x - d, y), heightAt(x, y + d), heightAt(x, y - d)
+    if not (e and w and n and s) then return groundNormal(x, y) end
+    local gx, gy = (e - w) / (2 * d), (n - s) / (2 * d)
+    local len = math.sqrt(gx * gx + gy * gy + 1)
+    return -gx / len, -gy / len, 1 / len
+  end
+  local NATURAL_GROUND = {ground = true, forest = true, meadow = true, scrub = true, heath = true, bare_ground = true,
+    bare_rock = true, scree = true, beach = true, park = true, farmland = false}
   local function surfaceKind(x, y, kind)
     kind = kind or coverAt(x, y)
-    if kind == 'residential' then return 'ground' end
+    if kind == 'residential' then kind = 'ground' end
+    local p = bio.on and NATURAL_GROUND[kind] and bio.at(x, y)
+    if p then
+      local e = rawHeight(x, y) - bio.sea
+      local nx, ny, nz = bio.normal(x, y)
+      local snow = bio.snow(p, e, nx, ny, nz)
+      if snow > 0 then
+        local n = bio.noise(x, y, 140, 61) * .75 + bio.noise(x, y, 35, 63) * .25
+        if n < snow then return (snow < .9 and n > snow - .1) and 'snow_edge' or 'snow' end
+      end
+      if kind == 'ground' then return bio.ground(p, x, y, e, nz) end
+      local arid, group = p.arid, p.group
+      -- mapped land of a dry climate: a National Forest drawn over Nevada's sagebrush, dunes
+      if kind == 'beach' and group == 'desert' then return 'dune' end
+      if (kind == 'forest' or kind == 'meadow' or kind == 'heath' or kind == 'scrub') and (arid or group == 'mediterranean' or group == 'savanna') then
+        local open = bio.ground(p, x, y, e, nz)
+        if open ~= 'ground' then return open end
+      end
+      if (kind == 'meadow' or kind == 'heath') and e > bio.treeline(p) + 150 then return bio.ground(p, x, y, e, nz) end
+      -- a park of a dry town is a lawn where it is flat; a park drawn over a desert mountain is
+      -- the mountain (Las Vegas' Lone Mountain stood bright green)
+      if kind == 'park' and (arid or group == 'mediterranean') and nz < .96 then return bio.ground(p, x, y, e, nz) end
+    end
     if kind == 'forest' or kind == 'meadow' or kind == 'scrub' or kind == 'heath' or kind == 'bare_ground' then
       local _, _, nz = groundNormal(x, y)
       if nz < .64 then return 'bare_rock' end
@@ -1683,6 +1943,11 @@ local function build(cells, i, j, options)
       local surfaceRoad = tags.bridge ~= 'yes' and tags.tunnel ~= 'yes' and tags.layer ~= '-1'
       local major = tags.highway == 'motorway' or tags.highway == 'trunk' or tags.highway == 'primary'
       local material = grade == 0 and (major and majorRoad or minorRoad) or ROAD_GRADE_MAT[grade]
+      -- a grass track where the open ground is desert, dry grass, turf or snow is a dirt track
+      -- (a green ribbon ran across the Owens Valley)
+      if material == 'road_track' and bio.on and points[1] and surfaceKind(points[1][1], points[1][2], 'ground') ~= 'ground' then
+        material = 'road_dirt'
+      end
       local dist = {0}   -- along the strip, for the UVs of its curbs and edges
       for k = 2, #points do
         dist[k] = dist[k - 1] + math.sqrt((points[k][1] - points[k - 1][1]) ^ 2 + (points[k][2] - points[k - 1][2]) ^ 2)
@@ -1988,14 +2253,19 @@ local function build(cells, i, j, options)
         -- blend of the two tiles' endpoint heights does not land on the shared ground().
         local clipped = clip(piece, rect)
         local shaded = {}
+        local cx, cy = 0, 0
         for i, p in ipairs(clipped) do
           local z = p[3] or 0
           if (p[9] or 0) > 0.9 then z = ground(p[1], p[2]) end
           local q = {p[1], p[2], z}
           q[6], q[7], q[8] = groundNormal(p[1], p[2])
           shaded[i] = q
+          cx, cy = cx + p[1], cy + p[2]
         end
-        if #shaded >= 3 then collectorOf.polygon(material, shaded, up) end
+        -- a verge is the place's own ground: desert, alpine turf or snow, not a green band
+        local kind = material
+        if bio.on and #shaded >= 3 then kind = surfaceKind(cx / #shaded, cy / #shaded, 'ground') end
+        if #shaded >= 3 then collectorOf.polygon(kind, shaded, up) end
       else
         collectorOf.polygon(material, piece, up)
       end
@@ -2223,6 +2493,9 @@ local function build(cells, i, j, options)
   local function edgeKind(strip)
     if not edgesOn or strip.grade > 1 or strip.tags.service == 'parking_aisle' then return nil end
     if vergeChoice == 'dirt' or vergeChoice == 'gravel' or vergeChoice == 'dry' then return 'edge_dirt' end
+    -- no grass creeping onto the asphalt where the verge is desert, dry grass, turf or snow
+    local first = strip.points[1]
+    if bio.on and first and surfaceKind(first[1], first[2], 'ground') ~= 'ground' then return 'edge_dirt' end
     return DECAL.dirtRoads[((strip.tags.highway or ''):gsub('_link$', ''))] and 'edge_dirt' or 'edge_grass'
   end
   -- The decal lies edgeLift over the road and over the verge as drawn: a point `metres` past
@@ -2325,6 +2598,15 @@ local function build(cells, i, j, options)
   -- (0 m plus the world lift). Open water is a plane just above it over every ground quad that
   -- reaches it; higher ground covers the plane on the shore. Lakes and rivers are OSM areas.
   local sea = type(options.seaLevel) == 'number' and options.seaLevel + SEA_ABOVE or nil
+  -- Death Valley's floor lies 86 m under the sea, and the plane flooded it: a tile far inland
+  -- (land on the climate grid ~3 km round its corners and centre) has no sea at all
+  if sea and bio.on and VEG.biome.inland then
+    local dry = true
+    for _, q in ipairs({{.5, .5}, {0, 0}, {1, 0}, {0, 1}, {1, 1}}) do
+      if not VEG.biome.inland(options.geo, rect[1] + q[1] * size, rect[2] + q[2] * size) then dry = false; break end
+    end
+    if dry then sea = nil end
+  end
   local seaStep = distant and size / 5 or size / count
   local seaCount = math.max(1, math.floor(size / seaStep + .5))
   local seaQuads, seaAll = {}, true
@@ -2522,6 +2804,27 @@ local function build(cells, i, j, options)
         end
       end
       if iy % 4 == 3 then pause() end
+    end
+    -- A vista block's edge runs at 100 m, the 5 km horizon's beside it at 25 m: a ridge between
+    -- two of its knots showed the sky through the seam. Every edge hangs a skirt in the ground's
+    -- own material, facing out of the block.
+    if options.vista then
+      for _, e in ipairs({{x0, y0, x1, y0, 0, -1}, {x1, y0, x1, y1, 1, 0}, {x1, y1, x0, y1, 0, 1}, {x0, y1, x0, y0, -1, 0}}) do
+        local m = math.floor(math.max(math.abs(e[3] - e[1]), math.abs(e[4] - e[2])) / fine + .5)
+        for k = 0, m - 1 do
+          local ax, ay = e[1] + (e[3] - e[1]) * k / m, e[2] + (e[4] - e[2]) * k / m
+          local bx, by = e[1] + (e[3] - e[1]) * (k + 1) / m, e[2] + (e[4] - e[2]) * (k + 1) / m
+          local za, zb = heightAt(ax, ay), heightAt(bx, by)
+          if za and zb then
+            local p, q = {ax, ay, za}, {bx, by, zb}
+            if -(by - ay) * e[5] + (bx - ax) * e[6] < 0 then p, q = q, p end
+            local kind = surfaceKind((ax + bx) / 2, (ay + by) / 2)
+            scene.triangle(kind, p, q, {q[1], q[2], q[3] - 60}, false)
+            scene.triangle(kind, p, {q[1], q[2], q[3] - 60}, {p[1], p[2], p[3] - 60}, false)
+          end
+        end
+        pause()
+      end
     end
   end
   mark('areas')
@@ -2905,6 +3208,227 @@ local function build(cells, i, j, options)
     -- again, and residential land plants only inside groves (VEG.grove below).
     local spacingOf = {forest = forestSpacing, park = 14, residential = 16, orchard = 13, scrub = 12, heath = 16}
     local townChance = {park = .5, orchard = .45}
+    -- Open woodland of dry mountains (pinyon and juniper on Nevada's ranges): from 1500 m under
+    -- the tree line, fully 900 m under it, thinning out to the line.
+    function bio.woodland(p, e)
+      local t = bio.treeline(p)
+      local w = math.max(0, math.min(1, (e - (t - 1500)) / 600))
+      return w * math.max(0, math.min(1, (t - e) / 250))
+    end
+    -- Crowns and shrubs on open ground at a place: (chance, kind, shrub). Temperate, boreal and
+    -- rainforest land keeps the chance it had; a desert gets shrubs and junipers on its ranges, a
+    -- steppe fewer, a Mediterranean hill oak savanna and chaparral under its mountain pines, a
+    -- savanna scattered trees, the tundra and the alpine belt dwarf shrubs.
+    function bio.open(p, x, y, chance, kind, e)
+      local g, treeline = p.group, bio.treeline(p)
+      if kind == 'town' or kind == 'garden' then return chance, kind, false end
+      local shrubAbove = e > treeline - 40 and g ~= 'ice' and g ~= 'desert'
+      if shrubAbove then
+        -- dwarf shrubs thin out over the lower half of the alpine belt
+        local high = (e - treeline) / math.max(300, p.snowline - treeline)
+        return math.max(0, .16 * (1 - 2 * high)), kind, true
+      end
+      if g == 'temperate' or g == 'boreal' or g == 'rainforest' then return chance, kind, false end
+      local pick = bio.noise(x, y, 23, 73)
+      if g == 'desert' or g == 'steppe' then
+        local w = bio.woodland(p, e)
+        local tree = (g == 'desert' and .45 or .55) * w + (g == 'steppe' and .015 or 0)
+        if pick < .5 then return tree * 2, kind, false end
+        return g == 'desert' and .26 or .2, kind, true
+      elseif g == 'mediterranean' then
+        -- conifer forest of the mountains (the Sierra's west slope, the Apennines) from ~900 m
+        local forest = math.max(0, math.min(1, (e - 900) / 600))
+        local savanna = bio.noise(x, y, 90, 75) > .55 and .45 or .03
+        if forest > 0 and pick < forest then return .85, kind, false end
+        if pick < .55 then return savanna, kind, false end
+        return bio.noise(x, y, 150, 77) > .45 and .3 or .05, kind, true
+      elseif g == 'savanna' then
+        if pick < .5 then return bio.noise(x, y, 80, 79) > .6 and .3 or .06, kind, false end
+        return .12, kind, true
+      elseif g == 'tundra' then
+        return .25, kind, true
+      end
+      return 0, kind, false
+    end
+    -- Species of a crown or shrub at a place: (set, scale), or nil for the temperate choice.
+    function bio.species(p, candidate, e, needle, settled, u, h)
+      local g, kind, treeline = p.group, candidate.kind, bio.treeline(p)
+      local scrubby = candidate.shrub or kind == 'scrub' or kind == 'heath'
+      if scrubby then
+        if e > treeline - 100 or g == 'tundra' then return 'tundraShrub', .45 + u * .4 end
+        if g == 'desert' or g == 'steppe' then return p.hot and 'desertShrubHot' or 'desertShrub', .7 + u * .5 end
+        if g == 'mediterranean' then
+          if p.west then return 'chaparralWest', .35 + u * .35 end
+          return 'chaparral', .5 + u * .4
+        end
+        if g == 'savanna' or g == 'rainforest' then return 'tropicalBush', .45 + u * .4 end
+        return nil
+      end
+      local hot = g == 'rainforest' or g == 'savanna'
+      -- palms: the beaches of the tropics, a share of every street and yard where they grow
+      if kind == 'beach' then return hot and 'palmCoco' or 'palmFan', .7 + u * .4 end
+      if settled and p.palms and h % 100 < (hot and 55 or 35) then return hot and 'palmCoco' or 'palmFan', .7 + u * .4 end
+      if p.australia then return 'eucalyptus', (settled and .5 or .65) + u * .4 end
+      if g == 'desert' or g == 'steppe' then
+        if settled then return p.west and 'oakWest' or 'med', .6 + u * .4 end
+        local pine = (e - (treeline - 800)) / 600
+        if keyHash(81, candidate.key) % 1000 / 1000 < pine then return p.west and 'pineWest' or 'pine', .6 + u * .4 end
+        return 'juniper', .75 + u * .45
+      elseif g == 'mediterranean' then
+        if needle or e > 1000 + (h % 400) then
+          if e > 1700 then return 'fir', .65 + u * .45 end
+          return p.west and 'pineWest' or 'medPine', .7 + u * .45
+        end
+        if p.west then
+          if settled and h % 100 < 20 then return 'eucalyptus', .55 + u * .35 end
+          return 'oakWest', (settled and .6 or .8) + u * .4
+        end
+        return 'med', (settled and .6 or .75) + u * .4
+      elseif g == 'savanna' then
+        if settled then return 'tropical', .4 + u * .3 end
+        return 'tropical', .35 + u * .3
+      elseif g == 'rainforest' then
+        if not settled and e < 40 and h % 100 < 45 then return 'palmCoco', .7 + u * .4 end
+        return 'tropical', (settled and .4 or .55) + u * .4
+      elseif g == 'boreal' and not settled and not needle and kind ~= 'park' then
+        if keyHash(83, candidate.key) % 1000 / 1000 < .75 then
+          return e > VEG.firFrom and 'fir' or 'pine', .7 + u * .55
+        end
+      end
+      return nil
+    end
+    -- Grass, flowers, ferns, understory and stones of the decor scatter at a place: another
+    -- climate's set, false for none, `shapes` for the temperate one.
+    function bio.decor(p, prefix, kind, e, shapes, x, y)
+      local g = p.group
+      if e > p.snowline - 350 and prefix ~= 'rock' then return false end
+      local open = kind == 'ground' or kind == 'meadow' or kind == 'heath' or kind == 'forest' or kind == 'scrub'
+      -- nothing green on scree, rock, snow or desert; the alpine turf keeps a third of its tufts
+      local mild = (g == 'temperate' or g == 'boreal' or g == 'rainforest') and e < bio.treeline(p) - 150
+      if open and x and not mild and prefix ~= 'rock' and prefix ~= 'bush' then
+        local surface = surfaceKind(x, y, kind)
+        if bio.bare[surface] or surface == 'desert' or surface == 'dune' then return false end
+        if (surface == 'alpine' or surface == 'tundra') and (prefix == 'fern' or ihash(91, floor(x * 10), floor(y * 10)) % 3 ~= 0) then
+          return false
+        end
+      end
+      if prefix == 'grass' then
+        -- yards of a dry town are gravel and a few dry tufts; parks and gardens are watered
+        if kind == 'residential' and (p.arid or g == 'mediterranean') then
+          return x and ihash(93, floor(x * 10), floor(y * 10)) % 4 == 0 and VEG.use('dryTufts') or false
+        end
+        if not open then return shapes end
+        if g == 'desert' then return false end
+        if g == 'steppe' or g == 'savanna' or g == 'mediterranean' then return VEG.use('dryTufts') end
+      elseif prefix == 'flower' then
+        if g == 'desert' or g == 'steppe' or g == 'savanna' or g == 'mediterranean' then return false end
+      elseif prefix == 'fern' then
+        if g ~= 'temperate' and g ~= 'boreal' and g ~= 'rainforest' then return false end
+      elseif prefix == 'bush' then
+        if p.arid then return VEG.use(p.hot and 'desertShrubHot' or 'desertShrub') end
+        if g == 'mediterranean' then return VEG.use(p.west and 'chaparralWest' or 'chaparral') end
+        if g == 'rainforest' or g == 'savanna' then return VEG.use('tropicalBush') end
+      elseif prefix == 'rock' then
+        if p.arid then return VEG.use('desertRocks') end
+        if e > bio.treeline(p) - 100 or g == 'tundra' or g == 'ice' then return VEG.use('mountainRocks') end
+      end
+      return shapes
+    end
+    -- Layers of the climate's own open ground, on lattices of their own: sagebrush, creosote and
+    -- dry plants of deserts and steppes, dry tufts of steppes, savannas and Mediterranean hills,
+    -- turf of the alpine belt, and stones of deserts, the alpine belt and the tundra.
+    -- (chance at a lattice point; set, lowest and highest size: metres for tufts, else scale)
+    bio.bare = {scree = true, bare_rock = true, snow = true, snow_edge = true, glacier = true}
+    function bio.layerChance(p, prefix, x, y, e)
+      local g, treeline = p.group, bio.treeline(p)
+      local alpine = e > treeline + 60
+      if e > p.snowline - 200 then return prefix == 'rock' and .08 or 0 end
+      if prefix == 'grass' then
+        if g == 'desert' then return .3 end
+        if g == 'steppe' then return .42 end
+        if g == 'savanna' then return .3 end
+        if g == 'mediterranean' then return bio.noise(x, y, 120, 57) > .7 and 0 or .22 end
+        if alpine or g == 'tundra' then return .14 end
+        return 0
+      end
+      if g == 'desert' then return .26 end
+      if g == 'steppe' then return .09 end
+      if alpine then return .2 + .35 * math.min(1, (e - treeline) / math.max(300, p.snowline - treeline)) end
+      if g == 'tundra' then return .2 end
+      if g == 'mediterranean' or g == 'savanna' then return .03 end
+      return 0
+    end
+    function bio.layerSet(p, prefix, e, h)
+      local g = p.group
+      if prefix == 'grass' then
+        if g == 'desert' or (g == 'steppe' and h % 10 < 6) then return VEG.use('desertPlants'), .75, 1.25 end
+        if g == 'steppe' or g == 'savanna' or g == 'mediterranean' then return VEG.use('dryTufts'), .3, .65 end
+        return VEG.grass, .14, .24
+      end
+      if p.arid then return VEG.use('desertRocks'), .55, 1.35 end
+      return VEG.use('mountainRocks'), .6, 1.45
+    end
+    function bio.layers(grassCap, rockCap, spread)
+      if distant or not bio.on then return end
+      -- any other climate, or ground near a tree line, in the tile (3 x 3 samples)?
+      local any = false
+      for s = 0, 8 do
+        local x, y = rect[1] + (s % 3 + .5) * size / 3, rect[2] + (floor(s / 3) + .5) * size / 3
+        local p = bio.at(x, y)
+        if p and ((p.group ~= 'temperate' and p.group ~= 'boreal' and p.group ~= 'rainforest')
+            or rawHeight(x, y) - bio.sea > bio.treeline(p) - 200) then any = true end
+      end
+      if not any then return end
+      for _, layer in ipairs({{'grass', 4.5, 31, grassCap}, {'rock', 7, 33, rockCap}}) do
+        local prefix, spacing, seed, cap = layer[1], layer[2], layer[3], layer[4]
+        local list, code = {}, floor(spacing * 10 + .5)
+        for gy = floor(rect[2] / spacing) - 1, math.ceil(rect[4] / spacing) do
+          for gx = floor(rect[1] / spacing) - 1, math.ceil(rect[3] / spacing) do
+            if gx % 8 == 0 then pause() end
+            local h = ihash(seed, gx, gy, code)
+            local x = (gx + .5 + (h % 1000 / 1000 - .5) * .7) * spacing
+            local y = (gy + .5 + (floor(h / 1000) % 1000 / 1000 - .5) * .7) * spacing
+            if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] then
+              local kind = coverAt(x, y)
+              local p = NATURAL_GROUND[kind] and kind ~= 'beach' and kind ~= 'park' and bio.at(x, y)
+              if p then
+                local key = latticeKey(4, gx, gy, code)
+                if keyHash(seed + 100, key) % 1000 / 1000 < bio.layerChance(p, prefix, x, y, rawHeight(x, y) - bio.sea) then
+                  list[#list + 1] = {x = x, y = y, hash = h, key = key, p = p}
+                end
+              end
+            end
+          end
+          pause()
+        end
+        spread(list, cap, 25, function(c)
+          local x, y, h = c.x, c.y, c.hash
+          local z = ground(x, y)
+          local _, _, nz = groundNormal(x, y)
+          -- a stone on a cliff face hung half in the air from the side (Whitney's east face)
+          if nz < (prefix == 'rock' and .55 or .7) or (sea and z <= sea) or blocked(x, y, prefix == 'grass' and 2.2 or 3) then
+            return false
+          end
+          local surface = (prefix == 'grass' or c.p.snowline - 400 < rawHeight(x, y) - bio.sea) and surfaceKind(x, y)
+          if prefix == 'grass' and bio.bare[surface] then return false end
+          -- a stone now and then on a snowfield, not a scatter
+          if (surface == 'snow' or surface == 'glacier') and h % 8 ~= 0 then return false end
+          local set, lo, hi = bio.layerSet(c.p, prefix, rawHeight(x, y) - bio.sea, h)
+          local shape = set[h % #set + 1]
+          local scale = lo + keyHash(seed + 200, c.key) % 1000 / 1000 * (hi - lo)
+          local mesh = VEG.grassMesh[shape]
+          if mesh then scale = scale / mesh.span; z = z - mesh.bottom * scale end   -- tufts: metres high
+          if prefix == 'rock' and h % 6 == 0 then shape = set[#set]; scale = scale * .9 end
+          static(prefix .. 'b_' .. c.key, shape, x, y, z, h % 6283 / 1000, scale)
+          return true
+        end)
+      end
+    end
+    -- the tropics and hot coasts plant palms on mapped beaches
+    local centre = bio.on and bio.at((rect[1] + rect[3]) / 2, (rect[2] + rect[4]) / 2)
+    if centre and (centre.group == 'rainforest' or centre.group == 'savanna' or (centre.palms and centre.hot)) then
+      spacingOf.beach, townChance.beach = 15, .32
+    end
     for _, area in ipairs(lists.areas) do
       local spacing = spacingOf[area.kind]
       if spacing and ringsTouch(area.rings, rect) then
@@ -2936,6 +3460,10 @@ local function build(cells, i, j, options)
                     wooded = true
                     chance = chance * (1 - .85 * math.min(1, (built - VEG.gardenFrom) / .02))
                   end
+                  -- a forest polygon of a dry climate is open woodland (a National Forest over
+                  -- Nevada's sagebrush), a riverside grove keeps a quarter
+                  local p = bio.on and bio.at(x, y)
+                  if p and p.arid then chance = chance * math.max(.25, bio.woodland(p, rawHeight(x, y) - bio.sea)) end
                 end
                 if keyHash(4, position) % 1000 / 1000 < chance then
                   candidates[#candidates + 1] = {x=x, y=y, hash=h, key=position, kind=kind, tags=owner.tags or NONE,
@@ -2988,8 +3516,11 @@ local function build(cells, i, j, options)
               chance = chance + (town - chance) * urban
               if urban >= .5 then kind = 'town' end
             end
-            if keyHash(4, position) % 1000 / 1000 < chance then
-              candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = kind, tags = NONE}
+            -- another climate's open land (bio.open); shrubs only near: they do not read from 3 km
+            local p, shrub = bio.on and bio.at(x, y), false
+            if p then chance, kind, shrub = bio.open(p, x, y, chance, kind, rawHeight(x, y) - bio.sea) end
+            if keyHash(4, position) % 1000 / 1000 < chance and not (shrub and distant) then
+              candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = kind, tags = NONE, shrub = shrub}
             end
           end
         end
@@ -3085,7 +3616,15 @@ local function build(cells, i, j, options)
                 local h = keyHash(8, position)
                 -- a poplar now and then: their billboards are baked autumn yellow (the level's
                 -- imposter), and a village full of them looked like October from 150 m (veg-hatne-b)
-                local set = VEG.have(needle and 'pine' or (h % 10 < 1 and 'poplar' or 'town'))
+                local name = needle and 'pine' or (h % 10 < 1 and 'poplar' or 'town')
+                -- avenues of palms where they grow, of the climate's own street trees elsewhere
+                local p = bio.on and bio.at(x, y)
+                if p and not needle then
+                  local hot = p.group == 'rainforest' or p.group == 'savanna'
+                  if p.palms and h % 10 < 4 then name = hot and 'palmCoco' or 'palmFan'
+                  else name = bio.species(p, {kind = 'town', key = position}, z - bio.sea, false, true, .5, h) or name end
+                end
+                local set = VEG.use(name)
                 static(string.format('tree_row_%d', position), set[math.floor(h / 7) % #set + 1], x, y, z, h % 6283 / 1000, .8 + keyHash(6, position) % 300 / 1000)
                 rowPlanted = rowPlanted + 1
               end
@@ -3100,12 +3639,19 @@ local function build(cells, i, j, options)
       local z = ground(x, y)
       local elevation = rawHeight(x, y) - (options.seaLevel or 20)
       local _, _, nz = groundNormal(x, y)
-      local bush = candidate.kind == 'scrub' or candidate.kind == 'heath'
+      local bush = candidate.kind == 'scrub' or candidate.kind == 'heath' or candidate.shrub
       local kind = candidate.kind
       local settled = kind == 'town' or kind == 'residential' or kind == 'garden' or kind == 'park' or candidate.wooded
+      -- the climate's own tree line; dwarf shrubs climb to the snow
+      local p = bio.on and bio.at(x, y)
+      local line, shrubLine = treeline, 250
+      if p then line, shrubLine = bio.treeline(p), math.max(250, p.snowline - 300 - bio.treeline(p)) end
+      if p and bush and (p.arid or elevation > line - 150) and bio.bare[surfaceKind(x, y, kind == 'ground' and 'ground' or nil)] then
+        return false
+      end
       -- a crown's radius from walls (4.5 m) and roads (4 m) where people live: it stood 3 m off a wall.
       -- A garden's small fruit-sized trees keep 3 m.
-      if not (nz >= (bush and .64 or .72) and elevation < treeline + (bush and 250 or 0)
+      if not (nz >= (bush and .64 or .72) and elevation < line + (bush and shrubLine or 0)
           and (not sea or z > sea) and not blocked(x, y, settled and (kind == 'garden' and 3 or 4) or nil,
             bush and 1.5 or (settled and (kind == 'garden' and 3 or 4.5) or WALL))) then return false end
       local leaf = candidate.tags.leaf_type or candidate.tags.wood
@@ -3135,7 +3681,16 @@ local function build(cells, i, j, options)
       elseif settled then name, scale = 'town', .55 + u * .45
       elseif candidate.wooded then name, scale = 'forest', .6 + u * .4
       else name, scale = 'forest', .7 + u * .55 end
-      local set = VEG.have(name)
+      if p then
+        local other, size = bio.species(p, candidate, elevation, needle, settled, u, h)
+        if other then name, scale = other, size end
+        -- krummholz: the last 150 m under the tree line grows low and bent
+        if not bush and not settled and elevation > line - 150 then
+          scale = scale * (.45 + .55 * math.max(0, (line - elevation) / 150))
+          if name == 'forest' or name == 'pine' then name = 'fir' end
+        end
+      end
+      local set = VEG.use(name)
       -- Source and exact key: `..` prints 14 digits, and one lattice point's keys in two
       -- namespaces (forest and open ground at one spacing) printed the same name.
       static(string.format('tree_%s_%d', candidate.kind, candidate.key), set[h % #set + 1], x, y, z,
@@ -3207,18 +3762,26 @@ local function build(cells, i, j, options)
         if not (nz >= minNz and (not elevationCap or elevation < elevationCap) and (not sea or z > sea) and not blocked(x, y, clearance)) then
           return false
         end
-        local shape = shapes[h % #shapes + 1]
+        -- another climate's tufts, shrubs and stones (bio.decor), or none at all
+        local here, lo, hi = shapes, scaleMin, scaleMax
+        local p = bio.on and bio.at(x, y)
+        if p then
+          here = bio.decor(p, prefix, candidate.kind, elevation, shapes, x, y)
+          if not here then return false end
+          if here ~= shapes and prefix == 'grass' then lo, hi = .3, .6 end   -- dry tufts stand taller
+        end
+        local shape = here[h % #here + 1]
         local scale
         if prefix == 'grass' then
           -- scaleMin/scaleMax are the blade height in metres, not a raw multiplier.
           local mesh = VEG.grassMesh[shape]
           local span = mesh and mesh.span or 0.26
-          local want = scaleMin + (keyHash(seed + 200, candidate.key) % 1000) / 1000 * (scaleMax - scaleMin)
+          local want = lo + (keyHash(seed + 200, candidate.key) % 1000) / 1000 * (hi - lo)
           scale = want / span
           z = z - (mesh and mesh.bottom or 0) * scale
         else
-          scale = scaleMin + (keyHash(seed + 200, candidate.key) % 1000) / 1000 * (scaleMax - scaleMin)
-          if prefix == 'rock' and h % 5 == 0 then shape = shapes[#shapes]; scale = scale * .8 end
+          scale = lo + (keyHash(seed + 200, candidate.key) % 1000) / 1000 * (hi - lo)
+          if prefix == 'rock' and h % 5 == 0 then shape = here[#here]; scale = scale * .8 end
         end
         static(prefix .. '_' .. candidate.key, shape, x, y, z, h % 6283 / 1000, scale)
         return true
@@ -3283,13 +3846,32 @@ local function build(cells, i, j, options)
         local z = ground(x, y)
         if not ((not sea or z > sea) and not blocked(x, y)) then return false end
         local scale = .7 + (keyHash(23, candidate.key) % 1000) / 1000 * .7
-        local shape = VEG.rocks[h % #VEG.rocks + 1]
-        if h % 5 == 0 then shape = VEG.rocks[#VEG.rocks]; scale = scale * .8 end
+        -- the climate's stones: desert sandstone, mountain granite and limestone
+        local p, set = bio.on and bio.at(x, y), VEG.rocks
+        if p and (p.arid or p.group == 'tundra' or p.group == 'ice' or rawHeight(x, y) - bio.sea > bio.treeline(p) - 100) then
+          -- rocky climates: no stone on a cliff face (it hung in the air), and the far ring's handful
+          -- only on gentle ground (its coarse mesh runs tens of metres off a steep slope)
+          local _, _, nz = bio.normal(x, y)
+          if nz < .55 or (distant and nz < .9) then return false end
+        end
+        if p then
+          local e = rawHeight(x, y) - bio.sea
+          set = bio.decor(p, 'rock', 'ground', e, VEG.rocks)
+          if e > p.snowline - 400 and h % 6 ~= 0 then
+            local surface = surfaceKind(x, y)
+            if surface == 'snow' or surface == 'glacier' then return false end
+          end
+        end
+        local shape = set[h % #set + 1]
+        if h % 5 == 0 then shape = set[#set]; scale = scale * .8 end
         static('srock_' .. candidate.key, shape, x, y, z, h % 6283 / 1000, scale)
         return true
       end)
     end
     scatterSlopeRocks()
+    -- deserts, steppes, the alpine belt and the tundra: their own tufts and many more stones
+    -- (detail.lua shows the nearest within its budget)
+    bio.layers(math.floor(maxGrass * .6), math.min(600, maxRocks * 3), spread)
   end
   if wantLamps and not distant then
     local lamp = 0
@@ -3327,13 +3909,36 @@ local function build(cells, i, j, options)
     for material in pairs(collector.used) do mats[#mats + 1] = material end
     table.sort(mats)
     for _, item in ipairs(collector.items) do total = total + (item.triangles or 0) end
+    local warm = VEG.warm(LAMP, BUS_STOP)
     return {version = 1, generator = 'earthng-lua-v1', source = options.regionId, layer = layer,
       tile = {i, j}, rect = rect, materials = options.materials or '/earthng/planet/materials.json',
       items = collector.items, mats = mats, triangles = total, packs = options.packs,
-      warmShapes = VEG.warm(LAMP, BUS_STOP)}
+      warmShapes = warm, stockMaterials = VEG.stockFor(collector.items, warm)}
   end
   local roadManifest, sceneManifest = manifest(roads, 'road'), manifest(scene, 'scene')
-  roadManifest.spawn = bestSpawn or {pos = {target[1], target[2], ground(target[1], target[2]) + ROAD_LIFT}, yaw = 0}
+  -- No road: the car stands on the ground at the landing (native.lua's off-road landing). The
+  -- gentlest ground within ~80 m of it, the car across the slope: on Everest's summit ridge it
+  -- rolled off the point itself.
+  local function groundSpawn()
+    local best, bestScore
+    for dy = -80, 80, 10 do
+      for dx = -80, 80, 10 do
+        local x, y = target[1] + dx, target[2] + dy
+        local d = math.sqrt(dx * dx + dy * dy)
+        if d <= 80 and heightAt(x, y) and coverAt(x, y) ~= 'water' then
+          local nx, ny, nz = groundNormal(x, y)
+          local score = nz - d / 4000
+          if not bestScore or score > bestScore then best, bestScore = {x, y, nx, ny}, score end
+        end
+      end
+    end
+    if not best then return {pos = {target[1], target[2], ground(target[1], target[2]) + ROAD_LIFT}, yaw = 0} end
+    local x, y = best[1], best[2]
+    -- along the contour (-ny, nx), as a road spawn's yaw = atan2(-dx, dy) of its direction
+    local yaw = (math.abs(best[3]) + math.abs(best[4]) > 1e-3) and math.atan2(best[4], best[3]) or 0
+    return {pos = {x, y, ground(x, y) + ROAD_LIFT}, yaw = yaw}
+  end
+  roadManifest.spawn = bestSpawn or groundSpawn()
   roadManifest.drivable = bestSpawn ~= nil
   sceneManifest.parking = parking
   if distant then

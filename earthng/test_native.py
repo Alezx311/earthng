@@ -244,13 +244,17 @@ class NativeTests(unittest.TestCase):
         self.assertGreater(len(job.manifest.navSegments), 0)
         self.assertAlmostEqual(job.manifest.spawn.pos[3], 8.85)
 
-    def test_ground_fallback_is_not_a_drivable_landing(self):
+    def test_no_road_within_reach_lands_on_the_ground_at_the_point(self):
+        # a summit or a desert: no road in the landing square, the car stands on the DEM there
         _, mod, cv = self.make(real_generator=True)
         lat, lon = geographic(1750, 1750)
         mod.land(cv(dict(seq=4, lat=lat, lon=lon)))
         job = self.pump(mod, count=4000)
-        self.assertEqual(job.state, 'error')
-        self.assertIn('no_drivable_spawn', job.message)
+        self.assertEqual(job.state, 'ready')
+        self.assertTrue(job.manifest.offRoad)
+        self.assertFalse(job.manifest.drivable)
+        self.assertAlmostEqual(job.manifest.spawn.pos[1], 1750, delta=1)
+        self.assertAlmostEqual(job.manifest.spawn.pos[2], 1750, delta=1)
 
     def test_invalid_geometry_is_a_visible_job_error(self):
         files = fixture()
@@ -595,6 +599,62 @@ class NativeV2Tests(NativeTests.__base__):
                 far += 1
         self.assertGreater(far, 0)
         self.assertGreater(horizon, 0)
+
+    def test_terrain_only_decoder_reads_the_grid_of_a_full_cell(self):
+        lua, _, _ = self.make()
+        cell = dict(roads=[dict(id='w1', nodes=['a', 'b'], width=7, tags={'highway': 'primary'},
+                                points=[[1000, 0, 5], [1500, 10, 6]])],
+                    junctions=[], buildings=[], areas=[], lines=[], points=[],
+                    terrain=dict(rect=[1000, 0, 2000, 1000], nx=2, ny=3, heights=[1, 2.04, 3, -4, 5, 6.66]))
+        data, _ = binary.encode_block({binary.slot(1, 0): binary.encode_cell(cell, (1000, 0))})
+        first, last = binary.decode_block(data)[binary.slot(1, 0)]
+        got = lua.globals().cellformat.terrain(data, first + 1, last, lua.table_from([1000, 0, 2000, 1000]))
+        self.assertEqual(list(got.terrain.heights.values()), [1, 2.0, 3, -4, 5, 6.7])
+        self.assertEqual(got.low, -4)
+        self.assertEqual(len(got.roads), 0)
+
+    def test_vista_runs_on_from_a_summit_but_not_while_driving_or_on_the_plain(self):
+        _, mod, cv = self.make(fixture(40))
+        lat, lon = geographic(20000, 20000)
+        mod.land(cv(dict(seq=12, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+
+        def vista(**pose):
+            mod.pose(cv(dict(x=20000, y=20000, state='driving', **pose)))
+            mod.update(.016, 2)
+            wanted = mod.status().stream.wanted
+            return [k for k in wanted.keys() if str(k).startswith('v4000')], mod.status().stream
+
+        # 400 m over the lowest ground round the camera, standing: 4 km blocks out to 24 km
+        keys, st = vista(z=400, vx=0, vy=0)
+        self.assertGreater(len(keys), 20)
+        # past 5 km nothing decodes whole cells: the full horizon tiles are those of the 5 km ring
+        full = sum(1 for k in st.wanted.keys() if str(k).startswith('h'))
+        light = sum(1 for k in st.wanted.keys() if str(k).startswith('v'))
+        self.assertLess(light, 260)
+        self.assertEqual(st.vista, 24000)
+        wanted = st.wanted
+        self.assertTrue(all(wanted[k] >= 3_000_000 for k in keys))
+        # the blocks and the 1 km horizon cover each 500 m quadrant once
+        quads = {}
+        for key in wanted.keys():
+            key = str(key)
+            kind, _, ij = key.partition(':')
+            if kind not in ('v4000', 'v1000', 'v500', 'h1000', 'h500'):
+                continue
+            i, j = map(int, ij.split('_'))
+            n = {'v4000': 8, 'v1000': 2, 'v500': 1, 'h1000': 2, 'h500': 1}[kind]
+            for a in range(n):
+                for b in range(n):
+                    q = (i * n + a, j * n + b)
+                    self.assertNotIn(q, quads, key)
+                    quads[q] = key
+        # driving at 20 m/s or standing on the plain: the 5 km horizon alone
+        keys, st = vista(z=400, vx=20, vy=0)
+        self.assertEqual(keys, [])
+        self.assertEqual(full, sum(1 for k in st.wanted.keys() if str(k).startswith('h')))
+        self.assertEqual(vista(z=100, vx=0, vy=0)[0], [])
+        self.assertIsNone(mod.status().stream.vista)
 
     def test_coarse_horizon_stays_until_its_children_are_ready(self):
         _, mod, cv = self.make()

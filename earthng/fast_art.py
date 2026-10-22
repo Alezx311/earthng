@@ -450,6 +450,21 @@ def warm_defs(pack, fields):
     return out
 
 
+# Biome sheets (fast_style.BIOME_GROUND) ship smaller: their normals at 1024 px (2.3 cm a texel
+# over the 24 m sheet), and the smooth snow, ice and dune colours too. 2048 px each added 27 MB
+# to the planet ZIP.
+SMOOTH_GROUND = ('snow', 'snow_edge', 'glacier', 'dune')
+
+
+def ground_sheet(kind):
+    im, nm = photo.ground_sheet(kind)
+    if kind in style.BIOME_GROUND or kind == 'glacier':
+        nm = nm.resize((1024, 1024), Image.LANCZOS)
+        if kind in SMOOTH_GROUND:
+            im = im.resize((1024, 1024), Image.LANCZOS)
+    return im, nm
+
+
 def ensure(user):
     """The art in the user folder (the game reads it from there): copied from the shared
     build in data/art/<VERSION>, which is written once (~20 s: photo facades and ground
@@ -484,6 +499,13 @@ def prebuild(distributable=False):
             # roads came after this build's facades: only they are written
             road_sheets(shared)
             to_dds(shared / 'real')
+        # the biome ground sheets came after it too (fast_style.BIOME_GROUND): the missing ones
+        missing = [k for k in style.PHOTO_GROUND if not (shared / 'real' / f'ground_{k}.color.dds').exists()]
+        if missing:
+            for kind in missing:
+                im, nm = ground_sheet(kind)
+                im.save(shared / 'real' / f'ground_{kind}.color.png'); nm.save(shared / 'real' / f'ground_{kind}.normal.png')
+            to_dds(shared / 'real')
         write_manifest(shared)  # environment/fields are code, not a texture cache
     return shared
 
@@ -512,7 +534,7 @@ def build(r, game_assets=True):
                 if pack == 'synth':
                     stylised(name, pack, glow=True).save(r / pack / f'{name}.glow.png')
     for kind in style.PHOTO_GROUND:
-        im, nm = photo.ground_sheet(kind)
+        im, nm = ground_sheet(kind)
         im.save(r / 'real' / f'ground_{kind}.color.png'); nm.save(r / 'real' / f'ground_{kind}.normal.png')
     # footpaths: ambientCG photos as they are (normal green flipped for BeamNG)
     for name, src in (('paving', 'paving'), ('trodden', 'photo_trodden')):

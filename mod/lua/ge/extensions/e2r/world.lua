@@ -903,7 +903,16 @@ end
 -- the materials that already exist ("duplicate material. Overwriting"), ~80 per tile, and the
 -- frames after it stall for 1-3 s (route-05). So only the definitions not loaded yet go through
 -- a small temporary file.
-loadNewMaterials = function(path)
+loadNewMaterials = function(path, stock)
+  -- another climate's plants and stones: their level's material files, each once, before the
+  -- first shape that needs them (generator VEG.stockFor), or it draws without material
+  S.stockMats = S.stockMats or {}
+  for _, file in ipairs(type(stock) == 'table' and stock or {}) do
+    if type(file) == 'string' and not S.stockMats[file] then
+      S.stockMats[file] = true
+      if FS:fileExists(file) then loadJsonMaterialsFile(file) end
+    end
+  end
   if not path then return end
   local ok, defs = pcall(jsonReadFile, path)
   if not ok or type(defs) ~= 'table' then return end
@@ -924,6 +933,54 @@ loadNewMaterials = function(path)
   result.materialsLoaded = (result.materialsLoaded or 0) + n
 end
 
+-- Past the vista: one plane VISTA.PLANE m out at the lowest ground the vista found (native.lua
+-- vistaLow, vistaGround), without collision worth a thought (it lies under all the land). From
+-- Mount Whitney the sky under the horizon read as a sea past the last block.
+-- (one table: the main chunk is at LuaJIT's 200 locals)
+-- 200 km: at 60 km the plane's edge sat 3 degrees under the horizon of a 4 km summit, a blue band
+local VISTA = {PLANE = 200000}
+function VISTA.plane(z, kind, cx, cy)
+  local old = scenetree.findObject('e2r_vista_plane')
+  if old then old:delete() end
+  S.vistaPlaneAt = z and {z, kind, cx, cy} or nil
+  if not z then return end
+  local R, k = VISTA.PLANE, 1 / 24
+  local verts = {{x = -R, y = -R, z = 0}, {x = R, y = -R, z = 0}, {x = R, y = R, z = 0}, {x = -R, y = R, z = 0}}
+  local up = {x = 0, y = 0, z = 1}
+  local uvs = {}
+  for n, v in ipairs(verts) do uvs[n] = {u = v.x * k, v = v.y * k} end
+  local faces = {}
+  for _, v in ipairs({0, 2, 1, 0, 3, 2}) do table.insert(faces, {v = v, n = v, u = v}) end
+  local obj = createObject('ProceduralMesh')
+  obj:registerObject('e2r_vista_plane')
+  obj.canSave = false
+  obj:createMesh({{{verts = verts, normals = {up, up, up, up}, uvs = uvs, faces = faces, material = 'e2rf_' .. kind}}})
+  obj:setPosition(vec3(cx, cy, z))
+end
+
+-- The vista ring (native.lua VISTA_RADIUS, from a summit or a pass): the level's far clip and fog
+-- follow it, so the land 24 km off draws and fades as the 5 km ring did; the pack's own values
+-- come back when it ends. radius nil: no vista.
+function VISTA.apply(radius)
+  if S.vistaApplied == (radius or false) then return end
+  S.vistaApplied = radius or false
+  local info = scenetree.findObject('theLevelInfo')
+  if not info then return end
+  if radius then
+    S.vistaBase = S.vistaBase or {visible = info:getField('visibleDistance', 0), fog = info:getField('fogDensity', 0)}
+    local fog = tonumber(S.vistaBase.fog) or .00015
+    info:setField('visibleDistance', 0, tostring(math.max(tonumber(S.vistaBase.visible) or 8000, VISTA.PLANE)))
+    -- twice the 5 km ring's haze at its edge: the land 24 km off fades out, not cut against the sky
+    info:setField('fogDensity', 0, tostring(fog * 2 * 5000 / radius))
+  elseif S.vistaBase then
+    info:setField('visibleDistance', 0, S.vistaBase.visible)
+    info:setField('fogDensity', 0, S.vistaBase.fog)
+    S.vistaBase = nil
+  end
+  pcall(function() info:postApply() end)
+  result.vista = radius
+end
+
 -- A delivered manifest keeps only its item count (native.release).
 local function itemCount(manifest) return manifest.itemCount or #(manifest.items or {}) end
 
@@ -941,7 +998,7 @@ local function startTile(key, i, j)
   if NATIVE then ok, manifest = true, native.manifest(key, 'road')
   else ok, manifest = pcall(jsonReadFile, tilePath(key)) end
   if not ok or type(manifest) ~= 'table' then return end
-  loadNewMaterials(manifest.materials)
+  loadNewMaterials(manifest.materials, manifest.stockMaterials)
   local tile = {state = 'loading', i = i, j = j, manifest = manifest, group = tileGroup('E2RT_' .. key), decor = tileGroup('E2RD_' .. key, true),
                 left = #manifest.items, roadLeft = #manifest.items, startedAt = S.now}
   S.tiles[key] = tile
@@ -956,7 +1013,7 @@ local function startScene(key, tile)
   if NATIVE then ok, manifest = true, native.manifest(key, 'scene')
   else ok, manifest = pcall(jsonReadFile, tilePath(key, 'scene')) end
   if not ok or type(manifest) ~= 'table' or manifest.source ~= S.stream.region then return end
-  loadNewMaterials(manifest.materials)
+  loadNewMaterials(manifest.materials, manifest.stockMaterials)
   tile.sceneStarted = true
   tile.parking = manifest.parking
   tile.sceneGroup = tileGroup('E2RS_' .. key)
@@ -1272,7 +1329,7 @@ local function updateTiles()
         if NATIVE then ok, manifest = true, native.manifest(key, 'far')
         else ok, manifest = pcall(jsonReadFile, tilePath(key, 'far')) end
         if ok and type(manifest) == 'table' and manifest.source == S.stream.region then
-          loadNewMaterials(manifest.materials)
+          loadNewMaterials(manifest.materials, manifest.stockMaterials)
           local far = {i = i, j = j, left = #manifest.items, group = tileGroup('E2RF_' .. key, true), far = true,
             serial = type(st.far[key]) == 'number' and st.far[key] or 1}
           S.far[key] = far
@@ -1284,6 +1341,16 @@ local function updateTiles()
     -- DEM horizon past the far ring. Its own group stays out of MissionGroup, so it never
     -- joins the static collision. A coarser ring is not scheduled until the 5 km one is checked.
     local horizonR = (NATIVE and st.horizonDem) and (st.horizonRadius or 0) or 0
+    VISTA.apply(NATIVE and st.vista or nil)
+    -- the plane follows the lowest ground found (down only), its climate, and a camera gone far
+    local want, at = NATIVE and st.vista and st.vistaLow, S.vistaPlaneAt
+    if want then
+      if not at or want < at[1] - 30 or st.vistaGround ~= at[2] or (p.x - at[3]) ^ 2 + (p.y - at[4]) ^ 2 > 15000 ^ 2 then
+        pcall(VISTA.plane, math.min(want, at and at[1] or want), st.vistaGround or 'forest', p.x, p.y)
+      end
+    elseif at then
+      pcall(VISTA.plane, nil)
+    end
     S.horizon = S.horizon or {}
     if horizonR > 0 then
       for key, spawned in pairs(S.horizon) do
@@ -1309,7 +1376,7 @@ local function updateTiles()
           local info = st.horizon[bestH]
           local manifest = native.manifest(bestH, 'horizon')
           if type(manifest) == 'table' and manifest.source == S.stream.region then
-            loadNewMaterials(manifest.materials)
+            loadNewMaterials(manifest.materials, manifest.stockMaterials)
             local groupName = 'E2RH_' .. bestH:gsub('[^%w_]', '_')
             local horizon = {left = #manifest.items, group = tileGroup(groupName, true), horizon = true,
               serial = info.serial, x = info.x, y = info.y, groupName = groupName}
@@ -1531,10 +1598,11 @@ local function updateCollision()
   return true
 end
 
-local function tileLoadedAt(x, y)
+local function tileLoadedAt(x, y, offRoad)
   local i, j = tileOf(x, y)
   local t = S.tiles[i .. '_' .. j]
-  return t and not t.failed and t.roadComplete and t.collided and t.manifest.drivable ~= false
+  -- an off-road landing (native.lua: no road within reach) stands on a tile of ground alone
+  return t and not t.failed and t.roadComplete and t.collided and (offRoad or t.manifest.drivable ~= false)
 end
 
 -- --- texture packs (fast generator) -----------------------------------------------------------------
@@ -1788,6 +1856,8 @@ end
 local function applyPack(name)
   local pack = S.packs and S.packs[name]
   if not pack then return end
+  -- the pack sets its own fog: the vista scales the new one (VISTA.apply)
+  S.vistaApplied, S.vistaBase = nil, nil
   S.pack = name
   S.envAgain, S.exposurePending = nil, nil
   local timer = hptimer()
@@ -1927,7 +1997,7 @@ local function beginArrival(job)
   for _, path in ipairs(stockMaterials) do
     if FS:fileExists(path) then loadJsonMaterialsFile(path) end
   end
-  loadNewMaterials(manifest.materials)
+  loadNewMaterials(manifest.materials, manifest.stockMaterials)
   if manifest.spawn and job.horizonZ then pcall(makeHorizon, job.horizonZ, manifest.spawn.pos[1], manifest.spawn.pos[2]) end
   if manifest.packs and FS:fileExists(manifest.packs) then
     local okP, packs = pcall(jsonReadFile, manifest.packs)
@@ -3317,6 +3387,7 @@ local function refreshCountries()
     dropGroup('E2RWorldWarmup'); dropGroup('E2RWorldPacks'); dropGroup('E2RWorldShapes')
     local horizon = scenetree.findObject('e2r_horizon')
     if horizon then horizon:delete() end
+    pcall(VISTA.plane, nil)
     dropLights()
     if trafficRunning() then gameplay_traffic.deleteVehicles() end
     S.stream, S.co, S.job, S.landing = nil, nil, nil, nil
@@ -4045,9 +4116,11 @@ function M.tick(dt)
     dropGroup('E2RWorldWarmup')
     dropGroup('E2RWorldPacks')
     local sp = S.landing.spawn.pos
+    -- 3 km under the landing, not 40 m: on a summit 40 m down and 150 m east was the air over
+    -- the east face, and a fir, a bus stop and a stone hung there in every view (Mount Whitney)
     for k in ipairs(S.landing.warmShapes or {}) do
       local obj = scenetree.findObject('e2r_shape_' .. k)
-      if obj then obj:setPosRot(sp[1] + k * 3, sp[2], sp[3] - 40, 0, 0, 0, 1) end
+      if obj then obj:setPosRot(sp[1] + k % 8, sp[2] + math.floor(k / 8), sp[3] - 3000, 0, 0, 0, 1) end
     end
     S.state, S.frames, S.phaseAt = 'spawning', {}, S.now
   end
@@ -4133,7 +4206,7 @@ function M.tick(dt)
         if test then result.status = 'failed'; saveResult(); shutdown(1) end
       end
     end
-    if buffered and tileLoadedAt(sp[1], sp[2]) and S.collisionAt > 0 and S.now - S.collisionAt > 0.2 then
+    if buffered and tileLoadedAt(sp[1], sp[2], S.landing.offRoad) and S.collisionAt > 0 and S.now - S.collisionAt > 0.2 then
       result.spawnFrames = frameStats(S.frames)
       result.spawnSeconds = S.now - S.phaseAt
       S.frames = {}

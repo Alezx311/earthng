@@ -22,6 +22,17 @@ SETS = {
     'leaves_orange': 'ScatteredLeaves007',
     'leaves_brown': 'ScatteredLeaves002',
     'leaves_forest': 'Ground070',
+    # biome ground sheets (fast_photo.GROUND): deserts, dunes, steppe, tundra, the alpine belt, snow
+    'desert_soil': 'Ground079S',      # sandy dirt with gravel
+    'desert_crust': 'Ground080',      # dry rippled dirt
+    'dune_sand': 'Ground097',         # wind ripples
+    'steppe_ground': 'Ground102',     # dry yellow-green ground
+    'lichen_stones': 'Ground063',     # dry grass, lichen and stones: fellfield, tundra
+    'rock_debris': 'Ground110',       # dark rocky debris: scree belts
+    'moss_earth': 'Ground037',        # damp moss: tundra, boreal floor
+    'moss_red': 'Ground068',          # moss with red-brown heath
+    'snow_wind': 'Snow014',           # wind-packed snow of the high mountains
+    'snow_melt': 'Snow015',           # melting snow over grass: the edge of a snow patch
 }
 # Roads: (site, asset, maps that must be there, resolution). Ambient occlusion and opacity come
 # along when a set has them. The aerial street is the roads' base; the others are their detail.

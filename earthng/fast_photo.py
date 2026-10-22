@@ -223,7 +223,24 @@ GROUND = {
     'park':   (('photo_lawn', 3.0), ('photo_meadow', 4.0, .22), ('photo_worn', 3.0, .05), (.86, .90, .82), .66),
     'forest': (('photo_meadow', 4.0), ('photo_worn', 3.0, .35), ('photo_trodden', 3.0, .15), (.72, .74, .66), .6),
     'verge':  (('photo_verge', 3.0), ('photo_lawn', 3.0, .35), ('photo_worn', 3.0, .15), (.86, .88, .76), .85),
+    # other climates' open ground (generator.lua bio.ground, biome.lua): ambientCG sets of
+    # fetch_textures.SETS. Desert floor of sandy grit with crusted patches; wind-rippled dune
+    # sand; steppe of dry ground and bleached grass; the Mediterranean's and savanna's golden
+    # grass; tundra moss with red heath and lichen stones; the alpine belt's lichen, turf and
+    # debris; snow over rock; the melting edge of a snow patch; glacier ice under old snow.
+    'desert':    (('desert_soil', 3.0), ('desert_crust', 4.0, .35), ('ground', 3.0, .22), (1.0, .96, .9), .85),
+    'dune':      (('dune_sand', 4.0), ('ground', 3.0, .12), ('desert_crust', 4.0, .08), (1.03, .99, .92), .9),
+    'steppe':    (('steppe_ground', 3.0), ('photo_meadow', 4.0, .32), ('desert_soil', 3.0, .22), (1.04, 1.0, .8), .5),
+    'dry_grass': (('grass', 3.0), ('steppe_ground', 4.0, .45), ('desert_soil', 3.0, .12), (1.24, 1.04, .66), .36),
+    'tundra':    (('moss_earth', 3.0), ('moss_red', 4.0, .35), ('lichen_stones', 3.0, .3), (.9, .9, .82), .62),
+    'alpine':    (('lichen_stones', 3.0), ('rock_debris', 3.0, .28), ('photo_meadow', 4.0, .12), (.92, .95, .93), .4),
+    'snow':      (('snow_wind', 4.0), ('snow_fresh', 4.0, .25), ('rock_debris', 3.0, .03), (1.0, 1.0, 1.0), 1.0),
+    'snow_edge': (('snow_wind', 4.0), ('snow_melt', 3.0, .38), ('lichen_stones', 3.0, .3), (1.0, 1.0, 1.0), .8),
+    'glacier':   (('snow_wind', 4.0), ('snow_fresh', 4.0, .5), ('snow_dirty', 3.0, .06), (.95, .98, 1.02), .9),
 }
+# Mean brightness (0..1, after tone and saturation) a sheet is brought to: Snow005 photographs
+# grey, the dune sand dark; a kind not named keeps its photos' own.
+GROUND_LEVEL = {'snow': .74, 'snow_edge': .64, 'glacier': .7, 'dune': .62, 'desert': .5, 'alpine': .42}
 
 
 def _layer(name, metres, which):
@@ -291,6 +308,8 @@ def ground_sheet(kind):
         normal = normal * (1 - mask) + own_n * mask
     grey = (colour @ np.array([.3, .59, .11], dtype=np.float32))[..., None]
     colour = (grey + (colour - grey) * saturation) * np.array(tone, dtype=np.float32)
+    if kind in GROUND_LEVEL:
+        colour = colour * (GROUND_LEVEL[kind] / max(float(colour.mean()), .02))
     normal[..., 1] = 1 - normal[..., 1]
     img = lambda a: Image.fromarray(np.clip(a * 255 + .5, 0, 255).astype('uint8'))
     return img(colour), img(normal)

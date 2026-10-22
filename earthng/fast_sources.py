@@ -305,6 +305,19 @@ def write_index(segments, arcs, mouths, node_h, path, emit=print):
     from concurrent.futures import ProcessPoolExecutor
     started = time.perf_counter()
     pool = ProcessPoolExecutor(min(6, os.cpu_count() or 2)) if len(segments) > 50_000 else None
+    schema = '''PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-262144;
+            PRAGMA temp_store=MEMORY;
+            CREATE TABLE features(id INTEGER PRIMARY KEY, kind TEXT, data TEXT, geom BLOB);
+            CREATE VIRTUAL TABLE bounds USING rtree(id,x0,x1,y0,y1);
+            CREATE TABLE nodes(id INTEGER PRIMARY KEY, data TEXT);
+            CREATE TABLE links(node INTEGER, segment INTEGER);'''
+    if not segments:
+        # no road in the whole region (wilderness): the same empty tables, no mouths to place
+        db = sqlite3.connect(path)
+        db.executescript(schema)
+        db.execute('CREATE INDEX links_node ON links(node)')
+        db.commit(); db.close()
+        return
     try:
         # every mouth, node by node in mouths order
         nids = list(mouths)
@@ -390,12 +403,7 @@ def write_index(segments, arcs, mouths, node_h, path, emit=print):
         bound_rows = [bound_rows[i] for i in np.argsort(code, kind='stable')]
         link_rows = sorted(zip(np.repeat(nids, counts).tolist(), sid.tolist()), key=lambda r: r[0])
         db = sqlite3.connect(path)
-        db.executescript('''PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-262144;
-            PRAGMA temp_store=MEMORY;
-            CREATE TABLE features(id INTEGER PRIMARY KEY, kind TEXT, data TEXT, geom BLOB);
-            CREATE VIRTUAL TABLE bounds USING rtree(id,x0,x1,y0,y1);
-            CREATE TABLE nodes(id INTEGER PRIMARY KEY, data TEXT);
-            CREATE TABLE links(node INTEGER, segment INTEGER);''')
+        db.executescript(schema)
         db.executemany('INSERT INTO bounds VALUES(?,?,?,?,?)', bound_rows)
         db.executemany('INSERT INTO links VALUES(?,?)', link_rows)
         db.execute('CREATE INDEX links_node ON links(node)')
@@ -504,11 +512,15 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
     # one height solve for the whole graph: shared nodes, smooth grades, soft bridges/tunnels
     import fast_profile
     terrain = Terrain(dem, frame)
-    mosaic = fast_profile.Mosaic(terrain, np.concatenate([np.asarray(seg['xy']) for seg in segments]))
-    profiles, node_h = fast_profile.solve(segments, lambda q: mosaic.sample(q, missing=True), emit=emit)
-    for seg, (ps, ph) in zip(segments, profiles):
-        seg['prof'] = [np.round(ps, 2).tolist(), np.round(ph, 3).tolist()]
-    del mosaic, profiles
+    # a wilderness region (Everest's Tibetan side) has no road at all: nothing to solve
+    if segments:
+        mosaic = fast_profile.Mosaic(terrain, np.concatenate([np.asarray(seg['xy']) for seg in segments]))
+        profiles, node_h = fast_profile.solve(segments, lambda q: mosaic.sample(q, missing=True), emit=emit)
+        for seg, (ps, ph) in zip(segments, profiles):
+            seg['prof'] = [np.round(ps, 2).tolist(), np.round(ph, 3).tolist()]
+        del mosaic, profiles
+    else:
+        node_h = {}
     emit(f'profile ready: {time.perf_counter()-started:.1f}s')
     check()
     tmp = target / f'sources.{os.getpid()}.tmp'

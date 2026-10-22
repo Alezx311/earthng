@@ -173,6 +173,11 @@ def build(out, lang='en'):
         for src in sorted(art.rglob('*')):
             if src.is_file() and src.suffix in ('.dds', '.json'):
                 z.write(src, f'e2r_stream/fast-art/{fast_art.VERSION}/' + src.relative_to(art).as_posix())
+        # the climate of every place (Köppen-Geiger, Beck et al. 2023, CC BY 4.0): biome.lua
+        import build_climate
+        climate = build_climate.build()
+        for src in sorted(climate.glob('*.bin')):
+            z.write(src, 'earthng/planet/climate/' + src.name)
         # the picker's offline base map (Natural Earth tiles and labels; PNGs are stored as is)
         import build_basemap
         base = build_basemap.build()

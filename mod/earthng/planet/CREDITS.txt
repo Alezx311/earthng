@@ -7,6 +7,11 @@ Country source data: OpenStreetMap contributors, ODbL 1.0.
 https://www.openstreetmap.org/copyright
 Country packs must retain their source/date and attribution in the manifest.
 
+Climate classes (climate/*.bin): Koppen-Geiger 1991-2020 at one arc minute, from
+Beck, H. E. et al., High-resolution (1 km) Koppen-Geiger maps for 1901-2099 based on
+constrained CMIP6 projections, Scientific Data 10, 724 (2023). CC BY 4.0.
+https://doi.org/10.6084/m9.figshare.21789074
+
 Shared art: EarthNG procedural drawings and CC0 photos (Panelka, ambientCG).
 Retro City: original EarthNG procedural pixel drawings, palette and material preset.
 No BeamNG game assets are included: game shapes and materials are referenced

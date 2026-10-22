@@ -507,7 +507,9 @@ def _clip(box, core):
 
 def _landing(present, roads, frame, core):
     """The centre of a cell with roads whose whole 3 x 3 neighbourhood is exported, nearest
-    the core's centre: a country button always lands on a road with full startup sources."""
+    the core's centre: a country button always lands on a road with full startup sources.
+    A region without a single road (Everest's: trails only) lands in its most central cell
+    with a full neighbourhood instead."""
     if core is not None:
         x, y = frame.local([(core[0]+core[2])/2], [(core[1]+core[3])/2])
         cx, cy = float(x[0]), float(y[0])
@@ -515,8 +517,9 @@ def _landing(present, roads, frame, core):
         cx = sum(i+.5 for i, _ in present)/len(present)*CELL
         cy = sum(j+.5 for _, j in present)/len(present)*CELL
     best = None
-    for (i, j), n in sorted(roads.items()):
-        if n and all((i+a, j+b) in present for a in (-1, 0, 1) for b in (-1, 0, 1)):
+    wild = not any(roads.values())
+    for (i, j) in sorted(present if wild else roads):
+        if (wild or roads[(i, j)]) and all((i+a, j+b) in present for a in (-1, 0, 1) for b in (-1, 0, 1)):
             d = ((i+.5)*CELL-cx)**2 + ((j+.5)*CELL-cy)**2
             if best is None or d < best[0]:
                 best = (d, [(i+.5)*CELL, (j+.5)*CELL])

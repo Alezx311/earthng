@@ -1,5 +1,37 @@
 # EarthNG native mod migration
 
+## 2026-10-22: climate biomes, the vista from summits, Death Valley above the sea
+
+Detail and measurements: `docs/NATURE.md` (22.10).
+
+- Planet: Köppen-Geiger 1991-2020 (Beck et al. 2023, CC BY 4.0) at one arc minute in 10 degree
+  land blocks (`earthng/build_climate.py`, 2.9 MB), read lazily by the new `e2r/biome.lua`.
+  Groups: rainforest, savanna, desert, steppe, Mediterranean, temperate, boreal, tundra, ice.
+  Tree and snow lines by latitude and climate; a measured tundra ridge lowers the tree line.
+- Generator (`bio` in `build()`): untagged ground of other climates is desert, dune, steppe, golden
+  grass, tundra, alpine turf, scree, rock or snow (snow patches by height and aspect); verges and
+  edge decals follow. Plants and stones from Utah, Johnson Valley, West Coast USA, Jungle Rock Island
+  and Italy: junipers, creosote, yucca, sagebrush, live oaks, eucalyptus, palms, rainforest, holm and
+  cork oaks, olives, krummholz near the tree line, dwarf alpine shrubs. Their level material files
+  load once a tile names them (`stockMaterials`). Temperate climate builds byte-identical tiles.
+- The sea plane no longer floods depressions far inland (Death Valley was 46 % water).
+- Vista: from a summit or pass (camera 250 m over the lowest ground within 5 km, under 15 m/s) the
+  horizon runs on to 24 km in 4 km blocks of 400 m steps, from elevation grids alone
+  (`cellformat.terrain`); the level's far clip and fog follow it.
+- Art: 9 ground sheets from ambientCG CC0 (desert, dune, steppe, dry grass, tundra, alpine, snow,
+  snow edge, glacier), normals and smooth colours at 1024 px: planet ZIP +15 MB.
+- Pack builder: a region without a single road (Everest's) no longer crashes and lands in its
+  most central full cell. The Everest spot pack (`spot_pack.py --id everest`, 24 km) builds.
+- Tools and tests: `earthng/biome_census.py` (ground and plants round any point of any pack, map),
+  `test_biome.py` (4), native vista and terrain decoder tests.
+- In game (8 places, `out/biome-game`): landing where no road is within 500 m now stands the car on
+  the gentlest ground within ~80 m (summits failed with `no_drivable_spawn`); warm-up shapes hide 3 km
+  under the landing (they hung over Whitney's east face); cross-folder level materials (Jungle Rock's
+  lianas showed NO MATERIAL ribbons; `VEG.stockExtra`, planet `leaves_thin`); 80 m slopes and 150-200 m
+  patches instead of a triangle mosaic; the vista's light tiles (380 instead of 762) over a 200 km
+  plane at the lowest ground; European tree line lowered (45 deg 2050 m, 50 deg 1500 m). Frames:
+  Las Vegas 18.4 -> 14.7 ms, Zanzibar 12.5 -> 10.7 ms against the planet before biomes.
+
 ## 2026-10-18 (day): collision only where something can reach it, generator pauses
 
 Detail and measurements: `docs/PERFORMANCE.md`.

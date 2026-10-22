@@ -324,7 +324,9 @@ GROUND_KINDS = ('ground', 'park', 'forest')
 # the cover classes added after the packs (nature.py); winter snows them over with the ground's
 # sheet and rain darkens them like the ground. Before this they stayed summer-green in the snow.
 COVER_KINDS = ('meadow', 'farmland', 'orchard', 'vineyard', 'scrub', 'heath', 'wetland', 'bare_ground',
-               'bare_rock', 'scree')
+               'bare_rock', 'scree',
+               # other climates' open ground (fast_style.BIOME_GROUND): the snow and ice kinds stay
+               'desert', 'dune', 'steppe', 'dry_grass', 'tundra', 'alpine')
 UNPAVED_ROADS = ('road_gravel', 'road_dirt', 'road_track')
 GLOW = {'night': '1.8 1.8 1.8', 'cyber': '2.2 2.2 2.2', 'rain': '1.4 1.4 1.4'}      # emissive gain of lit windows
 # Only luminous objects emit. Ambient visibility belongs to the sky/exposure, not

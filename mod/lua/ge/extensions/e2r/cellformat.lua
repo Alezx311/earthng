@@ -184,6 +184,35 @@ function M.cell(data, first, last, ox, oy, rect, pause, keep)
   return cell
 end
 
+-- Only the elevation grid of a cell, for the distant vista ring: {terrain = .., roads = {}, ...}.
+-- The strings are skipped by length and nothing after the grid is read.
+function M.terrain(data, first, last, rect)
+  local pos = first
+  local function u()
+    local value, mul = 0, 1
+    while true do
+      if pos > last or mul > 2 ^ 49 then error('truncated source cell') end
+      local b = byte(data, pos)
+      pos = pos + 1
+      if b < 128 then return value + b * mul end
+      value, mul = value + (b - 128) * mul, mul * 128
+    end
+  end
+  for _ = 1, u() do pos = pos + u() end
+  local nx, ny = u(), u()
+  if nx < 2 or ny < 2 or nx > 257 or ny > 257 then error('invalid source elevation grid') end
+  local heights, h, low = {}, 0, math.huge
+  for k = 1, nx * ny do
+    local v = u()
+    h = h + (v % 2 == 0 and v / 2 or -(v + 1) / 2)
+    heights[k] = h / 10
+    if heights[k] < low then low = heights[k] end
+  end
+  local cell = {terrain = {rect = rect, nx = nx, ny = ny, heights = heights}, low = low}
+  for _, kind in ipairs(KINDS) do cell[kind] = {} end
+  return cell
+end
+
 -- Only the road centre lines of a cell, for the map: {id = .., highway = .., xy = {x1, y1, ...}}.
 -- Terrain and every later section are skipped; nothing else is built.
 function M.roads(data, first, last, ox, oy)

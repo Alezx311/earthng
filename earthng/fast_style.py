@@ -477,7 +477,17 @@ TREE_SETS = {
 ALL_TREES = sorted({t for v in TREE_SETS.values() for t in v})
 
 
-PHOTO_GROUND = ('ground', 'park', 'forest')
+# Other climates' open ground (generator.lua bio.ground): their own photo sheets of GROUND_M,
+# with what the tyres feel. The glacier was a flat colour until it had a sheet.
+BIOME_GROUND = {'desert': 'DIRT', 'dune': 'SAND', 'steppe': 'GRASS', 'dry_grass': 'GRASS', 'tundra': 'GRASS',
+                'alpine': 'GRAVEL', 'snow': 'SNOW', 'snow_edge': 'SNOW'}
+for _k, _ground in BIOME_GROUND.items():
+    KINDS[_k] = (None, [*(_c / 255 for _c in {'desert': (184, 152, 112), 'dune': (214, 176, 126), 'steppe': (162, 146, 96),
+                                              'dry_grass': (176, 146, 80), 'tundra': (122, 124, 86), 'alpine': (124, 118, 98),
+                                              'snow': (232, 236, 242), 'snow_edge': (206, 212, 204)}[_k]), 1],
+                 _ground, _photo.GROUND_M, 'plan')
+KINDS['glacier'] = KINDS['glacier'][:3] + (_photo.GROUND_M,) + KINDS['glacier'][4:]
+PHOTO_GROUND = ('ground', 'park', 'forest', *BIOME_GROUND, 'glacier')
 
 
 def real_stage(kind):
@@ -543,6 +553,10 @@ MATERIALS = dds({'e2rf_' + k: material(k) for k in KINDS})
 import json as _json
 from pathlib import Path as _Path
 MATERIALS.update(_json.loads((_Path(__file__).with_name('fast_tree_materials.json')).read_text(encoding='utf8')))
+# the thin-leaf physics material (no stages: what a car feels in a bush) of Italy's generibush and
+# East Coast's fir bush, as leaves_strong above; the levels define it in a file that would also
+# overwrite our leaves_strong
+MATERIALS['leaves_thin'] = {**MATERIALS['leaves_strong'], 'name': 'leaves_thin', 'mapTo': 'leaves_thin', 'groundType': 'leaves_thin'}
 # Poplar leaves (Automation Test Track's poplars, generator.lua VEG.poplar) as that level defines
 # them but summer green: its leaves are autumn yellow (sRGB 154 132 58) and stood out in every
 # village (veg-hatne-a). The autumn pack gives the level's own colour back, winter drops them.
