@@ -31,5 +31,19 @@ actual world scheduler with an engine stand-in. Existing widget checks also comp
 the full Lua module, guarding LuaJIT's 200-local limit.
 
 Live evidence is under the managed worktree's `out/runtime-review/`. The first
-manual run was diagnostic only. A fresh Kyiv route with quality cycling is pending;
-do not infer a frame-time improvement from the queue microbenchmark alone.
+manual run was diagnostic only. The fresh runtime-only Kyiv route drove 1782 m;
+subsequent Potato/OASIS changes preserved the road and did not crash. Queues drained
+to zero during the hold; a later count of all actual Forest items matched the
+reported count exactly (52,472). This run uses the pre-placement-fix generator.
+
+The performance gate failed: the initial 120-second route measured 26.81 ms mean,
+81 ms p99, 17 frames over 100 ms. Offline tests/Claude work overlapped this run and
+the installed game is now 0.40.3, so it is not comparable to the earlier 0.40.2 table.
+The subsequent manual hold keeps accumulating `driveFrames`; the initial route
+snapshot is saved separately as `route-fixed-evidence.json`. No frame-time gain is
+claimed from this run or from the FIFO microbenchmark. Integrated Python/Lua suite:
+277 tests run: 274 passed, 3 skipped (local cache fixtures unavailable).
+
+Retirement diagnostics also record the largest spatial-query batch and its elapsed
+time; the slowest commit records its shape and add/remove counts. These help
+separate spatial lookup cost from engine mutation cost in follow-up measurements.

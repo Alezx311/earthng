@@ -471,6 +471,7 @@ local function retireForest(tile)
   local f = forestFor()
   local data = f and f:getData()
   if not data or not Box3F then return end
+  local timer = hptimer()
   local t = S.stream and S.stream.tile or 500
   local box = Box3F()
   -- getItemsBox tests model bounds, not anchors: a neighbouring bench/tree can
@@ -494,6 +495,8 @@ local function retireForest(tile)
       end
     end
   end
+  result.forestRetireMaxMs = math.max(result.forestRetireMaxMs or 0, timer:stop())
+  result.forestRetireMaxScanned = math.max(result.forestRetireMaxScanned or 0, #items)
 end
 
 local function forestCommit()
@@ -561,7 +564,10 @@ local function forestCommit()
   result.forestCommits = (result.forestCommits or 0) + 1
   local ms = timer:stop()
   result.forestCommitMs = ms
-  if ms > (result.forestCommitMaxMs or 0) then result.forestCommitMaxMs = ms end
+  if ms > (result.forestCommitMaxMs or 0) then
+    result.forestCommitMaxMs, result.forestCommitMaxKind = ms, name
+    result.forestCommitMaxAdded, result.forestCommitMaxRemoved = added, removed
+  end
 end
 
 local function resetForests()
