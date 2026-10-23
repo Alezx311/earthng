@@ -149,6 +149,7 @@ class DetailTests(unittest.TestCase):
     def world(self):
         lua = self.make()
         lua.globals().collision = lua.execute((ROOT / 'collision.lua').read_text())
+        lua.globals().fifo = lua.execute((ROOT / 'fifo.lua').read_text())
         lua.execute('''
           ui_imgui = setmetatable({ArrayChar=function() return {} end}, {__index=function() return function() end end})
           native={setTune=quality.clamp,unload=function() end}
@@ -156,6 +157,7 @@ class DetailTests(unittest.TestCase):
             if n=='ge/extensions/e2r/quality' then return quality end
             if n=='ge/extensions/e2r/detail' then return detail end
             if n=='ge/extensions/e2r/collision' then return collision end
+            if n=='ge/extensions/e2r/fifo' then return fifo end
             if n=='ge/extensions/e2r/native' then return native end
             return {}
           end
@@ -190,7 +192,9 @@ class DetailTests(unittest.TestCase):
           local items={}
           data={
             createNewItem=function(_, kind, m, scale)
-              local item={getData=function() return kind end, kind=kind.shape}
+              local pos, key = {x=m.pos.x,y=m.pos.y,z=m.pos.z}, #items+1
+              local item={getData=function() return kind end, kind=kind.shape,
+                getPosition=function() return pos end,getKey=function() return key end}
               items[#items+1]=item; calls.adds[#calls.adds+1]=kind.shape; return item
             end,
             removeItem=function(_, item) calls.removes[#calls.removes+1]=item.kind end,
@@ -199,7 +203,7 @@ class DetailTests(unittest.TestCase):
           local forest={getData=function() return data end, getID=function() return 7 end}
           scenetree={findObject=function(name) if name=='e2rForest' then return forest end end,
             findObjectById=function() return forest end}
-          MatrixF=function() return {setFromEuler=function() end, setPosition=function() end} end
+          MatrixF=function() return {setFromEuler=function() end, setPosition=function(self,p) self.pos=p end} end
           vec3=function(x,y,z) return {x=x or 0,y=y or 0,z=z or 0} end
           Box3F=function() return {} end
           local plantData=up(spawnForest,'plantDataFor')
