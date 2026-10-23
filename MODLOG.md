@@ -1,5 +1,22 @@
 # EarthNG native mod migration
 
+## 2026-10-23: street furniture by place, merged into master
+
+- `codex/street-assets-experiments` merged into master: `Rebuild.bat` builds from
+  master, so the furniture never reached the installed planet before.
+- Furniture now follows what the ground is, not one street mix everywhere: park and
+  yard paths (benches with bins), squares (lattice of planters, benches, bollards,
+  racks), blocks of flats (entrance benches turned from the wall, rows of 1100 l
+  containers in the yard), shops (planters, bins, racks on street walls, a skip
+  behind), houses (wheelie bin or bench at the gate), village sidewalks (a sparse
+  set). Paths out of town get none; footways through car parks keep furniture out.
+- New stock models from `/art/shapes/garage_and_dealership/Clutter/` (global art
+  materials) and East Coast's concrete bollard; bounds measured from the DAEs.
+  Every model is checked with `FS:fileExists`, so a game without one places less.
+- `earthng/props_map.py`: offline top-down map, counts and lat/lon samples of the
+  props of near tiles. Kyiv Obolon, Balanced: 439 → 535 props a tile; tile build
+  391 → 382 ms mean over nine tiles (noise). Automated suite: 289 pass.
+
 ## 2026-10-23: unified street layout on the asset experiment branch
 
 - Worktree: `C:/Users/Alezx311/.codex/worktrees/street-assets-night/EarthNG`,

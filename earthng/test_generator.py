@@ -27,7 +27,13 @@ PROP_BOUNDS = {'bollard_hoop_grey.dae': (-.518, .518, -.175, .175), 'bollard_yel
                'garbage_bin_a.dae': (-.253, .253, -.235, .26), 'garbage_bin_b.dae': (-.253, .253, -.235, .321),
                'clutter_city_bench_wood.dae': (-1, 1, -.357, .205), 'planterbox.dae': (-.46, .46, -.46, .46),
                'clutter_city_bike_stand.dae': (-2.079, 2.079, -.321, .321), 'hydrant1.dae': (-.326, .326, -.377, .377),
-               'postbox_blue.dae': (-.335, .249, -.32, .32)}
+               'postbox_blue.dae': (-.335, .249, -.32, .32), 'clutter_city_bin_round.dae': (-.348, .348, -.348, .348),
+               'italy_clutter_metal_bin.DAE': (-.171, .171, -.171, .171), 'italy_clutter_dumpster.DAE': (-.783, .783, -.414, .414),
+               'italy_clutter_big_dustbin.DAE': (-.356, .347, -.367, .34), 'clutter_city_bollard_concrete.dae': (-.385, .385, -.385, .385),
+               'ind_dumpster_full.DAE': (-1.516, 1.501, -.818, .818), 'ind_dumpster_empty.DAE': (-1.516, 1.501, -.818, .818)}
+# a paved retail frontage under the test tile: its footways take the street's furniture
+RETAIL = {'id': 'retail', 'kind': 'paved', 'tags': {'landuse': 'retail'},
+          'rings': [[[-50, -50], [550, -50], [550, 550], [-50, 550]]]}
 
 
 def prop_outline(x, y, yaw, shape, step=.05):
@@ -686,7 +692,7 @@ class GeneratorTests(unittest.TestCase):
                  {'id': 'b', 'kind': 'path', 'tags': {'highway': 'footway', 'width': '1'}, 'points': [[102, 100, 10], [102, 400, 10]]}]
         near = {'clutter_city_bike_stand.dae': .321, 'clutter_city_bench_wood.dae': .205, 'planterbox.dae': .46 * math.sqrt(2)}
         for kind, edge in near.items():
-            placed = self.street_prop_items([{'lines': walks}], kind)
+            placed = self.street_prop_items([{'lines': walks, 'areas': [RETAIL]}], kind)
             self.assert_props_clear(placed, paths=walks)
             self.assertFalse([p for p in placed if 100 < p[0] < 102], kind)
             self.assertTrue([p for p in placed if p[0] < 100] and [p for p in placed if p[0] > 102], kind)
@@ -749,7 +755,7 @@ class GeneratorTests(unittest.TestCase):
         # two footways cross at (250, 250); a zebra crosses the street at x=300
         walks = [{'id': 'ns', 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[250, 100, 10], [250, 400, 10]]},
                  {'id': 'ew', 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[100, 250, 10], [400, 250, 10]]}]
-        placed = self.street_props([{'lines': walks}])
+        placed = self.street_props([{'lines': walks, 'areas': [RETAIL]}])
         self.assertTrue(placed)
         for x, y, _shape in placed:
             self.assertFalse(abs(x - 250) < 1.3 and 100 <= y <= 400 or abs(y - 250) < 1.3 and 100 <= x <= 400, (x, y))
@@ -815,6 +821,99 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(key(whole), key(reverse))
         self.assertEqual({item.streetKind for item in split}, {'tree', 'lamp', 'furniture'})
         self.assertTrue(all(item.prop and item.collision == 'Collision Mesh' for item in split))
+
+    def furniture(self, cells, **options):
+        """Placed furniture as (x, y, yaw, shape, name) on tile 0, 0."""
+        scene = self.build(cells, 0, 0, terrainStep=100, propSpacing=options.pop('propSpacing', 12), maxTrees=0, **options)[1]
+        return [(item.pos[1], item.pos[2], 2 * math.atan2(item.rot[3], item.rot[4]), item.shape, item.name)
+                for item in scene['items'].values() if item.streetKind == 'furniture']
+
+    def test_street_furniture_by_blocks_of_flats_turns_to_the_yard(self):
+        # six blocks of flats 12 x 60 m with no street near: a bench and a bin at the entrances,
+        # backs to the wall, and rows of three containers out in the yard
+        blocks = []
+        for k in range(6):
+            x0, y0 = 60 + 130 * (k % 3), 80 + 200 * (k // 3)
+            blocks.append({'id': f'flats{k}', 'height': 27, 'tags': {'building': 'apartments'},
+                           'rings': [[[x0, y0], [x0 + 12, y0], [x0 + 12, y0 + 60], [x0, y0 + 60]]]})
+        placed = self.furniture([{'buildings': blocks}], propSpacing=6)
+        entrance = [p for p in placed if '_entrance_' in p[4]]
+        bins = [p for p in placed if '_bins_' in p[4]]
+        self.assertTrue([p for p in entrance if p[3].endswith('bench_wood.dae')])
+        self.assertTrue([p for p in entrance if p[3].endswith('metal_bin.DAE')])
+        self.assertTrue(bins)
+        self.assertEqual(set(p[3].rsplit('/', 1)[1] for p in placed), {'clutter_city_bench_wood.dae', 'italy_clutter_metal_bin.DAE',
+                                                                     'italy_clutter_dumpster.DAE'})
+        for x, y, yaw, shape, _name in placed:
+            outline = prop_outline(x, y, yaw, shape)
+            for block in blocks:
+                ring = block['rings'][0]
+                for px, py in outline:
+                    inside = ring[0][0] < px < ring[1][0] and ring[0][1] < py < ring[2][1]
+                    self.assertFalse(inside, (x, y, shape))
+                    self.assertGreaterEqual(outline_clearance([(px, py)], ring + [ring[0]]), .6 - 1e-6, (x, y, shape))
+        for x, y, yaw, shape, _name in entrance:
+            block = min(blocks, key=lambda b: outline_clearance([(x, y)], b['rings'][0] + [b['rings'][0][0]]))
+            ring = block['rings'][0]
+            self.assertLess(outline_clearance([(x, y)], ring + [ring[0]]), 3.5)
+            if shape.endswith('bench_wood.dae'):
+                # local +Y (sin, cos) turned out from the wall it stands at
+                cx, cy = (ring[0][0] + ring[1][0]) / 2, (ring[0][1] + ring[2][1]) / 2
+                out = (x - cx, 0) if abs(abs(x - cx) - 6) < 4 else (0, y - cy)
+                self.assertGreater(math.sin(yaw) * out[0] + math.cos(yaw) * out[1], 0, (x, y))
+        rows = {}
+        for p in bins:
+            rows.setdefault(p[4].rsplit('_', 1)[0], []).append(p)
+        for row in rows.values():
+            self.assertLessEqual(len(row), 3)
+            row.sort(key=lambda p: (p[0], p[1]))
+            for a, b in zip(row, row[1:]):
+                self.assertAlmostEqual(math.hypot(b[0] - a[0], b[1] - a[1]), 1.85, 6)
+
+    def test_street_furniture_follows_the_ground_a_path_runs_through(self):
+        # a footway through a park, one past a building, one in the fields beyond the town
+        park = {'id': 'park', 'kind': 'park', 'tags': {'leisure': 'park'}, 'rings': [[[0, 0], [200, 0], [200, 500], [0, 500]]]}
+        house = {'id': 'school', 'height': 9, 'tags': {'building': 'yes'}, 'rings': [[[300, 240], [330, 240], [330, 270], [300, 270]]]}
+        walks = [{'id': name, 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[x, 40, 10], [x, 460, 10]]}
+                 for name, x in (('park', 100), ('yard', 285), ('field', 480))]
+        placed = self.furniture([{'areas': [park], 'buildings': [house], 'lines': walks}], propSpacing=6)
+        def kinds(x):
+            return {p[3].rsplit('/', 1)[1] for p in placed if abs(p[0] - x) < 4}
+        self.assertEqual(kinds(100), {'clutter_city_bench_wood.dae', 'clutter_city_bin_round.dae'})
+        self.assertTrue(kinds(285))
+        self.assertLessEqual(kinds(285), {'clutter_city_bench_wood.dae', 'italy_clutter_metal_bin.DAE', 'garbage_bin_a.dae'})
+        self.assertEqual(kinds(480), set())
+
+    def test_street_furniture_at_house_gates_and_on_a_village_sidewalk(self):
+        # houses north of a village street with sidewalks: a wheelie bin or a bench past the
+        # sidewalk at some gates, and the sidewalk gets a village's furniture, not a city's
+        road = {'id': 'street', 'width': 6, 'tags': {'highway': 'residential', 'sidewalk': 'both'},
+                'points': [[0, 250, 10], [500, 250, 10]]}
+        houses = [{'id': f'house{k}', 'height': 6, 'tags': {'building': 'yes'},
+                   'rings': [[[20 + 25 * k, 268], [30 + 25 * k, 268], [30 + 25 * k, 278], [20 + 25 * k, 278]]]}
+                  for k in range(19)]
+        placed = self.furniture([{'roads': [road], 'buildings': houses}])
+        gates = [p for p in placed if '_gate_' in p[4]]
+        self.assertTrue(gates)
+        for x, y, yaw, shape, _name in gates:
+            self.assertGreater(y, 250)
+            outline = prop_outline(x, y, yaw, shape)
+            self.assertGreaterEqual(outline_clearance(outline, road['points']), 3 + 2 + .3 - 1e-6, (x, y, shape))
+        self.assertTrue([p for p in placed if '_gate_' not in p[4]])
+        self.assertLessEqual({p[3].rsplit('/', 1)[1] for p in placed},
+                             {'clutter_city_bench_wood.dae', 'garbage_bin_a.dae', 'garbage_bin_b.dae', 'italy_clutter_big_dustbin.DAE'})
+
+    def test_street_furniture_on_a_square_stays_on_it(self):
+        square = {'id': 'square', 'kind': 'paved', 'tags': {'place': 'square'},
+                  'rings': [[[100, 100], [220, 100], [220, 180], [100, 180]]]}
+        placed = self.furniture([{'areas': [square]}], propSpacing=6)
+        self.assertGreater(len(placed), 20)
+        for x, y, _yaw, shape, _name in placed:
+            outline = prop_outline(x, y, _yaw, shape)
+            self.assertTrue(all(100 <= px <= 220 and 100 <= py <= 180 for px, py in outline), (x, y, shape))
+        self.assertLessEqual({p[3].rsplit('/', 1)[1] for p in placed},
+                             {'planterbox.dae', 'clutter_city_bench_wood.dae', 'clutter_city_bin_round.dae',
+                              'clutter_city_bollard_concrete.dae', 'clutter_city_bike_stand.dae'})
 
     def test_street_lamps_and_trees_respect_exclusions_and_quality(self):
         road = {'id': 'avenue', 'width': 8, 'tags': {'highway': 'primary', 'sidewalk': 'both'},

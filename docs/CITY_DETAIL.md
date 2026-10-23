@@ -39,6 +39,30 @@ passes the `curb` flag through, and candidates test each other's full capsules.
 surveyed OSM points remain. Existing quality presets still control density and
 near-tile range. Extra avenue trees are additional to the existing scatter cap.
 
+## Furniture by place (23 October, master)
+
+One street mix on every footway put planters and bike racks in yards and village
+streets, and nothing stood by the buildings. The planner now picks a set by place:
+
+| Place | How it is found | Furniture |
+|---|---|---|
+| Park path | path midpoint in `park` (most particular area wins) | bench + round bin, every 2× step |
+| Yard path | town (a building within ~100 m), not park/square/paved | bench + small bin, bin, every 3× step |
+| Square | `place=square` / pedestrian area | lattice of planters, benches, bollards, racks, 3.5 m in from the edge |
+| Paved frontage, `footway=sidewalk` | `paved` area or the tag | the street mix |
+| Path out of town | no building near, no area | none |
+| Block of flats | `apartments`/`residential`/`dormitory`, or `yes` ≥ 12 m | entrance benches + bins 1 m off yard walls (backs to the wall); a row of three 1100 l containers 3.5–9 m into the yard |
+| Shop | `retail`/`commercial`/`supermarket`/`kiosk`/`mall` or `shop=*` | planters, bins, racks on walls facing a street; a skip behind |
+| House | `house`/`detached`/… or a 30–300 m² `yes` among houses | wheelie bin or bench at the road's verge, past a sidewalk |
+| Village sidewalk | houses, no flats, under 1/6 of the ground built | sparse bench or bin |
+
+A yard wall is one with no street (service ways and living streets do not count)
+within 14 m of it. Groups (a bench and its bin, a row of containers) do not thin
+each other; containers outrank other furniture. Car parks keep furniture out but
+not lamps and trees. Density follows the street step: Potato fewer, OASIS more.
+`earthng/props_map.py` draws a tile's props from a real pack and prints counts and
+lat/lon samples for in-game views.
+
 ## Runtime
 
 Furniture, inferred/surveyed lamps and surveyed/avenue trees use collidable

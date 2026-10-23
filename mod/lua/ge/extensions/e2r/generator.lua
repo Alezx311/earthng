@@ -241,6 +241,56 @@ VEG.props = {
   {WCO .. 'hydrant1.dae', 8, curb = true, fp = {-.326, .326, -.377, .377}},
   {WCO .. 'postbox_blue.dae', 6, face = true, fp = {-.335, .249, -.32, .32}},
 }
+-- Furniture by place, not one street mix everywhere: the paths of a park and of a block's yard,
+-- a square, the yards by the blocks of flats (benches at the entrances, a site of 1100 l
+-- containers), wheelie bins and benches at the gates of houses, planters and bins before shops.
+-- /art shapes take their materials from the game's global art folder. with: a second prop gap
+-- metres along the path (a bin beside its bench); away: +Y turned from the path, not to it.
+local GDC = '/art/shapes/garage_and_dealership/Clutter/'
+local BENCH = {ECA_CLUTTER .. 'clutter_city_bench_wood.dae', 1, face = true, fp = {-1, 1, -.357, .205}}
+local ROUND_BIN = {GDC .. 'clutter_city_bin_round.dae', 1, fp = {-.348, .348, -.348, .348}}
+local SMALL_BIN = {GDC .. 'italy_clutter_metal_bin.DAE', 1, fp = {-.171, .171, -.171, .171}}
+VEG.yard = {
+  {BENCH[1], 35, face = true, fp = BENCH.fp, with = SMALL_BIN, gap = 1.75},
+  {BENCH[1], 15, face = true, fp = BENCH.fp},
+  {SMALL_BIN[1], 30, fp = SMALL_BIN.fp},
+  {WCO .. 'garbage_bin_a.dae', 20, fp = {-.253, .253, -.235, .26}},
+}
+VEG.park = {
+  {BENCH[1], 50, face = true, fp = BENCH.fp, with = ROUND_BIN, gap = 1.9},
+  {BENCH[1], 20, face = true, fp = BENCH.fp},
+  {ROUND_BIN[1], 30, fp = ROUND_BIN.fp},
+}
+VEG.square = {
+  {WCO .. 'planterbox.dae', 25, fp = {-.46, .46, -.46, .46}},
+  {BENCH[1], 25, face = true, fp = BENCH.fp, with = ROUND_BIN, gap = 1.9},
+  {ROUND_BIN[1], 15, fp = ROUND_BIN.fp},
+  {ECA_CLUTTER .. 'clutter_city_bollard_concrete.dae', 20, fp = {-.385, .385, -.385, .385}},
+  {ECA_CLUTTER .. 'clutter_city_bike_stand.dae', 15, face = true, fp = {-2.079, 2.079, -.321, .321}},
+}
+-- a village street's sidewalk: now and then a bench or a bin, no planters, hoops or racks
+VEG.village = {{'', 60, none = true}, {BENCH[1], 18, face = true, fp = BENCH.fp},
+  {WCO .. 'garbage_bin_a.dae', 14, fp = {-.253, .253, -.235, .26}}, {WCO .. 'garbage_bin_b.dae', 8, fp = {-.253, .253, -.235, .321}}}
+VEG.entrance = {{BENCH[1], 1, face = true, away = true, fp = BENCH.fp, with = SMALL_BIN, gap = 1.75}}
+VEG.container = {{GDC .. 'italy_clutter_dumpster.DAE', 1, face = true, away = true, priority = 2.5,
+  fp = {-.783, .783, -.414, .414}}}
+VEG.gate = {
+  {GDC .. 'italy_clutter_big_dustbin.DAE', 60, face = true, fp = {-.356, .347, -.367, .34}},
+  {BENCH[1], 40, face = true, fp = BENCH.fp},
+}
+VEG.shopFront = {
+  {WCO .. 'planterbox.dae', 35, fp = {-.46, .46, -.46, .46}},
+  {WCO .. 'garbage_bin_a.dae', 25, fp = {-.253, .253, -.235, .26}},
+  {ECA_CLUTTER .. 'clutter_city_bike_stand.dae', 20, face = true, fp = {-2.079, 2.079, -.321, .321}},
+  {ROUND_BIN[1], 20, fp = ROUND_BIN.fp},
+}
+VEG.backyard = {{GDC .. 'ind_dumpster_full.DAE', 50, face = true, away = true, fp = {-1.516, 1.501, -.818, .818}},
+  {GDC .. 'ind_dumpster_empty.DAE', 50, face = true, away = true, fp = {-1.516, 1.501, -.818, .818}}}
+VEG.propSets = {'yard', 'park', 'square', 'village', 'entrance', 'container', 'gate', 'shopFront', 'backyard'}
+-- what a building is to the furniture round it
+local FLATS = {apartments = true, residential = true, dormitory = true}
+local HOUSES = {house = true, detached = true, semidetached_house = true, bungalow = true, farm = true}
+local SHOPS = {retail = true, commercial = true, supermarket = true, kiosk = true, mall = true}
 VEG.used = {}
 VEG.biomeSets = {juniper = true, desertShrub = true, desertShrubHot = true, desertPlants = true, dryTufts = true, desertRocks = true,
   mountainRocks = true, oakWest = true, pineWest = true, eucalyptus = true, chaparralWest = true, med = true,
@@ -1704,6 +1754,8 @@ local function propFootprint(prop)
     local r = math.sqrt(math.max(fp[1] ^ 2, fp[2] ^ 2) + math.max(fp[3] ^ 2, fp[4] ^ 2))
     c = {x0 = 0, x1 = 0, y = 0, r = r, near = r, far = r}
   end
+  -- a prop turned away from its path reaches toward it by its back
+  if prop.away then c.near, c.far = c.far, c.near end
   c.curb = prop.curb
   prop.capsule = c
   return c
@@ -1732,7 +1784,24 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   local props = VEG.propsHave
   local total = 0
   for _, p in ipairs(props) do total = total + p[2] end
+  -- the place sets the same way, each with its weight total; a set the game lacks is empty
+  if not VEG.setsHave then
+    VEG.setsHave = {}
+    for _, name in ipairs(VEG.propSets) do
+      local have = {total = 0}
+      for _, p in ipairs(VEG[name]) do
+        if p.none or (not FS or FS:fileExists(p[1])) and (not p.with or not FS or FS:fileExists(p.with[1])) then
+          have[#have + 1] = p
+          have.total = have.total + p[2]
+        end
+      end
+      VEG.setsHave[name] = have
+    end
+  end
+  local sets = VEG.setsHave
   local count = 0
+  -- More furniture in yards and squares as the street step shortens (Balanced 12 m: 1)
+  local dense = spacing > 0 and math.min(1.5, 12 / spacing) or 0
   -- the tile's buildings in 50 m bins, 0.6 m out from the walls (a footway along a wall)
   local walls = {}
   for _, building in ipairs(buildings) do
@@ -1748,10 +1817,11 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
     end
   end
   for _, area in ipairs(context.areas or NONE) do
-    if area.kind == 'water' or area.kind == 'parking' then
+    if area.kind == 'water' or area.kind == 'parking' or (area.tags or NONE).amenity == 'parking' then
       local b = ringBounds(area.rings)
       if boundsTouch(b, rect, 1) then
-        local entry = {rings = area.rings, bounds = b}
+        -- a car park keeps furniture out, not the lamps and trees at its edge
+        local entry = {rings = area.rings, bounds = b, parking = area.kind ~= 'water'}
         for by = math.floor((b[2] - 1) / 50), math.floor((b[4] + 1) / 50) do
           for bx = math.floor((b[1] - 1) / 50), math.floor((b[3] + 1) / 50) do
             local bin = walls[bx * 65536 + by] or {}
@@ -1761,12 +1831,90 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
       end
     end
   end
+  -- the ground a point stands on (park, square, paved, residential...) from the mapped areas,
+  -- and the 50 m bins with a building in them (a town, not a field or a forest)
+  local grounds, built, squares = {}, {}, {}
+  for _, area in ipairs(context.areas or NONE) do
+    local tags = area.tags or NONE
+    local kind = area.kind
+    if kind == 'paved' and (tags.place == 'square' or tags.highway == 'pedestrian') then kind = 'square' end
+    if kind == 'park' or kind == 'meadow' or kind == 'residential' or kind == 'square' or kind == 'forest'
+        or kind == 'paved' then
+      local b = ringBounds(area.rings)
+      if boundsTouch(b, rect, 1) then
+        local entry = {rings = area.rings, bounds = b, kind = kind}
+        if kind == 'square' then squares[#squares + 1] = entry end
+        -- a residential area spans kilometres: only the bins round this tile
+        for by = math.floor(math.max(b[2], rect[2] - 50) / 50), math.floor(math.min(b[4], rect[4] + 50) / 50) do
+          for bx = math.floor(math.max(b[1], rect[1] - 50) / 50), math.floor(math.min(b[3], rect[3] + 50) / 50) do
+            local bin = grounds[bx * 65536 + by] or {}
+            grounds[bx * 65536 + by], bin[#bin + 1] = bin, entry
+          end
+        end
+      end
+    end
+  end
+  -- footprint m2 of the buildings centred in each 50 m bin, and whether one of them is a block
+  -- of flats or taller than 3 floors (a town's, not a village's)
+  local footprint = {}
+  for _, building in ipairs(buildings) do
+    local b = ringBounds(building.rings)
+    if boundsTouch(b, rect, 100) then
+      local ring, a2 = building.rings[1] or NONE, 0
+      for k = 1, #ring do
+        local p, q = ring[k], ring[k % #ring + 1]
+        a2 = a2 + p[1] * q[2] - q[1] * p[2]
+      end
+      footprint[building] = a2 / 2
+      local key = math.floor((b[1] + b[3]) / 100) * 65536 + math.floor((b[2] + b[4]) / 100)
+      local bin = built[key] or {area = 0}
+      built[key] = bin
+      bin.area = bin.area + math.abs(a2) / 2
+      bin.tall = bin.tall or (building.height or 0) >= 12 or FLATS[(building.tags or NONE).building] or false
+    end
+  end
+  -- the most particular ground wins: a park drawn inside a residential area is a park
+  local RANK = {square = 1, park = 2, forest = 3, meadow = 4, paved = 5, residential = 6}
+  local function groundAt(x, y)
+    local best
+    for _, e in ipairs(grounds[math.floor(x / 50) * 65536 + math.floor(y / 50)] or NONE) do
+      local b = e.bounds
+      if (not best or RANK[e.kind] < RANK[best]) and x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4]
+          and inside(e.rings, x, y) then best = e.kind end
+    end
+    return best
+  end
+  -- a building within a bin or two of the point
+  local function town(x, y)
+    local bx, by = math.floor(x / 50), math.floor(y / 50)
+    for dx = -1, 1 do
+      for dy = -1, 1 do
+        if built[(bx + dx) * 65536 + by + dy] then return true end
+      end
+    end
+    return false
+  end
+  -- Houses round the point but no block of flats, and under a sixth of the ground built over
+  -- (a city's blocks of flats: a fifth and more)
+  local function village(x, y)
+    local bx, by, area, any = math.floor(x / 50), math.floor(y / 50), 0, false
+    for dx = -1, 1 do
+      for dy = -1, 1 do
+        local bin = built[(bx + dx) * 65536 + by + dy]
+        if bin then
+          if bin.tall then return false end
+          area, any = area + bin.area, true
+        end
+      end
+    end
+    return any and area < 3600
+  end
   -- the capsule a-b of radius r inside a building or nearer than 0.6 m to its wall
-  local function inWall(bins, ax, ay, bx, by, mx, my, hl, r)
+  local function inWall(bins, ax, ay, bx, by, mx, my, hl, r, furniture)
     local m = r + .6
     for _, w in ipairs(bins) do
       local b = w.bounds
-      if math.max(ax, bx) >= b[1] - m and math.max(ay, by) >= b[2] - m and math.min(ax, bx) <= b[3] + m
+      if (furniture or not w.parking) and math.max(ax, bx) >= b[1] - m and math.max(ay, by) >= b[2] - m and math.min(ax, bx) <= b[3] + m
           and math.min(ay, by) <= b[4] + m then
         if inside(w.rings, ax, ay) or inside(w.rings, bx, by) then return true end
         for _, ring in ipairs(w.rings) do
@@ -1843,15 +1991,29 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   pause()
   -- one prop at lattice distance d of its road or path; t along the polyline segment from a
   -- (unit ux, uy), `side` of it
-  local function place(seed, d, a, t, ux, uy, side, offset, z, name, footway, fixed)
+  local function place(seed, d, a, t, ux, uy, side, offset, z, name, footway, fixed, group)
     local h = ihash(seed, math.floor(d * 10 + .5), side + 2, 7)
     local pick, prop = h % math.max(1, total), props[1]
     for _, p in ipairs(props) do
       if pick < p[2] then prop = p; break end
       pick = pick - p[2]
     end
-    prop = fixed or prop
+    if fixed and fixed.total then
+      -- a place set: its own weighted pick
+      local n = h % math.max(1, fixed.total)
+      prop = nil
+      for _, p in ipairs(fixed) do
+        if n < p[2] then prop = p; break end
+        n = n - p[2]
+      end
+      fixed = prop
+    else
+      prop = fixed or prop
+    end
     if not prop then return end
+    -- A village street is not a city's: its own sparse set
+    if not fixed and village(a[1] + ux * t, a[2] + uy * t) then return place(seed, d, a, t, ux, uy, side, offset, z, name, footway, sets.village) end
+    if prop.none then return end
     -- Rare fixtures have a street-scale cadence, never a dense random row.
     if not fixed and #props > 1 then
       local period = prop[1]:find('hydrant', 1, true) and 120
@@ -1873,12 +2035,12 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
     end
     -- a bench or a stand along its path, +Y to the road; the rest at random. Yaw turns local X
     -- to (cos, -sin) as BeamNG's MatrixF:setFromEuler does (clockwise from above).
-    local yaw = prop.face and math.atan2(ux, uy) + side * math.pi / 2 or (h % 628) / 100
+    local yaw = prop.face and math.atan2(ux, uy) + side * math.pi / 2 + (prop.away and math.pi or 0) or (h % 628) / 100
     local cs, sn = math.cos(yaw), math.sin(yaw)
     local cx, cy = x + c.y * sn, y + c.y * cs
     local ax, ay, bx, by = cx + c.x0 * cs, cy - c.x0 * sn, cx + c.x1 * cs, cy - c.x1 * sn
     local r, mx, my, hl = c.r, (ax + bx) / 2, (ay + by) / 2, (c.x1 - c.x0) / 2
-    if inWall(near(walls, ax, ay, bx, by, r + .6, 0), ax, ay, bx, by, mx, my, hl, r)
+    if inWall(near(walls, ax, ay, bx, by, r + .6, 0), ax, ay, bx, by, mx, my, hl, r, not prop.kind)
         or inBand(near(occupied, ax, ay, bx, by, r, 0), ax, ay, bx, by, mx, my, hl, r)
         or inBand(near(paths, ax, ay, bx, by, r, 0), ax, ay, bx, by, mx, my, hl, r)
         or footway and inBand(near(walks, ax, ay, bx, by, r, 0), ax, ay, bx, by, mx, my, hl, r) then return end
@@ -1890,7 +2052,13 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
     end
     candidates[#candidates + 1] = {name = name, shape = shape, x = x, y = y, z = onGround and ground(x, y) or z(x, y), yaw = yaw,
       ax = ax, ay = ay, bx = bx, by = by, mx = mx, my = my, hl = hl, r = r,
-      priority = prop.priority or 3, rank = h, kind = prop.kind or 'furniture', scale = prop.scale or 1}
+      priority = prop.priority or 3, rank = h, kind = prop.kind or 'furniture', scale = prop.scale or 1, group = group}
+    -- a group (a bench and its bin, a row of containers) does not thin itself
+    if prop.with then
+      candidates[#candidates].group = group or name
+      place(seed, d, a, t + prop.gap, ux, uy, side, offset, z, name .. '_w', footway, prop.with, group or name)
+    end
+    return true
   end
   -- start: metres of the road before points[1]; margin1, margin2: metres kept clear at its ends
   local function walk(points, dist, seed, sides, margin1, margin2, start, offset, z, prefix, footway, step, fixed, phase)
@@ -1951,15 +2119,35 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   end
   for l, line in ipairs(lines) do
     local tags, points = line.tags or NONE, line.points or NONE
-    if line.kind == 'path' and (tags.highway == 'footway' or tags.highway == 'pedestrian') and #points > 1
+    local way = tags.highway
+    if line.kind == 'path' and (way == 'footway' or way == 'pedestrian' or way == 'path' or way == 'cycleway') and #points > 1
         and pathOnGround(tags) and not pathCrossing(tags) then
       local dist = {0}
       for k = 2, #points do
         dist[k] = dist[k - 1] + math.sqrt((points[k][1] - points[k - 1][1]) ^ 2 + (points[k][2] - points[k - 1][2]) ^ 2)
       end
       local half = (tonumber(tags.width) or 2) / 2
-      walk(points, dist, hash(tostring(line.id or l)), function() return true end, 3, 3, 0,
-        function(prop) return half + .35 + prop.near end, ground, 'walkprop_' .. tostring(line.id or l), true)
+      -- What the path runs through picks its furniture: benches and bins in a park or a
+      -- yard, a street's mix on a square or a paved frontage. A path out of town gets none.
+      local mx, my = points[1][1], points[1][2]
+      for k = 2, #points do
+        if dist[k] >= dist[#dist] / 2 then
+          local f = (dist[#dist] / 2 - dist[k - 1]) / math.max(EPS, dist[k] - dist[k - 1])
+          mx = points[k - 1][1] + (points[k][1] - points[k - 1][1]) * f
+          my = points[k - 1][2] + (points[k][2] - points[k - 1][2]) * f
+          break
+        end
+      end
+      local where, set, step = groundAt(mx, my), false, spacing
+      if where == 'square' then set = sets.square
+      elseif where == 'paved' or tags.footway == 'sidewalk' then set = nil
+      elseif where == 'park' then set, step = sets.park, spacing * 2
+      elseif town(mx, my) then set, step = sets.yard, spacing * 3 end
+      if set ~= false and (way == 'path' or way == 'cycleway') then set, step = set or sets.park, step * 1.5 end
+      if set ~= false then
+        walk(points, dist, hash(tostring(line.id or l)), function() return true end, 3, 3, 0,
+          function(prop) return half + .35 + prop.near end, ground, 'walkprop_' .. tostring(line.id or l), true, step, set)
+      end
       if context.tree and spacing > 0 and tags.footway == 'sidewalk' then
         walk(points, dist, hash(tostring(line.id or l)), function() return true end, 10, 10, 0,
           function() return half + 3.3 end, ground, 'walktree_' .. tostring(line.id or l), true,
@@ -1967,6 +2155,146 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
       end
     end
     pause()
+  end
+  -- The nearest carriageway on the ground within r metres of its edge (service ways and living
+  -- streets are a yard's driveways, not a street, unless `driveways`): segment, foot t (0..1).
+  local function roadNear(x, y, r, driveways)
+    local best, bestD, bestT
+    for _, s in ipairs(segmentBins[(math.floor(x / 50) + 32768) * 65536 + math.floor(y / 50) + 32768] or NONE) do
+      local way = (s.tags or NONE).highway
+      if s.surface and (driveways or way ~= 'service' and way ~= 'living_street') then
+        local t = math.max(0, math.min(1, ((x - s.a[1]) * s.dx + (y - s.a[2]) * s.dy) / s.len2))
+        local d = math.sqrt((s.a[1] + t * s.dx - x) ^ 2 + (s.a[2] + t * s.dy - y) ^ 2) - s.width / 2
+        if d < r and (not bestD or d < bestD) then best, bestD, bestT = s, d, t end
+      end
+    end
+    return best, bestT
+  end
+  -- Round the buildings. A block of flats: a bench and a bin at its entrances on the walls that
+  -- face away from the street, a site of containers in the yard. A shop: planters, bins and
+  -- bike stands along its street walls, a skip behind it. A house: a wheelie bin or a bench by
+  -- the road at its gate. Benches and containers turn their backs to the wall.
+  if spacing > 0 then
+    for index, building in ipairs(buildings) do
+      local tags = building.tags or NONE
+      local kind = tags.building
+      local flats = FLATS[kind] or kind == 'yes' and (building.height or 0) >= 12
+      local shop = not flats and (SHOPS[kind] or tags.shop ~= nil)
+      local ring = building.rings[1]
+      local b = ringBounds(building.rings)
+      local house = HOUSES[kind] or kind == 'yes' and not flats and not shop and footprint[building]
+        and math.abs(footprint[building]) >= 30 and math.abs(footprint[building]) <= 300 and village((b[1] + b[3]) / 2, (b[2] + b[4]) / 2)
+      if (flats or shop or house) and ring and #ring >= 3 and boundsTouch(b, rect, 30) then
+        local id = tostring(building.id or index):gsub('[^%w_]', '_')
+        local seed = hash(id)
+        if house then
+          local cx, cy = (b[1] + b[3]) / 2, (b[2] + b[4]) / 2
+          local s, t = roadNear(cx, cy, 30, true)
+          if s and ihash(seed, 3, 1, 1) % 100 < 45 * dense then
+            local length = math.sqrt(s.len2)
+            local ux, uy = s.dx / length, s.dy / length
+            local side = ux * (cy - s.a[2]) - uy * (cx - s.a[1]) > 0 and 1 or -1
+            -- at the verge, past a sidewalk if the street has one on this side
+            local fx, fy = s.a[1] + t * s.dx, s.a[2] + t * s.dy
+            local walked = VEG.streetBlocked(walks, fx - uy * side * (s.width / 2 + 1), fy + ux * side * (s.width / 2 + 1))
+            local verge = s.width / 2 + (walked and walkWidth + .5 or 1.2)
+            place(seed, 1, s.a, t * length, ux, uy, side, function(c) return verge + c.near, true end, ground,
+              'gate_' .. id, false, sets.gate)
+          end
+        else
+          local area2 = 0
+          for k = 1, #ring do
+            local p, q = ring[k], ring[k % #ring + 1]
+            area2 = area2 + p[1] * q[2] - q[1] * p[2]
+          end
+          -- place() puts side 1 to the left of an edge; a counter-clockwise ring's outside is right
+          local out = area2 > 0 and -1 or 1
+          local yardWalls, backDone = {}, false
+          for k = 1, #ring do
+            local p, q = ring[k], ring[k % #ring + 1]
+            local length = math.sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2)
+            if length >= 6 then
+              local ux, uy = (q[1] - p[1]) / length, (q[2] - p[2]) / length
+              local nx, ny = -uy * out, ux * out
+              local mx, my = (p[1] + q[1]) / 2 + nx * 8, (p[2] + q[2]) / 2 + ny * 8
+              local street = roadNear(mx, my, shop and 18 or 6) ~= nil
+              if flats and not street and length >= 12 then
+                yardWalls[#yardWalls + 1] = {k, length}
+                local n = math.max(1, math.floor(length / 25))
+                for e = 1, n do
+                  if ihash(seed, k, e, 5) % 100 < 55 * dense then
+                    place(seed, k * 100 + e, p, (e - .5) * length / n, ux, uy, out, function(c) return 1 + c.near, true end,
+                      ground, 'entrance_' .. id .. '_' .. k .. '_' .. e, false, sets.entrance)
+                  end
+                end
+              elseif shop and street then
+                local step = math.max(8, spacing * 1.25)
+                for e = 1, math.floor(length / step) do
+                  if ihash(seed, k, e, 6) % 100 < 60 * dense then
+                    place(seed, k * 100 + e, p, (e - .5) * step + (length % step) / 2, ux, uy, out,
+                      function(c) return .9 + c.near, true end, ground, 'front_' .. id .. '_' .. k .. '_' .. e, false, sets.shopFront)
+                  end
+                end
+              elseif shop and not backDone and ihash(seed, k, 0, 6) % 100 < 40 * dense then
+                backDone = true
+                place(seed, k * 100, p, length / 2, ux, uy, out, function(c) return 1.5 + c.near, true end, ground,
+                  'back_' .. id .. '_' .. k, false, sets.backyard)
+              end
+            end
+          end
+          -- Three containers side by side out in the yard, by an end of a yard wall: the first
+          -- free spot (the middle one placed) of the longest walls, both ends, 6, 9 or 3.5 m out.
+          -- They outrank the benches and bins round them.
+          if #yardWalls > 0 and ihash(seed, 9, 9, 9) % 100 < math.min(75, 50 * dense) then
+            table.sort(yardWalls, function(u, v) return u[2] > v[2] or u[2] == v[2] and u[1] < v[1] end)
+            local flip = ihash(seed, 9, 9, 8) % 2
+            for w = 1, math.min(3, #yardWalls) do
+              local k, length = yardWalls[w][1], yardWalls[w][2]
+              local p, q = ring[k], ring[k % #ring + 1]
+              local ux, uy = (q[1] - p[1]) / length, (q[2] - p[2]) / length
+              local done = false
+              for _, off in ipairs({6, 9, 3.5}) do
+                for e = 0, 1 do
+                  local t0 = (e + flip) % 2 == 0 and 4 or length - 7.7
+                  local function bin(n)
+                    return place(seed, 9000 + n, p, t0 + n * 1.85, ux, uy, out, function(c) return off + c.near, true end,
+                      ground, 'bins_' .. id .. '_' .. n, false, sets.container, 'bins_' .. id)
+                  end
+                  if t0 >= 2 and bin(1) then
+                    bin(0); bin(2)
+                    done = true
+                    break
+                  end
+                end
+                if done then break end
+              end
+              if done then break end
+            end
+          end
+        end
+      end
+      if index % 32 == 0 then pause() end
+    end
+    -- Squares: a loose lattice of planters, benches with bins, bollards and bike stands, 3.5 m
+    -- in from the square's edge (a bench and its bin, a rack reach that far)
+    local cell, taken = math.max(8, spacing), {}
+    for _, e in ipairs(squares) do
+      local b = e.bounds
+      for gx = math.floor(math.max(b[1], rect[1]) / cell), math.floor(math.min(b[3], rect[3]) / cell) do
+        for gy = math.floor(math.max(b[2], rect[2]) / cell), math.floor(math.min(b[4], rect[4]) / cell) do
+          local h = ihash(77, gx, gy, 3)
+          local x, y = (gx + .2 + (h % 60) / 100) * cell, (gy + .2 + (math.floor(h / 60) % 60) / 100) * cell
+          if h % 100 < 50 * dense and not taken[gx * 65536 + gy] and inside(e.rings, x, y)
+              and not nearEdge(e.rings, x, y, 3.5) then
+            taken[gx * 65536 + gy] = true  -- squares drawn over each other: one prop a cell
+            local turn = (math.floor(h / 3600) % 4) * math.pi / 2
+            place(h, 0, {x, y}, 0, math.cos(turn), math.sin(turn), 1, function() return 0, true end, ground,
+              'square_' .. gx .. '_' .. gy, false, sets.square)
+          end
+        end
+      end
+      pause()
+    end
   end
   -- Index candidate capsules, not just their origins (a rack spans over four metres).
   local bins = {}
@@ -1983,7 +2311,7 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
     local clear = true
     for _, q in ipairs(near(bins, c.ax, c.ay, c.bx, c.by, c.r + .4, 0)) do
       local wins = q.priority < c.priority or q.priority == c.priority and (q.rank < c.rank or q.rank == c.rank and q.name < c.name)
-      if wins and capsuleNear(c.ax, c.ay, c.bx, c.by, c.mx, c.my, c.hl, q.ax, q.ay, q.bx, q.by, c.r + q.r + .4) then
+      if wins and (not c.group or q.group ~= c.group) and capsuleNear(c.ax, c.ay, c.bx, c.by, c.mx, c.my, c.hl, q.ax, q.ay, q.bx, q.by, c.r + q.r + .4) then
         clear = false; break
       end
     end
@@ -2080,7 +2408,7 @@ local function build(cells, i, j, options)
         local bounds = {math.min(a[1], b[1]), math.min(a[2], b[2]), math.max(a[1], b[1]), math.max(a[2], b[2])}
         if boundsTouch(rect, bounds, width / 2 + reach) then
           local segment = {a = a, b = b, dx = dx, dy = dy, len2 = length * length, width = width,
-            surface = not ROADS.bridge(tags) and not ROADS.tunnel(tags)}
+            surface = not ROADS.bridge(tags) and not ROADS.tunnel(tags), tags = tags}
           segments[#segments + 1] = segment
           local margin = width / 2 + tune.pullZero
           for by = math.floor((bounds[2] - margin) / 50), math.floor((bounds[4] + margin) / 50) do
