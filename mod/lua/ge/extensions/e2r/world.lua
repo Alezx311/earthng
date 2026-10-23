@@ -561,6 +561,9 @@ local function forestCommit()
   end
   if added > 0 then result.forest = 'on' end
   result.forestItems = math.max(0, (result.forestItems or 0) + added - removed)
+  if name:find('#solid', 1, true) then
+    result.forestProps = math.max(0, (result.forestProps or 0) + added - removed)
+  end
   result.forestCommits = (result.forestCommits or 0) + 1
   local ms = timer:stop()
   result.forestCommitMs = ms
