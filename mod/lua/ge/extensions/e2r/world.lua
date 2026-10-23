@@ -16,6 +16,7 @@ local quality = require('ge/extensions/e2r/quality')
 local detail = require('ge/extensions/e2r/detail')
 local collision = require('ge/extensions/e2r/collision')
 local parking = require('ge/extensions/e2r/parking')
+M.fifo = require('ge/extensions/e2r/fifo') -- keep below LuaJIT's 200 chunk locals
 local detailStream
 -- the UI language: the package's LANG until the player switches it (settings/earthng.json)
 local LANG_FILE = 'settings/earthng.json'
@@ -440,7 +441,7 @@ end
 local function forestQueue(name)
   S.forestQ = S.forestQ or {}
   local q = S.forestQ[name]
-  if not q then q = {adds = {}, removes = {}, since = nil, at = -10}; S.forestQ[name] = q end
+  if not q then q = {adds = M.fifo.new(), removes = M.fifo.new(), removing = {}, since = nil, at = -10}; S.forestQ[name] = q end
   if not q.since then q.since = S.now or 0 end
   return q
 end
@@ -452,7 +453,7 @@ local function spawnForestItem(it, tile)
   local kind = forestFor(tile) and plantDataFor(key)
   if not kind then return false end
   local adds = forestQueue(key).adds
-  adds[#adds + 1] = {it, tile, tile.forestGen or 0}
+  M.fifo.push(adds, {it, tile, tile.forestGen or 0})
   return true
 end
 
@@ -472,17 +473,25 @@ local function retireForest(tile)
   if not data or not Box3F then return end
   local t = S.stream and S.stream.tile or 500
   local box = Box3F()
-  -- a centimetre in from the edges: a neighbour's crown on the shared edge stays
-  box.minExtents = vec3(tile.i * t + .01, tile.j * t + .01, -1e5)
-  box.maxExtents = vec3((tile.i + 1) * t - .01, (tile.j + 1) * t - .01, 1e5)
+  -- getItemsBox tests model bounds, not anchors: a neighbouring bench/tree can
+  -- overlap this box. Query the full tile, then use the generator's half-open
+  -- anchor ownership so unloading one tile cannot erase its neighbour's props.
+  box.minExtents = vec3(tile.i * t, tile.j * t, -1e5)
+  box.maxExtents = vec3((tile.i + 1) * t, (tile.j + 1) * t, 1e5)
   local ok, items = pcall(data.getItemsBox, data, box)
   if not ok or type(items) ~= 'table' then return end
   for _, item in ipairs(items) do
     local okData, itemData = pcall(item.getData, item)
     local shape = okData and itemData and plantShape[itemData:getName()]
-    if shape then
-      local removes = forestQueue(shape).removes
-      removes[#removes + 1] = item
+    local okPos, pos = pcall(item.getPosition, item)
+    if shape and okPos and pos and math.floor(pos.x / t) == tile.i and math.floor(pos.y / t) == tile.j then
+      local q, key = forestQueue(shape), item:getKey()
+      -- Near/far retirement can query the same tile before a batch drains.
+      -- Passing an already-removed ForestItem back to C++ is unsafe.
+      if not q.removing[key] then
+        q.removing[key] = true
+        M.fifo.push(q.removes, item)
+      end
     end
   end
 end
@@ -504,20 +513,23 @@ local function forestCommit()
   local f = forestFor()
   local data = f and f:getData()
   local removed, added = 0, 0
-  if data then
-    for _, item in ipairs(q.removes) do
-      if pcall(data.removeItem, data, item) then removed = removed + 1 end
-    end
+  -- Retiring several dense tiles must obey the same budget as planting them.
+  -- A shared budget bounds the total engine calls, even during a quality change.
+  local limit = name:find('#solid', 1, true) and LIMIT.propMax or LIMIT.forestMax
+  local retireCount = math.min(M.fifo.size(q.removes), limit)
+  for _ = 1, retireCount do
+    local item = M.fifo.pop(q.removes)
+    q.removing[item:getKey()] = nil
+    if data and pcall(data.removeItem, data, item) then removed = removed + 1 end
   end
-  q.removes = {}
   local adds = q.adds
   -- 2500 solid props of one kind made a 19 ms commit (out/overnight/drive-p6)
-  local count = math.min(#adds, name:find('#solid', 1, true) and LIMIT.propMax or LIMIT.forestMax)
+  local count = math.min(M.fifo.size(adds), limit - retireCount)
   local kind = data and plantDataFor(name)
   -- createNewItem copies the transform, so one matrix and two vectors serve every crown
   local m, euler, at = MatrixF(true), vec3(0, 0, 0), vec3(0, 0, 0)
   for index = 1, count do
-    local entry = adds[index]
+    local entry = M.fifo.pop(adds)
     local it, tile = entry[1], entry[2]
     if kind and not tile.dropped and not tile.vegetationDropped and (tile.forestGen or 0) == entry[3] then
       euler.z = yawOf(it.rot)
@@ -538,10 +550,12 @@ local function forestCommit()
       end
     end
   end
-  local rest = {}
-  for k = count + 1, #adds do rest[#rest + 1] = adds[k] end
-  q.adds = rest
-  q.since = #rest > 0 and S.now or nil
+  q.since = (M.fifo.size(adds) > 0 or M.fifo.size(q.removes) > 0) and S.now or nil
+  result.forestPendingAdds, result.forestPendingRemoves = 0, 0
+  for _, pending in pairs(queues) do
+    result.forestPendingAdds = result.forestPendingAdds + M.fifo.size(pending.adds)
+    result.forestPendingRemoves = result.forestPendingRemoves + M.fifo.size(pending.removes)
+  end
   if added > 0 then result.forest = 'on' end
   result.forestItems = math.max(0, (result.forestItems or 0) + added - removed)
   result.forestCommits = (result.forestCommits or 0) + 1
