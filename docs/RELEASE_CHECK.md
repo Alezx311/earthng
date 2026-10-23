@@ -1,5 +1,44 @@
 # Release verification
 
+## Planet 0.6.0 — 2026-10-23
+
+The `EarthNG` player release gets a new `earthng_planet.zip` (manifest 0.6.0, 173.1 MB, built
+from ab8c854) and `EarthNG-MapBuilder.zip` (378 KB, same commit). `earthng_albania.zip` is
+byte-for-byte the 0.4.0 file. Everything on master since 0.5.0 ships: climate and biomes,
+photo asphalt and the game's parked cars, the offline map, road quality and bridges (#5, #2),
+the Map Builder start (#4).
+
+- Planet vs 0.5.0: 20,552 → 22,816 entries, none removed. Added: offline maps of Ukraine and
+  Albania (1,761 files, 31 MB), climate grid (464 files, 2.9 MB), 35 road and ground textures.
+  Every texture `materials.json` and `packs.json` name is inside the ZIP; no stock game files.
+  The notices now say the offline maps are derived OSM data (ODbL).
+- **Refresh planet code** from the new Map Builder changes nothing in the new planet and keeps
+  its language (it used to switch an English planet to Ukrainian). On a 0.5.0 planet it would
+  name 35 textures that planet lacks: the notes say to replace the planet first.
+- Unit suite: **267 tests passed**. Extracted Map Builder (folder with spaces): first start
+  installs `.venv` and shows the window in ~30 s, a second start in 1.6–4.4 s; 57 builder,
+  country, map and tile tests passed; the three CLIs answer `--help`.
+- **Bridges, Kyiv** (`out/overnight/build_kyiv_bridges.py`, `grade_audit.py`): the user found the
+  bridge by Beresteiska too low and a "bridge lying in the road" on Povitroflotskyi (now
+  Povitrianykh Syl). Three causes:
+  1. The Ukraine download (built 16.10) predates the clearance solve: in game the car hits the
+     Vasylenka bridge over Beresteiskyi avenue at 13 m/s. A pack built now clears it by 5.47 m
+     and the car drives under at 13.5 m/s. Needs a pack rebuild.
+  2. The solve raised decks over 50–80 m: Borshchahivska 14 %, the Povitrianykh Syl overpass
+     11.4 %. Grade limits by class (`fast_profile.GRADE_MAX`, index fast-13): 5.1 % and 6.0 %;
+     roads over 8 % near a crossing 17 → 5, all 61 crossings ≥ 5.45 m. Bratislava: 235
+     crossings ≥ 5.39 m (was 5.31), roads over 12 % near a crossing 15 → 2.
+  3. A rail yard's wall from OSM stood across the Povitrianykh Syl overpass, and the
+     parapets of the two side-by-side decks stood on each other's carriageway; both stopped
+     the car at the same spot. Fixed in the planet, so it holds for old packs too: the
+     overpass route (552 m) now drives through at 11–12 m/s on the new and on the old pack.
+- Release ZIPs in disposable profiles, BeamNG 0.40.2: Albania (Tirana) 423 m, 17.6 ms mean;
+  Kyiv centre route 1.78 km, 18.6 ms mean, p99 47 ms. Every run had 2–3 frames over 100 ms at
+  the drive start or while landing, as before, so the performance gate reports failure.
+- **Not done:** BeamNG 0.39 not run (its files are gone). The Ukraine pack on Google Drive is
+  not replaced by this release; until it is rebuilt and re-uploaded, Kyiv keeps its old,
+  partly too low bridges.
+
 ## Planet 0.5.0 — 2026-10-21
 
 The `EarthNG` player release gets a new `earthng_planet.zip` (planet manifest 0.5.0,
