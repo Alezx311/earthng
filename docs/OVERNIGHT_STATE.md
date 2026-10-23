@@ -96,3 +96,46 @@ thousands of street assets per tile on a separate branch, with measured performa
   `docs/STREET_PROPS.md` there: Forest with collidable kinds beats TSStatic (spawn 8-12x,
   collision rebuild +0.8 ms vs +22 ms per 6000). Kyiv route: 37-72k props cost +0.5-0.7 ms
   mean frame, +1.5-3 ms p99, no extra >100 ms frames. Not merged, not pushed.
+
+## Checkpoint — 05:04 Kyiv (Codex resumed)
+
+- Main master is owned by the existing Claude desktop session; leave its changes alone.
+- Codex now works in the attached managed worktree:
+  C:/Users/Alezx311/.codex/worktrees/street-assets-night/EarthNG
+  branch codex/street-assets-experiments, merged master ad58753 into it.
+- Claude CLI placement implementation running (exec session 71789), report target
+  out/overnight/claude-prop-placement-fix.md in this main checkout. Do not duplicate it.
+  It owns generator.lua, test_generator.py and STREET_PROPS.md in the worktree.
+- Codex owns world.lua/FIFO lifecycle there: bounded removal batches, no queue-tail
+  copying, half-open anchor ownership, deduplicated pending removals. Four regressions pass.
+- Real BeamNG getItemsBox returned neighbouring bench anchors x=500 and 500.005 for
+  a box ending x=499.99: bounds overlap is confirmed; inset alone is not ownership.
+  A subsequent deliberately repeated-remove probe crashed the isolated test game.
+  Crash reporter closed by exact PID, no personal profile touched. Need validate fixed
+  runtime in a fresh game. Do not count this diagnostic run as a performance pass.
+- New real route + quality-cycle run: worktree/out/runtime-review/fixed. Runtime-only
+  planet isolates Codex edits from Claude's in-progress generator changes. Check processes
+  and report before any new launch. Tests use main C:/js/EarthNG/.venv/Scripts/python.exe.
+- Continue until 08:00 Kyiv, then stop new work and disable earthng-2. No releases.
+
+### 05:13 Kyiv follow-up (Codex)
+
+- Runtime fixes committed in experiment worktree: 7df5742, 6f183d4; placement fixes
+  from CLI Claude reviewed and committed 5acfbdc. Full suite: 277 run, 274 pass,
+  3 cache-fixture skips. Runtime documentation: docs/FOREST_STREAMING_REVIEW.md.
+- Runtime-only route drove 1782 m, Potato/OASIS preserved the road; pending queues
+  drained and actual Forest count equalled recorded count (52472). Performance
+  gate FAILED (26.81 ms mean, p99 81, 17 >100 ms during initial 120 s). This run
+  overlapped offline work and installed game reports 0.40.3, so do not compare it
+  with previous 0.40.2 numbers. Game stopped cleanly; own harness session 12334 ended.
+- CLI Claude now implements full prop footprint clearance in generator/tests/docs,
+  exec session 69548, PID 29896; report out/overnight/claude-prop-footprint-fix.md.
+  Do not launch duplicate. It may leave uncommitted edits in the managed worktree.
+- Asset measurement found bike rack length 4.16 m (local X), bench 2 m, not the
+  guessed 1.8 m. Numeric bounds only in worktree/out/runtime-review/asset-bounds.jsonl.
+- Another Claude desktop session is now running main's release/game-ua-beresteiska
+  test, game PID 30820 at this checkpoint. Do not stop it or start another game
+  while it runs. Wait for a free game slot before clean baseline/props comparisons.
+- Next: review Claude footprint result, targeted/full tests, commit. Then compare
+  identical final planet at prop spacing 0/6/3 with no parallel heavy work, inspect
+  screenshots, update measurements and checkpoint. No publish from this task.
