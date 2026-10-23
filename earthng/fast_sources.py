@@ -20,7 +20,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point, shape
 from shapely.ops import transform
 
-VERSION = 'fast-13'         # source index format (keys fast-index/<id>); 9: frame per landing; 10: class widths; 11: shoulders; 12: guard rails, deeper decks; 13: tagged shoulders
+VERSION = 'fast-14'         # source index format (keys fast-index/<id>); 9: frame per landing; 10: class widths; 11: shoulders; 12: guard rails, deeper decks; 13: tagged shoulders; 14: unmarked two-way, wider one-lane
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -41,7 +41,13 @@ def number(value, default):
 # Lane width (m) by highway class when a way has no width tag. One 3.3 m lane for every class
 # made a residential street as wide as a primary road (6.6 m) and the classes indistinguishable.
 LANE_WIDTH = {'motorway': 3.75, 'trunk': 3.5, 'primary': 3.5, 'secondary': 3.25, 'tertiary': 3.0,
-              'unclassified': 2.75, 'residential': 2.75, 'road': 3.0}
+              'unclassified': 3.0, 'residential': 3.0, 'road': 3.0}
+# A two-way road tagged lanes=1 is an unmarked road both directions share, not one lane wide:
+# cars still pass each other on it (Estonian country roads are mapped so). Its carriageway is
+# this share of two lanes, at least SHARED_MIN.
+SHARED = .9
+SHARED_MIN = 4.5
+ONE_LANE_MIN = 4.0                                    # a one-way carriageway: lane plus margins
 NARROW = {'living_street': 4.5, 'service': 4.0}       # whole carriageway, any lane count
 DRIVEWAY = 3.0                                        # service=driveway / alley
 # Paved shoulder (m) outside the edge line, (left, right) of the direction, where a way has no
@@ -89,6 +95,10 @@ def road_width(tags):
         lanes = max(1., number(tags.get('lanes'), 2 if motorway or not one else 1))
         lane = LANE_WIDTH.get(klass, 3.3)
         fallback = lanes * lane
+        if one:
+            fallback = max(ONE_LANE_MIN, fallback)
+        elif lanes < 2:
+            fallback = max(SHARED_MIN, 2 * lane * SHARED)
         if tags.get('junction') in ('roundabout', 'circular'):
             # a circulating carriageway is wider than its lanes: long vehicles track inside it
             fallback = max(5.5, lanes * 4.)

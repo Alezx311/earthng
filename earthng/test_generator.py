@@ -779,6 +779,27 @@ class GeneratorTests(unittest.TestCase):
             self.assertAlmostEqual(v, .005 + (abs(y - 250) - 3.5) / .25 * .19, places=5)
             self.assertAlmostEqual(cyclic(u - (x + 50) / 2), 0, places=4)
 
+    def test_a_track_stops_at_the_edge_of_the_road_it_crosses(self):
+        # the road's profile sits 0.4 m under the DEM (a cut); the track's two source vertices
+        # carry the raw DEM 0.5 m over it: drawn straight across, its slab stood proud of the
+        # asphalt and threw cars off
+        road = {'id': 'main', 'width': 7, 'nodes': [1, 2], 'points': line(-50, 250, 550, 250, 19.6),
+                'tags': {'highway': 'tertiary'}}
+        track = {'id': 't', 'kind': 'path', 'points': [[250, 100, 20.5], [250, 400, 20.5]],
+                 'tags': {'highway': 'track'}}
+        manifest = self.build([dict(self.edge_cell(road), lines=[track])])[0]
+        dirt = [p for t in self.triangles(manifest, 'e2rf_road_dirt') for p in t]
+        self.assertTrue(dirt)
+        self.assertEqual({y > 250 for _x, y, _z in dirt}, {True, False})   # both sides kept
+        edge = 3.5 + .3
+        self.assertTrue(all(abs(y - 250) >= edge - 1e-3 for _x, y, _z in dirt))
+        # it lies on the ground pulled to the road: at the road's height where it stops
+        near = [z for _x, y, z in dirt if abs(y - 250) < edge + .05]
+        self.assertTrue(near)
+        self.assertTrue(all(abs(z - (19.6 + .1)) < .02 for z in near), near)
+        far = [z for _x, y, z in dirt if abs(y - 250) > 100]
+        self.assertTrue(all(abs(z - (20 + .1)) < .1 + .02 for z in far), far)   # DEM plus wear
+
     def test_edges_are_cut_by_a_crossing_carriageway(self):
         east = {'id': 'east', 'width': 6, 'nodes': [1, 2], 'points': line(-50, 250, 550, 250),
                 'tags': {'highway': 'residential', 'sidewalk': 'no'}}

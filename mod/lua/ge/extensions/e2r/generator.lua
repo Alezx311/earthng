@@ -1276,6 +1276,73 @@ function ROADS.marks(tags, width, grade)
   return marks
 end
 
+-- A track's runs off the roads: its line every TRACK_STEP m, cut where it comes within
+-- TRACK_CLEAR of a road's edge (segmentBins: the tile's road segments in 50 m bins), each
+-- point at height(x, y), the ground pulled to the roads, so a run's end meets the road's edge.
+-- A rough track's rise and fall (WEAR_AMP by grade, densifyWear's hash) is added here: its
+-- points are already closer than densifyWear's spans. The first and last 6 m stay put.
+local TRACK_STEP, TRACK_CLEAR, TRACK_MIN = 4, .3, 2
+function ROADS.trackRuns(points, segmentBins, height, grade)
+  local function onRoad(p)
+    local x, y = p[1], p[2]
+    for _, segment in ipairs(segmentBins[(math.floor(x / 50) + 32768) * 65536 + math.floor(y / 50) + 32768] or {}) do
+      if segment.surface then
+        local a = segment.a
+        local t = math.max(0, math.min(1, ((x - a[1]) * segment.dx + (y - a[2]) * segment.dy) / segment.len2))
+        local dx, dy = x - (a[1] + t * segment.dx), y - (a[2] + t * segment.dy)
+        if dx * dx + dy * dy < (segment.width / 2 + TRACK_CLEAR) ^ 2 then return true end
+      end
+    end
+    return false
+  end
+  local function mix(a, b, t)
+    return {a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, (a[3] or 0) + ((b[3] or 0) - (a[3] or 0)) * t}
+  end
+  local dense = {}
+  for k = 1, #points - 1 do
+    local a, b = points[k], points[k + 1]
+    local n = math.max(1, math.ceil(math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2) / TRACK_STEP))
+    for i = 0, n - 1 do dense[#dense + 1] = mix(a, b, i / n) end
+  end
+  if #points >= 2 then dense[#dense + 1] = mix(points[#points], points[#points], 0) end
+  local runs, run, prev, prevIn = {}, nil, nil, nil
+  for _, p in ipairs(dense) do
+    local inside = onRoad(p)
+    if prev and inside ~= prevIn then
+      -- the road's edge between the two samples: lo keeps prev's side, hi p's
+      local lo, hi = prev, p
+      for _ = 1, 8 do
+        local m = mix(lo, hi, .5)
+        if onRoad(m) == prevIn then lo = m else hi = m end
+      end
+      if inside then run[#run + 1], run = lo, nil
+      else run = {hi}; runs[#runs + 1] = run end
+    end
+    if not inside then
+      if not run then run = {}; runs[#runs + 1] = run end
+      run[#run + 1] = p
+    end
+    prev, prevIn = p, inside
+  end
+  local out = {}
+  for _, r in ipairs(runs) do
+    local length = 0
+    for k = 2, #r do length = length + math.sqrt((r[k][1] - r[k - 1][1]) ^ 2 + (r[k][2] - r[k - 1][2]) ^ 2) end
+    if #r >= 2 and length >= TRACK_MIN then
+      local amp, along = WEAR_AMP[(grade or 0) + 1] or 0, 0
+      for k, p in ipairs(r) do
+        if k > 1 then along = along + math.sqrt((p[1] - r[k - 1][1]) ^ 2 + (p[2] - r[k - 1][2]) ^ 2) end
+        p[3] = height(p[1], p[2]) or p[3]
+        if amp > 0 and along > 6 and length - along > 6 then
+          p[3] = p[3] + (hash('wear:' .. math.floor(p[1] + .5) .. ':' .. math.floor(p[2] + .5)) % 1000 / 1000 - .5) * 2 * amp
+        end
+      end
+      out[#out + 1] = r
+    end
+  end
+  return out
+end
+
 local SPEED = {motorway = 110, trunk = 90, primary = 60, secondary = 60, tertiary = 50,
   unclassified = 50, residential = 40, living_street = 20}
 local DRIVE = {motorway = 1, trunk = 1, primary = 1, secondary = 1, tertiary = .9,
@@ -1895,7 +1962,7 @@ local function collect(cells, pause)
     if line.kind == 'path' and highway == 'track' and not ROADS.bridge(tags) and not ROADS.tunnel(tags) and tags.area ~= 'yes' then
       local grade = roadGrade(tags)
       lists.roads[#lists.roads + 1] = {id = 'track:' .. tostring(line.id), points = line.points,
-        width = number(tags.width, TRACK_WIDTH[grade + 1] or 3.2), tags = tags}
+        width = number(tags.width, TRACK_WIDTH[grade + 1] or 3.2), tags = tags, track = true}
     else
       lines[#lines + 1] = line
     end
@@ -1981,8 +2048,9 @@ local function build(cells, i, j, options)
       if length > EPS then
         local bounds = {math.min(a[1], b[1]), math.min(a[2], b[2]), math.max(a[1], b[1]), math.max(a[2], b[2])}
         if boundsTouch(rect, bounds, width / 2 + reach) then
+          -- a track lies on the ground (ROADS.trackRuns): it does not shape it
           local segment = {a = a, b = b, dx = dx, dy = dy, len2 = length * length, width = width,
-            surface = not ROADS.bridge(tags) and not ROADS.tunnel(tags)}
+            surface = not road.track and not ROADS.bridge(tags) and not ROADS.tunnel(tags)}
           segments[#segments + 1] = segment
           local margin = width / 2 + tune.pullZero
           for by = math.floor((bounds[2] - margin) / 50), math.floor((bounds[4] + margin) / 50) do
@@ -2433,6 +2501,23 @@ local function build(cells, i, j, options)
   -- Two mouths meeting at a gentle angle (a way split by a tag change, a closed ring's seam, a
   -- roundabout arc) are one carriageway: no star, the strips share a mitred end (jointsOf).
   local cutsOf, stars, jointsOf = {}, {}, {}
+  -- Tracks (path lines with the raw DEM at a few far-apart vertices) as ground ribbons that
+  -- stop at the edge of every road they meet or cross. Drawn on across a road, a track's flat
+  -- slab stood proud of the asphalt and threw cars off.
+  do
+    local kept = {}
+    for index, road in ipairs(lists.roads) do
+      if index % 64 == 0 then pause() end
+      if road.track then
+        for n, run in ipairs(ROADS.trackRuns(road.points or NONE, segmentBins, pulled, roadGrade(road.tags or NONE))) do
+          kept[#kept + 1] = {id = road.id .. ':' .. n, points = run, width = road.width, tags = road.tags, track = true}
+        end
+      else
+        kept[#kept + 1] = road
+      end
+    end
+    lists.roads = kept
+  end
   local details = DETAIL.index(distant and NONE or lists.points, {turning_circle = true})
   local function along(points, dist, s)
     for k = 1, #points - 1 do
