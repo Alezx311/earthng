@@ -139,3 +139,20 @@ thousands of street assets per tile on a separate branch, with measured performa
 - Next: review Claude footprint result, targeted/full tests, commit. Then compare
   identical final planet at prop spacing 0/6/3 with no parallel heavy work, inspect
   screenshots, update measurements and checkpoint. No publish from this task.
+
+## Closed — 23 October 2026, 13:44 Kyiv
+
+Deadline 08:00 Kyiv has passed. Automation earthng-2 was deleted successfully.
+No new implementation or tests were started after the deadline; this is closeout only.
+Codex goal currently reports usageLimited; do not describe queued heartbeats as continuous work.
+No active Claude CLI worker from this session or primary BeamNG process was found.
+
+Final summary is in the experiment worktree at docs/OVERNIGHT_SUMMARY.md:
+C:/Users/Alezx311/.codex/worktrees/street-assets-night/EarthNG/docs/OVERNIGHT_SUMMARY.md
+Verified commits through c8b56e5 remain on codex/street-assets-experiments.
+Claude's footprint changes remain UNCOMMITTED in generator.lua, test_generator.py,
+and STREET_PROPS.md. Backup: out/overnight/street-footprints-unreviewed.patch in main.
+Do not merge that WIP: offset(c) passes a capsule without curb to a callback testing
+prop.curb; dense 3m placement also lacks prop-to-prop clearance for 4.16m bike stands.
+These review findings are recorded, not fixed after deadline. Clean final 0/6/3m
+in-game comparisons remain undone. See summary for tests, measurements and limits.
