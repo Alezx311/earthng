@@ -492,6 +492,9 @@ local function retireForest(tile)
       if not q.removing[key] then
         q.removing[key] = true
         M.fifo.push(q.removes, item)
+        if shape == LAMP_SHAPE .. '#solid' and S.lamps then
+          S.lamps[string.format('%d_%d', math.floor(pos.x), math.floor(pos.y))] = nil
+        end
       end
     end
   end
@@ -543,6 +546,10 @@ local function forestCommit()
       if ok and item then
         tile.forestId = sharedForestId
         added = added + 1
+        if it.shape == LAMP_SHAPE then
+          S.lamps = S.lamps or {}
+          S.lamps[string.format('%d_%d', math.floor(at.x), math.floor(at.y))] = {at.x, at.y, at.z}
+        end
       else
         S.forestFails = (S.forestFails or 0) + 1
         if S.forestFails >= 3 and not S.forestOff then
@@ -617,6 +624,11 @@ local function spawnItem(it, group, pause, tile, layer)
     if ms > (result.createMeshMs or 0) then result.createMeshMs, result.createMeshItem = ms, it.name end
   else
     if tile and (it.prop or vegetationShape(it.shape)) and spawnForestItem(it, tile) then return end
+    -- Forest lamps register on successful commit; fallback statics register here.
+    if it.shape == LAMP_SHAPE then
+      S.lamps = S.lamps or {}
+      S.lamps[string.format('%d_%d', math.floor(it.pos[1]), math.floor(it.pos[2]))] = {it.pos[1], it.pos[2], it.pos[3]}
+    end
     local obj = createObject('TSStatic')
     local itemName = it.name or ''
     if vegetationShape(it.shape) then result.staticTrees = (result.staticTrees or 0) + 1
@@ -630,11 +642,6 @@ local function spawnItem(it, group, pause, tile, layer)
     if it.scale then obj:setScale(vec3(it.scale, it.scale, it.scale)) end
     obj:registerObject(it.name)
     group:addObject(obj)
-    -- street lamps: where a night pack's lights go (lightsStep)
-    if it.shape == LAMP_SHAPE then
-      S.lamps = S.lamps or {}
-      S.lamps[string.format('%d_%d', math.floor(it.pos[1]), math.floor(it.pos[2]))] = {it.pos[1], it.pos[2], it.pos[3]}
-    end
     return obj:getID()
   end
 end

@@ -104,6 +104,22 @@ class ForestQueueTests(unittest.TestCase):
           assert(removed[7] and not removed[8])
         ''')
 
+    def test_instanced_lamps_register_only_on_commit_and_retire_their_light(self):
+        self.world()
+        self.lua.execute('''
+          local lamp='/art/shapes/objects/lamp1.dae'
+          local queue=findUp(retire,'forestQueue')
+          local q=queue(lamp .. '#solid')
+          fifo.push(q.adds,{{shape=lamp,pos={250,250,10}},{forestGen=1},0})
+          fifo.push(q.adds,{{shape=lamp,pos={260,250,10}},{forestGen=1},1})
+          commit()
+          assert(S.lamps['250_250']==nil and S.lamps['260_250'][3]==10)
+          shapes.bench=lamp .. '#solid'
+          items={item(1,260,250)}
+          retire({forestId=1,i=0,j=0})
+          assert(S.lamps['260_250']==nil)
+        ''')
+
     def test_dense_retirements_share_batch_budget_with_adds_and_drop_stale_generations(self):
         self.world()
         self.lua.execute('''
