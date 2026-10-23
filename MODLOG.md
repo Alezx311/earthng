@@ -1,5 +1,30 @@
 # EarthNG native mod migration
 
+## 2026-10-23: unified street layout on the asset experiment branch
+
+- Worktree: `C:/Users/Alezx311/.codex/worktrees/street-assets-night/EarthNG`,
+  branch `codex/street-assets-experiments`. Continued the existing uncommitted
+  footprint work; fixed its lost curb flag and missing inter-object clearance.
+- Route: existing Lua generator plus collidable Forest kinds. No loader or
+  personal game settings/saves changed. Test profiles are new directories under
+  `out/city-detail`; base art comes from the prior isolated test planet. Game
+  content is referenced in place, never copied into source.
+- Shared plan for furniture, avenue trees and street lamps: full footprints,
+  a pedestrian corridor, rare-fixture cadence, priority competition, tile halo,
+  water/parking/mapped-point exclusions, vegetation reservations. Forest lamps
+  retain the night light pool and retire its entries safely.
+- Measured installed `lamp1.dae` bounds: approximately X ±0.604 m, Y ±0.312 m;
+  planner uses ±0.61/0.32. Small East Coast oak crown fits the avenue envelope
+  at scale 0.65 (raw XY extents −1.78..2.36, −2.28..1.48 m, height 8.16 m).
+- Automated suite: 285 run, 282 pass, 3 missing-fixture skips. Offline central
+  Kyiv nine-tile results and full game reports live in `out/city-detail/`.
+  Current 6 m route drove 929 m; mean 18.64 ms, p99 48.5 ms; two >100 ms frames
+  mean the strict performance gate still fails. See `docs/CITY_DETAIL.md` for
+  comparisons, verification and remaining limits.
+- Final 3 m stress: 928 m, 19.29 ms mean / 51.5 ms p99, 3 >100 ms frames;
+  Potato/OASIS preserved the road. Post-drive ray smoke: 80/80 rays hit around
+  10 solid trees and 10 lamps after collision rebuild. Not a vehicle-impact test.
+
 ## 2026-10-22: offline map detail, search, stock minimap
 
 - Route: existing GE Lua/ImGui APIs, no new loader. Read installed BeamNG

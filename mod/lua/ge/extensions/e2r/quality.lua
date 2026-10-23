@@ -2,11 +2,11 @@
 local M = {}
 local anchors = {
   {nearM=800, farM=1400, maxTrees=700, maxFarTrees=120, maxGrass=2600, maxRocks=70,
-    forestSpacing=8, groundSpacing=12, grassM=45, rockM=220, grassBudget=600, rockBudget=250},
+    forestSpacing=8, groundSpacing=12, grassM=45, rockM=220, grassBudget=600, rockBudget=250, propSpacing=30},
   {nearM=1000, farM=2400, maxTrees=1800, maxFarTrees=400, maxGrass=4000, maxRocks=120,
-    forestSpacing=6, groundSpacing=8, grassM=100, rockM=500, grassBudget=2000, rockBudget=700},
+    forestSpacing=6, groundSpacing=8, grassM=100, rockM=500, grassBudget=2000, rockBudget=700, propSpacing=12},
   {nearM=1400, farM=4000, maxTrees=2400, maxFarTrees=800, maxGrass=4800, maxRocks=200,
-    forestSpacing=5, groundSpacing=6, grassM=220, rockM=900, grassBudget=6000, rockBudget=1600},
+    forestSpacing=5, groundSpacing=6, grassM=220, rockM=900, grassBudget=6000, rockBudget=1600, propSpacing=6},
 }
 local function number(v, default, lo, hi)
   v = tonumber(v)
@@ -31,7 +31,7 @@ function M.clamp(tune)
   local limits = {nearM={400,4000}, farM={800,8000}, maxTrees={0,2400}, maxFarTrees={0,1200},
     maxGrass={0,4800}, maxRocks={0,200}, forestSpacing={4,24}, groundSpacing={4,30},
     grassM={0,220}, rockM={0,900}, grassBudget={0,6000}, rockBudget={0,1600},
-    quality={0,100}, detail={0,100}, distance={0,100}, parkedCars={0,24}}
+    quality={0,100}, detail={0,100}, distance={0,100}, parkedCars={0,24}, propSpacing={0,60}}
   for key, range in pairs(limits) do out[key] = number(t[key], out[key], range[1], range[2]) end
   out.groundTrees = t.groundTrees ~= false and t.groundTrees ~= 0
   out.farM = math.max(out.nearM, out.farM)

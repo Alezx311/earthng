@@ -218,6 +218,29 @@ VEG.stockExtra = {
   [JRI .. 'trees/trees_tropical_2/'] = {JRI .. 'trees/trees_tropical_1/main.materials.json', JRI .. 'trees/vines_tropical/main.materials.json'},
   [JRI .. 'trees/bush_tropical_2/'] = {JRI .. 'trees/vines_tropical/main.materials.json'},
 }
+-- Street furniture on the sidewalks of near tiles (experiment): stock props, solid items of the
+-- level's Forest (world.lua), where a TSStatic cost ~8 times the spawn time and its collision
+-- ~4 ms a thousand in every rebuild (out/overnight/props). curb: stands at the curb, not at the
+-- sidewalk's outer edge; face: turned to the road. Weights per hundred. No stop or give-way
+-- signs: a random one stood mid-block at way splits and faced anywhere; the OSM ones are drawn.
+local WCO = WCA .. 'objects/'
+local ECA_CLUTTER = '/levels/east_coast_usa/art/shapes/clutter/'
+VEG.stock[WCO] = WCO .. 'main.materials.json'
+VEG.stockExtra[ECA_CLUTTER] = {'/levels/east_coast_usa/art/shapes/buildings/main.materials.json'}
+-- fp: the model's plan bounds {x0, x1, y0, y1} in its own metres, measured from the installed DAE
+-- geometry (out/runtime-review/asset-bounds.jsonl; the yellow bollard is unmeasured: a guess
+-- on the large side). A face prop's long X runs along the path and its +Y faces the road.
+VEG.props = {
+  {WCO .. 'bollard_hoop_grey.dae', 18, curb = true, face = true, fp = {-.518, .518, -.175, .175}},
+  {'/art/shapes/objects/bollard_yellow.dae', 8, curb = true, fp = {-.2, .2, -.2, .2}},
+  {WCO .. 'garbage_bin_a.dae', 12, fp = {-.253, .253, -.235, .26}},
+  {WCO .. 'garbage_bin_b.dae', 8, fp = {-.253, .253, -.235, .321}},
+  {ECA_CLUTTER .. 'clutter_city_bench_wood.dae', 14, face = true, fp = {-1, 1, -.357, .205}},
+  {WCO .. 'planterbox.dae', 10, fp = {-.46, .46, -.46, .46}},
+  {ECA_CLUTTER .. 'clutter_city_bike_stand.dae', 8, face = true, fp = {-2.079, 2.079, -.321, .321}},
+  {WCO .. 'hydrant1.dae', 8, curb = true, fp = {-.326, .326, -.377, .377}},
+  {WCO .. 'postbox_blue.dae', 6, face = true, fp = {-.335, .249, -.32, .32}},
+}
 VEG.used = {}
 VEG.biomeSets = {juniper = true, desertShrub = true, desertShrubHot = true, desertPlants = true, dryTufts = true, desertRocks = true,
   mountainRocks = true, oakWest = true, pineWest = true, eucalyptus = true, chaparralWest = true, med = true,
@@ -347,6 +370,7 @@ local function ihash(seed, a, b, c)
   h = (h * 48271 + 11) % HMOD
   return (h * 48271 + 7) % HMOD
 end
+
 -- An exact key of lattice point (gx, gy): namespace 0..3, lattice code 0..511.
 local function latticeKey(ns, gx, gy, code)
   return (((gx + 524288) * 1048576 + (gy + 524288)) * 512 + code) * 4 + ns
@@ -1624,6 +1648,365 @@ local function collect(cells, pause)
   return lists, terrain
 end
 
+-- spacing: metres between props along each sidewalk and footway; put(name, shape, x, y, z, yaw)
+-- emits one. The lattice runs along the whole road from its first node, not the strip trimmed at
+-- a junction (a tile trims only the junctions it sees: two tiles put the props out of step at
+-- their seam). A sidewalk prop keeps 6 m from its strip's ends at a junction, 3 m where the
+-- street runs on into its next way (a joint), a footway prop 3 m from the path's ends; every prop keeps off the carriageways, the other paths, the crossings and
+-- the buildings. Footways (most of central Kyiv's sidewalks are mapped as their own ways) get them
+-- just beside the paving, on the ground; a road's side tagged sidewalk=separate gets none (its
+-- footway has them). Indoor, underground and covered paths get none.
+local function pathOnGround(tags)
+  if ROADS.bridge(tags) or ROADS.tunnel(tags) then return false end
+  if (tags.indoor or 'no') ~= 'no' or (tags.covered or 'no') ~= 'no' then return false end
+  if (tonumber(tags.layer) or 0) < 0 then return false end
+  return tags.level == nil or tonumber(tags.level) == 0
+end
+local function pathCrossing(tags)
+  return tags.footway == 'crossing' or tags.cycleway == 'crossing' or tags.path == 'crossing'
+    or tags.footway == 'traffic_island' or (tags.crossing ~= nil and tags.crossing ~= 'no')
+end
+-- Squared distance from (px, py) to the segment a-b
+local function pointSegment2(px, py, ax, ay, bx, by)
+  local dx, dy = bx - ax, by - ay
+  local len2 = dx * dx + dy * dy
+  local t = len2 > EPS and math.max(0, math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) or 0
+  return (ax + t * dx - px) ^ 2 + (ay + t * dy - py) ^ 2
+end
+-- Squared distance between the segments a-b and c-d (0 where they cross)
+local function segmentSegment2(ax, ay, bx, by, cx, cy, dx, dy)
+  local d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+  local d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax)
+  local d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx)
+  local d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx)
+  if (d1 > 0) ~= (d2 > 0) and (d3 > 0) ~= (d4 > 0) and d1 ~= 0 and d2 ~= 0 and d3 ~= 0 and d4 ~= 0 then return 0 end
+  return math.min(pointSegment2(ax, ay, cx, cy, dx, dy), pointSegment2(bx, by, cx, cy, dx, dy),
+    pointSegment2(cx, cy, ax, ay, bx, by), pointSegment2(dx, dy, ax, ay, bx, by))
+end
+-- Whether the capsule a-b (half length hl, midpoint mx, my) comes nearer than m to the segment
+-- c-d: the midpoint first, the exact test only within reach of it
+local function capsuleNear(ax, ay, bx, by, mx, my, hl, cx, cy, dx, dy, m)
+  if pointSegment2(mx, my, cx, cy, dx, dy) >= (m + hl) ^ 2 then return false end
+  return hl < 1e-6 or segmentSegment2(ax, ay, bx, by, cx, cy, dx, dy) < m * m
+end
+-- A prop's plan as a capsule round a segment of its own X axis, conservative for its bounds fp:
+-- a face prop (turned with the path) the length of the model, radius half its depth; any other
+-- (random yaw) a disc round its origin through its farthest corner. near, far: metres from the
+-- origin to the capsule's edge toward the road (+Y) and away from it.
+local function propFootprint(prop)
+  if prop.capsule then return prop.capsule end
+  local fp = prop.fp or {-.3, .3, -.3, .3}
+  local c
+  if prop.face then
+    local r = (fp[4] - fp[3]) / 2
+    c = {x0 = fp[1], x1 = fp[2], y = (fp[3] + fp[4]) / 2, r = r, near = fp[4], far = -fp[3]}
+  else
+    local r = math.sqrt(math.max(fp[1] ^ 2, fp[2] ^ 2) + math.max(fp[3] ^ 2, fp[4] ^ 2))
+    c = {x0 = 0, x1 = 0, y = 0, r = r, near = r, far = r}
+  end
+  c.curb = prop.curb
+  prop.capsule = c
+  return c
+end
+local function walkSeparate(tags, side)
+  local v = tags[side == 1 and 'sidewalk:left' or 'sidewalk:right'] or tags['sidewalk:both']
+  if v == nil and tags['sidewalk:left'] == nil and tags['sidewalk:right'] == nil then v = tags.sidewalk end
+  return v == 'separate'
+end
+
+function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, lift, walkWidth, ground, put, pause, context)
+  context = context or {}
+  spacing = math.max(0, tonumber(spacing) or 0)
+  -- Plan neighbours too: ownership is applied only after conflict resolution. A
+  -- local priority minimum makes the result independent of tile/generation order.
+  local owned = rect
+  rect = {rect[1] - 12, rect[2] - 12, rect[3] + 12, rect[4] + 12}
+  local candidates, occupied = {}, {}
+  -- the props this game has (all of them outside the game, where FS is absent)
+  if not VEG.propsHave then
+    VEG.propsHave = {}
+    for _, p in ipairs(VEG.props) do
+      if not FS or FS:fileExists(p[1]) then VEG.propsHave[#VEG.propsHave + 1] = p end
+    end
+  end
+  local props = VEG.propsHave
+  local total = 0
+  for _, p in ipairs(props) do total = total + p[2] end
+  local count = 0
+  -- the tile's buildings in 50 m bins, 0.6 m out from the walls (a footway along a wall)
+  local walls = {}
+  for _, building in ipairs(buildings) do
+    if ringsTouch(building.rings, rect) then
+      local b = ringBounds(building.rings)
+      local entry = {rings = building.rings, bounds = b}
+      for by = math.floor((b[2] - 1) / 50), math.floor((b[4] + 1) / 50) do
+        for bx = math.floor((b[1] - 1) / 50), math.floor((b[3] + 1) / 50) do
+          local bin = walls[bx * 65536 + by] or {}
+          walls[bx * 65536 + by], bin[#bin + 1] = bin, entry
+        end
+      end
+    end
+  end
+  for _, area in ipairs(context.areas or NONE) do
+    if area.kind == 'water' or area.kind == 'parking' then
+      local b = ringBounds(area.rings)
+      if boundsTouch(b, rect, 1) then
+        local entry = {rings = area.rings, bounds = b}
+        for by = math.floor((b[2] - 1) / 50), math.floor((b[4] + 1) / 50) do
+          for bx = math.floor((b[1] - 1) / 50), math.floor((b[3] + 1) / 50) do
+            local bin = walls[bx * 65536 + by] or {}
+            walls[bx * 65536 + by], bin[#bin + 1] = bin, entry
+          end
+        end
+      end
+    end
+  end
+  -- the capsule a-b of radius r inside a building or nearer than 0.6 m to its wall
+  local function inWall(bins, ax, ay, bx, by, mx, my, hl, r)
+    local m = r + .6
+    for _, w in ipairs(bins) do
+      local b = w.bounds
+      if math.max(ax, bx) >= b[1] - m and math.max(ay, by) >= b[2] - m and math.min(ax, bx) <= b[3] + m
+          and math.min(ay, by) <= b[4] + m then
+        if inside(w.rings, ax, ay) or inside(w.rings, bx, by) then return true end
+        for _, ring in ipairs(w.rings) do
+          local previous = ring[#ring]
+          for _, p in ipairs(ring) do
+            if capsuleNear(ax, ay, bx, by, mx, my, hl, previous[1], previous[2], p[1], p[2], m) then return true end
+            previous = p
+          end
+        end
+      end
+    end
+    return false
+  end
+  -- keep-out bands round polylines in 50 m bins: r metres either side of a segment
+  local function band(bins, a, b, r)
+    local dx, dy = b[1] - a[1], b[2] - a[2]
+    local len2 = dx * dx + dy * dy
+    local box = {math.min(a[1], b[1]), math.min(a[2], b[2]), math.max(a[1], b[1]), math.max(a[2], b[2])}
+    if len2 < EPS or not boundsTouch(rect, box, r) then return end
+    local entry = {a = a, dx = dx, dy = dy, len2 = len2, r = r}
+    for by = math.floor((box[2] - r) / 50), math.floor((box[4] + r) / 50) do
+      for bx = math.floor((box[1] - r) / 50), math.floor((box[3] + r) / 50) do
+        local bin = bins[bx * 65536 + by] or {}
+        bins[bx * 65536 + by], bin[#bin + 1] = bin, entry
+      end
+    end
+  end
+  -- the capsule a-b of radius r reaching into a band
+  local function inBand(bins, ax, ay, bx, by, mx, my, hl, r)
+    for _, s in ipairs(bins) do
+      if capsuleNear(ax, ay, bx, by, mx, my, hl, s.a[1], s.a[2], s.a[1] + s.dx, s.a[2] + s.dy, s.r + r) then return true end
+    end
+    return false
+  end
+  -- the entries of every 50 m bin under the box round a-b (r out), keyed as bins (plus offset)
+  local function near(bins, ax, ay, bx, by, r, offset)
+    local x0, x1 = math.floor((math.min(ax, bx) - r) / 50), math.floor((math.max(ax, bx) + r) / 50)
+    local y0, y1 = math.floor((math.min(ay, by) - r) / 50), math.floor((math.max(ay, by) + r) / 50)
+    if x0 == x1 and y0 == y1 then return bins[(x0 + offset) * 65536 + y0 + offset] or NONE end
+    local list = {}
+    for bx_ = x0, x1 do
+      for by_ = y0, y1 do
+        for _, e in ipairs(bins[(bx_ + offset) * 65536 + by_ + offset] or NONE) do list[#list + 1] = e end
+      end
+    end
+    return list
+  end
+  -- Surveyed trees, lamps and bus stops take precedence over inferred furniture.
+  for _, p in ipairs(context.points or NONE) do
+    if p.pos and (p.kind == 'tree' or p.kind == 'lamp' or p.kind == 'stop') then
+      local x, y = p.pos[1], p.pos[2]
+      local r = p.kind == 'tree' and 3 or p.kind == 'stop' and 5 or 2
+      band(occupied, {x - .001, y}, {x + .001, y}, r)
+    end
+  end
+  -- paths on the ground (their paving and 0.3 m more; a crossing 2 m either side) and the
+  -- streets' sidewalks (a footway's prop does not stand on them)
+  local paths, walks = {}, {}
+  for _, line in ipairs(lines) do
+    local tags, points = line.tags or NONE, line.points or NONE
+    if line.kind == 'path' and tags.area ~= 'yes' and pathOnGround(tags) then
+      local r = pathCrossing(tags) and 2 or (tonumber(tags.width) or 2) / 2 + .3
+      for k = 1, #points - 1 do band(paths, points[k], points[k + 1], r) end
+    end
+  end
+  for _, strip in ipairs(strips) do
+    if strip.surface then
+      for k = 1, #strip.points - 1 do
+        local w = strip.walk[k] or NONE
+        band(walks, strip.points[k], strip.points[k + 1], strip.hw + ((w[1] or w[-1]) and walkWidth or 0) + .3)
+      end
+    end
+  end
+  pause()
+  -- one prop at lattice distance d of its road or path; t along the polyline segment from a
+  -- (unit ux, uy), `side` of it
+  local function place(seed, d, a, t, ux, uy, side, offset, z, name, footway, fixed)
+    local h = ihash(seed, math.floor(d * 10 + .5), side + 2, 7)
+    local pick, prop = h % math.max(1, total), props[1]
+    for _, p in ipairs(props) do
+      if pick < p[2] then prop = p; break end
+      pick = pick - p[2]
+    end
+    prop = fixed or prop
+    if not prop then return end
+    -- Rare fixtures have a street-scale cadence, never a dense random row.
+    if not fixed and #props > 1 then
+      local period = prop[1]:find('hydrant', 1, true) and 120
+        or prop[1]:find('postbox', 1, true) and 180
+        or prop[1]:find('bike_stand', 1, true) and 48
+      if period and (footway or d % period >= math.min(spacing, 6)) then return end
+      if footway and prop.curb then return end
+    end
+    local c = propFootprint(prop)
+    local off, onGround = offset(c)
+    if not off then return end
+    local x = a[1] + ux * t - uy * off * side
+    local y = a[2] + uy * t + ux * off * side
+    if x < rect[1] or x >= rect[3] or y < rect[2] or y >= rect[4] then return end
+    local shape = prop[1]
+    if prop.kind == 'tree' and context.treeAt then
+      shape = context.treeAt(x, y)
+      if not shape then return end
+    end
+    -- a bench or a stand along its path, +Y to the road; the rest at random. Yaw turns local X
+    -- to (cos, -sin) as BeamNG's MatrixF:setFromEuler does (clockwise from above).
+    local yaw = prop.face and math.atan2(ux, uy) + side * math.pi / 2 or (h % 628) / 100
+    local cs, sn = math.cos(yaw), math.sin(yaw)
+    local cx, cy = x + c.y * sn, y + c.y * cs
+    local ax, ay, bx, by = cx + c.x0 * cs, cy - c.x0 * sn, cx + c.x1 * cs, cy - c.x1 * sn
+    local r, mx, my, hl = c.r, (ax + bx) / 2, (ay + by) / 2, (c.x1 - c.x0) / 2
+    if inWall(near(walls, ax, ay, bx, by, r + .6, 0), ax, ay, bx, by, mx, my, hl, r)
+        or inBand(near(occupied, ax, ay, bx, by, r, 0), ax, ay, bx, by, mx, my, hl, r)
+        or inBand(near(paths, ax, ay, bx, by, r, 0), ax, ay, bx, by, mx, my, hl, r)
+        or footway and inBand(near(walks, ax, ay, bx, by, r, 0), ax, ay, bx, by, mx, my, hl, r) then return end
+    -- the carriageways on the ground (a bridge or a tunnel leaves the street under or over it)
+    for _, segment in ipairs(near(segmentBins, ax, ay, bx, by, r, 32768)) do
+      local sa = segment.a
+      if segment.surface and capsuleNear(ax, ay, bx, by, mx, my, hl, sa[1], sa[2], sa[1] + segment.dx, sa[2] + segment.dy,
+          segment.width / 2 + .3 + r) then return end
+    end
+    candidates[#candidates + 1] = {name = name, shape = shape, x = x, y = y, z = onGround and ground(x, y) or z(x, y), yaw = yaw,
+      ax = ax, ay = ay, bx = bx, by = by, mx = mx, my = my, hl = hl, r = r,
+      priority = prop.priority or 3, rank = h, kind = prop.kind or 'furniture', scale = prop.scale or 1}
+  end
+  -- start: metres of the road before points[1]; margin1, margin2: metres kept clear at its ends
+  local function walk(points, dist, seed, sides, margin1, margin2, start, offset, z, prefix, footway, step, fixed, phase)
+    step, phase = step or spacing, phase or 0
+    if step <= 0 then return end
+    local length = dist[#dist] or 0
+    for k = 1, #points - 1 do
+      local a, b = points[k], points[k + 1]
+      local seg = dist[k + 1] - dist[k]
+      if seg > .5 then
+        local ux, uy = (b[1] - a[1]) / seg, (b[2] - a[2]) / seg
+        local d = math.ceil((dist[k] + start - phase) / step - 1e-6) * step + phase - start
+        while d < dist[k + 1] do
+          if d > margin1 and d < length - margin2 then
+            for _, side in ipairs({1, -1}) do
+              if sides(k, side) then
+                local t = d - dist[k]
+                place(seed, d + start, a, t, ux, uy, side, function(c) return offset(c, k, side) end,
+                  z or function() return (a[3] or 0) + t / seg * ((b[3] or 0) - (a[3] or 0)) + lift end,
+                  prefix .. '_' .. math.floor(d + start + .5) .. '_' .. side, footway, fixed)
+              end
+            end
+          end
+          d = d + step
+        end
+      end
+      if k % 16 == 0 then pause() end
+    end
+  end
+  for s, strip in ipairs(strips) do
+    if strip.surface and (strip.dist[#strip.dist] or 0) > 14 then
+      local hw, tags, id, joints = strip.hw, strip.tags or NONE, tostring(strip.road.id or s), strip.joints or NONE
+      walk(strip.points, strip.dist, hash(id), function(k, side) return strip.walk[k][side] and not walkSeparate(tags, side) end,
+        joints[1] and 3 or 6, joints[2] and 3 or 6, strip.start or 0, function(prop)
+          -- A continuous 1.2 m pedestrian corridor; large objects use the outer verge.
+          if prop.near + prop.far + (prop.curb and .35 or .1) + 1.2 > walkWidth then return hw + walkWidth + .35 + prop.near, true end
+          return hw + (prop.curb and math.max(.45, .35 + prop.near) or walkWidth - math.max(.45, .1 + prop.far))
+        end, nil, 'prop_' .. id)
+      local major = tags.highway == 'primary' or tags.highway == 'secondary' or tags.highway == 'tertiary' or tags.highway == 'trunk'
+      if context.lamps and tags.lit ~= 'no' and (tags.lit == 'yes' or major) and (not FS or FS:fileExists(LAMP)) then
+        walk(strip.points, strip.dist, hash(id), function(k, side)
+          return side == -1 or hw >= 6 and strip.walk[k][side]
+        end, 6, 6, strip.start or 0, function(prop, k, side)
+          if strip.walk[k][side] then return hw + walkWidth - .1 - prop.far end
+          return hw + .35 + prop.near, true
+        end,
+          nil, 'streetlamp_' .. id, false, 30,
+          {LAMP, kind = 'lamp', priority = 1, face = true, fp = {-.61, .61, -.32, .32}})
+      end
+      if context.tree and spacing > 0 then
+        walk(strip.points, strip.dist, hash(id), function(k, side)
+          return strip.walk[k][side] and not walkSeparate(tags, side)
+        end, 10, 10, strip.start or 0, function() return hw + walkWidth + 3 end,
+          ground, 'streettree_' .. id, false, math.max(24, math.ceil(spacing / 24) * 24), context.tree, 12)
+      end
+    end
+    pause()
+  end
+  for l, line in ipairs(lines) do
+    local tags, points = line.tags or NONE, line.points or NONE
+    if line.kind == 'path' and (tags.highway == 'footway' or tags.highway == 'pedestrian') and #points > 1
+        and pathOnGround(tags) and not pathCrossing(tags) then
+      local dist = {0}
+      for k = 2, #points do
+        dist[k] = dist[k - 1] + math.sqrt((points[k][1] - points[k - 1][1]) ^ 2 + (points[k][2] - points[k - 1][2]) ^ 2)
+      end
+      local half = (tonumber(tags.width) or 2) / 2
+      walk(points, dist, hash(tostring(line.id or l)), function() return true end, 3, 3, 0,
+        function(prop) return half + .35 + prop.near end, ground, 'walkprop_' .. tostring(line.id or l), true)
+      if context.tree and spacing > 0 and tags.footway == 'sidewalk' then
+        walk(points, dist, hash(tostring(line.id or l)), function() return true end, 10, 10, 0,
+          function() return half + 3.3 end, ground, 'walktree_' .. tostring(line.id or l), true,
+          math.max(24, math.ceil(spacing / 24) * 24), context.tree, 12)
+      end
+    end
+    pause()
+  end
+  -- Index candidate capsules, not just their origins (a rack spans over four metres).
+  local bins = {}
+  for _, c in ipairs(candidates) do
+    for by = math.floor((math.min(c.ay, c.by) - c.r - .4) / 50), math.floor((math.max(c.ay, c.by) + c.r + .4) / 50) do
+      for bx = math.floor((math.min(c.ax, c.bx) - c.r - .4) / 50), math.floor((math.max(c.ax, c.bx) + c.r + .4) / 50) do
+        local bin = bins[bx * 65536 + by] or {}
+        bins[bx * 65536 + by], bin[#bin + 1] = bin, c
+      end
+    end
+  end
+  local reserved = {}
+  for index, c in ipairs(candidates) do
+    local clear = true
+    for _, q in ipairs(near(bins, c.ax, c.ay, c.bx, c.by, c.r + .4, 0)) do
+      local wins = q.priority < c.priority or q.priority == c.priority and (q.rank < c.rank or q.rank == c.rank and q.name < c.name)
+      if wins and capsuleNear(c.ax, c.ay, c.bx, c.by, c.mx, c.my, c.hl, q.ax, q.ay, q.bx, q.by, c.r + q.r + .4) then
+        clear = false; break
+      end
+    end
+    if clear then
+      -- Used by vegetation scatter as well, so an avenue is not filled by yard trees.
+      band(reserved, {c.ax - .001, c.ay}, {c.bx + .001, c.by}, c.r + 2)
+      if c.x >= owned[1] and c.x < owned[3] and c.y >= owned[2] and c.y < owned[4] then
+        put(c.name, c.shape, c.x, c.y, c.z, c.yaw, c.scale, c.kind)
+        count = count + 1
+      end
+    end
+    if index % 64 == 0 then pause() end
+  end
+  return count, reserved
+end
+
+function VEG.streetBlocked(bins, x, y)
+  for _, s in ipairs(bins[math.floor(x / 50) * 65536 + math.floor(y / 50)] or NONE) do
+    if pointSegment2(x, y, s.a[1], s.a[2], s.a[1] + s.dx, s.a[2] + s.dy) < s.r * s.r then return true end
+  end
+  return false
+end
+
 local function build(cells, i, j, options)
   options = options or {}
   local pause = options.pause or options.yield or function() end
@@ -2319,8 +2702,11 @@ local function build(cells, i, j, options)
       -- it is built up (walkAt).
       local sides, walk = walkSides(tags), {}
       for k = 1, #points - 1 do walk[k] = walkAt(tags, sides, points[k], points[k + 1], builtAt) end
+      -- start: metres of the road cut off before points[1] (street props keep the road's lattice);
+      -- joints: its ends that run on into the next way (no junction there)
       local strip = {road = road, points = points, normals = normals, hw = hw, tags = tags, dist = dist,
-        surface = surfaceRoad, material = material, grade = grade, sides = sides, walk = walk}
+        surface = surfaceRoad, material = material, grade = grade, sides = sides, walk = walk,
+        start = cuts and cuts[1] or 0, joints = joints}
       strips[#strips + 1] = strip
       trimmed[road] = points
       -- A cut mouth's corridor back to its node, a centimetre under the junction fan: drawn only
@@ -3612,9 +3998,32 @@ local function build(cells, i, j, options)
       shelter(point, p)
     elseif p and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
       local shape = point.kind == 'tree' and VEG.tree or (point.kind == 'lamp' and wantLamps) and LAMP
-      if shape then static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), shape, p[1], p[2], ground(p[1], p[2]), 0) end
+      if shape then
+        static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), shape, p[1], p[2], ground(p[1], p[2]), 0)
+        local it = scene.items[#scene.items]
+        it.prop, it.streetKind, it.collision = true, point.kind, 'Collision Mesh'
+      end
     end
     pause()
+  end
+  if wantLamps and not distant then
+    local function treeAt(x, y)
+      local p = bio.at(x, y)
+      if p and (p.group == 'ice' or p.group == 'tundra' or rawHeight(x, y) - bio.sea > bio.treeline(p)) then return nil end
+      local set = VEG.have('town')
+      if p and (p.group == 'desert' or p.group == 'savanna' or p.group == 'rainforest') then set = VEG.use('palmFan')
+      elseif p and p.group == 'mediterranean' then set = VEG.use('med') end
+      return set[1]
+    end
+    local tree = (options.maxTrees or 2400) > 0 and {TREE, kind = 'tree', priority = 2, scale = .65,
+      fp = {-2, 2, -2, 2}} or nil
+    local _, reserved = VEG.streetProps(strips, lists.lines, lists.buildings, segmentBins, rect,
+      options.propSpacing, lift, tune.sidewalk, ground, function(name, shape, x, y, z, yaw, scale, kind)
+        static(name, shape, x, y, z, yaw, scale)
+        local it = scene.items[#scene.items]
+        it.prop, it.streetKind, it.collision = true, kind, 'Collision Mesh'
+      end, pause, {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points})
+    scene.streetReservations = reserved
   end
   if decor then
     local WALL = 3
@@ -3634,6 +4043,7 @@ local function build(cells, i, j, options)
     -- tree may stand in a square or a car park (a grate in the paving), a lattice one may not.
     local function blocked(x, y, pad, wall, paved)
       pad, wall = pad or 3.5, wall or 0
+      if scene.streetReservations and VEG.streetBlocked(scene.streetReservations, x, y) then return true end
       local nearby = segmentBins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE
       for _, segment in ipairs(nearby) do
         local a = segment.a
@@ -4348,36 +4758,6 @@ local function build(cells, i, j, options)
     -- (detail.lua shows the nearest within its budget)
     bio.layers(math.floor(maxGrass * .6), math.min(600, maxRocks * 3), spread)
   end
-  if wantLamps and not distant then
-    local lamp = 0
-    for _, road in ipairs(lists.roads) do
-      local tags, points = road.tags or {}, road.points or {}
-      local major = tags.highway == 'primary' or tags.highway == 'secondary' or tags.highway == 'tertiary' or tags.highway == 'trunk'
-      if tags.lit ~= 'no' and (tags.lit == 'yes' or major) then
-        local distance = 0
-        for index = 1, #points - 1 do
-          local a, b = points[index], points[index + 1]
-          local dx, dy = b[1] - a[1], b[2] - a[2]
-          local length = math.sqrt(dx * dx + dy * dy)
-          if length > EPS then
-            local nextDistance = math.ceil((distance + EPS) / 30) * 30
-            while nextDistance < distance + length - EPS do
-              local t, offset = (nextDistance - distance) / length, (road.width or 7) / 2 + 1.1
-              local x, y = a[1] + t * dx + dy / length * offset, a[2] + t * dy - dx / length * offset
-              if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] then
-                static('lamp_' .. lamp, LAMP, x, y, (a[3] or 0) + t * ((b[3] or 0) - (a[3] or 0)) + .2, math.atan2(dx, dy))
-                lamp = lamp + 1
-              end
-              nextDistance = nextDistance + 30
-            end
-            distance = distance + length
-          end
-          if index % 32 == 0 then pause() end
-        end
-      end
-      pause()
-    end
-  end
   mark('trees')
   local function manifest(collector, layer)
     local mats, total = {}, 0
@@ -4430,4 +4810,5 @@ M.build = build
 M.triangulate = triangulate
 M.clip = clip
 M.EDGE_MAPS = EDGE_MAPS
+M.STREET_PROPS = VEG.props
 return M

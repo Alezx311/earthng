@@ -16,6 +16,7 @@ local quality = require('ge/extensions/e2r/quality')
 local detail = require('ge/extensions/e2r/detail')
 local collision = require('ge/extensions/e2r/collision')
 local parking = require('ge/extensions/e2r/parking')
+M.fifo = require('ge/extensions/e2r/fifo') -- keep below LuaJIT's 200 chunk locals
 local detailStream
 -- the UI language: the package's LANG until the player switches it (settings/earthng.json)
 local LANG_FILE = 'settings/earthng.json'
@@ -131,7 +132,7 @@ local test, result = nil, {status = 'waiting', shots = {}}
 local frameTimer = hptimer()
 -- Streaming limits; see the comments where each is used.
 local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128,
-  forestStep = 0.12, forestKind = 1.5, forestMax = 2500,
+  forestStep = 0.12, forestKind = 1.5, forestMax = 2500, propMax = 600,
   collisionWant = 200, collisionLead = 6, collisionMargin = 200, vehicleCollision = {100, 300}}
 -- Read-only view for the development probe (earthng/probe.py); nothing in the mod calls it.
 function M.dbg() return {S = S, result = result, native = native, detail = detailStream, test = test} end
@@ -345,6 +346,8 @@ local function setPlantField(obj, field, value)
   obj:setField(field, 0, value)
 end
 
+-- shape .. '#solid': a street prop, the same shape as a collidable kind (a rebuild takes 6000 of
+-- them for ~1 ms, out/overnight/props)
 local function plantDataFor(shape)
   if S.forestOff then return nil end
   local known = plantData[shape]
@@ -359,11 +362,13 @@ local function plantDataFor(shape)
       result.forest = 'static'
       return nil
     end
-    setPlantField(created, 'shapeFile', shape)
-    setPlantField(created, 'collidable', '0')
-    setPlantField(created, 'windScale', '0.35')
-    setPlantField(created, 'branchAmp', '0.08')
-    setPlantField(created, 'detailAmp', '0.15')
+    local file = shape:match('^(.-)#solid$')
+    setPlantField(created, 'shapeFile', file or shape)
+    setPlantField(created, 'collidable', file and '1' or '0')
+    -- props do not sway
+    setPlantField(created, 'windScale', file and '0' or '0.35')
+    setPlantField(created, 'branchAmp', file and '0' or '0.08')
+    setPlantField(created, 'detailAmp', file and '0' or '0.15')
     local registered = pcall(function() created:registerObject('') end)
       or pcall(function() created:registerObject(name) end)
     if not registered then
@@ -436,17 +441,19 @@ end
 local function forestQueue(name)
   S.forestQ = S.forestQ or {}
   local q = S.forestQ[name]
-  if not q then q = {adds = {}, removes = {}, since = nil, at = -10}; S.forestQ[name] = q end
+  if not q then q = {adds = M.fifo.new(), removes = M.fifo.new(), removing = {}, since = nil, at = -10}; S.forestQ[name] = q end
   if not q.since then q.since = S.now or 0 end
   return q
 end
 
 local function spawnForestItem(it, tile)
   if S.forestOff or not tile or not MatrixF then return false end
-  local kind = forestFor(tile) and plantDataFor(it.shape)
+  local key = it.prop and it.shape .. '#solid' or it.shape
+  if it.prop then result.propsQueued = (result.propsQueued or 0) + 1 end
+  local kind = forestFor(tile) and plantDataFor(key)
   if not kind then return false end
-  local adds = forestQueue(it.shape).adds
-  adds[#adds + 1] = {it, tile, tile.forestGen or 0}
+  local adds = forestQueue(key).adds
+  M.fifo.push(adds, {it, tile, tile.forestGen or 0})
   return true
 end
 
@@ -464,21 +471,35 @@ local function retireForest(tile)
   local f = forestFor()
   local data = f and f:getData()
   if not data or not Box3F then return end
+  local timer = hptimer()
   local t = S.stream and S.stream.tile or 500
   local box = Box3F()
-  -- a centimetre in from the edges: a neighbour's crown on the shared edge stays
-  box.minExtents = vec3(tile.i * t + .01, tile.j * t + .01, -1e5)
-  box.maxExtents = vec3((tile.i + 1) * t - .01, (tile.j + 1) * t - .01, 1e5)
+  -- getItemsBox tests model bounds, not anchors: a neighbouring bench/tree can
+  -- overlap this box. Query the full tile, then use the generator's half-open
+  -- anchor ownership so unloading one tile cannot erase its neighbour's props.
+  box.minExtents = vec3(tile.i * t, tile.j * t, -1e5)
+  box.maxExtents = vec3((tile.i + 1) * t, (tile.j + 1) * t, 1e5)
   local ok, items = pcall(data.getItemsBox, data, box)
   if not ok or type(items) ~= 'table' then return end
   for _, item in ipairs(items) do
     local okData, itemData = pcall(item.getData, item)
     local shape = okData and itemData and plantShape[itemData:getName()]
-    if shape then
-      local removes = forestQueue(shape).removes
-      removes[#removes + 1] = item
+    local okPos, pos = pcall(item.getPosition, item)
+    if shape and okPos and pos and math.floor(pos.x / t) == tile.i and math.floor(pos.y / t) == tile.j then
+      local q, key = forestQueue(shape), item:getKey()
+      -- Near/far retirement can query the same tile before a batch drains.
+      -- Passing an already-removed ForestItem back to C++ is unsafe.
+      if not q.removing[key] then
+        q.removing[key] = true
+        M.fifo.push(q.removes, item)
+        if shape == LAMP_SHAPE .. '#solid' and S.lamps then
+          S.lamps[string.format('%d_%d', math.floor(pos.x), math.floor(pos.y))] = nil
+        end
+      end
     end
   end
+  result.forestRetireMaxMs = math.max(result.forestRetireMaxMs or 0, timer:stop())
+  result.forestRetireMaxScanned = math.max(result.forestRetireMaxScanned or 0, #items)
 end
 
 local function forestCommit()
@@ -498,19 +519,23 @@ local function forestCommit()
   local f = forestFor()
   local data = f and f:getData()
   local removed, added = 0, 0
-  if data then
-    for _, item in ipairs(q.removes) do
-      if pcall(data.removeItem, data, item) then removed = removed + 1 end
-    end
+  -- Retiring several dense tiles must obey the same budget as planting them.
+  -- A shared budget bounds the total engine calls, even during a quality change.
+  local limit = name:find('#solid', 1, true) and LIMIT.propMax or LIMIT.forestMax
+  local retireCount = math.min(M.fifo.size(q.removes), limit)
+  for _ = 1, retireCount do
+    local item = M.fifo.pop(q.removes)
+    q.removing[item:getKey()] = nil
+    if data and pcall(data.removeItem, data, item) then removed = removed + 1 end
   end
-  q.removes = {}
   local adds = q.adds
-  local count = math.min(#adds, LIMIT.forestMax)
+  -- 2500 solid props of one kind made a 19 ms commit (out/overnight/drive-p6)
+  local count = math.min(M.fifo.size(adds), limit - retireCount)
   local kind = data and plantDataFor(name)
   -- createNewItem copies the transform, so one matrix and two vectors serve every crown
   local m, euler, at = MatrixF(true), vec3(0, 0, 0), vec3(0, 0, 0)
   for index = 1, count do
-    local entry = adds[index]
+    local entry = M.fifo.pop(adds)
     local it, tile = entry[1], entry[2]
     if kind and not tile.dropped and not tile.vegetationDropped and (tile.forestGen or 0) == entry[3] then
       euler.z = yawOf(it.rot)
@@ -521,6 +546,10 @@ local function forestCommit()
       if ok and item then
         tile.forestId = sharedForestId
         added = added + 1
+        if it.shape == LAMP_SHAPE then
+          S.lamps = S.lamps or {}
+          S.lamps[string.format('%d_%d', math.floor(at.x), math.floor(at.y))] = {at.x, at.y, at.z}
+        end
       else
         S.forestFails = (S.forestFails or 0) + 1
         if S.forestFails >= 3 and not S.forestOff then
@@ -531,16 +560,24 @@ local function forestCommit()
       end
     end
   end
-  local rest = {}
-  for k = count + 1, #adds do rest[#rest + 1] = adds[k] end
-  q.adds = rest
-  q.since = #rest > 0 and S.now or nil
+  q.since = (M.fifo.size(adds) > 0 or M.fifo.size(q.removes) > 0) and S.now or nil
+  result.forestPendingAdds, result.forestPendingRemoves = 0, 0
+  for _, pending in pairs(queues) do
+    result.forestPendingAdds = result.forestPendingAdds + M.fifo.size(pending.adds)
+    result.forestPendingRemoves = result.forestPendingRemoves + M.fifo.size(pending.removes)
+  end
   if added > 0 then result.forest = 'on' end
   result.forestItems = math.max(0, (result.forestItems or 0) + added - removed)
+  if name:find('#solid', 1, true) then
+    result.forestProps = math.max(0, (result.forestProps or 0) + added - removed)
+  end
   result.forestCommits = (result.forestCommits or 0) + 1
   local ms = timer:stop()
   result.forestCommitMs = ms
-  if ms > (result.forestCommitMaxMs or 0) then result.forestCommitMaxMs = ms end
+  if ms > (result.forestCommitMaxMs or 0) then
+    result.forestCommitMaxMs, result.forestCommitMaxKind = ms, name
+    result.forestCommitMaxAdded, result.forestCommitMaxRemoved = added, removed
+  end
 end
 
 local function resetForests()
@@ -586,7 +623,12 @@ local function spawnItem(it, group, pause, tile, layer)
     local ms = t:stop()
     if ms > (result.createMeshMs or 0) then result.createMeshMs, result.createMeshItem = ms, it.name end
   else
-    if tile and vegetationShape(it.shape) and spawnForestItem(it, tile) then return end
+    if tile and (it.prop or vegetationShape(it.shape)) and spawnForestItem(it, tile) then return end
+    -- Forest lamps register on successful commit; fallback statics register here.
+    if it.shape == LAMP_SHAPE then
+      S.lamps = S.lamps or {}
+      S.lamps[string.format('%d_%d', math.floor(it.pos[1]), math.floor(it.pos[2]))] = {it.pos[1], it.pos[2], it.pos[3]}
+    end
     local obj = createObject('TSStatic')
     local itemName = it.name or ''
     if vegetationShape(it.shape) then result.staticTrees = (result.staticTrees or 0) + 1
@@ -600,11 +642,6 @@ local function spawnItem(it, group, pause, tile, layer)
     if it.scale then obj:setScale(vec3(it.scale, it.scale, it.scale)) end
     obj:registerObject(it.name)
     group:addObject(obj)
-    -- street lamps: where a night pack's lights go (lightsStep)
-    if it.shape == LAMP_SHAPE then
-      S.lamps = S.lamps or {}
-      S.lamps[string.format('%d_%d', math.floor(it.pos[1]), math.floor(it.pos[2]))] = {it.pos[1], it.pos[2], it.pos[3]}
-    end
     return obj:getID()
   end
 end
@@ -654,7 +691,7 @@ local function queueItems(items, tile, key, layer)
   local count, batch = 0, nil
   for _, it in ipairs(items) do
     if not getDetailStream():add(tile, it) then
-      if it.kind ~= 'proc' and vegetationShape(it.shape) then
+      if it.kind ~= 'proc' and (it.prop or vegetationShape(it.shape)) then
         if not batch or #batch.items >= LIMIT.plantBatch then
           batch = {kind='plants', name='plants_' .. key, decor=true, items={}}
           S.queue[#S.queue+1] = {tile=tile, key=key, item=batch, scene=layer=='scene', far=layer=='far'}
@@ -3149,7 +3186,7 @@ local function applyTune()
   end
   local base = S.appliedTune or TUNE_DEFAULT
   local rebuild = false
-  for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees'}) do
+  for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees','propSpacing'}) do
     if S.tune[key] ~= base[key] then rebuild = true end
   end
   if ((S.tune.parkedCars or 0) > 0) ~= ((base.parkedCars or 0) > 0) then rebuild = true end
@@ -3523,11 +3560,12 @@ local function runTest()
     local busy = queued > 0 or building > 0 or loading > 0 or #S.queue > 0 or (S.reloadQueue and #S.reloadQueue > 0) or false
     return busy, string.format('%d/%d/%d/%d/%d/q%d', loaded, near, far, horizon, #S.queue, queued)
   end
-  if test.quality and not S.testQuality and S.state == 'pick' then
+  if (test.quality or test.propSpacing) and not S.testQuality and S.state == 'pick' then
     S.testQuality = true
-    S.tune = quality.preset(test.quality)
+    S.tune = quality.preset(test.quality or 50)
+    if test.propSpacing then S.tune.propSpacing = test.propSpacing end
     applyTune()
-    result.quality = test.quality
+    result.quality = test.quality or 50
   end
   if test.qualityCycle and S.testDone and not S.qualityCycleDone then
     local veh = getPlayerVehicle(0)
