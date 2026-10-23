@@ -3,7 +3,8 @@
 The MIT license covers EarthNG's original code. It does not replace the terms
 of the following data and assets:
 
-- OpenStreetMap contributors: ODbL 1.0. Country packs contain derived OSM data;
+- OpenStreetMap contributors: ODbL 1.0. Country packs and the planet's offline maps
+  (`earthng/planet/maps`: settlements and road overviews) contain derived OSM data;
   retain their manifests and attribution. https://www.openstreetmap.org/copyright
 - Geofabrik provides the regional OSM extracts: https://download.geofabrik.de/
 - Map Builder's optional street detail shows OpenStreetMap standard tiles, used

@@ -16,6 +16,7 @@ from itertools import islice
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -367,6 +368,14 @@ def refresh_planet(mods, emit=print):
             replacements[src.relative_to(mod).as_posix()] = src.read_bytes()
     replacements['earthng/planet/materials.json'] = json.dumps(fast_style.MATERIALS).encode('utf-8')
     replacements[f'e2r_stream/fast-art/{fast_art.VERSION}/packs.json'] = fast_art.manifest_text().encode('utf-8')
+    # keep the language the planet was built with (build_mod.py --lang rewrites this line)
+    world = 'lua/ge/extensions/e2r/world.lua'
+    with zipfile.ZipFile(zip_path) as source:
+        installed = source.read(world).decode('utf-8') if world in source.namelist() else ''
+    lang = re.search(r"^local LANG = '(\w+)'", installed, re.M)
+    if lang and world in replacements:
+        replacements[world] = re.sub(r"^local LANG = '\w+'", f"local LANG = '{lang.group(1)}'",
+                                     replacements[world].decode('utf-8'), count=1, flags=re.M).encode('utf-8')
     temporary = zip_path.with_suffix('.zip.tmp')
     replaced = 0
     with zipfile.ZipFile(zip_path) as source, zipfile.ZipFile(temporary, 'w') as dest:

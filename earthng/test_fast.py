@@ -191,6 +191,24 @@ class ProfileTests(unittest.TestCase):
                 for s, h in profiles:
                     self.assertLess(np.abs(np.diff(h) / np.maximum(np.diff(s), .5)).max(), .1)
 
+    def test_an_urban_overpass_ramps_at_its_class_grade(self):
+        # Kyiv: a 50 m primary overpass over a primary street on flat ground (Borshchahivska was 14 %)
+        flat = lambda xy: np.full(len(xy), 40.)
+        primary = lambda k: {'highway': 'primary', **({'bridge': 'yes', 'layer': '1'} if k == 2 else {})}
+        over = self.chain([0, 300, 325, 375, 400, 700], primary)
+        under = [{'xy': [[350, -400], [350, 400]], 'nodes': [21, 22], 'tags': {'highway': 'primary'}}]
+        prof, _ = fast_profile.solve(over + under, flat)
+        deck = np.interp(25, prof[2][0], prof[2][1])
+        road = np.interp(400, prof[5][0], prof[5][1])
+        self.assertGreater(deck - road, fast_profile.CLEARANCE - .15)
+        for k, (s, h) in enumerate(prof):
+            self.assertLess(np.abs(np.diff(h) / np.maximum(np.diff(s), .5)).max(), .065, k)
+        # a street on a real 12 % hill keeps its hill
+        hill = lambda xy: 40 + np.asarray(xy)[:, 0] * .12
+        street, _ = fast_profile.solve(self.chain([0, 200, 400, 600, 800, 1000], lambda k: {'highway': 'residential'}), hill)
+        grades = np.concatenate([np.diff(h) / np.diff(s) for s, h in street])
+        self.assertGreater(np.median(grades), .11)
+
     def test_bridge_layer_rejects_nonfinite_osm_values(self):
         for value in ('inf', '-inf', 'nan', '', None):
             with self.subTest(value=value):

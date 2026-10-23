@@ -32,6 +32,13 @@ JUNCTION_FLAT = 10.0
 COUPLE = 1000.0
 # A deck over a road: 4.5 m headroom + 1 m of deck (the generator draws it 1 m deep), per layer.
 CLEARANCE, CLEAR_WEIGHT, CLEAR_PASSES = 5.5, 1e4, 4
+# Steepest grade the solve may make by class, where the ground itself is gentler. The clearance
+# springs alone raised a deck over 50-80 m: Kyiv's Borshchahivska bridge 14 %, the Povitrianykh
+# Syl overpass 11 %. An edge over its limit gets a stiffer grade weight and the solve runs again,
+# so the rise spreads over a longer approach (real urban overpasses: 4-6 %).
+GRADE_MAX = {'motorway': .05, 'trunk': .05, 'primary': .06, 'secondary': .06, 'tertiary': .07,
+             'motorway_link': .07, 'trunk_link': .07, 'primary_link': .07, 'secondary_link': .07}
+GRADE_DEFAULT, GRADE_PASSES, STIFF_MAX = .08, 4, 30.
 
 
 def crossings(pos, seg_of, same, upper, lower):
@@ -195,14 +202,14 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     degree = np.bincount(np.array([node_index[n] for seg in segments for n in seg['nodes']]), minlength=nvar)
     flat = np.where((degree[ea] >= 3) | (degree[eb] >= 3), JUNCTION_FLAT, 1.)
     ce, ct = ALPHA * flat / el, BETA / tl ** 3
+    edge_max = np.array([GRADE_MAX.get(segments[k]['tags'].get('highway'), GRADE_DEFAULT) for k in seg_of[:-1][same]])
+    edge_max = np.maximum(edge_max, np.abs(dem[eb] - dem[ea]) / el + .01)   # a hill street keeps its hill
+    stiff = np.ones(len(ea))
     widths = np.array([seg.get('width', 4.) for seg in segments])
     pa, pe, pt = close_pairs(pos_st, seg_of, widths[seg_of], k_st == 0, same)
     va, vb1, vb2 = ids[pa], ids[pe], ids[pe + 1]
     keep = (va != vb1) & (va != vb2)
     va, vb1, vb2, pt = va[keep], vb1[keep], vb2[keep], pt[keep]
-    rows = [np.arange(nvar), ea, eb, ea, eb]
-    cols = [np.arange(nvar), ea, eb, eb, ea]
-    vals = [mw, ce, ce, -ce, -ce]
     # a bridge over a road: (1-u) h_a + u h_a' - (1-t) h_b - t h_b' = clear, weight CLEAR_WEIGHT
     # A lower road may itself be a bridge (stacked motorway interchanges).
     # Compare vertical levels, not just bridge versus non-bridge: short spans
@@ -242,16 +249,24 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
         va, vb1, vb2, pt = va[free], vb1[free], vb2[free], pt[free]
     # residual h_a - (1-t) h_b1 - t h_b2, weight COUPLE
     cv, cw = (va, vb1, vb2), (np.ones(len(va)), -(1 - pt), -pt)
-    for i in range(3):
-        for j in range(3):
-            rows.append(cv[i]); cols.append(cv[j]); vals.append(COUPLE * cw[i] * cw[j])
     trip, coef = (ta, tb, tc), (1., -2., 1.)
-    for i in range(3):
-        for j in range(3):
-            rows.append(trip[i]); cols.append(trip[j]); vals.append(ct * coef[i] * coef[j])
-    ptr, col, data = csr(np.concatenate(rows), np.concatenate(cols), np.concatenate(vals), nvar)
-    diag0 = np.bincount(np.repeat(np.arange(nvar), np.diff(ptr)), np.where(
-        col == np.repeat(np.arange(nvar), np.diff(ptr)), data, 0.), nvar)
+
+    def assemble():
+        g = ce * stiff
+        rows = [np.arange(nvar), ea, eb, ea, eb]
+        cols = [np.arange(nvar), ea, eb, eb, ea]
+        vals = [mw, g, g, -g, -g]
+        for i in range(3):
+            for j in range(3):
+                rows.append(cv[i]); cols.append(cv[j]); vals.append(COUPLE * cw[i] * cw[j])
+        for i in range(3):
+            for j in range(3):
+                rows.append(trip[i]); cols.append(trip[j]); vals.append(ct * coef[i] * coef[j])
+        ptr, col, data = csr(np.concatenate(rows), np.concatenate(cols), np.concatenate(vals), nvar)
+        diag0 = np.bincount(np.repeat(np.arange(nvar), np.diff(ptr)), np.where(
+            col == np.repeat(np.arange(nvar), np.diff(ptr)), data, 0.), nvar)
+        return ptr, col, data, diag0
+    ptr, col, data, diag0 = assemble()
 
     # the clearance springs act only where a deck would be too low (a lower bound): on a
     # crossing in an active set, outside the CSR matrix
@@ -289,21 +304,35 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     # gives part of the clearance only: its target is raised by the shortfall and solved again.
     base = mw * target
     aim = clear.copy()
-    for _ in range(CLEAR_PASSES + 1):
-        b = base - matvec(dem)
-        for c, v in zip(xc, xv):
-            b += np.bincount(v, CLEAR_WEIGHT * active * aim * c, nvar)
-        x, its, residual = cg(b)
-        short = clear - gap(dem + x)
-        if not len(xa) or short.max() < .1:
+    steep = 0
+    for grade_pass in range(GRADE_PASSES + 1):
+        for _ in range(CLEAR_PASSES + 1):
+            b = base - matvec(dem)
+            for c, v in zip(xc, xv):
+                b += np.bincount(v, CLEAR_WEIGHT * active * aim * c, nvar)
+            x, its, residual = cg(b)
+            short = clear - gap(dem + x)
+            if not len(xa) or short.max() < .1:
+                break
+            # a low crossing joins the set; an active one aims higher by what it still lacks
+            aim = np.where(active > 0, aim + np.maximum(short, 0), clear)
+            active = np.where(short > .1, 1., active)
+        h = dem + x
+        grade = np.abs(h[eb] - h[ea]) / el
+        over = grade > edge_max + .002
+        steep = int(over.sum())
+        if not steep or grade_pass == GRADE_PASSES:
             break
-        # a low crossing joins the set; an active one aims higher by what it still lacks
-        aim = np.where(active > 0, aim + np.maximum(short, 0), clear)
-        active = np.where(short > .1, 1., active)
+        # the grade weight goes with the square of the excess; neighbours take the rest next pass
+        # capped, so the clearance springs (CLEAR_WEIGHT) still win where both cannot hold
+        stiff[over] = np.minimum(stiff[over] * np.clip(3 * (grade[over] / edge_max[over]) ** 2, 2, 30), STIFF_MAX)
+        ptr, col, data, diag0 = assemble()
     if emit:
         low = int((short > .5).sum()) if len(xa) else 0
+        worst = f', worst {short.max():.2f} m' if low else ''
         emit(f'profile: {nvar} stations, {len(va)} close station-edge pairs, {len(xa)} bridge crossings '
-             f'({low} short of clearance), {its} CG iterations, residual {residual:.1e}')
+             f'({low} short of clearance{worst}), {steep} edges over their grade after {grade_pass} grade passes, '
+             f'{its} CG iterations, residual {residual:.1e}')
     h = dem + x
     hs = h[ids]
     bounds = np.r_[run, len(s)]
