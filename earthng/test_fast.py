@@ -32,6 +32,10 @@ class SourceTests(unittest.TestCase):
         self.assertAlmostEqual(w({'highway': 'residential', 'lanes': '1'}), 5.4)
         self.assertEqual(w({'highway': 'residential'}), 6.0)
         self.assertEqual(w({'highway': 'tertiary', 'lanes': '1', 'oneway': 'yes'}), 4.0)
+        # race tracks are drivable roads (Porsche Ring): a circuit's width, a kart track's
+        self.assertIn('raceway', sources.DRIVABLE)
+        self.assertEqual(w({'highway': 'raceway', 'sport': 'motor', 'oneway': 'yes'}), 12.0)
+        self.assertEqual(w({'highway': 'raceway', 'sport': 'karting'}), 8.0)
         ring = w({'highway': 'tertiary', 'junction': 'roundabout'})  # implied one-way, one lane
         self.assertGreaterEqual(ring, 5.5)
         self.assertLess(ring, w({'highway': 'tertiary'}) + 1)

@@ -20,7 +20,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point, shape
 from shapely.ops import transform
 
-VERSION = 'fast-14'         # source index format (keys fast-index/<id>); 9: frame per landing; 10: class widths; 11: shoulders; 12: guard rails, deeper decks; 13: tagged shoulders; 14: unmarked two-way, wider one-lane
+VERSION = 'fast-15'         # source index format (keys fast-index/<id>); 9: frame per landing; 10: class widths; 11: shoulders; 12: guard rails, deeper decks; 13: tagged shoulders; 14: unmarked two-way, wider one-lane; 15: raceways
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -28,7 +28,7 @@ LIFT = 20.0                 # absolute DEM heights + lift; never the carrier pla
 CRS = 'EPSG:32636'          # the frame before fast-9 (Kyiv): old replay routes are in it
 ORIGIN = (324000., 5590000.)
 DRIVABLE = {'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'residential',
-            'unclassified', 'service', 'living_street', 'road'}
+            'unclassified', 'service', 'living_street', 'road', 'raceway'}
 
 
 def number(value, default):
@@ -48,6 +48,9 @@ LANE_WIDTH = {'motorway': 3.75, 'trunk': 3.5, 'primary': 3.5, 'secondary': 3.25,
 SHARED = .9
 SHARED_MIN = 4.5
 ONE_LANE_MIN = 4.0                                    # a one-way carriageway: lane plus margins
+# A race track's carriageway (highway=raceway, sport=karting narrower) where no width is tagged.
+RACEWAY = {'karting': 8.0}
+RACEWAY_WIDTH = 12.0
 NARROW = {'living_street': 4.5, 'service': 4.0}       # whole carriageway, any lane count
 DRIVEWAY = 3.0                                        # service=driveway / alley
 # Paved shoulder (m) outside the edge line, (left, right) of the direction, where a way has no
@@ -88,7 +91,9 @@ def shoulder(tags):
 def road_width(tags):
     klass = tags.get('highway', '').replace('_link', '')
     one = oneway(tags)
-    if klass in NARROW and tags.get('lanes') is None:
+    if klass == 'raceway':
+        fallback = RACEWAY.get(tags.get('sport'), RACEWAY_WIDTH)
+    elif klass in NARROW and tags.get('lanes') is None:
         fallback = DRIVEWAY if tags.get('service') in ('driveway', 'alley') else NARROW[klass]
     else:
         motorway = tags.get('highway') == 'motorway'
