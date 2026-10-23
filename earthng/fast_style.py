@@ -387,8 +387,14 @@ WOODS = {'forest', 'wood'}
 PARKS = {'park', 'garden', 'recreation_ground', 'cemetery', 'village_green'}
 
 
+ISLANDS = {'area:highway': 'traffic_island', 'traffic_calming': 'island'}
+
+
 def ground_kind(tags):
-    """'paved', 'forest', 'park', 'residential' or None for an OSM area's tags."""
+    """'island' (a raised traffic island: the generator shapes it on the road), 'paved', 'forest',
+    'park', 'residential' or None for an OSM area's tags."""
+    if any(tags.get(k) == v for k, v in ISLANDS.items()) and tags.get('area') != 'no':
+        return 'island'
     if tags.get('landuse') in PAVED or tags.get('amenity') == 'parking' or tags.get('place') == 'square':
         return 'paved'
     if tags.get('landuse') in WOODS or tags.get('natural') in WOODS:
@@ -406,10 +412,13 @@ UNPAVED = {'unpaved', 'dirt', 'ground', 'earth', 'grass', 'sand', 'gravel', 'fin
 
 
 def line_kind(tags):
-    """'path', 'fence', 'guard_rail' or 'tree_row' for an OSM way drawn as a line, 'coastline' for the shore
-    the exporter fixes the DEM with (never drawn), else None."""
+    """'path', 'fence', 'guard_rail', 'gantry' (an overhead sign frame across a road) or 'tree_row' for
+    an OSM way drawn as a line, 'coastline' for the shore the exporter fixes the DEM with (never
+    drawn), else None."""
     if tags.get('natural') == 'coastline':
         return 'coastline'
+    if tags.get('man_made') == 'gantry':
+        return 'gantry'
     h = tags.get('highway')
     if h in PATHS and tags.get('area') != 'yes' and tags.get('footway') not in ('sidewalk', 'crossing')             and tags.get('bridge') in (None, 'no') and tags.get('tunnel') in (None, 'no') and tags.get('layer', '0') in ('0', ''):
         return 'path'

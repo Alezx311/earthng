@@ -33,6 +33,11 @@ class AssetTests(unittest.TestCase):
         self.assertEqual(kind({'highway': 'mini_roundabout'}), 'mini_roundabout')
         self.assertEqual(kind({'highway': 'bus_stop'}), 'stop')
 
+    def test_traffic_islands_and_gantries_have_kinds(self):
+        self.assertEqual(style.ground_kind({'area:highway': 'traffic_island'}), 'island')
+        self.assertEqual(style.ground_kind({'traffic_calming': 'island', 'landuse': 'grass'}), 'island')
+        self.assertEqual(style.line_kind({'man_made': 'gantry'}), 'gantry')
+
     def test_dark_surfaces_are_not_light_sources(self):
         for pack in ('night', 'rain', 'cyber'):
             fields = art.pack_fields(pack, style.ART)
