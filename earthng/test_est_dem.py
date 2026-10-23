@@ -88,6 +88,42 @@ class EstDemTests(unittest.TestCase):
             self.assertEqual(est_dem.restore(root), 1)
             self.assertEqual(path.read_bytes(), original)
 
+    def test_fine_tiles_follow_the_sheets_at_ten_metres(self):
+        import fast_sources
+        with tempfile.TemporaryDirectory() as root:
+            centre = self.tile_cache(root, 59.33, 24.9)
+            x, y = int(centre.parent.name), int(centre.stem)
+            tiles = [centre]
+            for dx in (-1, 0, 1):          # the upsampled base reads the neighbours
+                for dy in (-1, 0, 1):
+                    if dx or dy:
+                        path = Path(root) / 'terrain' / '12' / str(x + dx) / f'{y + dy}.png'
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        Image.fromarray(est_dem.encode(np.full((256, 256), 50.)), 'RGB').save(path)
+                        tiles.append(path)
+            every = set(est_dem.sheets((500000, 6530000, 600000, 6630000)))
+            est_dem.refine(tiles, root, emit=lambda _m: None, fetch=self.fake_fetch(every))
+            children = sorted(Path(root, 'terrain', '13').glob('*/*.png'))
+            self.assertIn(Path(root, 'terrain', '13', str(2 * x), f'{2 * y}.png'), children)
+            # a z13 pixel X samples the ground at X: ~9.6 m pixels match the plane
+            a, b = 2 * x + 1, 2 * y + 1
+            with Image.open(Path(root, 'terrain', '13', str(a), f'{b}.png')) as image:
+                h = est_dem.decode(np.asarray(image.convert('RGB')))
+            size = est_dem.TILE / 2
+            mx, my = np.meshgrid(-est_dem.R + a * size + np.arange(256) * size / 256,
+                                 est_dem.R - b * size - np.arange(256) * size / 256)
+            e, n = Transformer.from_crs(3857, 3301, always_xy=True).transform(mx, my)
+            self.assertLess(np.abs(h - plane(e, n))[4:-4, 4:-4].max(), .1)
+            # zoom 13 reads the fine tile; where none was burnt, the z12 tile upsampled
+            terrain = fast_sources.Terrain(root, zoom=13)
+            self.assertTrue(np.allclose(terrain.image(a, b), h, atol=1 / 128))
+            self.assertFalse(Path(root, 'terrain', '13', str(2 * x + 2), f'{2 * y}.png').exists())   # its right half needs x + 2
+            coarse = fast_sources.Terrain(root).image(x + 1, y)
+            self.assertTrue(np.allclose(terrain.image(2 * x + 2, 2 * y)[::2, ::2], coarse[:128, :128], atol=1e-6))
+            self.assertEqual(fast_sources.dem_zoom(root, [24.89, 59.32, 24.91, 59.34]), 13)
+            self.assertEqual(est_dem.restore(root), 9)
+            self.assertFalse(Path(root, 'terrain', '13').exists())
+
     def test_no_sheet_leaves_terrarium(self):
         with tempfile.TemporaryDirectory() as root:
             path = self.tile_cache(root, 59.33, 24.9)

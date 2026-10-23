@@ -316,6 +316,12 @@ class CountryTests(unittest.TestCase):
             self.assertEqual(len(index['regions']), 2)
             self.assertTrue(any('/second-region/blocks/' in name for name in archive.namelist()))
 
+    def test_a_fine_local_dem_exports_a_ten_metre_grid(self):
+        import types
+        fine = types.SimpleNamespace(terrain=country.Despiked(types.SimpleNamespace(zoom=13)))
+        self.assertEqual(country.grid_step(fine), country.GRID_FINE)
+        self.assertEqual(country.grid_step(types.SimpleNamespace(terrain=Terrain())), country.GRID)
+
     def test_dem_spikes_and_pits_take_the_neighbourhood_median_with_equal_seams(self):
         class Noisy:
             def sample(self, xy):

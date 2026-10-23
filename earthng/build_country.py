@@ -36,6 +36,7 @@ FORMAT = 'earthng-features-v2'
 CELL = 1000
 HALO = 100
 GRID = 25
+GRID_FINE = 10       # metres of a cell's elevation grid over a local ~10 m DEM (z13, est_dem)
 MARGIN = 4000             # metres a region exports beyond its core box: driving room
 GRID_STEP = (1.5, 1.0)    # degrees of a region core: ~105 x 111 km in Ukraine
 PAD = (0.12, 0.08)        # source window beyond the core: MARGIN + HALO + tile buffer
@@ -257,9 +258,10 @@ def compile_cell(store, rect, include=None):
                                       'kind': kind, 'tags': tags, 'rings': rings})
     for features in cell.values():
         features.sort(key=lambda feature: feature['id'])
-    xs = np.arange(rect[0], rect[2]+GRID, GRID, dtype=float)
-    ys = np.arange(rect[1], rect[3]+GRID, GRID, dtype=float)
-    if isinstance(store.terrain, Despiked) and abs(xs[1] - xs[0] - GRID) < 1e-9:
+    step = grid_step(store)
+    xs = np.arange(rect[0], rect[2]+step, step, dtype=float)
+    ys = np.arange(rect[1], rect[3]+step, step, dtype=float)
+    if isinstance(store.terrain, Despiked):
         heights = store.terrain.grid(xs, ys)
     else:
         heights = np.asarray(store.terrain.sample(np.array([(x, y) for y in ys for x in xs])), dtype=float)
@@ -268,6 +270,13 @@ def compile_cell(store, rect, include=None):
     heights = _coast(store, rect, xs, ys, heights)
     cell['terrain'] = {'rect': list(rect), 'nx': len(xs), 'ny': len(ys), 'heights': heights.tolist()}
     return cell
+
+
+def grid_step(store):
+    """GRID, or GRID_FINE when the store reads a finer local DEM."""
+    terrain = getattr(store.terrain, 'terrain', store.terrain)
+    zoom = getattr(terrain, 'zoom', 12)
+    return GRID_FINE if isinstance(zoom, int) and zoom > 12 else GRID
 
 
 def _coastlines(store, box):

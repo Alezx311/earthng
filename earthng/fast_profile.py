@@ -310,24 +310,26 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
 class Mosaic:
     """Terrain.sample for millions of points: the needed PNG tiles stitched once."""
     def __init__(self, terrain, xy):
+        self.zoom = getattr(terrain, 'zoom', 12)
         lon, lat = terrain.frame.geographic(xy[:, 0], xy[:, 1])
-        x, y = self._px(lon, lat)
+        x, y = self._px(lon, lat, self.zoom)
         self.tx0, self.ty0 = int(x.min() // 256) - 1, int(y.min() // 256) - 1
         tx1, ty1 = int(x.max() // 256) + 1, int(y.max() // 256) + 1
         self.terrain = terrain
-        self.grid = np.full(((ty1 - self.ty0 + 1) * 256, (tx1 - self.tx0 + 1) * 256), np.nan)
+        # a z13 grid has four times the pixels: single precision (millimetres at 1000 m)
+        self.grid = np.full(((ty1 - self.ty0 + 1) * 256, (tx1 - self.tx0 + 1) * 256), np.nan,
+                            dtype=np.float32 if self.zoom > 12 else float)
         for a in range(self.tx0, tx1 + 1):
             for b in range(self.ty0, ty1 + 1):
-                path = terrain.cache / 'terrain' / '12' / str(a) / f'{b}.png'
-                if path.exists():
+                if terrain.has(a, b):
                     ix = np.arange(a * 256, a * 256 + 256); iy = np.arange(b * 256, b * 256 + 256)
                     gx, gy = np.meshgrid(ix, iy)
                     self.grid[(b - self.ty0) * 256:(b - self.ty0 + 1) * 256,
                               (a - self.tx0) * 256:(a - self.tx0 + 1) * 256] = terrain.pixels(gx.ravel(), gy.ravel()).reshape(256, 256)
 
     @staticmethod
-    def _px(lon, lat):
-        scale = 256 * 2 ** 12
+    def _px(lon, lat, zoom=12):
+        scale = 256 * 2 ** zoom
         return (np.asarray(lon) + 180) / 360 * scale, (1 - np.arcsinh(np.tan(np.radians(lat))) / np.pi) / 2 * scale
 
     def sample(self, xy, smooth=True, missing=False):
@@ -335,7 +337,7 @@ class Mosaic:
         from fast_sources import LIFT
         xy = np.asarray(xy, dtype=float).reshape(-1, 2)
         lon, lat = self.terrain.frame.geographic(xy[:, 0], xy[:, 1])
-        x, y = self._px(lon, lat)
+        x, y = self._px(lon, lat, self.zoom)
         ix, iy = np.floor(x).astype(int), np.floor(y).astype(int)
         u, v = x - ix, y - iy
         gx, gy = ix - self.tx0 * 256, iy - self.ty0 * 256
