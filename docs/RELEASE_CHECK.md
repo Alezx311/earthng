@@ -35,8 +35,13 @@ the Map Builder start (#4).
 - Release ZIPs in disposable profiles, BeamNG 0.40.2: Albania (Tirana) 423 m, 17.6 ms mean;
   Kyiv centre route 1.78 km, 18.6 ms mean, p99 47 ms. Every run had 2–3 frames over 100 ms at
   the drive start or while landing, as before, so the performance gate reports failure.
-- **Not done:** BeamNG 0.39 not run (its files are gone). The Ukraine pack on Google Drive is
-  not replaced by this release; until it is rebuilt and re-uploaded, Kyiv keeps its old,
+- Ukraine pack rebuilt with these fixes (`build_packs.py --only ukraine`, index fast-13): 3.03 GB,
+  101 regions, 871,422 cells, 128 min, no index block short of clearance. With the 0.6.0 planet
+  both Kyiv routes drive through without assists: under the Vasylenka bridge at Beresteiska (min
+  13.2 m/s) and over the Povitrianykh Syl overpass (min 10.8 m/s). File:
+  `out/release/ukraine-0.6.0/earthng_ukraine.zip`, SHA-256 `91eac3b5e402c1adc925707cb562cf72d69d34fe7b6374fd8013e073fc2a2691`.
+- **Not done:** BeamNG 0.39 not run (its files are gone). The rebuilt Ukraine pack still has to
+  be uploaded to Google Drive in place of the 16.10 file; until then players get the old,
   partly too low bridges.
 
 ## Planet 0.5.0 — 2026-10-21
