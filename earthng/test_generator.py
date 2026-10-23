@@ -571,6 +571,97 @@ class GeneratorTests(unittest.TestCase):
         self.assertFalse([item for item in placed if abs(item.pos[1] - 250) < 10 and abs(item.pos[2] - 250) < 10])
         self.assertEqual(props(propSpacing=0), [])
         self.assertEqual(props(propSpacing=6, look={'statics': 'sparse'}), [])
+        # no random stop or give-way signs (OSM's own are drawn elsewhere)
+        self.assertFalse([item for item in placed if 'sign_' in item.shape])
+
+    def street_props(self, cells, i=0, j=0):
+        scene = self.build(cells, i, j, terrainStep=100, propSpacing=6)[1]
+        return [(item.pos[1], item.pos[2], item.shape) for item in scene['items'].values() if item.prop]
+
+    def test_street_props_keep_the_road_lattice_across_a_tile_seam(self):
+        # the road starts at junction j (900, 250) in tile 1 and runs west into tile 0, which
+        # does not see the junction: both tiles step 6 m from j, and the junction's cut moves nothing
+        main = {'id': 'main', 'nodes': ['j', 'w'], 'width': 8, 'tags': {'highway': 'residential', 'sidewalk': 'both'},
+                'points': [[900, 250, 10], [100, 250, 10]]}
+        arms = [{'id': arm, 'nodes': ['j', arm], 'width': 12, 'tags': {'highway': 'residential'},
+                 'points': [[900, 250, 10], end]} for arm, end in (('n', [900, 450, 10]), ('s', [900, 50, 10]))]
+        tile0 = self.street_props([{'roads': [main]}], 0, 0)
+        tile1 = self.street_props([{'roads': [main] + arms}], 1, 0)
+        alone = self.street_props([{'roads': [main]}], 1, 0)
+        along = [p for p in tile0 + tile1 if abs(p[1] - 250) < 7 and p[0] < 880]
+        self.assertGreater(len(along), 100)
+        for x, y, _shape in along:
+            phase = (900 - x) % 6
+            self.assertTrue(min(phase, 6 - phase) < 1e-6, (x, y))
+        edge = sorted(p[0] for p in tile0 + tile1 if p[1] > 250 and abs(p[0] - 500) < 10)
+        self.assertTrue(all(abs(b - a - 6) < 1e-6 or abs(b - a) < 1e-6 for a, b in zip(edge, edge[1:])), edge)
+        # the same props, kind included, whether or not the tile sees the junction
+        key = lambda props: sorted((round(x, 3), round(y, 3), shape) for x, y, shape in props if x < 880)
+        self.assertEqual(key(tile1), key(alone))
+
+    def test_street_props_run_on_through_a_way_split(self):
+        # one straight street split at (250, 250) by a tag change: a joint, not a junction, so the
+        # sidewalk keeps 3 m (not 6) either side of it and no sign stands there
+        tags = {'highway': 'residential', 'sidewalk': 'both'}
+        roads = [{'id': 'a', 'nodes': ['p', 'q'], 'width': 8, 'tags': tags, 'points': [[250, 0, 10], [250, 250, 10]]},
+                 {'id': 'b', 'nodes': ['q', 'r'], 'width': 8, 'tags': dict(tags, maxspeed='30'),
+                  'points': [[250, 250, 10], [250, 500, 10]]}]
+        placed = self.street_props([{'roads': roads}])
+        east = sorted(p[1] for p in placed if p[0] > 250)
+        self.assertGreater(len(east), 70)
+        gaps = [b - a for a, b in zip(east, east[1:])]
+        self.assertLessEqual(max(gaps), 10 + 1e-6, east)
+        self.assertGreaterEqual(min(gaps), 6 - 1e-6, east)
+        self.assertFalse([p for p in placed if 'sign_' in p[2]])
+
+    def test_street_props_skip_a_separate_sidewalk_and_stay_off_the_street_band(self):
+        # the north sidewalk is a footway of its own 7 m from the axis: only that footway's
+        # outer row has props there; its inner row would stand on the road's drawn sidewalk
+        road = {'id': 'street', 'width': 8, 'points': [[0, 250, 10], [500, 250, 10]],
+                'tags': {'highway': 'residential', 'sidewalk:left': 'separate', 'sidewalk:right': 'yes'}}
+        walk = {'id': 'walk', 'kind': 'path', 'tags': {'highway': 'footway', 'footway': 'sidewalk'},
+                'points': [[0, 257, 10], [500, 257, 10]]}
+        placed = self.street_props([{'roads': [road], 'lines': [walk]}])
+        north = [p for p in placed if p[1] > 250]
+        self.assertTrue(north)
+        self.assertTrue(all(abs(y - 258.4) < 1e-6 for _x, y, _s in north), sorted({round(p[1], 2) for p in north}))
+        self.assertTrue([p for p in placed if p[1] < 250])
+        for k, a in enumerate(placed):
+            for b in placed[k + 1:]:
+                self.assertGreater((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2, 1, (a, b))
+
+    def test_street_props_keep_off_other_paths_crossings_and_path_ends(self):
+        # two footways cross at (250, 250); a zebra crosses the street at x=300
+        walks = [{'id': 'ns', 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[250, 100, 10], [250, 400, 10]]},
+                 {'id': 'ew', 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[100, 250, 10], [400, 250, 10]]}]
+        placed = self.street_props([{'lines': walks}])
+        self.assertTrue(placed)
+        for x, y, _shape in placed:
+            self.assertFalse(abs(x - 250) < 1.3 and 100 <= y <= 400 or abs(y - 250) < 1.3 and 100 <= x <= 400, (x, y))
+            for ex, ey in ((250, 100), (250, 400), (100, 250), (400, 250)):
+                self.assertGreater(abs(x - ex) + abs(y - ey), 3, (x, y))
+        street = {'id': 'street', 'width': 8, 'points': [[0, 250, 10], [500, 250, 10]],
+                  'tags': {'highway': 'residential', 'sidewalk': 'both'}}
+        zebra = {'id': 'zebra', 'kind': 'path', 'tags': {'highway': 'footway', 'footway': 'crossing'},
+                 'points': [[300, 244, 10], [300, 256, 10]]}
+        placed = self.street_props([{'roads': [street], 'lines': [zebra]}])
+        self.assertFalse([p for p in placed if abs(p[0] - 300) < 2], [p for p in placed if abs(p[0] - 300) < 2])
+        self.assertTrue([p for p in placed if 290 <= p[0] <= 310])
+
+    def test_street_props_only_on_paths_and_streets_on_the_ground(self):
+        hidden = [{'id': f'u{k}', 'kind': 'path', 'tags': dict(tags, highway='footway'),
+                   'points': [[100 + 40 * k, 100, 10], [100 + 40 * k, 400, 10]]}
+                  for k, tags in enumerate(({'indoor': 'yes'}, {'level': '-1'}, {'layer': '-1'},
+                                            {'covered': 'yes'}, {'tunnel': 'yes'}, {'level': '1'}))]
+        self.assertEqual(self.street_props([{'lines': hidden}]), [])
+        # a road tunnel under the street leaves the street's sidewalk props above it
+        street = {'id': 'street', 'width': 8, 'points': [[0, 250, 10], [500, 250, 10]],
+                  'tags': {'highway': 'residential', 'sidewalk': 'both'}}
+        tunnel = {'id': 'tunnel', 'width': 10, 'points': [[250, 0, 0], [250, 500, 0]],
+                  'tags': {'highway': 'residential', 'tunnel': 'yes', 'layer': '-1', 'sidewalk': 'both'}}
+        placed = self.street_props([{'roads': [street, tunnel]}])
+        self.assertTrue([p for p in placed if abs(p[0] - 250) < 5 and abs(p[1] - 250) < 7])
+        self.assertFalse([p for p in placed if abs(p[1] - 250) > 7])
 
     def test_country_look_selects_worn_asphalt_brick_and_skips_lamps(self):
         road = {'id': 'street', 'width': 7, 'points': [[0, 250, 10], [500, 250, 10]],
