@@ -44,9 +44,10 @@ preview materials and the game's runtime. Internet is required for initial
 setup and new source data. Large regions can take hours and many GB of disk.
 Stop cancels a build before installation; the window waits for its worker.
 
-If the window does not open, run Setup.bat and read the error. To see Python
-errors, open a terminal here and run:
-  .venv\Scripts\python.exe earthng/country_ui.py
+If the window does not open, MapBuilder.bat keeps its console open with the
+reason (missing Tcl/Tk, packages, files) and saves it to
+out\mapbuilder\startup.log. Setup.bat repairs .venv and reinstalls packages.
+Attach startup.log when reporting a problem.
 
 Uninstall: delete this extracted folder. Generated packs already installed in
 BeamNG remain in mods; remove their ZIPs there if no longer wanted.
@@ -69,7 +70,7 @@ def source_snapshot(ref):
 
 def builder_files(files):
     """Follow local imports, including worker functions and the subprocess entry point."""
-    pending = ['country_ui', 'osm_tiles_country']
+    pending = ['launch_builder', 'country_ui', 'osm_tiles_country']
     selected = set()
     while pending:
         module = pending.pop()

@@ -20,7 +20,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point, shape
 from shapely.ops import transform
 
-VERSION = 'fast-15'         # source index format (keys fast-index/<id>); 9: frame per landing; 10: class widths; 11: shoulders; 12: guard rails, deeper decks; 13: tagged shoulders; 14: unmarked two-way, wider one-lane; 15: raceways
+VERSION = 'fast-15'         # source index format (keys fast-index/<id>); 9: frame per landing; 10: class widths; 11: shoulders; 12: guard rails, deeper decks; 13: tagged shoulders; 14: unmarked two-way, wider one-lane; 15: raceways; +approach grade limits (master)
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)

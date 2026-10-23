@@ -3261,6 +3261,43 @@ local function build(cells, i, j, options)
       end
       scene.polygon(material or 'fence_wall', poly, false)
     end
+    -- Two decks of one road side by side (a dual carriageway's bridges, ~10 m apart and 11.5 m
+    -- wide in Kyiv) overlap in plan: each one's parapet stood on the other's carriageway and
+    -- stopped the car. A side whose parapet line lies on another strip's surface at the deck's
+    -- height (within 1.5 m) gets no parapet or edge face; the two decks read as one.
+    local deckBins = {}
+    for _, other in ipairs(strips) do
+      local pts = other.points
+      for k = 1, #pts - 1 do
+        local a, b = pts[k], pts[k + 1]
+        local reach = other.hw + tune.sidewalk + 1
+        for by = floor((math.min(a[2], b[2]) - reach) / 50), floor((math.max(a[2], b[2]) + reach) / 50) do
+          for bx = floor((math.min(a[1], b[1]) - reach) / 50), floor((math.max(a[1], b[1]) + reach) / 50) do
+            local bin = deckBins[bx * 65536 + by] or {}
+            deckBins[bx * 65536 + by], bin[#bin + 1] = bin, {other, k}
+          end
+        end
+      end
+    end
+    local function onOtherSurface(own, p)
+      for _, entry in ipairs(deckBins[floor(p[1] / 50) * 65536 + floor(p[2] / 50)] or NONE) do
+        local other, k = entry[1], entry[2]
+        if other ~= own then
+          local a, b = other.points[k], other.points[k + 1]
+          local dx, dy = b[1] - a[1], b[2] - a[2]
+          local len2 = dx * dx + dy * dy
+          if len2 > EPS then
+            local t = math.max(0, math.min(1, ((p[1] - a[1]) * dx + (p[2] - a[2]) * dy) / len2))
+            local d = math.sqrt((p[1] - a[1] - t * dx) ^ 2 + (p[2] - a[2] - t * dy) ^ 2)
+            local side = (p[1] - a[1]) * -dy + (p[2] - a[2]) * dx >= 0 and 1 or -1
+            local reach = other.hw + (other.walk[k][side] and tune.sidewalk or 0) + .5
+            local z = (a[3] or 0) + t * ((b[3] or 0) - (a[3] or 0)) + lift
+            if d < reach and math.abs(z - p[3]) < 1.5 then return true end
+          end
+        end
+      end
+      return false
+    end
     for _, strip in ipairs(strips) do
       if ROADS.bridge(strip.tags) then
         local points, edge, hw = strip.points, strip.edge, strip.hw
@@ -3279,6 +3316,14 @@ local function build(cells, i, j, options)
               local outer = (hw + (strip.walk[k][sign] and tune.sidewalk or 0)) * sign
               local inner = outer - deck.thick * sign
               local ox, oy = -dy * sign, dx * sign
+              local covered = 0
+              for _, f in ipairs({.1, .5, .9}) do
+                local a, b = edge(k, outer), edge(k + 1, outer)
+                if onOtherSurface(strip, {a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f}) then
+                  covered = covered + 1
+                end
+              end
+              if covered >= 2 then goto nextSide end
               -- the edge face, outside, from the parapet's top to the soffit
               local top, low = deck.parapet, -depth
               face({at(k, outer, top, u0, 0), at(k + 1, outer, top, u1, 0),
@@ -3288,6 +3333,7 @@ local function build(cells, i, j, options)
                 at(k + 1, inner, 0, u1, top / deck.repeatU), at(k, inner, 0, u0, top / deck.repeatU)}, -ox, -oy, 0)
               face({at(k, inner, top, u0, 0), at(k + 1, inner, top, u1, 0),
                 at(k + 1, outer, top, u1, deck.thick / deck.repeatU), at(k, outer, top, u0, deck.thick / deck.repeatU)}, 0, 0, 1)
+              ::nextSide::
             end
             -- the soffit, seen from the road under the bridge
             local l = (hw + (strip.walk[k][1] and tune.sidewalk or 0))
@@ -4295,9 +4341,21 @@ local function build(cells, i, j, options)
       local z = p[3] + (up and height + .1 or 0)
       return {p[1] + n[1] * side, p[2] + n[2] * side, z, along[k] / scale, (z - p[3]) / scale}
     end
+    -- A piece over a carriageway or a deck is left out: OSM fences cross a road at a gate or pass
+    -- under a bridge, and on the ground lattice (24 m DEM) a yard's wall stood 2 m high across the
+    -- Povitrianykh Syl overpass in Kyiv.
+    local function overRoad(k)
+      local x, y = (pts[k][1] + pts[k + 1][1]) / 2, (pts[k][2] + pts[k + 1][2]) / 2
+      for _, segment in ipairs(segmentBins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE) do
+        local a = segment.a
+        local t = math.max(0, math.min(1, ((x - a[1]) * segment.dx + (y - a[2]) * segment.dy) / segment.len2))
+        if (x - a[1] - t * segment.dx) ^ 2 + (y - a[2] - t * segment.dy) ^ 2 < (segment.width / 2 + .5) ^ 2 then return true end
+      end
+      return false
+    end
     for k = 1, #pts - 1 do
       local box = ringBounds({{pts[k], pts[k + 1]}})
-      if boundsTouch(rect, box, half * 2 + .5) then
+      if boundsTouch(rect, box, half * 2 + .5) and not overRoad(k) then
         scene.polygon(kind, {corner(k + 1, 1), corner(k, 1), corner(k, 1, true), corner(k + 1, 1, true)}, false)
         scene.polygon(kind, {corner(k, -1), corner(k + 1, -1), corner(k + 1, -1, true), corner(k, -1, true)}, false)
         scene.polygon(kind, {corner(k, 1, true), corner(k, -1, true), corner(k + 1, -1, true), corner(k + 1, 1, true)}, true)

@@ -10,6 +10,9 @@ other Estonian players are welcome.
 - **LiDAR terrain** (`--local-dem`): the Land Board's (Maa- ja Ruumiamet) 10 m bare-earth
   DTM replaces the SRTM-based Terrarium heights, which stand 3–10 m too high under forest
   and towns. 578 sheets cover the country (about 1.8 GB cache in `out/world/cache/est`).
+  The sheets are burnt into z13 tiles and the region carries a 10 m elevation grid, so
+  ditches, embankments and small rises survive; the ground is pulled to the roads only
+  within 15 m of their edge.
 - **Road register** (`--road-register`): carriageway widths, shoulders and guard rails of
   the state roads from the Transpordiamet road register. Its terms for redistributing
   derived packs are not yet confirmed: keep register-built packs for local use.

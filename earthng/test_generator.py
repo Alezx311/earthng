@@ -252,6 +252,27 @@ class GeneratorTests(unittest.TestCase):
         self.assertAlmostEqual(min(ys), 246 - .3, places=3)
         self.assertEqual(walls({'tunnel': 'building_passage'}), [])
 
+    def test_side_by_side_decks_keep_parapets_off_each_other(self):
+        # Kyiv, Povitrianykh Syl: two 11.5 m oneway decks 9.7 m apart overlap in plan; each one's
+        # parapet stood on the other's carriageway and stopped the car
+        def deck(way, y, step=0.):
+            return {'id': way, 'nodes': [way + 'a', way + 'b'], 'width': 11.5,
+                    'tags': {'highway': 'primary', 'oneway': 'yes', 'sidewalk': 'no', 'bridge': 'yes', 'layer': '1'},
+                    'points': [[0, y, 20 + step], [500, y, 20 + step]]}
+
+        def parapets(roads):
+            tops = [t for t in self.triangles(self.build([{'roads': roads}])[1], 'e2rf_fence_wall')
+                    if all(abs(p[2] - 21.0) < .02 for p in t)]                  # the parapet tops
+            return sorted({round(p[1], 1) for t in tops for p in t})
+        pair = parapets([deck('n', 254.85), deck('s', 245.15)])
+        self.assertTrue(pair)
+        # deck edges: 239.4 / 250.9 and 249.1 / 260.6; only the outer two keep a parapet
+        self.assertFalse([y for y in pair if 240 < y < 260], pair)
+        self.assertTrue([y for y in pair if y > 260] and [y for y in pair if y < 240], pair)
+        # a deck 5 m higher (a stacked bridge) is not the same surface: both keep their parapets
+        stacked = parapets([deck('n', 254.85), deck('s', 245.15, step=5)])
+        self.assertTrue([y for y in stacked if 245 < y < 255])
+
     def test_piers_stand_every_25_m_but_never_on_a_road_under_the_bridge(self):
         bridge = {'id': 'b', 'nodes': ['a', 'b'], 'width': 8, 'points': [[0, 250, 20], [500, 250, 20]],
                   'tags': {'highway': 'trunk', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'}}
@@ -386,7 +407,8 @@ class GeneratorTests(unittest.TestCase):
     def test_fences_across_a_carriageway_or_under_a_low_deck_are_cut_there(self):
         # OSM: a fence across a road at grade (a gate the pack does not carry), a fence under a
         # bridge deck 1.5 m over the ground (it would stand through the deck) and one under a
-        # deck 8 m up (kept: there is room under it)
+        # deck 8 m up (also left out under the deck itself: a piece over any deck is, see
+        # test_a_wall_leaves_a_gap_over_a_road_and_under_a_deck)
         road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'points': [[0, 100, 20.1], [500, 100, 20.1]],
                 'tags': {'highway': 'trunk', 'sidewalk': 'no'}}
         low = {'id': 'l', 'nodes': ['c', 'd'], 'width': 8, 'points': [[0, 250, 21.5], [500, 250, 21.5]],
@@ -402,7 +424,7 @@ class GeneratorTests(unittest.TestCase):
         beside = lambda x, y: [t for t in mesh if all(abs(p[0] - x) < 1 and 8 < abs(p[1] - y) < 25 for p in t)]
         self.assertEqual(over(100, 100), [])
         self.assertEqual(over(250, 250), [])
-        self.assertTrue(over(400, 400))
+        self.assertEqual(over(400, 400), [])
         for x, y in ((100, 100), (250, 250), (400, 400)):
             self.assertTrue(beside(x, y))
 
@@ -603,6 +625,18 @@ class GeneratorTests(unittest.TestCase):
         mitre = 3.5 / math.cos(math.radians(15))
         corner = (500 + normal[0] * mitre, 250 + normal[1] * mitre)   # the inner edge, in tile 0
         self.assertTrue([p for t in asphalt for p in t if math.hypot(p[0] - corner[0], p[1] - corner[1]) < 1e-3])
+
+    def test_a_wall_leaves_a_gap_over_a_road_and_under_a_deck(self):
+        # Kyiv: a rail yard's wall crossed the Povitrianykh Syl overpass and stopped the car
+        wall = {'id': 'w', 'kind': 'fence', 'tags': {'barrier': 'wall'}, 'points': [[250, 20, 10], [250, 480, 10]]}
+        for tags in ({}, {'bridge': 'yes', 'layer': '1'}):
+            with self.subTest(tags=tags):
+                road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 10, 'points': [[0, 250, 10], [500, 250, 10]],
+                        'tags': dict(tags, highway='primary', sidewalk='no')}
+                scene = self.build([{'roads': [road], 'lines': [wall]}], terrainStep=100)[1]
+                ys = [p[1] for t in self.triangles(scene, 'e2rf_fence_wall') for p in t if abs(p[0] - 250) < .2]
+                self.assertTrue([y for y in ys if y < 200] and [y for y in ys if y > 300])
+                self.assertFalse([y for y in ys if 245 < y < 255], 'wall on the carriageway')
 
     def test_fences_follow_the_ground_and_have_thickness(self):
         # one 400 m wall over a 6 m hump: its ends alone on the ground buried the middle

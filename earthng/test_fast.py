@@ -185,6 +185,51 @@ class ProfileTests(unittest.TestCase):
         for k, (s, h) in enumerate(prof):
             self.assertLess(np.abs(np.diff(h) / np.maximum(np.diff(s), .5)).max(), .1, k)
 
+    def test_short_stacked_bridges_have_clearance_and_continuous_approaches(self):
+        for length in (14, 30, 50):
+            with self.subTest(length=length):
+                xs = [-350, -length / 2, length / 2, 350]
+                upper = self.chain(xs, lambda k: {'bridge': 'yes', 'layer': '2'} if k == 1 else {})
+                lower = self.chain(xs, lambda k: {'bridge': 'yes', 'layer': '1'} if k == 1 else {})
+                for segment in lower:
+                    segment['xy'] = [[y, x] for x, y in segment['xy']]
+                    segment['nodes'] = [n + 10 for n in segment['nodes']]
+                profiles, _ = fast_profile.solve(upper + lower, lambda xy: np.full(len(xy), 40.))
+                gap = np.interp(length / 2, *profiles[1]) - np.interp(length / 2, *profiles[4])
+                self.assertGreater(gap, fast_profile.CLEARANCE - .15)
+                for start in (0, 3):
+                    self.assertEqual(profiles[start][1][-1], profiles[start + 1][1][0])
+                    self.assertEqual(profiles[start + 1][1][-1], profiles[start + 2][1][0])
+                for s, h in profiles:
+                    self.assertLess(np.abs(np.diff(h) / np.maximum(np.diff(s), .5)).max(), .1)
+
+    def test_an_urban_overpass_ramps_at_its_class_grade(self):
+        # Kyiv: a 50 m primary overpass over a primary street on flat ground (Borshchahivska was 14 %)
+        flat = lambda xy: np.full(len(xy), 40.)
+        primary = lambda k: {'highway': 'primary', **({'bridge': 'yes', 'layer': '1'} if k == 2 else {})}
+        over = self.chain([0, 300, 325, 375, 400, 700], primary)
+        under = [{'xy': [[350, -400], [350, 400]], 'nodes': [21, 22], 'tags': {'highway': 'primary'}}]
+        prof, _ = fast_profile.solve(over + under, flat)
+        deck = np.interp(25, prof[2][0], prof[2][1])
+        road = np.interp(400, prof[5][0], prof[5][1])
+        self.assertGreater(deck - road, fast_profile.CLEARANCE - .15)
+        for k, (s, h) in enumerate(prof):
+            self.assertLess(np.abs(np.diff(h) / np.maximum(np.diff(s), .5)).max(), .065, k)
+        # a street on a real 12 % hill keeps its hill
+        hill = lambda xy: 40 + np.asarray(xy)[:, 0] * .12
+        street, _ = fast_profile.solve(self.chain([0, 200, 400, 600, 800, 1000], lambda k: {'highway': 'residential'}), hill)
+        grades = np.concatenate([np.diff(h) / np.diff(s) for s, h in street])
+        self.assertGreater(np.median(grades), .11)
+
+    def test_bridge_layer_rejects_nonfinite_osm_values(self):
+        for value in ('inf', '-inf', 'nan', '', None):
+            with self.subTest(value=value):
+                self.assertEqual(fast_profile.layer({'layer': value}), 1.)
+                segments = self.chain([0, 100, 200, 300],
+                    lambda k: {'bridge': 'yes', 'layer': value} if k == 1 else {})
+                profiles, _ = fast_profile.solve(segments, lambda xy: np.full(len(xy), 40.))
+                self.assertTrue(all(np.isfinite(h).all() for _, h in profiles))
+
     def test_parallel_carriageways_share_height(self):
         # two oneway halves 12 m apart, 13 m wide (they overlap), over a DEM tilted across them
         dem=lambda xy: 40+np.asarray(xy)[:,1]*.15

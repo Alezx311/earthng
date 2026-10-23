@@ -53,7 +53,9 @@ Download **[EarthNG-MapBuilder.zip](https://github.com/Alezx311/earthng/releases
 extract the entire archive to a writable folder, then open **MapBuilder.bat**.
 You can also clone this repository (Country.bat starts the same window). On first use it runs
 **Setup.bat** to create `.venv` and install the required packages. An internet
-connection is required for setup and new data.
+connection is required for setup and new data. If the window does not open,
+MapBuilder.bat keeps its console open with the reason and saves it to
+`out\mapbuilder\startup.log`; attach that file when reporting a problem.
 
 In the country window:
 
