@@ -8,6 +8,8 @@ from pathlib import Path
 import time
 import urllib.request
 
+import tls
+
 
 def audit(index, cache):
     """DEM under every source tile's coverage, not the package box: a country's box is half
@@ -29,7 +31,7 @@ def fetch(path):
         return
     url='https://s3.amazonaws.com/elevation-tiles-prod/terrarium/12/'+path.parent.name+'/'+path.name
     req=urllib.request.Request(url,headers={'User-Agent':'EarthNG/0.1 (+https://github.com/Alezx311/earth2road)'})
-    with urllib.request.urlopen(req,timeout=45) as response:
+    with urllib.request.urlopen(req,timeout=45,context=tls.context()) as response:
         data=response.read()
     path.parent.mkdir(parents=True,exist_ok=True)
     tmp=path.with_suffix('.png.part'); tmp.write_bytes(data)

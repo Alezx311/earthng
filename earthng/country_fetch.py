@@ -31,6 +31,7 @@ sys.path.insert(0, str(HERE))
 
 import looks  # noqa: E402
 import places  # noqa: E402
+import tls  # noqa: E402
 
 CATALOG = HERE / 'ready_packs.json'
 USER_AGENT = places.USER_AGENT
@@ -89,7 +90,7 @@ def availability(slug_id, mods, root=ROOT):
 
 def content_length(url, timeout=30):
     request = urllib.request.Request(url, method='HEAD', headers={'User-Agent': USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.urlopen(request, timeout=timeout, context=tls.context()) as response:
         length = response.headers.get('Content-Length')
     return int(length) if length and length.isdigit() else None
 
@@ -108,7 +109,7 @@ def download(url, dest, emit=print, cancel=None):
     if have:
         headers['Range'] = f'bytes={have}-'
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with urllib.request.urlopen(request, timeout=60, context=tls.context()) as response:
         status = getattr(response, 'status', 200)
         if status == 200:
             have = 0

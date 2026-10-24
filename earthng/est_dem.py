@@ -20,6 +20,8 @@ import shutil
 import time
 import urllib.request
 
+import tls
+
 import numpy as np
 
 KIND = 'dem_10m_geotiff'
@@ -81,7 +83,7 @@ def fetch_sheet(code, cache, kind=KIND):
     if none.exists():
         return None
     request = urllib.request.Request(URL.format(code=code, kind=kind), headers={'User-Agent': AGENT})
-    with urllib.request.urlopen(request, timeout=90) as response:
+    with urllib.request.urlopen(request, timeout=90, context=tls.context()) as response:
         data = response.read()
     folder.mkdir(parents=True, exist_ok=True)
     if data[:4] not in (b'II*\x00', b'MM\x00*'):      # an HTML page: "no sheet with this number"

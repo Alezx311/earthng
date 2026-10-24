@@ -17,6 +17,7 @@ import zipfile
 from PIL import Image, ImageTk
 
 import paths
+import tls
 
 MAX_LAT = 85.05112878
 MAX_ZOOM = 14          # offline map, its last level enlarged
@@ -140,7 +141,7 @@ class OnlineTiles:
 
     def download(self, key):
         request = urllib.request.Request(self.URL.format(*key), headers={'User-Agent': self.AGENT})
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=20, context=tls.context()) as response:
             data = response.read()
         image = rgb(data)   # an error page is never cached as a tile
         path = self.path(key)

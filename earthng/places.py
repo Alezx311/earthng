@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 import urllib.request
 
+import tls
+
 
 INDEX_URL = 'https://download.geofabrik.de/index-v1-nogeom.json'
 USER_AGENT = 'EarthNG/0.4 (country setup)'
@@ -59,7 +61,7 @@ def fetch_index(root, emit=print):
     path.parent.mkdir(parents=True, exist_ok=True)
     emit(f'Geofabrik index: {INDEX_URL}')
     request = urllib.request.Request(INDEX_URL, headers={'User-Agent': USER_AGENT})
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with urllib.request.urlopen(request, timeout=60, context=tls.context()) as response:
         payload = response.read()
     places = parse_index(json.loads(payload.decode('utf-8')))
     path.write_bytes(payload)
@@ -107,7 +109,7 @@ def load_boundaries(root, refresh=False):
     else:
         request = urllib.request.Request('https://download.geofabrik.de/index-v1.json',
                                          headers={'User-Agent': USER_AGENT})
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=60, context=tls.context()) as response:
             data = response.read()
         payload = json.loads(data)
         parse_index(payload)  # validate before replacing the cache

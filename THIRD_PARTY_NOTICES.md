@@ -7,6 +7,8 @@ of the following data and assets:
   (`earthng/planet/maps`: settlements and road overviews) contain derived OSM data;
   retain their manifests and attribution. https://www.openstreetmap.org/copyright
 - Geofabrik provides the regional OSM extracts: https://download.geofabrik.de/
+- ISRG Root X1 and ISRG Root X2 are bundled so the builder can verify Let's Encrypt
+  chains when the system store cannot: https://letsencrypt.org/certificates/
 - Map Builder's optional street detail shows OpenStreetMap standard tiles, used
   under the tile usage policy: https://operations.osmfoundation.org/policies/tiles/
 - Terrarium elevation tiles: https://registry.opendata.aws/terrain-tiles/
