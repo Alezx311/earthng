@@ -383,6 +383,76 @@ class GeneratorTests(unittest.TestCase):
         self.assertAlmostEqual(self.surface_at(asphalt, 0, 40), 10.1, delta=.05)
         self.assertAlmostEqual(self.surface_at(asphalt, 100, 40), 30.1, delta=.05)
 
+    def test_a_repeated_abutment_stays_on_the_same_ramp(self):
+        # Country cells repeat the shared node: the same xy twice, at the approach end
+        # or at a bridge end. The raise landed on the later copy. The mesh keeps the
+        # first and drops anything within 0.1 mm, so the deck began a full clearance
+        # above the road. A 1 cm gap is a real edge and has to ramp as well.
+        def way(name, nodes, points, tags, width=12):
+            return {'id': name, 'nodes': nodes, 'width': width, 'points': points,
+                    'tags': dict(tags, highway='primary', sidewalk='no')}
+
+        def copy(points):
+            return [list(p) for p in points]
+
+        def exact_end(points):
+            points = copy(points)
+            return points + [list(points[-1])]
+
+        def exact_start(points):
+            points = copy(points)
+            return [list(points[0])] + points
+
+        def centimetre_end(points):
+            points = copy(points)
+            a, b = points[-2], points[-1]
+            length = math.hypot(b[0] - a[0], b[1] - a[1])
+            points.insert(-1, [b[0] - (b[0] - a[0]) / length * .01,
+                               b[1] - (b[1] - a[1]) / length * .01, b[2]])
+            return points
+
+        west, deck, east = line(0, 250, 200, 250, 20), line(200, 250, 400, 250, 20), line(400, 250, 500, 250, 20)
+        under = line(300, 0, 300, 500, 20)
+
+        def scene(west_pts, deck_pts):
+            roads = [
+                way('west', ['w', 'a'], west_pts, {}),
+                way('deck', ['a', 'b'], deck_pts, {'bridge': 'yes', 'layer': '1'}),
+                way('east', ['b', 'e'], copy(east), {}),
+                way('under', ['u', 'v'], copy(under), {}, 40),
+            ]
+            built = self.build([{'roads': roads}])
+            asphalt = list(self.triangles(built[0], 'e2rf_road_major'))
+            soffit = [t for t in self.triangles(built[1], 'e2rf_fence_wall')
+                      if abs(sum(p[0] for p in t) / 3 - 300) < 15
+                      and abs(sum(p[1] for p in t) / 3 - 250) < 15]
+            return asphalt, soffit
+
+        cases = {
+            'approach end repeated': (exact_end(west), copy(deck)),
+            'bridge start repeated': (copy(west), exact_start(deck)),
+            'bridge end repeated': (copy(west), exact_end(deck)),
+            'both abutments repeated': (exact_end(west), exact_start(exact_end(deck))),
+            'approach end one centimetre short': (centimetre_end(west), copy(deck)),
+        }
+        for name, (west_pts, deck_pts) in cases.items():
+            with self.subTest(name=name):
+                asphalt, soffit = scene(west_pts, deck_pts)
+                self.assertTrue(soffit, name)
+                lower = self.surface_at(asphalt, 300, 40)
+                self.assertAlmostEqual(lower, 20.1, places=2)
+                headroom = min(p[2] for t in soffit for p in t) - lower
+                self.assertGreaterEqual(headroom, 4.5, name)
+                samples = [(x, self.surface_at(asphalt, x, 250)) for x in range(0, 501, 2)]
+                self.assertTrue(all(z is not None for _, z in samples), name)
+                for (x0, z0), (x1, z1) in zip(samples, samples[1:]):
+                    self.assertLessEqual(abs(z1 - z0) / (x1 - x0), .065, (name, x0, z0, z1))
+                self.assertAlmostEqual(samples[0][1], 20.1, delta=.05)
+                self.assertAlmostEqual(samples[-1][1], 20.1, delta=.05)
+                # the deck over the road underneath is one carriageway here, so the
+                # sampled top is the ramp, not a second road stacked under it
+                self.assertGreater(self.surface_at(asphalt, 300, 250), lower + 4.5, name)
+
     def test_per_side_sidewalk_tags_win(self):
         def sides(tags):
             road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 7, 'points': [[0, 250, 10], [500, 250, 10]],

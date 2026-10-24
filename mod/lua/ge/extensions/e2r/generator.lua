@@ -2820,10 +2820,21 @@ local function liftDecks(roads, pause)
   for index, road in ipairs(roads) do
     local tags = road.tags or {}
     local level = deckLevel(tags)
+    -- The mesh keeps the first of two points and drops a later one closer than 0.1 mm.
+    -- Country cells repeat an abutment (the same node twice, or a centimetre that rounded
+    -- onto it). The raise landed on that later copy, the mesh threw it away, and the bridge
+    -- started a full clearance above the road that shares the node. Collapse onto the point
+    -- the mesh keeps, and keep the higher copy so a raise already on the repeat survives.
     local src, points, base = road.points or {}, {}, {}
-    for i, p in ipairs(src) do
-      points[i] = {p[1], p[2], p[3] or 0}
-      base[i] = points[i][3]
+    for _, p in ipairs(src) do
+      local q = points[#points]
+      local z = p[3] or 0
+      if q and math.abs(q[1] - p[1]) + math.abs(q[2] - p[2]) <= 1e-4 then
+        if z > q[3] then q[3], base[#base] = z, z end
+      else
+        points[#points + 1] = {p[1], p[2], z}
+        base[#base + 1] = z
+      end
     end
     local owned = {}
     for _, id in ipairs(road.nodes or {}) do
