@@ -323,6 +323,60 @@ class GeneratorTests(unittest.TestCase):
         stacked = parapets([deck('n', 254.85), deck('s', 245.15, step=5)])
         self.assertTrue([y for y in stacked if 245 < y < 255])
 
+    def test_side_by_side_bridges_are_one_deck(self):
+        # a median of a few metres is one slab: asphalt and soffit cross the gap, parapets
+        # only on the outside. Thirty metres apart stays two decks.
+        def bridge(name, y0, y1=None, width=8):
+            y1 = y0 if y1 is None else y1
+            return {'id': name, 'nodes': [name + 'a', name + 'b'], 'width': width,
+                    'tags': {'highway': 'trunk', 'oneway': 'yes', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'},
+                    'points': line(0, y0, 400, y1, 20)}
+
+        def built(roads):
+            road, walls = self.build([{'roads': roads}])[:2]
+            return (list(self.triangles(road, 'e2rf_road_major')),
+                    list(self.triangles(walls, 'e2rf_fence_wall')))
+
+        asphalt, walls = built([bridge('s', 250), bridge('n', 262)])
+        self.assertAlmostEqual(self.surface_at(asphalt, 200, 256), 20.1, places=2)  # the gap is paved
+        self.assertIsNotNone(self.surface_at(walls, 200, 256))                        # one soffit across it
+        tops = [p[1] for t in walls for p in t if all(abs(q[2] - 21.0) < .02 for q in t)]
+        self.assertTrue(any(y < 247 for y in tops) and any(y > 265 for y in tops), tops)
+        self.assertFalse([y for y in tops if 250 < y < 262], tops)
+        # a converging ramp is not one deck: the wide end keeps a hole between the soffits
+        asphalt, walls = built([bridge('s', 250), bridge('n', 290, 258)])
+        self.assertIsNone(self.surface_at(walls, 40, 268))
+        # far enough apart to be two bridges
+        _, walls = built([bridge('s', 250), bridge('n', 280)])
+        self.assertIsNone(self.surface_at(walls, 200, 265))
+        tops = [p[1] for t in walls for p in t if all(abs(q[2] - 21.0) < .02 for q in t)]
+        self.assertTrue(any(250 < y < 258 for y in tops) and any(272 < y < 280 for y in tops), tops)
+
+    def test_a_bridge_line_loses_a_spike_and_keeps_a_bend(self):
+        pts = line(0, 250, 400, 250, 20)
+        for p in pts:
+            if abs(p[0] - 200) < 1:
+                p[1] = 252
+        road = {'id': 'b', 'nodes': ['a', 'c'], 'width': 8, 'points': pts,
+                'tags': {'highway': 'trunk', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'}}
+        asphalt = list(self.triangles(self.build([{'roads': [road]}])[0], 'e2rf_road_major'))
+        edge = [p[1] for t in asphalt for p in t if 190 < p[0] < 210]
+        self.assertTrue(edge)
+        # a 2 m spike would put the edge at 256; two capped pulls bring it to about 255
+        self.assertLess(max(edge), 255.6)
+        self.assertGreater(max(edge), 254.4)
+        r, length, x0, y0 = 400, 200, 200, 300
+        n = math.ceil(length / 20)
+        arc = []
+        for k in range(n + 1):
+            ang = (k / n - .5) * (length / r)
+            arc.append([x0 + r * math.sin(ang), y0 - r * (1 - math.cos(ang)), 20])
+        curve = {'id': 'c', 'nodes': ['a', 'b'], 'width': 8, 'points': arc,
+                 'tags': {'highway': 'trunk', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'}}
+        asphalt = list(self.triangles(self.build([{'roads': [curve]}])[0], 'e2rf_road_major'))
+        self.assertIsNotNone(self.surface_at(asphalt, x0, y0))          # the crown stays on the arc
+        self.assertIsNone(self.surface_at(asphalt, x0, y0 + 8))
+
     def test_a_low_pack_bridge_clears_a_truck_and_the_approaches_ramp(self):
         # Installed Ukraine pack, bridge 2149 over road 148723 near 50.45845, 30.42135:
         # the stored deck sits about 2 m above the road, and the soffit is 1 m thick, so the
@@ -367,8 +421,15 @@ class GeneratorTests(unittest.TestCase):
             self.assertAlmostEqual(self.surface_at(low, ox + 500, oy + 250), 20.1, delta=.05)
             samples = [(x, self.surface_at(low, ox + x, oy + 250)) for x in range(0, 501, 10)]
             self.assertTrue(all(z is not None for _, z in samples), origin)
+            slopes = []
             for (x0, z0), (x1, z1) in zip(samples, samples[1:]):
-                self.assertLessEqual(abs(z1 - z0) / (x1 - x0), .065, (origin, x0, z0, z1))
+                slope = abs(z1 - z0) / (x1 - x0)
+                slopes.append(slope)
+                self.assertLessEqual(slope, .065, (origin, x0, z0, z1))
+            # a straight grade into a flat deck kinks by the whole grade in one step;
+            # the eased ramp changes slope gradually
+            turns = [abs(b - a) for a, b in zip(slopes, slopes[1:])]
+            self.assertLessEqual(max(turns), .04, origin)
             # 6% over 20 m is 1.2 m. A missed abutment is the whole 3.6 m lift.
             joint = [self.surface_at(low, ox + x, oy + 250) for x in (190, 200, 210)]
             self.assertLessEqual(max(joint) - min(joint), 1.35, joint)

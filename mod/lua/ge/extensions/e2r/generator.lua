@@ -1405,7 +1405,7 @@ function ROADS.substructure(ctx)
       if sign then return hw + (walk[sign] and ctx.sidewalk or 0) end
       return hw + ((walk[1] or walk[-1]) and ctx.sidewalk or 0)
     end
-    if ROADS.bridge(strip.tags) and n >= 2 then
+    if ROADS.bridge(strip.tags) and n >= 2 and not (strip.road and strip.road.deckGroup) then
       local depth = ROADS.deckDepth(strip.tags)
       -- centre, tangent and soffit height at s metres along the strip
       local function at(s)
@@ -1473,6 +1473,204 @@ function ROADS.substructure(ctx)
             -- away from the road.
             local behind = sign * step
             if #path >= 2 then ROADS.guardRail({rect = rect, face = face, behind = behind}, path) end
+          end
+        end
+      end
+    end
+    if ctx.pause then ctx.pause() end
+  end
+end
+-- One slab for a deckGroup: the carriageways stay separate ways, but the mesh is a single
+-- soffit, a single asphalt quad and parapets only on the outer edges. Piers stand on the
+-- united centre line. A mate is included only where it actually runs beside the host.
+function ROADS.unitedDecks(ctx)
+  local deck, rect, lift = ROADS.deck, ctx.rect, ctx.lift or 0
+  local function owns(x, y) return x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] end
+  local groups = {}
+  for _, strip in ipairs(ctx.strips) do
+    local id = strip.road and strip.road.deckGroup
+    if id and ROADS.bridge(strip.tags) and strip.edge and #strip.points >= 2 then
+      local list = groups[id]
+      if not list then list = {}; groups[id] = list end
+      list[#list + 1] = strip
+    end
+  end
+  local function project(strip, x, y)
+    local pts, best, bestD = strip.points
+    for i = 2, #pts do
+      local a, b = pts[i - 1], pts[i]
+      local dx, dy = b[1] - a[1], b[2] - a[2]
+      local l2 = dx * dx + dy * dy
+      if l2 > EPS then
+        local t = ((x - a[1]) * dx + (y - a[2]) * dy) / l2
+        if t >= 0 and t <= 1 then
+          local qx, qy = a[1] + dx * t, a[2] + dy * t
+          local ddx, ddy = x - qx, y - qy
+          local d2 = ddx * ddx + ddy * ddy
+          if not bestD or d2 < bestD then
+            bestD = d2
+            best = {qx, qy, (a[3] or 0) + ((b[3] or 0) - (a[3] or 0)) * t, math.sqrt(d2), i - 1,
+              dx, dy}
+          end
+        end
+      end
+    end
+    return best
+  end
+  local function atDist(strip, s)
+    local pts, dist = strip.points, strip.dist
+    local n = #pts
+    local k = 1
+    while k < n - 1 and dist[k + 1] < s do k = k + 1 end
+    local span = math.max(EPS, dist[k + 1] - dist[k])
+    local t = math.max(0, math.min(1, (s - dist[k]) / span))
+    local a, b = pts[k], pts[k + 1]
+    local dx, dy = b[1] - a[1], b[2] - a[2]
+    local l = math.max(EPS, math.sqrt(dx * dx + dy * dy))
+    return a[1] + dx * t, a[2] + dy * t, (a[3] or 0) + ((b[3] or 0) - (a[3] or 0)) * t, dx / l, dy / l, k
+  end
+  local function sideWalk(strip, k, sign)
+    local walk = strip.walk and strip.walk[k]
+    return walk and walk[sign] and ctx.sidewalk or 0
+  end
+  for _, members in pairs(groups) do
+    if #members >= 2 then
+      local host = members[1]
+      for _, strip in ipairs(members) do
+        if strip.road and strip.road.deckHost then host = strip end
+      end
+      local depth = 0
+      for _, strip in ipairs(members) do depth = math.max(depth, ROADS.deckDepth(strip.tags)) end
+      local function frame(s)
+        local x, y, z, tx, ty, k = atDist(host, s)
+        local nx, ny = -ty, tx
+        local left = host.hw + sideWalk(host, k, 1)
+        local right = -(host.hw + sideWalk(host, k, -1))
+        local top = z
+        for _, mate in ipairs(members) do
+          if mate ~= host then
+            local hit = project(mate, x, y)
+            if hit and hit[4] - host.hw - mate.hw <= 12 and math.abs(z - hit[3]) < 1.5 then
+              local off = (hit[1] - x) * nx + (hit[2] - y) * ny
+              local mk = hit[5]
+              local walkL, walkR = sideWalk(mate, mk, 1), sideWalk(mate, mk, -1)
+              local same = hit[6] * tx + hit[7] * ty >= 0
+              if not same then walkL, walkR = walkR, walkL end
+              left = math.max(left, off + mate.hw + walkL)
+              right = math.min(right, off - mate.hw - walkR)
+              if hit[3] > top then top = hit[3] end
+            end
+          end
+        end
+        return {x = x, y = y, z = top, tx = tx, ty = ty, nx = nx, ny = ny, left = left, right = right, s = s}
+      end
+      local length = host.dist[#host.dist] - host.dist[1]
+      local samples, s = {}, host.dist[1]
+      samples[1] = frame(s)
+      while s < host.dist[#host.dist] - .01 do
+        s = math.min(host.dist[#host.dist], s + 8)
+        samples[#samples + 1] = frame(s)
+      end
+      local function corner(sample, offset, dz, u, v)
+        return {sample.x + sample.nx * offset, sample.y + sample.ny * offset, sample.z + lift + dz, u, v}
+      end
+      for i = 1, #samples - 1 do
+        local a, b = samples[i], samples[i + 1]
+        if a.left - a.right > .2 and b.left - b.right > .2 then
+          local u0, u1 = a.s / deck.repeatU, b.s / deck.repeatU
+          local quad = {corner(a, a.left, 0), corner(a, a.right, 0), corner(b, b.right, 0), corner(b, b.left, 0)}
+          if boundsTouch(rect, ringBounds({quad}), 0) then
+            ctx.roads.polygon(host.material, quad, 'flat')
+            ctx.face({corner(a, a.left, -depth, u0, 0), corner(b, b.left, -depth, u1, 0),
+              corner(b, b.right, -depth, u1, (a.left - a.right) / deck.repeatU),
+              corner(a, a.right, -depth, u0, (a.left - a.right) / deck.repeatU)}, 0, 0, -1)
+            for _, side in ipairs({{a.left, b.left, 1}, {a.right, b.right, -1}}) do
+              local edgeA, edgeB, outward = side[1], side[2], side[3]
+              local outerA, outerB = edgeA + deck.thick * outward, edgeB + deck.thick * outward
+              local top, low = deck.parapet, -depth
+              local ox, oy = a.nx * outward, a.ny * outward
+              ctx.face({corner(a, outerA, top, u0, 0), corner(b, outerB, top, u1, 0),
+                corner(b, outerB, low, u1, (top - low) / deck.repeatU),
+                corner(a, outerA, low, u0, (top - low) / deck.repeatU)}, ox, oy, 0)
+              ctx.face({corner(a, edgeA, top, u0, 0), corner(b, edgeB, top, u1, 0),
+                corner(b, edgeB, 0, u1, top / deck.repeatU),
+                corner(a, edgeA, 0, u0, top / deck.repeatU)}, -ox, -oy, 0)
+              ctx.face({corner(a, edgeA, top, u0, 0), corner(b, edgeB, top, u1, 0),
+                corner(b, outerB, top, u1, deck.thick / deck.repeatU),
+                corner(a, outerA, top, u0, deck.thick / deck.repeatU)}, 0, 0, 1)
+            end
+          end
+        end
+      end
+      local below, pier = nil, deck.pier
+      local function roadUnder(x, y)
+        if not below then
+          below = {}
+          for _, other in ipairs(ctx.strips) do
+            if not ROADS.bridge(other.tags) then
+              local ps = other.points
+              for k = 1, #ps - 1 do
+                below[#below + 1] = {ps[k][1], ps[k][2], ps[k + 1][1], ps[k + 1][2], other.hw + pier.clear}
+              end
+            end
+          end
+        end
+        for _, seg in ipairs(below) do
+          local ax, ay, bx, by, r = seg[1], seg[2], seg[3], seg[4], seg[5]
+          if x > math.min(ax, bx) - r and x < math.max(ax, bx) + r and y > math.min(ay, by) - r and y < math.max(ay, by) + r then
+            local dx, dy = bx - ax, by - ay
+            local l2 = dx * dx + dy * dy
+            local t = l2 > EPS and math.max(0, math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2)) or 0
+            if (x - ax - t * dx) ^ 2 + (y - ay - t * dy) ^ 2 < r * r then return true end
+          end
+        end
+        return false
+      end
+      local function blocked(x, y, tx, ty, across)
+        for _, f in ipairs({-1, -.5, 0, .5, 1}) do
+          if roadUnder(x - ty * across * f, y + tx * across * f) then return true end
+        end
+        return false
+      end
+      local bridgeEnds = {}
+      for _, strip in ipairs(ctx.strips) do
+        local nodes = strip.road and strip.road.nodes or NONE
+        for e = 1, 2 do
+          local id = nodes[e] ~= nil and tostring(nodes[e])
+          if id and ROADS.bridge(strip.tags) then bridgeEnds[id] = (bridgeEnds[id] or 0) + 1 end
+        end
+      end
+      if length >= pier.min then
+        local count = math.max(2, math.ceil(length / pier.every))
+        for i = 1, count - 1 do
+          local sample = frame(host.dist[1] + length * i / count)
+          local across = (sample.left - sample.right) / 2 * pier.across
+          local mid = (sample.left + sample.right) / 2
+          local x = sample.x + sample.nx * mid
+          local y = sample.y + sample.ny * mid
+          local z = sample.z + lift - depth
+          if owns(x, y) then
+            local zg = ctx.ground(x, y)
+            local clear = z - zg >= pier.gap and not blocked(x, y, sample.tx, sample.ty, across)
+            if clear then
+              ROADS.box(ctx.face, 'fence_wall', x, y, sample.tx, sample.ty, across, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU)
+            end
+          end
+        end
+      end
+      local nodes = host.road and host.road.nodes or NONE
+      for e = 1, 2 do
+        local id = nodes[e] ~= nil and tostring(nodes[e])
+        if id and bridgeEnds[id] == 1 then
+          local sample = frame(e == 1 and host.dist[1] + pier.thick / 2 or host.dist[#host.dist] - pier.thick / 2)
+          local across = (sample.left - sample.right) / 2 + deck.thick
+          local mid = (sample.left + sample.right) / 2
+          local x = sample.x + sample.nx * mid
+          local y = sample.y + sample.ny * mid
+          local z = sample.z + lift - depth
+          local zg = ctx.ground(x, y)
+          if owns(x, y) and z - zg > .1 then
+            ROADS.box(ctx.face, 'fence_wall', x, y, sample.tx, sample.ty, across, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU)
           end
         end
       end
@@ -3694,6 +3892,42 @@ local function liftDecks(roads, pause)
     if level > maxLevel then maxLevel = level end
     if index % 32 == 0 then pause() end
   end
+  -- A kink of one bad node (a spike off an otherwise straight deck) reads as a warp. Pull it
+  -- part way back to the chord of its neighbours. A bend's sagitta at a 20 m spacing stays
+  -- under the threshold, so a cloverleaf is not straightened. Ends stay: the abutment is shared.
+  local function smoothPlan(m)
+    local pts = m.points
+    if #pts < 3 then return end
+    for _ = 1, 2 do
+      local shift = {}
+      for i = 2, #pts - 1 do
+        local a, b, c = pts[i - 1], pts[i], pts[i + 1]
+        local acx, acy = c[1] - a[1], c[2] - a[2]
+        local ac2 = acx * acx + acy * acy
+        local t = 0
+        if ac2 > EPS then
+          t = ((b[1] - a[1]) * acx + (b[2] - a[2]) * acy) / ac2
+          if t < 0 then t = 0 elseif t > 1 then t = 1 end
+        end
+        local ox, oy = b[1] - (a[1] + acx * t), b[2] - (a[2] + acy * t)
+        local off = math.sqrt(ox * ox + oy * oy)
+        if off > .75 then
+          local pull = math.min(.5, off * .5)
+          shift[i] = {b[1] - ox / off * pull, b[2] - oy / off * pull}
+        end
+      end
+      for i, p in pairs(shift) do pts[i][1], pts[i][2] = p[1], p[2] end
+    end
+    local dist = {0}
+    for i = 2, #pts do
+      local a, b = pts[i - 1], pts[i]
+      dist[i] = dist[i - 1] + math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+    end
+    m.dist = dist
+  end
+  for _, m in ipairs(meta) do
+    if m.level > 0 then smoothPlan(m) end
+  end
   local function shares(a, b)
     for id in pairs(a.nodes) do
       if b.nodes[id] then return true end
@@ -3852,6 +4086,260 @@ local function liftDecks(roads, pause)
         end
         if not moved then break end
       end
+    end
+  end
+  -- Two carriageways of one bridge are separate OSM ways. Drawn apart, a median is two
+  -- soffits and the two profiles drift by a few centimetres, which reads as a ridge.
+  -- Same deck level, nearly parallel, a stable gap of at most 12 m: one group. A ramp
+  -- whose separation changes, or a deck stacked a few metres above, stays its own span.
+  local function project(m, x, y)
+    local best, bestD
+    local pts, dist = m.points, m.dist
+    for i = 2, #pts do
+      local a, b = pts[i - 1], pts[i]
+      local dx, dy = b[1] - a[1], b[2] - a[2]
+      local l2 = dx * dx + dy * dy
+      if l2 > EPS then
+        local t = ((x - a[1]) * dx + (y - a[2]) * dy) / l2
+        if t >= 0 and t <= 1 then
+          local qx, qy = a[1] + dx * t, a[2] + dy * t
+          local ddx, ddy = x - qx, y - qy
+          local d2 = ddx * ddx + ddy * ddy
+          if not bestD or d2 < bestD then
+            local l = math.sqrt(l2)
+            bestD = d2
+            best = {qx, qy, a[3] + (b[3] - a[3]) * t, math.sqrt(d2), dist[i - 1] + l * t}
+          end
+        end
+      end
+    end
+    return best
+  end
+  local function pointAt(m, s)
+    local pts, dist = m.points, m.dist
+    if s <= 0 then return pts[1][1], pts[1][2], pts[1][3] end
+    for i = 2, #pts do
+      if s <= dist[i] or i == #pts then
+        local a, b = pts[i - 1], pts[i]
+        local span = math.max(EPS, dist[i] - dist[i - 1])
+        local t = math.max(0, math.min(1, (s - dist[i - 1]) / span))
+        return a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t
+      end
+    end
+  end
+  local function chord(m)
+    local a, b = m.points[1], m.points[#m.points]
+    local dx, dy = b[1] - a[1], b[2] - a[2]
+    local l = math.sqrt(dx * dx + dy * dy)
+    if l < 1 then return nil end
+    return dx / l, dy / l
+  end
+  local function parallel(a, b)
+    if a.level <= 0 or a.level ~= b.level or #a.points < 2 or #b.points < 2 then return false end
+    local ax, ay = chord(a)
+    local bx, by = chord(b)
+    if not ax or not bx or math.abs(ax * bx + ay * by) < .9 then return false end
+    local short = a.dist[#a.dist] <= b.dist[#b.dist] and a or b
+    local long = short == a and b or a
+    local length = short.dist[#short.dist]
+    if length < 30 then return false end
+    local count = math.max(2, math.floor(length / 25))
+    local n, s0, s1, near, far = 0, length, 0, math.huge, 0
+    for i = 0, count do
+      local s = length * i / count
+      local x, y, z = pointAt(short, s)
+      local hit = project(long, x, y)
+      if hit and hit[4] - short.width / 2 - long.width / 2 <= 12 and math.abs(z - hit[3]) < 1.5 then
+        n = n + 1
+        if s < s0 then s0 = s end
+        if s > s1 then s1 = s end
+        if hit[4] < near then near = hit[4] end
+        if hit[4] > far then far = hit[4] end
+      end
+    end
+    return n >= 3 and s1 - s0 >= 30 and s1 - s0 >= length * .5 and far - near <= 4
+  end
+  local parent = {}
+  for i = 1, #meta do parent[i] = i end
+  local function find(i)
+    while parent[i] ~= i do parent[i] = parent[parent[i]]; i = parent[i] end
+    return i
+  end
+  local function unite(i, j)
+    i, j = find(i), find(j)
+    if i ~= j then parent[j] = i end
+  end
+  local bridges = {}
+  for i, m in ipairs(meta) do
+    if m.level > 0 and #m.points >= 2 and m.dist[#m.dist] >= 30 then bridges[#bridges + 1] = i end
+  end
+  for a = 1, #bridges do
+    for b = a + 1, #bridges do
+      if parallel(meta[bridges[a]], meta[bridges[b]]) then unite(bridges[a], bridges[b]) end
+    end
+    if a % 8 == 0 then pause() end
+  end
+  local membersOf, group = {}, 0
+  for _, i in ipairs(bridges) do
+    local root = find(i)
+    local list = membersOf[root]
+    if not list then list = {}; membersOf[root] = list end
+    list[#list + 1] = i
+  end
+  for _, list in pairs(membersOf) do
+    if #list >= 2 then
+      group = group + 1
+      local host, hostLen = list[1], -1
+      for _, i in ipairs(list) do
+        local len = meta[i].dist[#meta[i].dist]
+        if len > hostLen then host, hostLen = i, len end
+      end
+      for _, i in ipairs(list) do meta[i].road.deckGroup = group end
+      meta[host].road.deckHost = true
+      for _pass = 1, 3 do
+        for _, i in ipairs(list) do
+          local m = meta[i]
+          local want = {}
+          for k, p in ipairs(m.points) do want[k] = p[3] end
+          for _, j in ipairs(list) do
+            if j ~= i then
+              local other = meta[j]
+              for k, p in ipairs(m.points) do
+                local hit = project(other, p[1], p[2])
+                if hit and hit[4] - m.width / 2 - other.width / 2 <= 12 and hit[3] > want[k]
+                    and math.abs(p[3] - hit[3]) < 1.5 then
+                  want[k] = hit[3]
+                end
+              end
+            end
+          end
+          for k, z in ipairs(want) do m.points[k][3] = z end
+        end
+      end
+    end
+    pause()
+  end
+  for _hop = 1, 8 do
+    local moved = equalize()
+    for _, m in ipairs(meta) do
+      if m.level >= 0 and #m.points >= 2 and sweep(m) then moved = true end
+    end
+    if not moved then break end
+  end
+  -- The clearance ramp is a straight grade up to a flat deck: a kink at each end of it.
+  -- A smoothstep whose steepest slope is the class grade needs about half as much run
+  -- again, taken from approach that is still on the ground. Where that spare length is
+  -- missing the straight ramp stays. Nothing is lowered, so a clearance hold stays put.
+  local function connected(m, node)
+    if node == nil then return nil end
+    local id, found = tostring(node), nil
+    for _, other in ipairs(meta) do
+      if other ~= m and other.level >= 0 and #other.points >= 2 then
+        local nodes = other.road.nodes or {}
+        -- nodes names the two ends only; the second end is the last point, not point 2
+        local at
+        if nodes[1] ~= nil and tostring(nodes[1]) == id then at = 1
+        elseif nodes[2] ~= nil and tostring(nodes[2]) == id then at = #other.points end
+        if at then
+          if found then return nil end
+          found = {other, at}
+        end
+      end
+    end
+    return found and found[1], found and found[2]
+  end
+  local function easeSide(m, iH, dir)
+    local zH = m.points[iH][3]
+    local chain, road, idx, step = {}, m, iH + dir, dir
+    -- The flat deck can run to the abutment. The ramp then lives on the next way, and the
+    -- chain has to step across the shared node before the first sample.
+    if idx < 1 or idx > #m.points then
+      local nodes = m.road.nodes or {}
+      local node = dir < 0 and nodes[1] or nodes[2]
+      local nxt, nEnd = connected(m, node)
+      if not nxt or #nxt.points < 2 then return end
+      chain[1] = {nxt, nEnd}
+      step = nEnd == 1 and 1 or -1
+      road, idx = nxt, nEnd + step
+    end
+    local low, dropped, flat, guard = zH, false, 0, 0
+    while road and idx >= 1 and idx <= #road.points and guard < 80 do
+      local z = road.points[idx][3]
+      if z < low - .05 then low, dropped = z, true end
+      if dropped and z > low + .3 then break end
+      guard = guard + 1
+      chain[#chain + 1] = {road, idx}
+      local atEnd = (step > 0 and idx == #road.points) or (step < 0 and idx == 1)
+      if not atEnd then
+        idx = idx + step
+      else
+        local nodes = road.road.nodes or {}
+        local node = idx == 1 and nodes[1] or nodes[2]
+        local atBase = z - (road.base[idx] or z) <= .05
+        local nxt, nEnd = connected(road, node)
+        if not nxt or #nxt.points < 2 then break end
+        local j = nEnd == 1 and 2 or nEnd - 1
+        local span = math.abs(nxt.dist[j] - nxt.dist[nEnd])
+        local bg = span > EPS and math.abs(nxt.base[j] - nxt.base[nEnd]) / span or 0
+        if atBase and bg > .02 then break end
+        chain[#chain + 1] = {nxt, nEnd}
+        step = nEnd == 1 and 1 or -1
+        road, idx = nxt, nEnd + step
+        if atBase then flat = flat + 1 end
+        if flat > 12 then break end
+      end
+    end
+    if #chain == 0 then return end
+    local cum, zAt, run, pm, pi = {}, {}, 0, m, iH
+    for k, item in ipairs(chain) do
+      local meta, i = item[1], item[2]
+      if meta == pm then run = run + math.abs(meta.dist[i] - meta.dist[pi]) end
+      cum[k], zAt[k], pm, pi = run, meta.points[i][3], meta, i
+    end
+    local k0 = 1
+    while k0 <= #chain and cum[k0] < 1 do k0 = k0 + 1 end
+    if k0 > #chain or math.abs(zH - zAt[k0]) / cum[k0] < .02 then return end
+    local foot
+    for k, item in ipairs(chain) do
+      local meta, i = item[1], item[2]
+      if meta.points[i][3] - meta.base[i] <= .05 then foot = k; break end
+    end
+    if not foot or cum[foot] < 8 then return end
+    local slack = foot
+    for k = foot, #chain do
+      local meta, i = chain[k][1], chain[k][2]
+      if meta.points[i][3] - meta.base[i] > .05 then break end
+      slack = k
+    end
+    local zFoot = zAt[foot]
+    local rise = zH - zFoot
+    if rise < .4 then return end
+    local limit = m.grade
+    if not limit or limit < .02 then limit = .08 end
+    local need = 1.5 * rise / limit
+    if cum[slack] + .5 < need then return end
+    for k, item in ipairs(chain) do
+      local d = cum[k]
+      if d > need then break end
+      local t = 1 - d / math.max(EPS, need)
+      if t < 0 then t = 0 end
+      local s = t * t * (3 - 2 * t)
+      local zNew = zFoot + rise * s
+      local p = item[1].points[item[2]]
+      if zNew > p[3] + 1e-4 then p[3] = zNew end
+    end
+  end
+  for _, m in ipairs(meta) do
+    if m.level > 0 and #m.points >= 3 then
+      local zMax, iMax = m.points[1][3], 1
+      for i = 2, #m.points do
+        if m.points[i][3] > zMax then zMax, iMax = m.points[i][3], i end
+      end
+      local left, right = iMax, iMax
+      while left > 1 and m.points[left - 1][3] >= zMax - .15 do left = left - 1 end
+      while right < #m.points and m.points[right + 1][3] >= zMax - .15 do right = right + 1 end
+      easeSide(m, left, -1)
+      easeSide(m, right, 1)
     end
   end
   for _, m in ipairs(meta) do
@@ -4630,7 +5118,9 @@ local function build(cells, i, j, options)
         local box = ringBounds({quad})
         if boundsTouch(rect, box, stripReach) then
           if surfaceRoad then addAsphalt(quad, strip, k) end
-          if visualRoads and boundsTouch(rect, box, 0) then roads.polygon(strip.material, quad, 'flat') end
+          if visualRoads and boundsTouch(rect, box, 0) and not road.deckGroup then
+            roads.polygon(strip.material, quad, 'flat')
+          end
           local dx, dy = b[1] - a[1], b[2] - a[2]
           local length = math.sqrt(dx * dx + dy * dy)
           local t = math.max(0, math.min(1, ((target[1] - a[1]) * dx + (target[2] - a[2]) * dy) / (length * length)))
@@ -4650,6 +5140,24 @@ local function build(cells, i, j, options)
   -- the soffit itself, and a parapet on either side, all solid. Every face is a whole quad of
   -- its segment, clipped to the tile like the fences.
   if visualRoads then
+    -- A grouped carriageway whose mate missed this tile keeps the ordinary deck. The pair
+    -- itself is drawn once, below, so the two asphalt strips do not z-fight in the median.
+    local groupCount = {}
+    for _, strip in ipairs(strips) do
+      local id = strip.road and strip.road.deckGroup
+      if id then groupCount[id] = (groupCount[id] or 0) + 1 end
+    end
+    for _, strip in ipairs(strips) do
+      local id = strip.road and strip.road.deckGroup
+      if id and groupCount[id] < 2 then
+        local points, edge, hw = strip.points, strip.edge, strip.hw
+        for k = 1, #points - 1 do
+          local quad = {edge(k, hw), edge(k, -hw), edge(k + 1, -hw), edge(k + 1, hw)}
+          if boundsTouch(rect, ringBounds({quad}), 0) then roads.polygon(strip.material, quad, 'flat') end
+        end
+        strip.road.deckGroup = nil
+      end
+    end
     local deck = ROADS.deck
     local function face(poly, ox, oy, oz, material)
       -- turned to face (ox, oy, oz): Newell's normal of the quad
@@ -4703,7 +5211,7 @@ local function build(cells, i, j, options)
       return false
     end
     for _, strip in ipairs(strips) do
-      if ROADS.bridge(strip.tags) then
+      if ROADS.bridge(strip.tags) and not (strip.road and strip.road.deckGroup) then
         local points, edge, hw = strip.points, strip.edge, strip.hw
         local depth = ROADS.deckDepth(strip.tags)
         for k = 1, #points - 1 do
@@ -4749,6 +5257,8 @@ local function build(cells, i, j, options)
         end
       end
     end
+    ROADS.unitedDecks({strips = strips, rect = rect, ground = ground, face = face, roads = roads,
+      lift = lift, pause = pause, sidewalk = tune.sidewalk})
     ROADS.substructure({strips = strips, rect = rect, ground = ground, face = face, pause = pause, sidewalk = tune.sidewalk})
     ROADS.embankmentRails({strips = strips, rect = rect, dem = #terrain > 0 and demAt or nil, face = face, pause = pause, sidewalk = tune.sidewalk,
       crowded = function(x, y, road, clear)
