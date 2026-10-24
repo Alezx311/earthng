@@ -1,5 +1,28 @@
 # Release verification
 
+## Planet 0.6.1 — 2026-10-24
+
+The `EarthNG` player release gets a new `earthng_planet.zip` (manifest 0.6.1, built
+from 1fb5d15) and `EarthNG-MapBuilder.zip` from the same tree. `earthng_albania.zip`
+stays the published 0.4.0 file. Country packs are not rebuilt and are not replaced
+in the live mods folder.
+
+Since the 23 October 0.6.0 planet: side-by-side bridge carriageways share one deck,
+with parapets only on the outer edges, and the ramp eases onto the approach. A long
+bridge line drops a sharp kink and keeps a real bend. Deck clearance is 6 m from the
+road below to the deck surface, so about 4.5 m remains under the girder, including
+when an old pack is drawn. A repeated abutment no longer leaves a second step.
+County sections are the map jump buttons; grid regions no longer repeat the country
+name. Map Builder trusts unexpired system certificates plus the bundled ISRG roots,
+and runs the region index and country export outside the window process.
+
+- Unit suite: **351 tests passed** (the printed `RuntimeError: broken region list`
+  and two `ResourceWarning`s are the existing builder checks).
+- **Not done:** this planet was not driven in BeamNG before publication. The long
+  bridge near Kyiv at 50.45730, 30.38654 was not looked at in the game again.
+  BeamNG 0.39 was not run. The Ukraine file on Google Drive is still the 16 October
+  pack.
+
 ## Planet 0.6.0 — 2026-10-23
 
 The `EarthNG` player release gets a new `earthng_planet.zip` (manifest 0.6.0, 173.1 MB, built
