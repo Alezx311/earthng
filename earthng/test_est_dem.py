@@ -1,3 +1,4 @@
+import json
 import math
 from pathlib import Path
 import tempfile
@@ -18,6 +19,23 @@ except ImportError:            # the nature requirements are optional
 
 def plane(e, n):
     return 10 + .002 * (e - 540000) - .001 * (n - 6570000)
+
+
+class CreditTests(unittest.TestCase):
+    def test_a_pack_over_burnt_tiles_credits_the_land_board(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cache = Path(folder)
+            tiles = [cache / 'terrain' / '12' / '2329' / '1185.png', cache / 'terrain' / '12' / '2330' / '1185.png']
+            self.assertIsNone(est_dem.credit(tiles, cache))           # nothing burnt
+            (cache / 'est' / est_dem.KIND).mkdir(parents=True)
+            (cache / 'est' / est_dem.KIND / '6374.tif').write_bytes(b'')
+            # a burn outlives the build that made it: the record says which tiles carry the DTM
+            (cache / 'est' / 'burnt.json').write_text(json.dumps({'2330/1185': 'stamp'}))
+            credit = est_dem.credit(tiles, cache)
+            self.assertIn('Maa- ja Ruumiamet', credit['source'])
+            self.assertEqual(credit['url'], 'https://geoportaal.maaruum.ee/opendata-licence')
+            self.assertRegex(credit['data'], r'extracted 2\d{3}$')
+            self.assertIsNone(est_dem.credit(tiles[:1], cache))       # a pack off the burnt tiles
 
 
 @unittest.skipIf(rasterio is None, 'rasterio not installed')

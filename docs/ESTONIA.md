@@ -52,3 +52,7 @@ with a test (`earthng/test_generator.py`), then the affected county is rebuilt.
   open data licence, https://geoportaal.maaruum.ee/opendata-licence .
 - State roads (optional): Transpordiamet, Teeregister, https://teeregister.mnt.ee/ ,
   CC BY 4.0.
+
+A pack carries these credits itself (`CREDITS.txt` and the manifest's `credits`): the
+Land Board's whenever its elevation tiles hold the burnt-in LiDAR (a burn stays in the
+cache after the build that made it), the register's when built with `--road-register`.

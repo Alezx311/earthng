@@ -187,4 +187,6 @@ are not FPS. [Native format and architecture](docs/NATIVE_MODS.md).
 ## License
 
 Original code: [MIT](LICENSE). Country data and third-party art retain their
-[separate attribution and terms](THIRD_PARTY_NOTICES.md).
+[separate attribution and terms](THIRD_PARTY_NOTICES.md). Every map pack carries the
+credits of the data it was built from (`CREDITS.txt` beside its manifest, and the
+manifest's `credits`), so a pack shared on its own still names its sources.

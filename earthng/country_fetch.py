@@ -335,6 +335,17 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
         else:
             emit('No original PBF/map sidecar in this cache: using base map labels and close-up roads.')
             map_data = None
+    # the optional sources a pack is built from travel in it (build_country.CREDITS)
+    credits = []
+    if road_register:
+        import est_roads
+        credits.append(est_roads.CREDIT)
+    if (dem / 'est' / 'burnt.json').is_file():
+        import est_dem
+        import fast_dem
+        land = est_dem.credit(fast_dem.audit(index, dem), dem)
+        if land:
+            credits.append(land)
     part = f"_{section['id']}" if section else ''
     emit(f"building earthng_{slug_id}{part}.zip, block {look['block']}")
     with stage('Export'):
@@ -344,7 +355,7 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
                        'regions': regions, 'out': str(out), 'jobs': jobs, 'landing': landing,
                        'look': look, 'include': include,
                        'map_data': None if map_data is None else str(map_data),
-                       'work': str(work), 'result': str(export_path),
+                       'work': str(work), 'result': str(export_path), 'credits': credits,
                        'section': None if section is None else {'id': section['id'], 'title': section['name']}},
                       emit, cancel)
         archive = Path(export_path.read_text(encoding='utf-8').strip())

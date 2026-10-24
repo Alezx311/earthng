@@ -288,6 +288,26 @@ def refine(tiles, cache, emit=print, kind=KIND, fetch=fetch_sheet):
     return changed + done
 
 
+def credit(tiles, cache, kind=KIND):
+    """The Land Board's credit for a pack over the given z12 tile paths (fast_dem.audit) when any
+    of them carries the DTM, else None. A burn outlives the build that made it, so the record
+    (cache/est/burnt.json), not the build's flag, says so. The licence asks for the licensor, the
+    data and its extraction date, and the licence's reference."""
+    cache = Path(cache)
+    record = cache / 'est' / 'burnt.json'
+    if not record.exists():
+        return None
+    burnt = json.loads(record.read_text())
+    if not any(f'{x}/{y}' in burnt for x, y in (tile_of(Path(p)) for p in tiles)):
+        return None
+    sheets_ = list((cache / 'est' / kind).glob('*.tif'))
+    year = time.gmtime(max(p.stat().st_mtime for p in sheets_)).tm_year if sheets_ else None
+    return {'source': 'Republic of Estonia Land and Spatial Development Board (Maa- ja Ruumiamet)',
+            'data': 'Elevation data, 10 m DTM' + (f', extracted {year}' if year else ''),
+            'license': 'Estonian Land Board open data licence',
+            'url': 'https://geoportaal.maaruum.ee/opendata-licence'}
+
+
 def restore(cache):
     """Put every original Terrarium tile back."""
     cache = Path(cache)
