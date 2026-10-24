@@ -15,8 +15,8 @@ Local roads (7-digit numbers) are left alone: their widths are whole metres and 
 lane, not the street. The source tiles are copied, never edited: the enriched copy has its
 own directory and checksums, so the OSM-only cache stays valid.
 
-Data: Transpordiamet, Teeregister (CC BY 4.0 per andmed.eesti.ee; the WFS itself still
-says "private" - confirm before redistributing a pack built with it).
+Data: Transpordiamet, Teeregister, open data under CC BY 4.0 (andmed.eesti.ee); a pack built
+with it credits the register.
 """
 import hashlib
 import json

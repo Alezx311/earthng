@@ -14,8 +14,8 @@ other Estonian players are welcome.
   ditches, embankments and small rises survive; the ground is pulled to the roads only
   within 15 m of their edge.
 - **Road register** (`--road-register`): carriageway widths, shoulders and guard rails of
-  the state roads from the Transpordiamet road register. Its terms for redistributing
-  derived packs are not yet confirmed: keep register-built packs for local use.
+  the state roads from the Transpordiamet road register, open data under CC BY 4.0
+  (andmed.eesti.ee): register-built packs may be shared with its credit.
 - **Sections**: each county can be rebuilt on its own and replaces that area of the
   country pack in game.
 
@@ -50,4 +50,5 @@ with a test (`earthng/test_generator.py`), then the affected county is rebuilt.
 - © OpenStreetMap contributors, ODbL.
 - Elevation: Republic of Estonia Land and Spatial Development Board (Maa- ja Ruumiamet),
   open data licence, https://geoportaal.maaruum.ee/opendata-licence .
-- State roads (optional): Transpordiamet, Teeregister, https://teeregister.mnt.ee/ .
+- State roads (optional): Transpordiamet, Teeregister, https://teeregister.mnt.ee/ ,
+  CC BY 4.0.
