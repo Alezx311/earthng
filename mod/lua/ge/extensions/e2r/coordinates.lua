@@ -59,4 +59,15 @@ function M.frame(spec)
   return transform
 end
 
+-- UTM easting/northing of a point and its EPSG code. The live window pins its
+-- origin to the rounded metres of this, the same zone a country pack would use.
+function M.utm(lat, lon)
+  if not finite(lat) or not finite(lon) or lat < -80 or lat > 84 or lon < -180 or lon > 180 then return nil end
+  local zone = math.floor((lon + 180) / 6) % 60 + 1
+  local crs = 'EPSG:' .. ((lat >= 0 and 32600 or 32700) + zone)
+  local tr = M.frame({crs = crs, origin = {0, 0}})
+  local x, y = tr.localPoint(lat, lon)
+  return crs, x, y
+end
+
 return M

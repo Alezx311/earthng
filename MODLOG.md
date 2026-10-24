@@ -1,5 +1,46 @@
 # EarthNG native mod migration
 
+## 2026-10-24: city block silhouette
+
+- Blocks from 8 m that are not houses or sheds, on a near tile at detail 40 and above,
+  gain a concrete socle in front of the photo facade, a parapet and coping on a flat
+  roof, one roof bulkhead (and a smaller vent from 26 m), and one concrete visor along
+  each street facade of 12 m or more and along the longest yard facade. Collinear OSM
+  edges count as one facade. Separate hoods every 28 m on a 180 m slab sat between
+  the camera frames, so the visor is the whole wall (two quads, not up to eight).
+  A pitched `roof:shape` keeps the socle and the visor and skips the rim.
+- No new textures. The rim, canopies and bulkhead share `e2rf_parapet` (stock
+  `concrete_plain`), which stays in static collision. Houses are unchanged.
+  Low, Potato and the far ring stay boxes. Panel UVs are not split.
+- Unit check: `test_generator.py` 80. Offline before the full-length visor
+  (`mesh_pairs`, detail on, radius 0): Times Square parapet 7236 tris, still 3 pieces;
+  Berlin Mitte 4275 (2); Obolon 1086 (1). Scene objects stayed 58 / 60 / 55.
+  The visor is two quads a facade, so it does not add a piece. Live `mods` was not updated.
+- Obolon, quality 50, graphics Normal, 1280×720, 50.5105, 30.4970.
+  `out/city-mass-01`: 39.4 m, mean 19.4 ms, p99 56.5 ms, worst 565 ms, 3 frames over 100 ms.
+  `out/city-mass-02`: 38.9 m, mean 19.2 ms, p99 56.5 ms, worst 308 ms, 4 frames over 100 ms.
+  Both street shots showed the parapet band and the base skirt. The yard face had four
+  short hoods on a ~180 m wall and the camera missed them.
+  `out/city-mass-03` (full-length visor, still facing down): 39.3 m, mean 19.7 ms,
+  p99 54 ms, worst 281 ms, 4 frames over 100 ms. The mesh has the ledge beside the car;
+  the orbit camera is above it and did not draw the downward face.
+  `out/city-mass-04`, top facing up: 38.8 m, mean 19.9 ms, p99 55.5 ms, worst 276 ms,
+  4 frames over 100 ms. The ledge shows above the first window row and casts a shadow.
+  Potato, night, the far ring and the other four cities were not driven.
+
+## 2026-10-24: house massing on the near tile
+
+- Houses (under 8 m, not panel or glass) on a near tile at detail 40 and above gain a
+  board cornice, a door canopy, a brick chimney on the ridge, and on a quarter of
+  two-storey houses one wooden balcony. A tall gable gets one attic window from the
+  same atlas. `roof:shape` other than a pitched form still keeps a flat roof.
+- Low steps windows to 4.2 m (at most 4 a wall) and skips those parts. Potato keeps
+  one bay a wall. The far ring stays a box. The chimney is one material
+  (`e2rf_chimney`, stock brick) and is left out of static collision.
+- Panel photo facades are unchanged. The planet ZIP has to be rebuilt before the
+  game knows the chimney material. Unit checks: `test_generator.py` 79,
+  `test_styles.py` 18, `test_collision.py` 3.
+
 ## 2026-10-23: street furniture by place, merged into master
 
 - `codex/street-assets-experiments` merged into master: `Rebuild.bat` builds from

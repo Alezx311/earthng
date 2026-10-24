@@ -138,7 +138,7 @@ class ProfileTests(unittest.TestCase):
         grade=np.abs(np.diff(h)/np.diff(s))
         self.assertLess(grade.max(),.08)
         mid=h[np.argmin(np.abs(s-500))]
-        self.assertGreater(mid,40-12+6)          # the deck stays well above the river
+        self.assertGreater(mid,39)               # the span stays with the banks, not the river bed
 
     def test_an_overpass_clears_the_road_under_it(self):
         # Juri: a 51 m trunk bridge over a ring road on flat ground (the DEM has no cutting)
@@ -149,8 +149,8 @@ class ProfileTests(unittest.TestCase):
         deck=np.interp(25,prof[2][0],prof[2][1])
         road=np.interp(400,prof[5][0],prof[5][1])
         self.assertGreater(deck-road,fast_profile.CLEARANCE-.15)
-        self.assertGreater(deck,42)                       # both move: the deck rises ...
-        self.assertLess(road,39)                          # ... the road dips
+        self.assertGreater(deck-40,fast_profile.CLEARANCE-.4)   # the deck takes the whole rise
+        self.assertGreater(road,39.6)                             # the road underneath stays on the ground
         for k,(s,h) in enumerate(prof):
             # ramps a car can drive
             self.assertLess(np.abs(np.diff(h)/np.maximum(np.diff(s),.5)).max(),.1,k)
@@ -208,6 +208,48 @@ class ProfileTests(unittest.TestCase):
         street, _ = fast_profile.solve(self.chain([0, 200, 400, 600, 800, 1000], lambda k: {'highway': 'residential'}), hill)
         grades = np.concatenate([np.diff(h) / np.diff(s) for s, h in street])
         self.assertGreater(np.median(grades), .11)
+
+    def test_clearance_uses_the_solved_lower_bridge_height(self):
+        # Three levels: the lower short bridge has no interior DEM target. Lifting it
+        # for a ground road must also lift the bridge above it, not report a false pass.
+        xs = [-350, -7, 7, 350]
+        upper = self.chain(xs, lambda k: {'bridge': 'yes', 'layer': '2'} if k == 1 else {})
+        lower = self.chain(xs, lambda k: {'bridge': 'yes', 'layer': '1'} if k == 1 else {})
+        for segment in lower:
+            segment['xy'] = [[y, x] for x, y in segment['xy']]
+            segment['nodes'] = [n + 10 for n in segment['nodes']]
+        ground = [{'xy': [[-350, 5], [350, 5]], 'nodes': [21, 22], 'tags': {}}]
+        profiles, _ = fast_profile.solve(upper + lower + ground, lambda xy: np.full(len(xy), 40.))
+        upper_z = np.interp(7, *profiles[1])
+        lower_z = np.interp(7, *profiles[4])
+        ground_z = np.interp(350, *profiles[6])
+        self.assertGreaterEqual(upper_z - lower_z, fast_profile.CLEARANCE - .02)
+        self.assertGreaterEqual(np.interp(12, *profiles[4]) - ground_z, fast_profile.CLEARANCE - .02)
+        self.assertGreater(ground_z, 39.8)
+        for start in (0, 3):
+            self.assertEqual(profiles[start][1][-1], profiles[start + 1][1][0])
+            self.assertEqual(profiles[start + 1][1][-1], profiles[start + 2][1][0])
+
+    def test_wide_skew_crossing_clears_the_whole_road_not_only_its_axis(self):
+        over = self.chain([0, 250, 300, 400, 450, 700],
+                          lambda k: {'highway': 'primary', **({'bridge': 'yes'} if k == 2 else {})})
+        for segment in over:
+            segment['width'] = 20.
+        under = [{'xy': [[100, -200], [600, 200]], 'nodes': [21, 22],
+                  'tags': {'highway': 'primary'}, 'width': 24.}]
+        profiles, _ = fast_profile.solve(over + under, lambda xy: 40 + xy[:, 1] * .04)
+        # Independently sample the common footprint, including the bridge's 2 m sidewalks.
+        x, y = np.meshgrid(np.linspace(300, 400, 201), np.linspace(-12, 12, 97))
+        points = np.column_stack((x.ravel(), y.ravel()))
+        direction = np.array([500., 400.]); length = np.linalg.norm(direction); direction /= length
+        offset = points - [100, -200]
+        inside = np.abs(offset[:, 0] * direction[1] - offset[:, 1] * direction[0]) <= 12.
+        points, offset = points[inside], offset[inside]
+        top = np.interp(points[:, 0] - 300, *profiles[2])
+        bottom = np.interp(offset @ direction, *profiles[-1])
+        self.assertGreaterEqual(float(np.min(top - bottom)), fast_profile.CLEARANCE - .02)
+        for s, h in profiles:
+            self.assertLess(np.max(np.abs(np.diff(h) / np.diff(s))), .1)
 
     def test_bridge_layer_rejects_nonfinite_osm_values(self):
         for value in ('inf', '-inf', 'nan', '', None):

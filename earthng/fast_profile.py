@@ -9,10 +9,12 @@ nodes) and the heights minimise
 (data, grade, change of grade), solved by Jacobi-preconditioned conjugate gradients. A node
 has one height for every road that meets there, so tiles and junction mouths agree by
 construction. Bridges pull up and real tunnels pull down only softly; their approaches become
-ramps. Where a bridge crosses a road in plan, the two are held CLEARANCE apart (the solve
-shares the step: the deck rises, the road under it dips into a cutting). A 24 m DEM has no
-cuttings or embankments, and the soft pull alone left Juri's overpasses 1.3 m over the ring
-road. tunnel=building_passage is an arch through a house, at ground level.
+ramps. A bridge spans the height of its abutments: it does not follow the river bed under
+the span. Where it crosses a road in plan, only the deck rises, by the full CLEARANCE above
+the road underneath. The lower road stays on the DEM. Sharing that step dug a cutting and
+left the deck about half as high as the clearance (2.7 m of a 5.5 m gap). A 24 m DEM has no
+cuttings, and the soft pull alone left Juri's overpasses 1.3 m over the ring road.
+tunnel=building_passage is an arch through a house, at ground level.
 """
 import math
 
@@ -31,7 +33,11 @@ JUNCTION_FLAT = 10.0
 # profiles up to 1.02 m apart.
 COUPLE = 1000.0
 # A deck over a road: 4.5 m headroom + 1 m of deck (the generator draws it 1 m deep), per layer.
-CLEARANCE, CLEAR_WEIGHT, CLEAR_PASSES = 5.5, 1e4, 4
+CLEARANCE, CLEAR_WEIGHT, CLEAR_PASSES = 5.5, 1e4, 12
+# Reserve the possible sidewalks of the rendered deck; clearance is measured at its
+# soffit over the whole lower carriageway, including skew crossings. Numerical slack
+# stays above the 4.5 m headroom rather than silently accepting a shortfall from it.
+DECK_OVERHANG, CLEAR_SLACK, CLEAR_TOL = 2., .1, .05
 # Steepest grade the solve may make by class, where the ground itself is gentler. The clearance
 # springs alone raised a deck over 50-80 m: Kyiv's Borshchahivska bridge 14 %, the Povitrianykh
 # Syl overpass 11 %. An edge over its limit gets a stiffer grade weight and the solve runs again,
@@ -41,37 +47,77 @@ GRADE_MAX = {'motorway': .05, 'trunk': .05, 'primary': .06, 'secondary': .06, 't
 GRADE_DEFAULT, GRADE_PASSES, STIFF_MAX = .08, 4, 30.
 
 
-def crossings(pos, seg_of, same, upper, lower):
-    """Station edges of upper segments that cross station edges of lower segments in plan.
-    Returns edge start rows (a, b) and the parameters (u, t) of the crossing on each."""
+def crossings(pos, seg_of, same, upper, lower, widths, levels):
+    """Vertices of the overlap between upper deck and lower road station ribbons.
+
+    Heights vary affinely along each straight station edge, so their least separation
+    over the common polygon occurs at a vertex. Centre-line intersections alone missed
+    a wide road's edges and bridges that overlap a road without their axes crossing.
+    Returns edge starts (a, b) and longitudinal parameters (u, t) at each vertex.
+    """
     e0 = np.flatnonzero(same)
     top, bottom = e0[upper[e0]], e0[lower[e0]]
     if not len(top) or not len(bottom):
         return np.zeros(0, int), np.zeros(0, int), np.zeros(0), np.zeros(0)
-    cell = 24.0                        # > a station edge (STEP): crossing edges are neighbours
+    cell = 32.0
     mid = (pos[bottom] + pos[bottom + 1]) / 2
     key = np.floor(mid / cell).astype(np.int64)
     bins = {}
     for k, (x, y) in enumerate(key.tolist()):
         bins.setdefault((x, y), []).append(k)
+    # A midpoint hash keeps country-sized indexes compact. Every lower edge is at
+    # most STEP long; expand a deck's query by the largest lower half width and length.
+    reach = float(np.max(widths[bottom])) / 2 + STEP / 2
+
+    def ribbon(p, r, half):
+        normal = np.array([-r[1], r[0]]) * (half / max(float(np.linalg.norm(r)), 1e-9))
+        return [p - normal, p + r - normal, p + r + normal, p + normal]
+
+    def clip(poly, q, d, half):
+        length = float(np.linalg.norm(d))
+        if length < 1e-9:
+            return []
+        axis = d / length
+        normal = np.array([-axis[1], axis[0]])
+        # dot(p-q, n) >= bound: longitudinal ends and both lateral edges.
+        for n, bound in ((axis, 0.), (-axis, -length), (normal, -half), (-normal, -half)):
+            if not poly:
+                break
+            result = []
+            a = poly[-1]; da = float((a - q) @ n) - bound
+            for b in poly:
+                db = float((b - q) @ n) - bound
+                if (da >= 0) != (db >= 0):
+                    result.append(a + (b - a) * (da / (da - db)))
+                if db >= 0:
+                    result.append(b)
+                a, da = b, db
+            poly = result
+        return poly
+
     out = ([], [], [], [])
     for a in top.tolist():
         p, r = pos[a], pos[a + 1] - pos[a]
-        x, y = np.floor((p + r / 2) / cell).astype(np.int64).tolist()
-        near = [k for dx in (-1, 0, 1) for dy in (-1, 0, 1) for k in bins.get((x + dx, y + dy), ())]
+        poly = ribbon(p, r, widths[a] / 2 + DECK_OVERHANG)
+        low = np.min(poly, axis=0); high = np.max(poly, axis=0)
+        lo = np.floor((low - reach) / cell).astype(int)
+        hi = np.floor((high + reach) / cell).astype(int)
+        near = [k for x in range(lo[0], hi[0] + 1) for y in range(lo[1], hi[1] + 1)
+                for k in bins.get((x, y), ())]
         if not near:
             continue
         b = bottom[near]
+        b = b[(seg_of[a] != seg_of[b]) & (levels[a] > levels[b])]
         q, d = pos[b], pos[b + 1] - pos[b]
-        den = r[0] * d[:, 1] - r[1] * d[:, 0]
-        ok = np.abs(den) > 1e-9
-        den = np.where(ok, den, 1.)
-        w = q - p
-        u = (w[:, 0] * d[:, 1] - w[:, 1] * d[:, 0]) / den
-        t = (w[:, 0] * r[1] - w[:, 1] * r[0]) / den
-        hit = ok & (u >= 0) & (u <= 1) & (t >= 0) & (t <= 1)
+        half = widths[b] / 2
+        hit = np.all(np.maximum(q, q + d) + half[:, None] >= low, axis=1)
+        hit &= np.all(np.minimum(q, q + d) - half[:, None] <= high, axis=1)
         for k in np.flatnonzero(hit).tolist():
-            out[0].append(a); out[1].append(int(b[k])); out[2].append(float(u[k])); out[3].append(float(t[k]))
+            overlap = clip(poly, q[k], d[k], half[k])
+            for point in overlap:
+                u = np.clip(float((point - p) @ r) / max(float(r @ r), 1e-9), 0, 1)
+                t = np.clip(float((point - q[k]) @ d[k]) / max(float(d[k] @ d[k]), 1e-9), 0, 1)
+                out[0].append(a); out[1].append(int(b[k])); out[2].append(u); out[3].append(t)
     return (np.array(out[0], int), np.array(out[1], int), np.array(out[2]), np.array(out[3]))
 
 
@@ -194,10 +240,25 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     kinds = np.array([{'road': 0, 'bridge': 1, 'tunnel': -1}[kind(seg['tags'])] for seg in segments])
     layers = np.array([max(1., layer(seg['tags'])) for seg in segments])
     k_st = kinds[seg_of]
-    inner = (k_st != 0) & (ids >= len(node_index))
-    off = np.where(k_st > 0, BRIDGE_CLEAR, -TUNNEL_DEPTH) * layers[seg_of]
-    target[ids[inner]] = dem[ids[inner]] + off[inner]
+    inner = (k_st < 0) & (ids >= len(node_index))
+    target[ids[inner]] = dem[ids[inner]] - TUNNEL_DEPTH * layers[seg_of[inner]]
     weight[ids[inner]] = np.where(known[ids[inner]], SOFT, 1e-3)
+    # A span keeps the chord between its abutments. The river bed is not a target, or the
+    # deck sags into the valley. Flat overpasses still want BRIDGE_CLEAR above the ground.
+    bounds = np.r_[run, len(s)]
+    for k in np.flatnonzero(kinds > 0):
+        sl = slice(int(bounds[k]), int(bounds[k + 1]))
+        sid = ids[sl]
+        interior = sid >= len(node_index)
+        if not interior.any():
+            continue
+        ss = s[sl]
+        span = float(ss[-1] - ss[0])
+        t = (ss - ss[0]) / span if span > 1e-6 else np.zeros(len(ss))
+        chord = dem[sid[0]] * (1 - t) + dem[sid[-1]] * t
+        want = np.maximum(chord, dem[sid] + BRIDGE_CLEAR * layers[k])
+        target[sid[interior]] = want[interior]
+        weight[sid[interior]] = np.where(known[sid[interior]], SOFT, 1e-3)
     mw = weight * np.maximum(mass, .5)
     degree = np.bincount(np.array([node_index[n] for seg in segments for n in seg['nodes']]), minlength=nvar)
     flat = np.where((degree[ea] >= 3) | (degree[eb] >= 3), JUNCTION_FLAT, 1.)
@@ -205,26 +266,32 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     edge_max = np.array([GRADE_MAX.get(segments[k]['tags'].get('highway'), GRADE_DEFAULT) for k in seg_of[:-1][same]])
     edge_max = np.maximum(edge_max, np.abs(dem[eb] - dem[ea]) / el + .01)   # a hill street keeps its hill
     stiff = np.ones(len(ea))
-    widths = np.array([seg.get('width', 4.) for seg in segments])
+    widths = np.clip(np.array([seg.get('width', 4.) for seg in segments]), .5, 80.)
     pa, pe, pt = close_pairs(pos_st, seg_of, widths[seg_of], k_st == 0, same)
     va, vb1, vb2 = ids[pa], ids[pe], ids[pe + 1]
     keep = (va != vb1) & (va != vb2)
     va, vb1, vb2, pt = va[keep], vb1[keep], vb2[keep], pt[keep]
-    # a bridge over a road: (1-u) h_a + u h_a' - (1-t) h_b - t h_b' = clear, weight CLEAR_WEIGHT
+    # a bridge over a road: the deck (not the road under it) reaches clear above that road.
     # A lower road may itself be a bridge (stacked motorway interchanges).
     # Compare vertical levels, not just bridge versus non-bridge: short spans
     # have no interior station and their soft DEM offset alone can be zero.
     levels = kinds * layers
-    xa, xb, xu, xt = crossings(pos_st, seg_of, same, k_st > 0, np.ones(len(k_st), bool))
+    xa, xb, xu, xt = crossings(pos_st, seg_of, same, k_st > 0, np.ones(len(k_st), bool),
+                               widths[seg_of], levels[seg_of])
     xv = (ids[xa], ids[xa + 1], ids[xb], ids[xb + 1])
     apart = levels[seg_of[xa]] > levels[seg_of[xb]]
     for i in range(2):
         for j in range(2, 4):
             apart &= xv[i] != xv[j]                # not a ramp leaving the bridge's own node
     xa, xb, xu, xt = xa[apart], xb[apart], xu[apart], xt[apart]
-    xv = tuple(v[apart] for v in xv)
-    xc = (1 - xu, xu, -(1 - xt), -xt)
-    clear = CLEARANCE * (levels[seg_of[xa]] - levels[seg_of[xb]])
+    # Lift only the deck. A spring on the gap also dug the lower road down, so a 5.5 m
+    # clearance showed up as a 2.7 m bridge over a 2.7 m cutting.
+    xv = (ids[xa], ids[xa + 1])
+    xc = (1 - xu, xu)
+    separation = CLEARANCE * (levels[seg_of[xa]] - levels[seg_of[xb]]) + CLEAR_SLACK
+    def clearance(h):
+        return (1 - xt) * h[ids[xb]] + xt * h[ids[xb + 1]] + separation
+    clear = clearance(target)
     # the road under a bridge passes close to the bridge's approaches in plan: they are not
     # one surface, so no coupling ties them (it dragged the trunk down to the underpass)
     if len(xa):
@@ -311,12 +378,15 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
             for c, v in zip(xc, xv):
                 b += np.bincount(v, CLEAR_WEIGHT * active * aim * c, nvar)
             x, its, residual = cg(b)
+            # A lower bridge can itself have risen in this solve. Its DEM target is
+            # no longer the road below us: measure the solved surfaces every pass.
+            clear = clearance(dem + x)
             short = clear - gap(dem + x)
-            if not len(xa) or short.max() < .1:
+            if not len(xa) or short.max() < CLEAR_TOL:
                 break
             # a low crossing joins the set; an active one aims higher by what it still lacks
             aim = np.where(active > 0, aim + np.maximum(short, 0), clear)
-            active = np.where(short > .1, 1., active)
+            active = np.where(short > CLEAR_TOL, 1., active)
         h = dem + x
         grade = np.abs(h[eb] - h[ea]) / el
         over = grade > edge_max + .002

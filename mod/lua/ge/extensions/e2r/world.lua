@@ -11,6 +11,11 @@ local logTag = 'e2r_world'
 local LANG = 'uk'   -- build_mod.py --lang en rewrites this line (the English packages: UK, California, New York)
 local NATIVE = true   -- fixed for releases; protocol stubs remain for isolated widget tests
 local native = NATIVE and require('ge/extensions/e2r/native') or nil
+-- On M, not a chunk local: this file is already at LuaJIT's 200-local limit.
+M.live = (function()
+  local ok, mod = pcall(require, 'ge/extensions/e2r/live')
+  if ok and type(mod) == 'table' and type(mod.request) == 'function' then return mod end
+end)()
 local planetMap = NATIVE and require('ge/extensions/e2r/planetMap') or nil
 local quality = require('ge/extensions/e2r/quality')
 local detail = require('ge/extensions/e2r/detail')
@@ -3062,6 +3067,25 @@ local function drawLandingBar()
       im.PopStyleColor(3)
       im.SameLine()
       im.Text(string.format('%s%.5f, %.5f', country and (country.title .. '  ') or '', S.marker.lat, S.marker.lon))
+    elseif M.live then
+      if im.Button(L('Завантажити й висадитися', 'Download and land'), im.ImVec2(240, 30)) then
+        M.live.request(S.marker.lat, S.marker.lon)
+        S.liveArmed = true
+      end
+      local st = M.live.status()
+      if S.liveArmed and st and (st.message_uk or st.message_en) then
+        im.TextColored(theme.muted, lang == 'en' and (st.message_en or st.message_uk) or (st.message_uk or st.message_en))
+      elseif S.liveArmed then
+        im.TextColored(theme.warn, L('Завантаження ще не почалось.',
+          'The download has not started.'))
+      else
+        im.TextColored(theme.muted, L('Пакета тут немає. Кнопка качає OSM і висоти в самій грі.',
+          'No pack here. The button downloads OSM and elevation in the game.'))
+      end
+      if S.liveArmed and native.at(S.marker.lat, S.marker.lon) then
+        S.liveArmed = false
+        land()
+      end
     else
       im.TextColored(theme.warn, string.format(L('%.5f, %.5f - тут немає даних. Оберіть зелену зону або встановіть пакет.',
         '%.5f, %.5f - no data here. Pick a green area or install a pack.'), S.marker.lat, S.marker.lon))
@@ -3392,10 +3416,15 @@ local function drawWindow()
     local st = S.status and S.status.stream
     local p, v = focus()
     if st and st.edgeKm and st.edgeKm < 3 then
-      im.TextColored(im.ImVec4(1, 0.5, 0.2, 1), string.format(L('Край завантаженої області: %.1f км. Далі доріг немає -',
-        'Edge of the loaded area: %.1f km. No roads beyond it -'), math.max(0, st.edgeKm)))
-      im.TextColored(im.ImVec4(1, 0.5, 0.2, 1), L('висадьтеся ближче до нової точки ("Обрати інше місце").',
-        'land again near a new point ("Pick another place").'))
+      if st.live then
+        im.TextColored(im.ImVec4(1, 0.5, 0.2, 1), string.format(L('Край вікна: %.1f км. Околиця ще докачується.',
+          'Edge of the window: %.1f km. The surroundings are still downloading.'), math.max(0, st.edgeKm)))
+      else
+        im.TextColored(im.ImVec4(1, 0.5, 0.2, 1), string.format(L('Край завантаженої області: %.1f км. Далі доріг немає -',
+          'Edge of the loaded area: %.1f km. No roads beyond it -'), math.max(0, st.edgeKm)))
+        im.TextColored(im.ImVec4(1, 0.5, 0.2, 1), L('висадьтеся ближче до нової точки ("Обрати інше місце").',
+          'land again near a new point ("Pick another place").'))
+      end
     end
     if p and not tileLoadedAt(p.x, p.y) then
       im.TextColored(im.ImVec4(1, 0.7, 0.2, 1), L('Генерую світ попереду, зачекайте...', 'Generating the world ahead, please wait...'))
@@ -3602,6 +3631,10 @@ local function runTest()
       built = stream.built, ready = stream.readyCount, error = S.lastError,
       cachedTiles = stream.cachedTiles, cachedCells = stream.cachedCells, rebuilds = stream.rebuilds,
       slowResumes = stream.slowResumes}
+    if M.live and M.live.status then
+      local liveState = M.live.status()
+      if liveState then result.live = {message_en = liveState.message_en, message_uk = liveState.message_uk} end
+    end
     local P = S.prof
     if P and P.frames > 0 then
       local mean = {}
@@ -3628,6 +3661,10 @@ local function runTest()
     return
   end
   if test.pickerOnly then return end
+  -- the landing bar may leave the picker on its own once the live window exists
+  if S.liveTest and not S.testLanded and S.state ~= 'pick' then
+    S.testLanded = true
+  end
   -- manual play: the automation only picks the point and lands; the player drives from there
   if test.manual and S.testLanded and S.state ~= 'pick' then
     -- keep the report current for the drive (it was frozen at the landing, play-bilychi-01)
@@ -3678,9 +3715,19 @@ local function runTest()
     goTo(test.lat, test.lon, 15)
     S.testPicked, S.phaseAt = S.now, S.now
   elseif S.state == 'pick' and S.testPicked and not S.testLanded and (test.skipMap or mapTexN > 0) and t > 2 then
-    shot('2-marker')
-    S.testLanded = true
-    land()
+    if NATIVE and M.live and not native.at(test.lat, test.lon) then
+      if not S.liveArmed then
+        shot('2-marker')
+        M.live.request(test.lat, test.lon)
+        S.liveArmed = true
+        S.liveTest = true
+      end
+    else
+      shot('2-marker')
+      S.liveArmed = false
+      S.testLanded = true
+      land()
+    end
   elseif S.state == 'driving' and not S.testDriving and S.now - S.phaseAt > 4 then
     local veh = getPlayerVehicle(0)
     local p = veh:getPosition()

@@ -262,6 +262,9 @@ TEXTURES['hw_silicate'] = {'baseColorMap': f'{_T}/brick/brick_painted/t_brick_pa
 TEXTURES['hw_siding'] = {'baseColorMap': f'{_T}/wood/eca_bld_woodcladding_new/eca_bld_woodcladding_new_d.png',
                          'normalMap': f'{_T}/wood/eca_bld_woodcladding_new/eca_bld_woodcladding_new_n.png'}
 TEXTURES['hw_wood'] = _maps(f'{_T}/wood/ut_bld_wood_old', 't_ut_bld_wood_old', 'b', 'nm', 'r', 'ao')
+TEXTURES['hw_oldbrick'] = _maps(f'{_T}/brick/t_italy_bld_old_bricks', 't_italy_bld_old_bricks', 'b', 'nm', 'r')
+TEXTURES['hw_flatbrick'] = _maps(f'{_T}/brick/t_italy_bld_big_flat_bricks', 't_italy_bld_big_flat_bricks', 'b', 'nm', 'r')
+TEXTURES['hw_stone'] = _maps(f'{_T}/brick/stone_brick_irregular', 't_stone_brick_irregular', 'b', 'nm', 'r', 'ao')
 TEXTURES['win_pvc'] = _maps('/assets/materials/trim/plastic/windows_doors', 't_windows_doors', 'b', 'nm', 'r', 'ao')
 TEXTURES['win_wood'] = _maps('/assets/materials/atlas/t_italy_bld_windows', 't_italy_bld_windows', 'b', 'nm', 'r')
 TEXTURES['door_house'] = {'baseColorMap': '/assets/materials/atlas/m_door/doors1_d.png',
@@ -272,6 +275,8 @@ HOUSE_WALLS = {   # kind: (texture, flat colour for a game without the maps)
     'hw_pink': ('hw_stucco', [.78, .64, .6]), 'hw_aged': ('hw_aged', [.6, .57, .48]),
     'hw_brick_red': ('hw_brick', [.55, .32, .26]), 'hw_silicate': ('hw_silicate', [.82, .8, .76]),
     'hw_siding': ('hw_siding', [.72, .68, .58]), 'hw_wood': ('hw_wood', [.36, .3, .24]),
+    'hw_oldbrick': ('hw_oldbrick', [.48, .28, .22]), 'hw_flatbrick': ('hw_flatbrick', [.62, .4, .32]),
+    'hw_stone': ('hw_stone', [.62, .6, .56]), 'hw_boards': ('boards', [.72, .64, .5]),
 }
 for _k, (_tex, _rgb) in HOUSE_WALLS.items():
     KINDS[_k] = (_tex, [*_rgb, 1], 'ROCK', 3.0, 'wall')
@@ -279,8 +284,10 @@ KINDS['win_pvc'] = ('win_pvc', [.22, .26, .3, 1], 'GLASS', 1.0, 'wall')
 KINDS['win_wood'] = ('win_wood', [.3, .22, .15, 1], 'GLASS', 1.0, 'wall')
 KINDS['door_house'] = ('door_house', [.32, .24, .18, 1], 'WOOD', 1.0, 'wall')
 KINDS['plinth_brown'] = ('plinth', [.36, .22, .18, 1], 'ROCK', 3.0, 'wall')
+# A house chimney shares the red-brick maps. One slot for the whole tile, not a texture per house.
+KINDS['chimney'] = ('hw_brick', [.42, .24, .20, 1], 'ROCK', 1.6, 'wall')
 # flat colours in a game without the maps: every house kind keeps its look's colour
-BUILDING_FALLBACK.update({k: None for k in (*HOUSE_WALLS, 'win_pvc', 'win_wood', 'door_house')})
+BUILDING_FALLBACK.update({k: None for k in (*HOUSE_WALLS, 'win_pvc', 'win_wood', 'door_house', 'chimney')})
 BUILDING_FALLBACK['plinth_brown'] = 'concrete'
 FALLBACK.update(BUILDING_FALLBACK)
 # footpaths and fences (decoration, no collision)
@@ -331,7 +338,9 @@ TINT.update({'roof_sheet': _factor((158, 158, 150), .677), 'roof_mtile_red': _fa
 TINT.update({'hw_white': _factor((236, 234, 226), .885), 'hw_yellow': _factor((226, 196, 124), .885),
              'hw_blue': _factor((170, 196, 216), .885), 'hw_green': _factor((182, 206, 168), .885),
              'hw_pink': _factor((226, 192, 182), .885), 'hw_silicate': _factor((222, 218, 206), .948),
-             'hw_siding': _factor((188, 180, 156), .486), 'plinth_brown': _factor((112, 68, 56), .862)})
+             'hw_siding': _factor((188, 180, 156), .486), 'plinth_brown': _factor((112, 68, 56), .862),
+             # mild soot darkening; the game treats the factor as sRGB (see _factor)
+             'chimney': [.86, .8, .76, 1]})
 
 # Stock PBR textures: referenced in the installed game, never copied into the mod.
 for _name, _path in {

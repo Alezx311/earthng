@@ -24,13 +24,25 @@ def line(x0, y0, x1, y1, z=20):
 
 # plan bounds (x0, x1, y0, y1) of the stock street props, from the installed DAE geometry
 PROP_BOUNDS = {'bollard_hoop_grey.dae': (-.518, .518, -.175, .175), 'bollard_yellow.dae': (-.2, .2, -.2, .2),
+               'bollard_hoop_red.dae': (-.518, .518, -.175, .175),
                'garbage_bin_a.dae': (-.253, .253, -.235, .26), 'garbage_bin_b.dae': (-.253, .253, -.235, .321),
                'clutter_city_bench_wood.dae': (-1, 1, -.357, .205), 'planterbox.dae': (-.46, .46, -.46, .46),
                'clutter_city_bike_stand.dae': (-2.079, 2.079, -.321, .321), 'hydrant1.dae': (-.326, .326, -.377, .377),
                'postbox_blue.dae': (-.335, .249, -.32, .32), 'clutter_city_bin_round.dae': (-.348, .348, -.348, .348),
-               'italy_clutter_metal_bin.DAE': (-.171, .171, -.171, .171), 'italy_clutter_dumpster.DAE': (-.783, .783, -.414, .414),
+               'italy_clutter_metal_bin.DAE': (-.171, .171, -.171, .171),
+               'italy_clutter_metal_bin_small.DAE': (-.1, .1, -.1, .1),
+               'italy_clutter_dumpster.DAE': (-.783, .783, -.414, .414),
                'italy_clutter_big_dustbin.DAE': (-.356, .347, -.367, .34), 'clutter_city_bollard_concrete.dae': (-.385, .385, -.385, .385),
-               'ind_dumpster_full.DAE': (-1.516, 1.501, -.818, .818), 'ind_dumpster_empty.DAE': (-1.516, 1.501, -.818, .818)}
+               'ind_dumpster_full.DAE': (-1.516, 1.501, -.818, .818), 'ind_dumpster_empty.DAE': (-1.516, 1.501, -.818, .818),
+               'clutter_city_wood_stool.dae': (-.294, .294, -.294, .294),
+               'clutter_city_wood_table_small.dae': (-.291, .291, -.435, .435),
+               'clutter_city_wood_table.dae': (-.291, .291, -.785, .785),
+               'clutter_city_chalkboard_sign.dae': (-.234, .234, -.363, .363),
+               'clutter_barrels_red.dae': (-.297, .297, -.297, .297),
+               'clutter_barrels_white.dae': (-.297, .297, -.297, .297),
+               's_wood_crate_closed.dae': (-.785, .785, -1.502, 1.502),
+               's_wheelbarrow.dae': (-.936, .910, -.384, .391),
+               'hr_plasticbarrier.DAE': (-.741, .741, -.27, .27)}
 # a paved retail frontage under the test tile: its footways take the street's furniture
 RETAIL = {'id': 'retail', 'kind': 'paved', 'tags': {'landuse': 'retail'},
           'rings': [[[-50, -50], [550, -50], [550, 550], [-50, 550]]]}
@@ -305,6 +317,71 @@ class GeneratorTests(unittest.TestCase):
         # a deck 5 m higher (a stacked bridge) is not the same surface: both keep their parapets
         stacked = parapets([deck('n', 254.85), deck('s', 245.15, step=5)])
         self.assertTrue([y for y in stacked if 245 < y < 255])
+
+    def test_a_low_pack_bridge_clears_a_truck_and_the_approaches_ramp(self):
+        # Installed Ukraine pack, bridge 2149 over road 148723 near 50.45845, 30.42135:
+        # the stored deck sits about 2 m above the road, and the soffit is 1 m thick, so the
+        # headroom is about 1 m. A pack that already clears by 4.5 m is left on its profile.
+        # The same geometry shifted onto Kyiv's negative coordinates locks the deck bins.
+        def way(name, nodes, points, tags, width=12):
+            return {'id': name, 'nodes': nodes, 'width': width, 'points': points,
+                    'tags': dict(tags, highway='primary', sidewalk='no')}
+
+        def scene(bridge_z, origin=(0, 0), tile=(0, 0), extra=()):
+            ox, oy = origin
+            def moved(points):
+                return [[x + ox, y + oy, z] for x, y, z in points]
+            roads = [
+                way('west', ['w', 'a'], moved(line(0, 250, 200, 250, 20)), {}),
+                way('deck', ['a', 'b'], moved(line(200, 250, 300, 250, bridge_z)),
+                    {'bridge': 'yes', 'layer': '1'}),
+                way('east', ['b', 'e'], moved(line(300, 250, 500, 250, 20)), {}),
+                way('under', ['u', 'v'], moved(line(250, 0, 250, 500, 20)), {}, 40),
+                *extra,
+            ]
+            built = self.build([{'roads': roads}], i=tile[0], j=tile[1])
+            road, walls = built[0], built[1]
+            asphalt = list(self.triangles(road, 'e2rf_road_major'))
+            soffit = [t for t in self.triangles(walls, 'e2rf_fence_wall')
+                      if abs(sum(p[0] for p in t) / 3 - (ox + 250)) < 12
+                      and abs(sum(p[1] for p in t) / 3 - (oy + 250)) < 12]
+            return asphalt, soffit
+
+        def check(origin, tile=(0, 0)):
+            ox, oy = origin
+            low, soffit = scene(22, origin, tile)
+            self.assertTrue(soffit, origin)
+            lower = self.surface_at(low, ox + 250, oy + 40)
+            self.assertAlmostEqual(lower, 20.1, places=2)
+            headroom = min(p[2] for t in soffit for p in t) - lower
+            self.assertGreaterEqual(headroom, 4.5, origin)
+            # 20 + 5.5 + 0.1 of slack, plus the 0.1 road lift. A second helping of the
+            # same lack (a wide road under several segments) would land near 29.
+            self.assertLess(self.surface_at(low, ox + 250, oy + 250), 26.4, origin)
+            self.assertAlmostEqual(self.surface_at(low, ox, oy + 250), 20.1, delta=.05)
+            self.assertAlmostEqual(self.surface_at(low, ox + 500, oy + 250), 20.1, delta=.05)
+            samples = [(x, self.surface_at(low, ox + x, oy + 250)) for x in range(0, 501, 10)]
+            self.assertTrue(all(z is not None for _, z in samples), origin)
+            for (x0, z0), (x1, z1) in zip(samples, samples[1:]):
+                self.assertLessEqual(abs(z1 - z0) / (x1 - x0), .065, (origin, x0, z0, z1))
+            # 6% over 20 m is 1.2 m. A missed abutment is the whole 3.6 m lift.
+            joint = [self.surface_at(low, ox + x, oy + 250) for x in (190, 200, 210)]
+            self.assertLessEqual(max(joint) - min(joint), 1.35, joint)
+            clear, _ = scene(30, origin, tile)
+            self.assertAlmostEqual(self.surface_at(clear, ox + 250, oy + 250), 30.1, delta=.05)
+            self.assertAlmostEqual(self.surface_at(clear, ox, oy + 250), 20.1, delta=.05)
+
+        check((0, 0))
+        # tile (-47, -8) is x [-23500, -23000), y [-4000, -3500): the whole span, on negative bins
+        check((-23500, -4000), (-47, -8))
+        # a 20% street in the same tile keeps its hill; the ramp must not terrace it
+        hill_pts = line(0, 40, 100, 40, 10)
+        for p in hill_pts:
+            p[2] = 10 + 20 * p[0] / 100
+        hill = way('hill', ['h1', 'h2'], hill_pts, {}, 7)
+        asphalt, _ = scene(22, extra=(hill,))
+        self.assertAlmostEqual(self.surface_at(asphalt, 0, 40), 10.1, delta=.05)
+        self.assertAlmostEqual(self.surface_at(asphalt, 100, 40), 30.1, delta=.05)
 
     def test_per_side_sidewalk_tags_win(self):
         def sides(tags):
@@ -903,6 +980,47 @@ class GeneratorTests(unittest.TestCase):
         self.assertLessEqual({p[3].rsplit('/', 1)[1] for p in placed},
                              {'clutter_city_bench_wood.dae', 'garbage_bin_a.dae', 'garbage_bin_b.dae', 'italy_clutter_big_dustbin.DAE'})
 
+    def test_postsoviet_streets_use_european_furniture(self):
+        # a city street with no houses: the sidewalk mix, not the village set
+        road = {'id': 'street', 'width': 8, 'tags': {'highway': 'residential', 'sidewalk': 'both', 'lit': 'yes'},
+                'points': [[0, 250, 10], [500, 250, 10]]}
+        look = {'block': 'postsoviet', 'statics': 'street'}
+        scene = self.build([{'roads': [road]}], terrainStep=100, propSpacing=6, maxTrees=0, look=look)[1]
+        furniture = [item for item in scene['items'].values() if item.streetKind == 'furniture']
+        names = {item.shape.rsplit('/', 1)[-1] for item in furniture}
+        self.assertIn('bollard_hoop_red.dae', names)
+        self.assertIn('italy_clutter_metal_bin.DAE', names)
+        self.assertNotIn('postbox_blue.dae', names)
+        self.assertNotIn('bollard_yellow.dae', names)
+        self.assertFalse([item.shape for item in furniture if 'sign_' in item.shape])
+        lamps = [item.shape for item in scene['items'].values() if item.streetKind == 'lamp']
+        self.assertTrue(lamps)
+        self.assertTrue(all(shape.endswith('lamp1.dae') for shape in lamps))
+
+    def test_postsoviet_village_and_park_skip_the_american_bins(self):
+        road = {'id': 'street', 'width': 6, 'tags': {'highway': 'residential', 'sidewalk': 'both'},
+                'points': [[0, 250, 10], [500, 250, 10]]}
+        houses = [{'id': f'house{k}', 'height': 6, 'tags': {'building': 'yes'},
+                   'rings': [[[20 + 25 * k, 268], [30 + 25 * k, 268], [30 + 25 * k, 278], [20 + 25 * k, 278]]]}
+                  for k in range(19)]
+        look = {'block': 'postsoviet'}
+        placed = self.furniture([{'roads': [road], 'buildings': houses}], look=look)
+        village = {p[3].rsplit('/', 1)[1] for p in placed}
+        self.assertLessEqual(village, {'clutter_city_bench_wood.dae', 'italy_clutter_metal_bin.DAE',
+                                       'italy_clutter_metal_bin_small.DAE', 'italy_clutter_big_dustbin.DAE'})
+        self.assertIn('italy_clutter_metal_bin.DAE', village)
+        self.assertNotIn('garbage_bin_a.dae', village)
+        self.assertNotIn('postbox_blue.dae', village)
+        park = {'id': 'park', 'kind': 'park', 'tags': {'leisure': 'park'},
+                'rings': [[[0, 0], [200, 0], [200, 500], [0, 500]]]}
+        walk = {'id': 'park', 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[100, 40, 10], [100, 460, 10]]}
+        placed = self.furniture([{'areas': [park], 'lines': [walk]}], look=look, propSpacing=6)
+        kinds = {p[3].rsplit('/', 1)[1] for p in placed if abs(p[0] - 100) < 4}
+        self.assertLessEqual(kinds, {'clutter_city_bench_wood.dae', 'clutter_city_bin_round.dae',
+                                     'clutter_city_wood_table_small.dae', 'clutter_city_wood_stool.dae'})
+        self.assertIn('clutter_city_bench_wood.dae', kinds)
+        self.assertTrue(kinds & {'clutter_city_wood_table_small.dae', 'clutter_city_wood_stool.dae'})
+
     def test_street_furniture_on_a_square_stays_on_it(self):
         square = {'id': 'square', 'kind': 'paved', 'tags': {'place': 'square'},
                   'rings': [[[100, 100], [220, 100], [220, 180], [100, 180]]]}
@@ -1234,9 +1352,13 @@ class GeneratorTests(unittest.TestCase):
         scene = self.build([{'buildings': [house]}], terrainStep=100)[1]
         windows = [t for name in ('e2rf_win_pvc', 'e2rf_win_wood') for t in self.triangles(scene, name)]
         doors = list(self.triangles(scene, 'e2rf_door_house'))
-        # 3 windows a floor on the 12 m walls, 2 on the 8 m ones, two floors; one slot is the door
-        self.assertEqual((len(windows) // 2, len(doors) // 2), (19, 1))
-        for t in windows + doors:
+        # 3 windows a floor on the 12 m walls, 2 on the 8 m ones, two floors; one slot is the door.
+        # A gable may add one attic quad above the wall top (16 m).
+        wall = [t for t in windows if max(p[2] for p in t) < 16]
+        attic = [t for t in windows if min(p[2] for p in t) > 16]
+        self.assertEqual((len(wall) // 2, len(doors) // 2), (19, 1))
+        self.assertLessEqual(len(attic) // 2, 1)
+        for t in wall + doors:
             for x, y, z in t:
                 outside = min(abs(x - 100), abs(x - 112), abs(y - 100), abs(y - 108))
                 self.assertAlmostEqual(outside, .03, places=6)     # 3 cm out from the wall
@@ -1244,6 +1366,155 @@ class GeneratorTests(unittest.TestCase):
         # the door is on a 12 m wall, on the ground
         self.assertTrue(all(abs(y - 99.97) < 1e-6 or abs(y - 108.03) < 1e-6 for t in doors for _x, y, _z in t))
         self.assertAlmostEqual(min(z for t in doors for _x, _y, z in t), 10.1)
+
+    def test_house_massing_stays_off_the_far_ring_and_potato(self):
+        # Grammar v0: large parts are a few quads. Windows stay atlas cells, thinned when detail is low.
+        def house(bid, levels='2'):
+            return {'id': bid, 'height': 6, 'tags': {'building': 'house', 'building:levels': levels},
+                    'rings': [[[100, 100, 10], [112, 100, 10], [112, 108, 10], [100, 108, 10]]]}
+        scene = self.build([{'buildings': [house('mass')]}], terrainStep=100)[1]
+        chimneys = list(self.triangles(scene, 'e2rf_chimney'))
+        self.assertEqual(len(chimneys), 10)  # four sides and a top
+        self.assertGreater(max(p[2] for t in chimneys for p in t), 16)
+        self.assertTrue(all(99 < p[0] < 113 and 99 < p[1] < 109 for t in chimneys for p in t))
+        gable = [p for t in self.triangles(scene, 'e2rf_gable') for p in t]
+
+        def past(p, margin):
+            return p[0] < 100 - margin or p[0] > 112 + margin or p[1] < 100 - margin or p[1] > 108 + margin
+
+        # cornice sits 7 cm outside the walls, up at the eaves; the porch reaches ~0.85 m out
+        self.assertTrue(any(p[2] > 15.5 and past(p, .04) for p in gable))
+        self.assertTrue(any(p[2] < 14 and past(p, .5) for p in gable))
+        flat = {'id': 'flat', 'height': 6, 'tags': {'building': 'house', 'roof:shape': 'flat'},
+                'rings': [[[200, 100, 10], [212, 100, 10], [212, 108, 10], [200, 108, 10]]]}
+        flat_scene = self.build([{'buildings': [flat]}], terrainStep=100)[1]
+        self.assertFalse(list(self.triangles(flat_scene, 'e2rf_chimney')))
+        far = self.build([{'buildings': [house('far')]}], terrainStep=100, far=True)[1]
+        self.assertFalse(list(self.triangles(far, 'e2rf_chimney')))
+        self.assertFalse(list(self.triangles(far, 'e2rf_gable')))
+
+        def window_quads(built):
+            return [t for name in ('e2rf_win_pvc', 'e2rf_win_wood') for t in self.triangles(built, name)]
+
+        full = len(window_quads(scene))
+        potato = self.build([{'buildings': [house('pot')]}], terrainStep=100, detail=0)[1]
+        self.assertLess(len(window_quads(potato)), full)
+        self.assertFalse(list(self.triangles(potato, 'e2rf_chimney')))
+        self.assertTrue(list(self.triangles(potato, 'e2rf_door_house')))
+
+        def lua_hash(value):
+            h = 17
+            for byte in value.encode():
+                h = (h * 131 + byte) % 2147483647
+            return h
+
+        bid = next(f'bal{k}' for k in range(80) if lua_hash(f'bal{k}') % 4 == 1)
+        bal = self.build([{'buildings': [house(bid)]}], terrainStep=100)[1]
+        deck = [p for t in self.triangles(bal, 'e2rf_gable') for p in t
+                if 13 < p[2] < 14.2 and past(p, .5)]
+        self.assertTrue(deck, bid)
+
+    def test_city_blocks_gain_a_rim_a_crown_and_a_canopy(self):
+        # Flat city blocks, near tiles, detail >= 40. Photo walls stay one quad. The new parts
+        # are a socle, a parapet with a coping, one roof bulkhead and concrete canopies.
+        def block(bid, height, rings, **tags):
+            return {'id': bid, 'height': height, 'tags': tags, 'rings': rings}
+
+        def rect(x, y, w, d, z=10):
+            return [[[x, y, z], [x + w, y, z], [x + w, y + d, z], [x, y + d, z]]]
+
+        panel = block('panel', 27, rect(100, 100, 40, 16), **{'building': 'apartments', 'building:material': 'panel'})
+        scene = self.build([{'buildings': [panel]}], terrainStep=100)[1]
+        top = 37
+        parapet = list(self.triangles(scene, 'e2rf_parapet'))
+        self.assertGreater(len(parapet), 16)
+        self.assertLess(len(parapet), 80)
+        self.assertFalse(list(self.triangles(scene, 'e2rf_chimney')))
+        high = [p for t in parapet for p in t if p[2] > top + 1]
+        self.assertTrue(high)
+        self.assertTrue(all(99 < p[0] < 141 and 99 < p[1] < 117 for p in high))
+        self.assertTrue(any(p[2] > top + .3 and p[1] < 99.97 for t in parapet for p in t))
+        self.assertTrue(any(12 < p[2] < 16 and p[1] < 99.2 for t in parapet for p in t))
+        # The orbit camera is above the ledge, so the top faces up and the fascia faces out.
+        hood_n = [n for x, y, z, *n in self.corners(scene, 'e2rf_parapet') if 12 < z < 16 and y < 99.2]
+        self.assertTrue(any(n[2] > .5 for n in hood_n))
+        self.assertTrue(any(n[1] < -.5 for n in hood_n))
+        socle = [p for t in self.triangles(scene, 'e2rf_plinth') for p in t]
+        self.assertTrue(any(9.9 < p[2] < 10.4 and p[1] < 99.98 for p in socle))
+        walls = [p[2] for item, mesh in self.meshes(scene) if str(mesh.material).startswith('e2rf_wall_')
+                 for k in range(1, len(mesh.verts) + 1)
+                 for p in [(mesh.verts[k].x, mesh.verts[k].y, mesh.verts[k].z + item.pos[3])]]
+        self.assertTrue(any(abs(z - top) < 1e-6 for z in walls))
+        # The face has vertices only at the roof and at the rim, so the band between them is empty.
+        south = [n for x, y, z, *n in self.corners(scene, 'e2rf_parapet')
+                 if y < 99.97 and abs(n[2]) < .2 and top - .05 <= z <= top + 1.2]
+        self.assertTrue(south)
+        self.assertTrue(all(n[1] < -.5 for n in south))
+        coping = [n for x, y, z, *n in self.corners(scene, 'e2rf_parapet') if z > top + .65]
+        self.assertTrue(any(n[2] > .5 for n in coping))
+
+        house = block('mass', 6, rect(200, 100, 12, 8), **{'building': 'house', 'building:levels': '2'})
+        house_scene = self.build([{'buildings': [house]}], terrainStep=100)[1]
+        self.assertEqual(len(list(self.triangles(house_scene, 'e2rf_chimney'))), 10)
+        self.assertFalse(list(self.triangles(house_scene, 'e2rf_parapet')))
+
+        shed = block('shed', 10, rect(100, 200, 30, 12), **{'building': 'shed'})
+        garage = block('row', 12, rect(100, 300, 60, 8), **{'building': 'garages'})
+        quiet = self.build([{'buildings': [shed, garage]}], terrainStep=100)[1]
+        self.assertFalse(list(self.triangles(quiet, 'e2rf_parapet')))
+
+        far = self.build([{'buildings': [panel]}], terrainStep=100, far=True)[2]
+        self.assertEqual(far.triangles, 10)
+        self.assertFalse(list(self.triangles(far, 'e2rf_parapet')))
+        potato = self.build([{'buildings': [panel]}], terrainStep=100, detail=0)[1]
+        self.assertFalse(list(self.triangles(potato, 'e2rf_parapet')))
+        self.assertFalse(list(self.triangles(potato, 'e2rf_plinth')))
+
+        court = block('court', 20, [
+            [[100, 100, 10], [160, 100, 10], [160, 160, 10], [100, 160, 10]],
+            [[120, 120, 10], [140, 120, 10], [140, 140, 10], [120, 140, 10]]],
+            **{'building': 'apartments'})
+        court_scene = self.build([{'buildings': [court]}], terrainStep=100)[1]
+        court_top = 30
+        rim = [p for t in self.triangles(court_scene, 'e2rf_parapet') for p in t]
+        self.assertTrue(any(p[1] < 99.97 and court_top < p[2] < court_top + 1 for p in rim))
+        self.assertFalse(any(court_top < p[2] < court_top + 1 and 120.5 < p[0] < 139.5 and 120.2 < p[1] < 121 for p in rim))
+        crown = [p for p in rim if p[2] > court_top + 1]
+        self.assertTrue(crown)
+        self.assertTrue(all(not (120.4 < p[0] < 139.6 and 120.4 < p[1] < 139.6) for p in crown))
+
+        ell = block('ell', 22, [[
+            [100, 100, 10], [150, 100, 10], [150, 118, 10], [118, 118, 10], [118, 150, 10], [100, 150, 10]]],
+            **{'building': 'apartments'})
+        ell_scene = self.build([{'buildings': [ell]}], terrainStep=100)[1]
+        ell_crown = [p for t in self.triangles(ell_scene, 'e2rf_parapet') for p in t if p[2] > 33]
+        self.assertTrue(ell_crown)
+        self.assertTrue(all(not (p[0] > 118.4 and p[1] > 118.4) for p in ell_crown))
+
+        gabled = block('pitch', 18, rect(100, 100, 30, 12), **{'building': 'apartments', 'roof:shape': 'gabled'})
+        pitched = self.build([{'buildings': [gabled]}], terrainStep=100)[1]
+        self.assertTrue(all(p[2] < 18 for t in self.triangles(pitched, 'e2rf_parapet') for p in t))
+
+        # North wall is the first long side. A road to the south pulls the canopy onto that face.
+        faced = block('faced', 27, [[[140, 116, 10], [100, 116, 10], [100, 100, 10], [140, 100, 10]]],
+                      **{'building': 'apartments', 'building:material': 'panel'})
+        road = {'id': 'street', 'width': 8, 'points': [[80, 88, 10], [180, 88, 10]],
+                'tags': {'highway': 'residential', 'sidewalk': 'no'}}
+        faced_scene = self.build([{'roads': [road], 'buildings': [faced]}], terrainStep=100)[1]
+        hood = [p for t in self.triangles(faced_scene, 'e2rf_parapet') for p in t if 12 < p[2] < 16]
+        self.assertTrue(any(p[1] < 99.2 for p in hood))
+        self.assertTrue(any(p[1] > 116.2 for p in hood))
+
+        # A long facade cut into 10 m OSM edges is still one wall: hoods reach the far end.
+        split = block('split', 27, [[
+            [100, 100, 10], [110, 100, 10], [120, 100, 10], [130, 100, 10],
+            [140, 100, 10], [150, 100, 10], [160, 100, 10], [170, 100, 10],
+            [180, 100, 10], [180, 116, 10], [100, 116, 10]]],
+            **{'building': 'apartments', 'building:material': 'panel'})
+        split_scene = self.build([{'roads': [road], 'buildings': [split]}], terrainStep=100)[1]
+        split_hood = [p for t in self.triangles(split_scene, 'e2rf_parapet') for p in t if 12 < p[2] < 16]
+        self.assertTrue(any(p[1] < 99.2 and p[0] > 155 for p in split_hood))
+        self.assertTrue(any(p[1] > 116.2 for p in split_hood))
 
     def test_post_soviet_roofs_mix_slate_and_metal_tile_with_uv_down_the_slope(self):
         houses = [{'id': f'h{k}', 'height': 4, 'tags': {'building': 'house'},
@@ -1290,6 +1561,38 @@ class GeneratorTests(unittest.TestCase):
                   if all(p[0] >= 200 for p in t)]
         self.assertTrue(plinth)
         self.assertAlmostEqual(max(p[2] for t in plinth for p in t), 10.35)
+
+    def test_low_houses_mix_stone_old_brick_and_boards(self):
+        stone = {'id': 'stone', 'height': 6, 'tags': {'building': 'house', 'building:material': 'stone'},
+                 'rings': [[[100, 100, 10], [112, 100, 10], [112, 110, 10], [100, 110, 10]]]}
+        scene = self.build([{'buildings': [stone]}], terrainStep=100)[1]
+        self.assertTrue(list(self.triangles(scene, 'e2rf_hw_stone')))
+        plaster = [{'id': f'p{k}', 'height': 6, 'tags': {'building': 'house', 'building:material': 'plaster'},
+                    'rings': [[[k * 20, 200, 10], [k * 20 + 10, 200, 10], [k * 20 + 10, 210, 10], [k * 20, 210, 10]]]}
+                   for k in range(40)]
+        plain = [{'id': f'h{k}', 'height': 5, 'tags': {'building': 'house'},
+                  'rings': [[[k * 16, 300, 10], [k * 16 + 10, 300, 10], [k * 16 + 10, 308, 10], [k * 16, 308, 10]]]}
+                 for k in range(120)]
+        scene = self.build([{'buildings': plaster + plain}], terrainStep=100, tileSize=2000)[1]
+
+        def materials_near(pred):
+            found = set()
+            for item, mesh in self.meshes(scene):
+                name = str(mesh.material)
+                if not name.startswith('e2rf_hw_'):
+                    continue
+                for k in range(1, len(mesh.verts) + 1):
+                    if pred(mesh.verts[k].y + item.pos[2]):
+                        found.add(name)
+                        break
+            return found
+
+        plaster_walls = materials_near(lambda y: y < 250)
+        self.assertTrue(plaster_walls)
+        self.assertTrue(all(material in ('e2rf_hw_white', 'e2rf_hw_yellow', 'e2rf_hw_blue', 'e2rf_hw_green',
+                                         'e2rf_hw_pink', 'e2rf_hw_aged') for material in plaster_walls), plaster_walls)
+        mixed = materials_near(lambda y: y > 250)
+        self.assertTrue({'e2rf_hw_oldbrick', 'e2rf_hw_flatbrick', 'e2rf_hw_stone', 'e2rf_hw_boards'} <= mixed, mixed)
 
     def test_courtyard_stays_open_even_when_pitched_roof_is_requested(self):
         source = [{'buildings': [{'id': 'courtyard', 'height': 6, 'tags': {'roof:shape': 'gabled'},

@@ -16,7 +16,7 @@ for _, kind in ipairs({'mark', 'mark_yellow', 'edge_grass', 'edge_dirt'}) do
   QUIET.road['e2rf_' .. kind], QUIET.scene['e2rf_' .. kind] = true, true
 end
 for _, kind in ipairs({'roof', 'roof_tile', 'roof_metal', 'roof_sheet', 'roof_mtile_red', 'roof_mtile_brown',
-    'win_pvc', 'win_wood', 'door_house', 'door_garage', 'door_rust',
+    'win_pvc', 'win_wood', 'door_house', 'door_garage', 'door_rust', 'chimney',
     'roof_mtile_green', 'footway', 'footway_asphalt', 'trodden', 'ground',
     'paved', 'water', 'glacier', 'bare_rock', 'scree', 'beach', 'wetland', 'orchard', 'vineyard', 'farmland',
     'meadow', 'heath', 'scrub', 'forest', 'park', 'bare_ground'}) do

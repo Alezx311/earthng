@@ -180,8 +180,11 @@ def fields(base):
                    'gable': 'wall_plaster', 'hw_white': 'wall_stucco', 'hw_yellow': 'wall_plaster',
                    'hw_blue': 'wall_pls_blue', 'hw_green': 'wall_pls_green', 'hw_pink': 'wall_pls_peach',
                    'hw_aged': 'wall_plaster', 'hw_brick_red': 'wall_brick_red', 'hw_silicate': 'wall_brick_white',
+                   'hw_oldbrick': 'wall_brick_red', 'hw_flatbrick': 'wall_brick_red', 'hw_stone': 'wall_brick_white',
+                   'hw_boards': 'fence_wall',
                    'hw_siding': 'wall_stucco', 'hw_wood': 'fence_wall', 'win_pvc': 'water', 'win_wood': 'water',
-                   'door_house': 'wall_block', 'plinth_brown': 'paved'}.get(kind, kind)
+                   'door_house': 'wall_block', 'plinth_brown': 'paved',
+                   'chimney': 'wall_brick_red'}.get(kind, kind)
         f.update(baseColorMap=f'{base}/pixel/{texture}.color.png', baseColorFactor='1 1 1 1',
                  emissiveFactor='0 0 0', roughnessFactor=.9, metallicFactor=0)
         if kind == 'mark_yellow':

@@ -1,11 +1,14 @@
 -- Engine-native EarthNG provider. Country ZIPs contain source cells; the Lua
 -- generator creates the same road/scene manifests as the streaming renderer.
--- Nothing is written to the user's filesystem and no companion process is used.
+-- A place with no pack can still be played: live.lua downloads OSM and
+-- elevation in this process and keeps the cells in memory. No companion.
 local M = {}
 local catalog = require('ge/extensions/e2r/countries')
 local generator = require('ge/extensions/e2r/generator')
 local coordinates = require('ge/extensions/e2r/coordinates')
 local cellformat = require('ge/extensions/e2r/cellformat')
+local liveOk, liveMod = pcall(require, 'ge/extensions/e2r/live')
+local live = liveOk and type(liveMod) == 'table' and type(liveMod.sync) == 'function' and liveMod or nil
 -- TILE_LIMIT holds the whole wanted set (1 km near plus the 3 km far ring, ~130 tiles): a
 -- delivered tile keeps only flags, while undelivered geometry is bounded by triangles/vertices.
 -- At 32 the far ring evicted itself and was rebuilt after every 250 m.
@@ -99,12 +102,20 @@ local function readBytes(path)
   return data
 end
 
--- v1 lists every cell in its manifest; v2 keeps a 64-bit presence mask per 8 x 8 km block,
+-- A country pack stores 8 x 8 km blocks. A live window stores one cell per block
+-- (blockCells 1, held in memory) so a cell can appear later without rewriting its neighbour.
+local function blocksOf(d)
+  local b = type(d) == 'table' and d.blockCells
+  if type(b) ~= 'number' or b ~= b or b < 1 or b > cellformat.BLOCK or b % 1 ~= 0 then return cellformat.BLOCK end
+  return b
+end
+
+-- v1 lists every cell in its manifest; v2 keeps a 64-bit presence mask per block,
 -- so a whole country's manifest stays small and nothing is enumerated at startup.
 local function hasCell(r, i, j)
   local d = r.data
   if d.schemaVersion ~= 2 then return d.cells[keyOf(i, j)] ~= nil end
-  local b = cellformat.BLOCK
+  local b = blocksOf(d)
   local block = d.blocks[keyOf(math.floor(i / b), math.floor(j / b))]
   return block ~= nil and cellformat.present(block.mask, i % b + (j % b) * b)
 end
@@ -303,6 +314,15 @@ local function at(lat, lon)
       end
     end
   end
+  if live then
+    local r = live.sync()
+    if r and insideAny(r.coverage, lon, lat) then
+      local x, y = localPoint(r, lat, lon)
+      if safeAt(r, x, y) and covered(r, x - LAND_RADIUS, y - LAND_RADIUS, x + LAND_RADIUS, y + LAND_RADIUS) then
+        return r.country, r.descriptor, x, y, r
+      end
+    end
+  end
 end
 
 local function touch() active.clock = active.clock + 1; return active.clock end
@@ -329,7 +349,8 @@ local function loadBlock(key, block)
   active.pause()
   hit = {data = data, slots = cellformat.block(data), used = touch()}
   active.blocks[key] = hit
-  evict(active.blocks, BLOCK_LIMIT)
+  -- One live cell is one block file. The country-pack limit of 6 would reread every tile.
+  evict(active.blocks, blocksOf(active.region.data) == 1 and 64 or BLOCK_LIMIT)
   return hit
 end
 
@@ -342,10 +363,20 @@ local function loadCell(key, i, j, keep)
   if hit then hit.used = touch(); return hit.data end
   local d = active.region.data
   if d.schemaVersion == 2 then
-    local b, s = cellformat.BLOCK, d.cellSize
+    local b, s = blocksOf(d), d.cellSize
     local blockKey = keyOf(math.floor(i / b), math.floor(j / b))
     local block = d.blocks[blockKey]
     if not block or not hasCell(active.region, i, j) then error('missing source cell: ' .. key) end
+    if block.memory and live and type(live.cell) == 'function' then
+      local cell = live.cell(i, j)
+      if type(cell) ~= 'table' or type(cell.terrain) ~= 'table' then error('missing live cell: ' .. key) end
+      if not active.lows[key] then
+        local low = math.huge
+        for _, h in ipairs(cell.terrain.heights) do if h < low then low = h end end
+        active.lows[key] = low
+      end
+      return cell
+    end
     local loaded = loadBlock(blockKey, block)
     local range = loaded.slots[i % b + (j % b) * b]
     if not range then error('source block lacks cell: ' .. key) end
@@ -523,7 +554,8 @@ local function land(req)
     calls = calls + 1
     if calls % 8 == 0 and a.timer and a.timer:stop() >= a.budget then coroutine.yield() end
   end
-  state.stream = {region = descriptor.id, country = country.id, tile = r.data.tileSize, generator = 'earthng-lua-v1',
+  state.stream = {region = descriptor.id, country = country.id, live = country.id == 'live' or nil,
+    tile = r.data.tileSize, generator = 'earthng-lua-v1',
     geo = affineAt(r, x, y), bounds = r.data.bounds, ready = {}, scenes = {}, far = {}, horizon = {}, wanted = {}, readyCount = 0,
     building = 0, queued = 0, failed = active.failed, built = 0, rebuilds = 0, horizonBuilt = 0, horizonRebuilds = 0,
     meanBuildSeconds = 0, loadRadius = 1000, farRadius = 3000, farFast = 25,
@@ -790,9 +822,22 @@ end
 local function loadTerrain(key, i, j)
   local d = active.region.data
   if d.schemaVersion ~= 2 then return loadCell(key, i, j) end
-  local b, s = cellformat.BLOCK, d.cellSize
+  local b, s = blocksOf(d), d.cellSize
   local blockKey = keyOf(math.floor(i / b), math.floor(j / b))
-  local loaded = loadBlock(blockKey, d.blocks[blockKey])
+  local block = d.blocks[blockKey]
+  if block and block.memory and live and type(live.cell) == 'function' then
+    local cell = live.cell(i, j)
+    if type(cell) ~= 'table' or type(cell.terrain) ~= 'table' then error('missing live cell: ' .. key) end
+    if not cell.low then
+      local low = math.huge
+      for _, h in ipairs(cell.terrain.heights) do if h < low then low = h end end
+      cell.low = low
+    end
+    active.lows[key] = active.lows[key] or cell.low
+    return {terrain = cell.terrain, low = cell.low, roads = {}, junctions = {}, buildings = {},
+      areas = {}, lines = {}, points = {}}
+  end
+  local loaded = loadBlock(blockKey, block)
   local range = loaded.slots[i % b + (j % b) * b]
   if not range then error('source block lacks cell: ' .. key) end
   local cell = cellformat.terrain(loaded.data, range[1], range[2], {i * s, j * s, (i + 1) * s, (j + 1) * s})
@@ -838,7 +883,8 @@ local function buildTile(key, wanted)
       seaLevel = finite(r.data.seaLevel) and r.data.seaLevel or nil,
       maxTrees = tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = tune.maxGrass,
       maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
-      groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = tune.propSpacing})
+      groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = tune.propSpacing,
+      detail = tune.detail})
   if type(road) ~= 'table' or type(road.items) ~= 'table' or type(road.mats) ~= 'table'
     or type(scene) ~= 'table' or type(scene.items) ~= 'table' then error('generator returned an invalid tile manifest') end
   if wanted.far and (type(far) ~= 'table' or type(far.items) ~= 'table') then error('generator returned an invalid far manifest') end
@@ -912,6 +958,9 @@ end
 local function update(dt, budgetMs, farBudgetMs)
   ensure()
   if not active then return end
+  if live and active.region.country.id == 'live' and live.absorb(active.region) then
+    active.prioritiesDirty = true
+  end
   local dirty = active.prioritiesDirty
   local wanted, best, bestKey = dirty and priorities() or active.desired, nil, nil
   local timer = hptimer()
@@ -1022,6 +1071,7 @@ local function pose(p)
     trimTiles()
   end
   local lon, lat = geographic(active.region, p.x, p.y)
+  if live and active.region.country.id == 'live' then live.note(lat, lon) end
   state.stream.car = {lon, lat}
   state.stream.geo = affineAt(active.region, p.x, p.y)
   local b = active.region.data.bounds
@@ -1120,9 +1170,45 @@ local RANK = {motorway = 1, trunk = 1, primary = 1, secondary = 1, tertiary = 2,
 local mapCache, mapClock, mapWork = {}, 0, nil
 
 local function mapBlock(r, key, block)
+  if block and block.memory then
+    if coroutine.running() then coroutine.yield() end
+    local lines = {}
+    if not (live and type(live.cell) == 'function') then return lines end
+    local i, j = key:match('^(-?%d+)_(-?%d+)$')
+    i, j = tonumber(i), tonumber(j)
+    if not i or not j then return lines end
+    local cell = live.cell(i, j)
+    if type(cell) ~= 'table' then return lines end
+    local s = r.data.cellSize
+    local g = affineAt(r, (i + .5) * s, (j + .5) * s)
+    local seen = {}
+    for _, road in ipairs(cell.roads or {}) do
+      if road.id and not seen[road.id] then
+        seen[road.id] = true
+        local highway = tostring((road.tags and road.tags.highway) or ''):gsub('_link$', '')
+        local geo, lastX, lastY = {}, nil, nil
+        local box = {math.huge, math.huge, -math.huge, -math.huge}
+        local pts = road.points or {}
+        for n, p in ipairs(pts) do
+          local x, y = p[1], p[2]
+          if n == 1 or n == #pts or (lastX and (x - lastX) ^ 2 + (y - lastY) ^ 2 >= 225) then
+            local dx, dy = x - g[1], y - g[2]
+            local lat = g[4] + g[7] * dx + g[8] * dy
+            local lon = g[3] + g[5] * dx + g[6] * dy
+            geo[#geo + 1], geo[#geo + 2] = lat, lon
+            box[1], box[2] = math.min(box[1], lat), math.min(box[2], lon)
+            box[3], box[4] = math.max(box[3], lat), math.max(box[4], lon)
+            lastX, lastY = x, y
+          end
+        end
+        if #geo >= 4 then lines[#lines + 1] = {rank = RANK[highway] or 3, geo = geo, box = box} end
+      end
+    end
+    return lines
+  end
   local data = readBytes(block.path)
   coroutine.yield()
-  local b, s = cellformat.BLOCK, r.data.cellSize
+  local b, s = blocksOf(r.data), r.data.cellSize
   local bi, bj = key:match('^(-?%d+)_(-?%d+)$')
   bi, bj = tonumber(bi), tonumber(bj)
   local cx, cy = (bi + .5) * b * s, (bj + .5) * b * s
@@ -1159,8 +1245,15 @@ end
 local function mapRoads(view, budgetMs)
   ensure()
   if type(view) ~= 'table' or not finite(view.w) or not finite(view.s) or not finite(view.e) or not finite(view.n) then return {} end
-  local wanted, out = {}, {}
-  for _, r in ipairs(regions) do
+  local wanted, out, listed = {}, {}, regions
+  if live then
+    local extra = live.sync()
+    if extra then
+      listed = {extra}
+      for i = 1, #regions do listed[#listed + 1] = regions[i] end
+    end
+  end
+  for _, r in ipairs(listed) do
     local b = r.data.bounds
     if r.data.schemaVersion == 2 and b[1] <= view.e and b[3] >= view.w and b[2] <= view.n and b[4] >= view.s then
       local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
@@ -1168,7 +1261,7 @@ local function mapRoads(view, budgetMs)
         local x, y = localPoint(r, p[1], p[2])
         x0, y0, x1, y1 = math.min(x0, x), math.min(y0, y), math.max(x1, x), math.max(y1, y)
       end
-      local size = cellformat.BLOCK * r.data.cellSize
+      local size = blocksOf(r.data) * r.data.cellSize
       local bi0, bj0, bi1, bj1 = math.floor(x0 / size), math.floor(y0 / size), math.floor(x1 / size), math.floor(y1 / size)
       if (bi1 - bi0 + 1) * (bj1 - bj0 + 1) <= MAP_BLOCKS * 4 then
         for bj = bj0, bj1 do

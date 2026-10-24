@@ -226,7 +226,10 @@ VEG.stockExtra = {
 local WCO = WCA .. 'objects/'
 local ECA_CLUTTER = '/levels/east_coast_usa/art/shapes/clutter/'
 VEG.stock[WCO] = WCO .. 'main.materials.json'
-VEG.stockExtra[ECA_CLUTTER] = {'/levels/east_coast_usa/art/shapes/buildings/main.materials.json'}
+-- East Coast clutter takes its wood from the buildings file. The dealership clutter file adds
+-- eca_bld_cleanmetal, which the chalkboard names and the buildings file does not define.
+VEG.stockExtra[ECA_CLUTTER] = {'/levels/east_coast_usa/art/shapes/buildings/main.materials.json',
+  '/art/shapes/garage_and_dealership/Clutter/main.materials.json'}
 -- fp: the model's plan bounds {x0, x1, y0, y1} in its own metres, measured from the installed DAE
 -- geometry (out/runtime-review/asset-bounds.jsonl; the yellow bollard is unmeasured: a guess
 -- on the large side). A face prop's long X runs along the path and its +Y faces the road.
@@ -287,6 +290,78 @@ VEG.shopFront = {
 VEG.backyard = {{GDC .. 'ind_dumpster_full.DAE', 50, face = true, away = true, fp = {-1.516, 1.501, -.818, .818}},
   {GDC .. 'ind_dumpster_empty.DAE', 50, face = true, away = true, fp = {-1.516, 1.501, -.818, .818}}}
 VEG.propSets = {'yard', 'park', 'square', 'village', 'entrance', 'container', 'gate', 'shopFront', 'backyard'}
+-- Sidewalk mixes by look.block. america is VEG.props itself, so a test can still replace that
+-- table before the first placement. europe: postsoviet, central, western, british, nordic,
+-- east and southeast Asia. med: plaster countries. No mailboxes and no scattered signs.
+local HOOP_GREY = {WCO .. 'bollard_hoop_grey.dae', 1, curb = true, face = true, fp = {-.518, .518, -.175, .175}}
+local HOOP_RED = {WCO .. 'bollard_hoop_red.dae', 1, curb = true, face = true, fp = {-.518, .518, -.175, .175}}
+local METAL_BIN = {GDC .. 'italy_clutter_metal_bin.DAE', 1, fp = {-.171, .171, -.171, .171}}
+local TINY_BIN = {GDC .. 'italy_clutter_metal_bin_small.DAE', 1, fp = {-.1, .1, -.1, .1}}
+local CONCRETE_BOLLARD = {ECA_CLUTTER .. 'clutter_city_bollard_concrete.dae', 1, curb = true, fp = {-.385, .385, -.385, .385}}
+local STOOL = {ECA_CLUTTER .. 'clutter_city_wood_stool.dae', 1, fp = {-.294, .294, -.294, .294}}
+local TABLE_SMALL = {ECA_CLUTTER .. 'clutter_city_wood_table_small.dae', 1, face = true, fp = {-.291, .291, -.435, .435}}
+local TABLE = {ECA_CLUTTER .. 'clutter_city_wood_table.dae', 1, face = true, fp = {-.291, .291, -.785, .785}}
+local BOARD = {ECA_CLUTTER .. 'clutter_city_chalkboard_sign.dae', 1, face = true, fp = {-.234, .234, -.363, .363}}
+local function weighted(prop, weight, extra)
+  local out = {prop[1], weight}
+  for k, v in pairs(prop) do if k ~= 1 and k ~= 2 then out[k] = v end end
+  for k, v in pairs(extra or NONE) do out[k] = v end
+  return out
+end
+VEG.kits = {
+  europe = {
+    weighted(HOOP_GREY, 14), weighted(HOOP_RED, 10), weighted(METAL_BIN, 14), weighted(TINY_BIN, 10),
+    weighted(BENCH, 16), weighted(CONCRETE_BOLLARD, 12),
+    {WCO .. 'planterbox.dae', 8, fp = {-.46, .46, -.46, .46}},
+    {ECA_CLUTTER .. 'clutter_city_bike_stand.dae', 8, face = true, fp = {-2.079, 2.079, -.321, .321}},
+    {WCO .. 'hydrant1.dae', 8, curb = true, fp = {-.326, .326, -.377, .377}},
+  },
+  med = {
+    {WCO .. 'planterbox.dae', 18, fp = {-.46, .46, -.46, .46}},
+    weighted(BENCH, 16), weighted(METAL_BIN, 14), weighted(TINY_BIN, 12), weighted(CONCRETE_BOLLARD, 14),
+    weighted(HOOP_GREY, 8),
+    {ECA_CLUTTER .. 'clutter_city_bike_stand.dae', 8, face = true, fp = {-2.079, 2.079, -.321, .321}},
+    {WCO .. 'hydrant1.dae', 6, curb = true, fp = {-.326, .326, -.377, .377}},
+    weighted(ROUND_BIN, 4),
+  },
+}
+local EUROPE = {
+  yard = {
+    weighted(BENCH, 30, {with = TINY_BIN, gap = 1.75}), weighted(BENCH, 12), weighted(TINY_BIN, 22),
+    weighted(METAL_BIN, 18), weighted(TINY_BIN, 10), weighted(STOOL, 8),
+  },
+  park = {
+    weighted(BENCH, 36, {with = ROUND_BIN, gap = 1.9}), weighted(BENCH, 14), weighted(ROUND_BIN, 16),
+    weighted(TABLE_SMALL, 18), weighted(STOOL, 16),
+  },
+  square = {
+    {WCO .. 'planterbox.dae', 18, fp = {-.46, .46, -.46, .46}},
+    weighted(BENCH, 16, {with = ROUND_BIN, gap = 1.9}), weighted(ROUND_BIN, 10),
+    {ECA_CLUTTER .. 'clutter_city_bollard_concrete.dae', 12, fp = {-.385, .385, -.385, .385}},
+    {ECA_CLUTTER .. 'clutter_city_bike_stand.dae', 10, face = true, fp = {-2.079, 2.079, -.321, .321}},
+    weighted(TABLE, 14), weighted(STOOL, 10), weighted(BOARD, 10),
+  },
+  village = {{'', 58, none = true}, weighted(BENCH, 18), weighted(METAL_BIN, 14), weighted(TINY_BIN, 10)},
+  entrance = VEG.entrance, container = VEG.container,
+  gate = {weighted({GDC .. 'italy_clutter_big_dustbin.DAE', 1, face = true, fp = {-.356, .347, -.367, .34}}, 45),
+    weighted(BENCH, 30), weighted(METAL_BIN, 25)},
+  shopFront = {
+    {WCO .. 'planterbox.dae', 22, fp = {-.46, .46, -.46, .46}},
+    weighted(METAL_BIN, 14), weighted(TINY_BIN, 12),
+    {ECA_CLUTTER .. 'clutter_city_bike_stand.dae', 14, face = true, fp = {-2.079, 2.079, -.321, .321}},
+    weighted(TABLE_SMALL, 16), weighted(BOARD, 14), weighted(STOOL, 8),
+  },
+  backyard = {
+    {GDC .. 'ind_dumpster_full.DAE', 28, face = true, away = true, fp = {-1.516, 1.501, -.818, .818}},
+    {GDC .. 'ind_dumpster_empty.DAE', 22, face = true, away = true, fp = {-1.516, 1.501, -.818, .818}},
+    {GDC .. 'clutter_barrels_red.dae', 14, fp = {-.297, .297, -.297, .297}},
+    {GDC .. 'clutter_barrels_white.dae', 10, fp = {-.297, .297, -.297, .297}},
+    {'/art/shapes/objects/s_wood_crate_closed.dae', 10, face = true, away = true, fp = {-.785, .785, -1.502, 1.502}},
+    {'/art/shapes/objects/s_wheelbarrow.dae', 8, face = true, away = true, fp = {-.936, .910, -.384, .391}},
+    {GDC .. 'hr_plasticbarrier.DAE', 8, face = true, away = true, fp = {-.741, .741, -.27, .27}},
+  },
+}
+VEG.kitSets = {europe = EUROPE, med = EUROPE}
 -- what a building is to the furniture round it
 local FLATS = {apartments = true, residential = true, dormitory = true}
 local HOUSES = {house = true, detached = true, semidetached_house = true, bungalow = true, farm = true}
@@ -1424,14 +1499,16 @@ end
 -- house of a village the same plaster and the same window rhythm (bld-hatne-05).
 BLD.homes = {yes = true, house = true, detached = true, semidetached_house = true, bungalow = true,
   terrace = true, residential = true, farm = true, cabin = true}
--- by h % 100: lime-wash colours, aged plaster, red and silicate brick, siding, old wood
-BLD.walls = {{16, 'hw_white'}, {26, 'hw_yellow'}, {35, 'hw_blue'}, {42, 'hw_green'}, {46, 'hw_pink'},
-  {52, 'hw_aged'}, {68, 'hw_brick_red'}, {82, 'hw_silicate'}, {92, 'hw_siding'}, {100, 'hw_wood'}}
+-- by h % 100. Plaster stays under 38; the rest is brick, stone, silicate, siding and boards.
+BLD.walls = {{10, 'hw_white'}, {17, 'hw_yellow'}, {23, 'hw_blue'}, {28, 'hw_green'}, {31, 'hw_pink'},
+  {38, 'hw_aged'}, {48, 'hw_brick_red'}, {56, 'hw_oldbrick'}, {64, 'hw_flatbrick'}, {72, 'hw_stone'},
+  {80, 'hw_silicate'}, {90, 'hw_siding'}, {100, 'hw_boards'}}
 BLD.wallColour = {white = 'hw_white', ivory = 'hw_white', cream = 'hw_aged', beige = 'hw_aged', yellow = 'hw_yellow',
   orange = 'hw_yellow', blue = 'hw_blue', lightblue = 'hw_blue', green = 'hw_green', lightgreen = 'hw_green',
   pink = 'hw_pink', red = 'hw_brick_red', brown = 'hw_brick_red', grey = 'hw_silicate', gray = 'hw_silicate'}
--- metres per texture repeat on a house wall
-BLD.wallScale = {hw_brick_red = 1.6, hw_silicate = 1.6, hw_siding = 1.2, hw_wood = 2}
+-- metres per texture repeat on a house wall. Big flat bricks and stone courses are wider than a plaster repeat.
+BLD.wallScale = {hw_brick_red = 1.6, hw_oldbrick = 1.6, hw_flatbrick = 2.4, hw_stone = 2,
+  hw_silicate = 1.6, hw_siding = 1.2, hw_boards = 1.2, hw_wood = 2}
 -- atlas cells {u0, v0, u1, v1} (v0 at the image's top) and the opening's size in metres
 BLD.windows = {
   win_pvc = {w = 1.15, h = 1.5, cells = {{.441, .002, .641, .264}, {.644, .002, .846, .264},
@@ -1445,13 +1522,24 @@ function BLD.house(tags, height, h)
   local m = tostring(tags['building:material'] or tags['facade:material'] or '')
   if m == 'panel' or m == 'concrete' or m == 'reinforced_concrete' or m == 'glass' or m == 'metal' then return nil end
   local colour = BLD.wallColour[(tostring(tags['building:colour'] or ''):lower():gsub('[%s_]', ''))]
-  if m == 'brick' then return (colour == 'hw_white' or colour == 'hw_silicate') and 'hw_silicate' or 'hw_brick_red' end
-  if m == 'wood' or m == 'timber_framing' or m == 'log' then return h % 3 == 0 and 'hw_siding' or 'hw_wood' end
+  if m == 'brick' then
+    if colour == 'hw_white' or colour == 'hw_silicate' then return 'hw_silicate' end
+    if h % 5 == 0 then return 'hw_oldbrick' end
+    if h % 5 == 1 then return 'hw_flatbrick' end
+    return 'hw_brick_red'
+  end
+  if m == 'stone' or m == 'masonry' then return 'hw_stone' end
+  if m == 'wood' or m == 'timber_framing' or m == 'log' then
+    local n = h % 3
+    if n == 0 then return 'hw_siding' end
+    if n == 1 then return 'hw_boards' end
+    return 'hw_wood'
+  end
   if colour and (m == 'plaster' or m == 'stucco' or m == '') then return colour end
   local plaster = m == 'plaster' or m == 'stucco'
   for _, w in ipairs(BLD.walls) do
     if h % 100 < w[1] then
-      if plaster and w[1] > 52 then return 'hw_white' end   -- tagged plaster: not brick or wood
+      if plaster and w[1] > 38 then return 'hw_white' end   -- tagged plaster: not brick, stone or wood
       return w[2]
     end
   end
@@ -1461,21 +1549,44 @@ end
 -- One house's openings: its window style and cell, door cell, plinth, gable and roof guesses.
 function BLD.dress(kind, h)
   local old = kind == 'hw_wood' or kind == 'hw_aged' or kind == 'hw_blue' or kind == 'hw_green'
+    or kind == 'hw_oldbrick' or kind == 'hw_flatbrick' or kind == 'hw_stone' or kind == 'hw_boards'
   local win = (old and h % 10 < 8 or not old and h % 10 < 4) and 'win_wood' or 'win_pvc'
   local cells = BLD.windows[win].cells
   return {win = win, cell = cells[math.floor(h / 11) % #cells + 1],
     door = BLD.doors.cells[math.floor(h / 17) % #BLD.doors.cells + 1],
     plinth = (h % 20 < 7) and 'plinth_brown' or 'plinth',
-    gable = (kind == 'hw_siding' or kind == 'hw_wood' or math.floor(h / 3) % 3 ~= 0) and kind or 'gable',
+    gable = (kind == 'hw_siding' or kind == 'hw_wood' or kind == 'hw_boards' or math.floor(h / 3) % 3 ~= 0) and kind or 'gable',
     shape = math.floor(h / 23) % 20 < 9 and 'hipped' or 'gabled', pitch = 26 + math.floor(h / 29) % 13}
+end
+
+-- Bays along a wall. Balanced and above keep a window about every 2.9 m (at most 8).
+-- Low steps them out; Potato keeps a single bay. Far tiles never call this.
+function BLD.bays(length, detail)
+  if length < 2.4 then return 0 end
+  local step, cap = 2.9, 8
+  if detail and detail <= 15 then step, cap = 5.4, 1
+  elseif detail and detail < 40 then step, cap = 4.2, 4 end
+  return math.min(cap, math.max(1, math.floor((length - .8) / step)))
+end
+
+-- Large house parts (porch, cornice, balcony, chimney) from detail 40 up. Potato and Low
+-- keep the walls, the roof and a thinned run of windows.
+function BLD.mass(detail)
+  return not (detail and detail < 40)
+end
+
+-- The door's bay: the last one on a hipped house, the first otherwise. One bay is the door.
+function BLD.slot(n, shape)
+  if n > 1 and shape == 'hipped' then return n end
+  return 1
 end
 
 -- Windows on every floor of an outer wall a -> b (inside on its left), evenly spaced, 3 cm out;
 -- the door in one slot of the door wall's ground floor.
-function BLD.openings(scene, a, b, length, base, height, dress, door)
-  if length < 2.4 then return end
+function BLD.openings(scene, a, b, length, base, height, dress, door, detail)
+  local n = BLD.bays(length, detail)
+  if n == 0 then return end
   local style = BLD.windows[dress.win]
-  local n = math.max(1, math.floor((length - .8) / 2.9))
   local dx, dy = (b[1] - a[1]) / length, (b[2] - a[2]) / length
   local ox, oy = dy * .03, -dx * .03
   local function quad(kind, s, w, z0, z1, cell)
@@ -1486,7 +1597,7 @@ function BLD.openings(scene, a, b, length, base, height, dress, door)
       {a[1] + dx * s0 + ox, a[2] + dy * s0 + oy, z1, cell[1], cell[2]}}, false)
   end
   local floors = math.max(1, math.floor((height + .3) / BLD.floor))
-  local doorSlot = door and (n == 1 and 1 or (dress.shape == 'hipped' and n or 1))
+  local doorSlot = door and BLD.slot(n, dress.shape)
   for f = 0, floors - 1 do
     local z0 = base + f * BLD.floor + .85
     if z0 + style.h > base + height - .15 then break end
@@ -1567,6 +1678,322 @@ local function footprintFrame(ring)
   return {ax = ax, ay = ay, bx = bx, by = by, u0 = u0, v0 = v0, u1 = u1, v1 = v1, area = math.abs(area) / 2}
 end
 
+-- A point on wall a -> b, `out` metres to the outside (the ring's inside is on the left).
+local function wallPoint(a, b, length, s, out, z, u, v)
+  local dx, dy = (b[1] - a[1]) / length, (b[2] - a[2]) / length
+  return {a[1] + dx * s + dy * out, a[2] + dy * s - dx * out, z, u, v}
+end
+
+-- Board band under the eaves, 7 cm out from the wall. One quad a wall.
+function BLD.cornice(scene, a, b, length, top)
+  local z0, z1, e = top - .2, top + .04, .07
+  scene.polygon('gable', {wallPoint(a, b, length, -e, e, z0, 0, 0),
+    wallPoint(a, b, length, length + e, e, z0, (length + 2 * e) / 1.5, 0),
+    wallPoint(a, b, length, length + e, e, z1, (length + 2 * e) / 1.5, .16),
+    wallPoint(a, b, length, -e, e, z1, 0, .16)}, false)
+end
+
+-- A canopy over the door, sloping down toward the street. The boards face downward
+-- (gable is single sided) and a lip marks the outer edge. Above a car, so it stays
+-- off the collision list only by sharing nothing solid at bumper height: the lip
+-- is at the door head.
+function BLD.porch(scene, a, b, length, base, dress, detail)
+  local n = BLD.bays(length, detail)
+  if n == 0 then return end
+  local slot = BLD.slot(n, dress.shape)
+  local s = (slot - .5) * length / n
+  local s0, s1 = s - .9, s + .9
+  local head = base + .1 + BLD.doors.h + .06
+  local zOut = head - .28
+  -- normal points down: seen from the yard
+  scene.polygon('gable', {wallPoint(a, b, length, s0, .05, head, 0, 0),
+    wallPoint(a, b, length, s1, .05, head, 1, 0),
+    wallPoint(a, b, length, s1, .85, zOut, 1, 1),
+    wallPoint(a, b, length, s0, .85, zOut, 0, 1)}, false)
+  scene.polygon('gable', {wallPoint(a, b, length, s0, .85, zOut - .12, 0, 0),
+    wallPoint(a, b, length, s1, .85, zOut - .12, 1, 0),
+    wallPoint(a, b, length, s1, .85, zOut, 1, .12),
+    wallPoint(a, b, length, s0, .85, zOut, 0, .12)}, false)
+end
+
+-- One wooden balcony on a two-storey house: a slab and a rail, not a balcony per window.
+function BLD.balcony(scene, a, b, length, base, h)
+  if length < 5 then return end
+  local w = 2.1
+  local s = math.max(w / 2 + .4, math.min(length - w / 2 - .4, length * (.28 + (h % 3) * .18)))
+  local s0, s1 = s - w / 2, s + w / 2
+  local z = base + BLD.floor
+  scene.polygon('gable', {wallPoint(a, b, length, s0, .05, z + .08, 0, 0),
+    wallPoint(a, b, length, s1, .05, z + .08, 1, 0),
+    wallPoint(a, b, length, s1, .82, z + .08, 1, 1),
+    wallPoint(a, b, length, s0, .82, z + .08, 0, 1)}, true)
+  scene.polygon('gable', {wallPoint(a, b, length, s0, .82, z, 0, 0),
+    wallPoint(a, b, length, s1, .82, z, 1, 0),
+    wallPoint(a, b, length, s1, .82, z + .08, 1, .08),
+    wallPoint(a, b, length, s0, .82, z + .08, 0, .08)}, false)
+  scene.polygon('gable', {wallPoint(a, b, length, s0, .82, z + .08, 0, 0),
+    wallPoint(a, b, length, s1, .82, z + .08, 1, 0),
+    wallPoint(a, b, length, s1, .82, z + .92, 1, .7),
+    wallPoint(a, b, length, s0, .82, z + .92, 0, .7)}, false)
+end
+
+-- Brick shaft on the ridge. Ten triangles, one mesh per tile, no collision (collision.lua).
+function BLD.chimney(scene, ring, top, dress, h, tags)
+  local frame = footprintFrame(cleanRing(ring))
+  local length, width = frame.u1 - frame.u0, frame.v1 - frame.v0
+  if width < 3 or length < 4 then return end
+  local pitch = dress.pitch or 32
+  local rise = math.max(.5, math.min(10, number(tags['roof:height'], math.min(6, width / 2 * math.tan(math.rad(pitch))))))
+  local inset = 0
+  local shape = dress.shape
+  if shape == 'hipped' or shape == 'half-hipped' or shape == 'pyramidal' then inset = math.min(width / 2, length / 2) end
+  if shape == 'pyramidal' then inset = length / 2 end
+  local r0, r1 = frame.u0 + inset, frame.u1 - inset
+  if r1 - r0 < .9 then return end
+  local along = r0 + (r1 - r0) * (.32 + (h % 5) * .08)
+  along = math.max(r0 + .35, math.min(r1 - .35, along))
+  local mid = (frame.v0 + frame.v1) / 2
+  local ridge = top + rise
+  local s = .24
+  local z0, z1 = ridge - .5, ridge + 1.05
+  local function p(u, v, z, uu, vv)
+    return {u * frame.ax + v * frame.bx, u * frame.ay + v * frame.by, z, uu, vv}
+  end
+  local u0, u1, v0, v1 = along - s, along + s, mid - s, mid + s
+  -- each face: bottom edge with the outside on the right of its direction, then up
+  scene.polygon('chimney', {p(u0, v0, z0, 0, 0), p(u1, v0, z0, 1, 0), p(u1, v0, z1, 1, 1), p(u0, v0, z1, 0, 1)}, false)
+  scene.polygon('chimney', {p(u1, v1, z0, 0, 0), p(u0, v1, z0, 1, 0), p(u0, v1, z1, 1, 1), p(u1, v1, z1, 0, 1)}, false)
+  scene.polygon('chimney', {p(u1, v0, z0, 0, 0), p(u1, v1, z0, 1, 0), p(u1, v1, z1, 1, 1), p(u1, v0, z1, 0, 1)}, false)
+  scene.polygon('chimney', {p(u0, v1, z0, 0, 0), p(u0, v0, z0, 1, 0), p(u0, v0, z1, 1, 1), p(u0, v1, z1, 0, 1)}, false)
+  scene.polygon('chimney', {p(u0, v0, z1, 0, 0), p(u1, v0, z1, 1, 0), p(u1, v1, z1, 1, 1), p(u0, v1, z1, 0, 1)}, true)
+end
+
+-- A city block (flat-roofed, not a house and not a shed). Houses keep BLD.cornice and the chimney.
+function BLD.block(use, height)
+  if height < 8 or BLD.low[use or ''] then return false end
+  return true
+end
+
+-- Concrete course 4 cm in front of a photo facade. The wall quad keeps its own UVs, so the
+-- ground floor of a panel stays where the photograph put it.
+function BLD.socle(scene, a, b, length, bottom, base)
+  local z0 = math.max(bottom, base - .05)
+  local z1 = z0 + .28
+  scene.polygon('plinth', {wallPoint(a, b, length, 0, .04, z0, 0, 0),
+    wallPoint(a, b, length, length, .04, z0, length / 3, 0),
+    wallPoint(a, b, length, length, .04, z1, length / 3, .1),
+    wallPoint(a, b, length, 0, .04, z1, 0, .1)}, false)
+end
+
+-- Same winding as the wall loop: outer CCW faces the street, a clockwise court faces the yard.
+function BLD.orient(raw, rings)
+  local ring, signed = cleanRing(raw), 0
+  for k, p in ipairs(ring) do
+    local q = ring[k % #ring + 1]
+    signed = signed + p[1] * q[2] - q[1] * p[2]
+  end
+  if (raw == rings[1] and signed < 0) or (raw ~= rings[1] and signed > 0) then
+    local reversed = {}
+    for k = #ring, 1, -1 do reversed[#reversed + 1] = ring[k] end
+    ring = reversed
+  end
+  return ring
+end
+
+-- Rim of a flat roof: a face 5 cm outside the wall and a coping across it. Outer ring only,
+-- and only edges long enough to read from the street. A court and a short jog would push a
+-- dense tile past PIECE_TRIS (2500) and split e2rf_parapet into extra first-frame draws.
+function BLD.parapets(scene, rings, top, height, h)
+  local rim = (height >= 40 and 1.05 or height >= 16 and .7 or .42) + (h % 4) * .03
+  local out, cap = .05, .12
+  local raw = rings[1]
+  if raw then
+    local ring = BLD.orient(raw, rings)
+    for k, a in ipairs(ring) do
+      local b = ring[k % #ring + 1]
+      local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+      if length > 6 then
+        scene.polygon('parapet', {wallPoint(a, b, length, 0, out, top, 0, 0),
+          wallPoint(a, b, length, length, out, top, length / 3, 0),
+          wallPoint(a, b, length, length, out, top + rim, length / 3, rim / 3),
+          wallPoint(a, b, length, 0, out, top + rim, 0, rim / 3)}, false)
+        scene.polygon('parapet', {wallPoint(a, b, length, 0, out - cap, top + rim, 0, 0),
+          wallPoint(a, b, length, length, out - cap, top + rim, length / 3, 0),
+          wallPoint(a, b, length, length, out, top + rim, length / 3, cap / 3),
+          wallPoint(a, b, length, 0, out, top + rim, 0, cap / 3)}, true)
+      end
+    end
+  end
+end
+
+-- Stair and machine bulkhead on the flat roof. Skipped when the box would leave the mass
+-- (a courtyard hole or the missing corner of an L). A tall block may add a smaller vent.
+function BLD.crown(scene, rings, top, height, h, area)
+  if height < 9 or area < 180 then return end
+  local ring = cleanRing(rings[1])
+  if #ring < 3 then return end
+  local frame = footprintFrame(ring)
+  local length, width = frame.u1 - frame.u0, frame.v1 - frame.v0
+  if width < 7 or length < 9 then return end
+  local function world(u, v)
+    return u * frame.ax + v * frame.bx, u * frame.ay + v * frame.by
+  end
+  local function fits(u, v, du, dv)
+    if u - du / 2 < frame.u0 + .8 or u + du / 2 > frame.u1 - .8 then return false end
+    if v - dv / 2 < frame.v0 + .8 or v + dv / 2 > frame.v1 - .8 then return false end
+    for _, corner in ipairs({{-1, -1}, {1, -1}, {1, 1}, {-1, 1}, {0, 0}}) do
+      local x, y = world(u + corner[1] * (du / 2 - .3), v + corner[2] * (dv / 2 - .3))
+      if not inside(rings, x, y) then return false end
+    end
+    return true
+  end
+  local function place(du, dv, avoid)
+    if du > length - 2.4 or dv > width - 2 then return nil end
+    local uSteps = math.max(1, math.floor((length - du - 1.6) / 4))
+    local vSteps = math.max(1, math.floor((width - dv - 1.6) / 3.5))
+    local span = uSteps * vSteps
+    local u0 = frame.u0 + du / 2 + .9
+    local v0 = frame.v0 + dv / 2 + .9
+    local start = h % span
+    for n = 0, math.min(16, span) - 1 do
+      local k = (start + n) % span
+      local iu, iv = k % uSteps, math.floor(k / uSteps)
+      local u = u0 + (uSteps == 1 and 0 or iu * (length - du - 1.8) / (uSteps - 1))
+      local v = v0 + (vSteps == 1 and 0 or iv * (width - dv - 1.8) / (vSteps - 1))
+      local hit = avoid and math.abs(u - avoid[1]) < (du + avoid[3]) / 2 + 1.4
+        and math.abs(v - avoid[2]) < (dv + avoid[4]) / 2 + 1.4
+      if not hit and fits(u, v, du, dv) then return u, v end
+    end
+  end
+  local function box(cx, cy, du, dv, rise)
+    local u0, u1 = cx - du / 2, cx + du / 2
+    local v0, v1 = cy - dv / 2, cy + dv / 2
+    local z0, z1 = top + .02, top + .02 + rise
+    local function p(u, v, z, uu, vv)
+      return {u * frame.ax + v * frame.bx, u * frame.ay + v * frame.by, z, uu, vv}
+    end
+    scene.polygon('parapet', {p(u0, v0, z0, 0, 0), p(u1, v0, z0, 1, 0), p(u1, v0, z1, 1, 1), p(u0, v0, z1, 0, 1)}, false)
+    scene.polygon('parapet', {p(u1, v1, z0, 0, 0), p(u0, v1, z0, 1, 0), p(u0, v1, z1, 1, 1), p(u1, v1, z1, 0, 1)}, false)
+    scene.polygon('parapet', {p(u1, v0, z0, 0, 0), p(u1, v1, z0, 1, 0), p(u1, v1, z1, 1, 1), p(u1, v0, z1, 0, 1)}, false)
+    scene.polygon('parapet', {p(u0, v1, z0, 0, 0), p(u0, v0, z0, 1, 0), p(u0, v0, z1, 1, 1), p(u0, v1, z1, 0, 1)}, false)
+    scene.polygon('parapet', {p(u0, v0, z1, 0, 0), p(u1, v0, z1, 1, 0), p(u1, v1, z1, 1, 1), p(u0, v1, z1, 0, 1)}, true)
+  end
+  local du = height >= 40 and 7.2 or height >= 16 and 5 or 3.6
+  local dv = height >= 40 and 5.2 or height >= 16 and 3.4 or 2.6
+  local rise = height >= 40 and 3.1 or height >= 16 and 2.3 or 1.65
+  local u, v = place(du, dv, nil)
+  if not u then return end
+  box(u, v, du, dv, rise)
+  if height >= 26 and area >= 400 then
+    local vu, vv = place(2.4, 1.8, {u, v, du, dv})
+    if vu then box(vu, vv, 2.4, 1.8, 1.35) end
+  end
+end
+
+-- One concrete visor along a whole facade. The top faces the sky: the orbit camera sits
+-- above a car, and a downward sheet (the house porch) was invisible there. The outer
+-- edge is a short vertical fascia so the ledge reads from the side. h is unused.
+function BLD.canopy(scene, a, b, length, base, h, height)
+  if length < 12 then return end
+  local reach = height >= 22 and 1.3 or 1.2
+  local head = base + (height >= 22 and 3.5 or 3.2)
+  local zOut = head - .18
+  local s0, s1 = .35, length - .35
+  local span = s1 - s0
+  scene.polygon('parapet', {wallPoint(a, b, length, s0, .04, head, 0, 0),
+    wallPoint(a, b, length, s1, .04, head, span / 3, 0),
+    wallPoint(a, b, length, s1, reach, zOut, span / 3, reach / 3),
+    wallPoint(a, b, length, s0, reach, zOut, 0, reach / 3)}, true)
+  scene.polygon('parapet', {wallPoint(a, b, length, s0, reach, zOut - .22, 0, 0),
+    wallPoint(a, b, length, s1, reach, zOut - .22, span / 3, 0),
+    wallPoint(a, b, length, s1, reach, zOut, span / 3, .16),
+    wallPoint(a, b, length, s0, reach, zOut, 0, .16)}, false)
+end
+
+-- True when a carriageway (not a yard driveway) passes within r metres of (x, y).
+-- segmentBins is the tile's road index from build(); service ways are a yard, not a street.
+function BLD.street(bins, x, y, r)
+  local key = (math.floor(x / 50) + 32768) * 65536 + math.floor(y / 50) + 32768
+  for _, s in ipairs(bins[key] or NONE) do
+    local way = (s.tags or NONE).highway
+    if s.surface and s.len2 > 0 and way ~= 'service' and way ~= 'living_street' then
+      local t = math.max(0, math.min(1, ((x - s.a[1]) * s.dx + (y - s.a[2]) * s.dy) / s.len2))
+      local d = math.sqrt((s.a[1] + t * s.dx - x) ^ 2 + (s.a[2] + t * s.dy - y) ^ 2) - s.width / 2
+      if d < r then return true end
+    end
+  end
+  return false
+end
+
+-- Straight facades are often many OSM edges. Chain the ones that meet and point the same
+-- way, then put hoods on each street run and on the longest yard run. One edge at a time
+-- left a long brick slab with a single hood on a short piece, off the camera.
+function BLD.canopies(scene, h, height)
+  local list = BLD.faces
+  local n = list and #list or 0
+  if n == 0 then return end
+  local function nxt(i) return i % n + 1 end
+  local function prv(i) return (i - 2) % n + 1 end
+  local function joins(p, f)
+    local gap = (f[1][1] - p[2][1]) ^ 2 + (f[1][2] - p[2][2]) ^ 2
+    if gap > .36 then return false end
+    local pdx, pdy = p[2][1] - p[1][1], p[2][2] - p[1][2]
+    local fdx, fdy = f[2][1] - f[1][1], f[2][2] - f[1][2]
+    local pl = math.sqrt(pdx * pdx + pdy * pdy)
+    local fl = math.sqrt(fdx * fdx + fdy * fdy)
+    if pl < 1e-4 or fl < 1e-4 then return false end
+    return (pdx * fdx + pdy * fdy) / (pl * fl) > .985
+  end
+  local start = 1
+  for i = 1, n do
+    if not joins(list[prv(i)], list[i]) then start = i break end
+  end
+  local streets, best, bestLen = 0, nil, 0
+  local function emit(a, b, z, road)
+    local dx, dy = b[1] - a[1], b[2] - a[2]
+    local chord = math.sqrt(dx * dx + dy * dy)
+    if chord < 12 then return end
+    if road and streets < 4 then
+      streets = streets + 1
+      BLD.canopy(scene, a, b, chord, z, h, height)
+    elseif not road and chord > bestLen then
+      best, bestLen = {a, b, z, chord}, chord
+    end
+  end
+  local i = start
+  repeat
+    local face = list[i]
+    local a, b, z, road = face[1], face[2], face.z, face.road
+    local j = nxt(i)
+    local steps = 1
+    while j ~= start and steps < n and joins(list[prv(j)], list[j]) do
+      b = list[j][2]
+      if list[j].road then road = true end
+      j = nxt(j)
+      steps = steps + 1
+    end
+    emit(a, b, z, road)
+    i = j
+  until i == start
+  if best then BLD.canopy(scene, best[1], best[2], best[4], best[3], h, height) end
+end
+
+-- One attic window in the gable at the long-axis end, when the triangle is tall enough.
+function BLD.gableWin(scene, frame, top, rise, dress)
+  if rise < 1.55 or not dress.win or not dress.cell then return end
+  local mid = (frame.v0 + frame.v1) / 2
+  local cell, hw = dress.cell, .34
+  local z0 = top + math.max(.4, rise * .3)
+  local z1 = z0 + .72
+  if z1 > top + rise - .2 then return end
+  local ox, oy = frame.ax * .03, frame.ay * .03
+  local function p(v, z, uu, vv)
+    return {frame.u1 * frame.ax + v * frame.bx + ox, frame.u1 * frame.ay + v * frame.by + oy, z, uu, vv}
+  end
+  scene.polygon(dress.win, {p(mid - hw, z0, cell[1], cell[4]), p(mid + hw, z0, cell[3], cell[4]),
+    p(mid + hw, z1, cell[3], cell[2]), p(mid - hw, z1, cell[1], cell[2])}, false)
+end
+
 -- guess: a house's dress (BLD.dress) for its roof shape, pitch and gables where OSM has none
 local function pitchedRoof(scene, rings, tags, top, base, kind, height, material, guess)
   if #rings ~= 1 then return false end -- Courtyards always keep their open flat-roof footprint.
@@ -1628,6 +2055,7 @@ local function pitchedRoof(scene, rings, tags, top, base, kind, height, material
       face[3] = {face[3][1], face[3][2], top + rise, width / (2 * scale), (top + rise - base) / scale}
       scene.polygon(gable, face, false)
     end
+    if guess.mass then BLD.gableWin(scene, frame, top, rise, guess) end
   end
   return true
 end
@@ -1766,6 +2194,46 @@ local function walkSeparate(tags, side)
   return v == 'separate'
 end
 
+-- america when there is no block, or the block is the tested North American mix.
+function VEG.streetKit(look)
+  local block = type(look) == 'table' and look.block or nil
+  if block == 'mediterranean' or block == 'latin' or block == 'middle-east'
+      or block == 'south-asia' or block == 'africa' then
+    return 'med'
+  end
+  if block == nil or block == '' or block == 'north-america' or block == 'oceania' or block == 'general' then
+    return 'america'
+  end
+  return 'europe'
+end
+
+-- Props and place sets this game has, once per kit. america reads VEG.props at the first call.
+function VEG.streetHave(kit)
+  VEG.haveKits = VEG.haveKits or {}
+  local cached = VEG.haveKits[kit]
+  if cached then return cached.props, cached.sets end
+  local list = VEG.kits[kit] or VEG.props
+  local props = {}
+  for _, p in ipairs(list) do
+    if not FS or FS:fileExists(p[1]) then props[#props + 1] = p end
+  end
+  local sets, custom = {}, VEG.kitSets[kit]
+  for _, name in ipairs(VEG.propSets) do
+    local source = custom and custom[name] or VEG[name]
+    local have = {total = 0}
+    for _, p in ipairs(source) do
+      if p.none or (not FS or FS:fileExists(p[1])) and (not p.with or not FS or FS:fileExists(p.with[1])) then
+        have[#have + 1] = p
+        have.total = have.total + p[2]
+      end
+    end
+    sets[name] = have
+  end
+  cached = {props = props, sets = sets}
+  VEG.haveKits[kit] = cached
+  return props, sets
+end
+
 function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, lift, walkWidth, ground, put, pause, context)
   context = context or {}
   spacing = math.max(0, tonumber(spacing) or 0)
@@ -1775,30 +2243,9 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   rect = {rect[1] - 12, rect[2] - 12, rect[3] + 12, rect[4] + 12}
   local candidates, occupied = {}, {}
   -- the props this game has (all of them outside the game, where FS is absent)
-  if not VEG.propsHave then
-    VEG.propsHave = {}
-    for _, p in ipairs(VEG.props) do
-      if not FS or FS:fileExists(p[1]) then VEG.propsHave[#VEG.propsHave + 1] = p end
-    end
-  end
-  local props = VEG.propsHave
+  local props, sets = VEG.streetHave(VEG.streetKit(context.look))
   local total = 0
   for _, p in ipairs(props) do total = total + p[2] end
-  -- the place sets the same way, each with its weight total; a set the game lacks is empty
-  if not VEG.setsHave then
-    VEG.setsHave = {}
-    for _, name in ipairs(VEG.propSets) do
-      local have = {total = 0}
-      for _, p in ipairs(VEG[name]) do
-        if p.none or (not FS or FS:fileExists(p[1])) and (not p.with or not FS or FS:fileExists(p.with[1])) then
-          have[#have + 1] = p
-          have.total = have.total + p[2]
-        end
-      end
-      VEG.setsHave[name] = have
-    end
-  end
-  local sets = VEG.setsHave
   local count = 0
   -- More furniture in yards and squares as the street step shortens (Balanced 12 m: 1)
   local dense = spacing > 0 and math.min(1.5, 12 / spacing) or 0
@@ -2335,6 +2782,233 @@ function VEG.streetBlocked(bins, x, y)
   return false
 end
 
+-- Same numbers as fast_profile: 4.5 m of headroom under the 1 m soffit, plus a little slack so a
+-- sampled footprint does not fall short of it. The grade limits keep the rise on a ramp a truck
+-- can drive; clearance still wins, and the rise is capped so a bad pack cannot throw the deck up.
+local DECK_CLEAR = {gap = 5.5, slack = .1, overhang = 2, cap = 40, bin = 32}
+local DECK_GRADE = {motorway = .05, trunk = .05, primary = .06, secondary = .06, tertiary = .07,
+  motorway_link = .07, trunk_link = .07, primary_link = .07, secondary_link = .07}
+
+local function deckLevel(tags)
+  if ROADS.tunnel(tags) then return -1 end
+  if not ROADS.bridge(tags) then return 0 end
+  local text = tostring(tags.layer or '1'):match('^%s*([%+%-]?%d+%.?%d*)')
+  local value = tonumber(text or '')
+  if not value or value ~= value then value = 1 end
+  value = math.abs(value)
+  if value < 1 then value = 1 end
+  return value
+end
+
+local function deckGrade(tags)
+  return DECK_GRADE[tags.highway or ''] or .08
+end
+
+-- A pack built before the clearance solve stores the deck about 2 m above the road under it.
+-- The soffit is drawn 1 m below that, so a car hits the concrete. Raise only the deck, then let
+-- the extra height run out along the span and the roads that share its nodes, at the class
+-- grade. Roads that share a node are the ramps, not the road underneath: they are not a second
+-- carriageway to clear. Each build copies the points first, so a tile that shares the source
+-- cell still starts from the same heights.
+local function liftDecks(roads, pause)
+  local bridges = false
+  for _, road in ipairs(roads or {}) do
+    if ROADS.bridge((road.tags) or {}) then bridges = true break end
+  end
+  if not bridges then return end
+  local meta, maxLevel = {}, 0
+  for index, road in ipairs(roads) do
+    local tags = road.tags or {}
+    local level = deckLevel(tags)
+    local src, points, base = road.points or {}, {}, {}
+    for i, p in ipairs(src) do
+      points[i] = {p[1], p[2], p[3] or 0}
+      base[i] = points[i][3]
+    end
+    local owned = {}
+    for _, id in ipairs(road.nodes or {}) do
+      if id ~= nil then owned[tostring(id)] = true end
+    end
+    local dist = {0}
+    for i = 2, #points do
+      local a, b = points[i - 1], points[i]
+      dist[i] = dist[i - 1] + math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+    end
+    meta[index] = {road = road, tags = tags, level = level, points = points, base = base,
+      nodes = owned, dist = dist, width = math.max(.5, math.min(80, road.width or 7)),
+      grade = deckGrade(tags)}
+    road.points = points
+    if level > maxLevel then maxLevel = level end
+    if index % 32 == 0 then pause() end
+  end
+  local function shares(a, b)
+    for id in pairs(a.nodes) do
+      if b.nodes[id] then return true end
+    end
+    return false
+  end
+  -- Spread a raised end along the road. The limit is the class grade, or the pack's own
+  -- grade where the street is already steeper: a hill in the same tile is not a ramp.
+  local function sweep(m)
+    local pts, dist, grade, base = m.points, m.dist, m.grade, m.base
+    local moved = false
+    for i = 2, #pts do
+      local span = dist[i] - dist[i - 1]
+      if span > EPS then
+        local limit = math.max(grade, math.abs(base[i] - base[i - 1]) / span)
+        local cap = pts[i - 1][3] - limit * span
+        if pts[i][3] < cap - 1e-4 then pts[i][3] = cap; moved = true end
+      end
+    end
+    for i = #pts - 1, 1, -1 do
+      local span = dist[i + 1] - dist[i]
+      if span > EPS then
+        local limit = math.max(grade, math.abs(base[i + 1] - base[i]) / span)
+        local cap = pts[i + 1][3] - limit * span
+        if pts[i][3] < cap - 1e-4 then pts[i][3] = cap; moved = true end
+      end
+    end
+    return moved
+  end
+  local function equalize()
+    local height, moved = {}, false
+    for _, m in ipairs(meta) do
+      local nodes = m.road.nodes or {}
+      local ends = {nodes[1], nodes[2]}
+      local at = {1, #m.points}
+      for e = 1, 2 do
+        local p = m.points[at[e]]
+        if ends[e] ~= nil and p then
+          local id, z = tostring(ends[e]), p[3]
+          if not height[id] or z > height[id] then height[id] = z end
+        end
+      end
+    end
+    for _, m in ipairs(meta) do
+      if m.level >= 0 then
+        local nodes = m.road.nodes or {}
+        local ends = {nodes[1], nodes[2]}
+        local at = {1, #m.points}
+        for e = 1, 2 do
+          local z = ends[e] ~= nil and height[tostring(ends[e])] or nil
+          local p = m.points[at[e]]
+          if z and p and p[3] < z - 1e-4 then p[3] = z; moved = true end
+        end
+      end
+    end
+    return moved
+  end
+  for level = 1, maxLevel do
+    for _ = 1, 2 do
+      local bins = {}
+      -- Nested integer keys: a packed ix*K+iy collides once a road spans K bins,
+      -- and Kyiv's pack sits on negative coordinates.
+      local function put(seg)
+        local a, b, reach = seg.a, seg.b, seg.reach
+        local x0, x1 = math.min(a[1], b[1]) - reach, math.max(a[1], b[1]) + reach
+        local y0, y1 = math.min(a[2], b[2]) - reach, math.max(a[2], b[2]) + reach
+        for ix = math.floor(x0 / DECK_CLEAR.bin), math.floor(x1 / DECK_CLEAR.bin) do
+          local col = bins[ix]
+          if not col then col = {}; bins[ix] = col end
+          for iy = math.floor(y0 / DECK_CLEAR.bin), math.floor(y1 / DECK_CLEAR.bin) do
+            local list = col[iy]
+            if not list then list = {}; col[iy] = list end
+            list[#list + 1] = seg
+          end
+        end
+      end
+      for _, m in ipairs(meta) do
+        if m.level >= 0 and m.level < level and #m.points >= 2 then
+          local reach = m.width / 2
+          for i = 2, #m.points do
+            local a, b = m.points[i - 1], m.points[i]
+            if (b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2 > EPS then
+              put({a = a, b = b, reach = reach, half2 = reach * reach, level = m.level, owner = m})
+            end
+          end
+        end
+      end
+      for _, m in ipairs(meta) do
+        if m.level == level and #m.points >= 2 then
+        local half = m.width / 2 + DECK_CLEAR.overhang
+        -- Deltas land after every segment is measured. Raising a shared vertex in
+        -- place made the next segment add the same lack again, so a wide road
+        -- under the span climbed by twice the clearance.
+        local add = {}
+        for i = 2, #m.points do
+          local a, b = m.points[i - 1], m.points[i]
+          local dx, dy = b[1] - a[1], b[2] - a[2]
+          local len = math.sqrt(dx * dx + dy * dy)
+          if len > EPS then
+          local z0, z1 = a[3], b[3]
+          local nx, ny = -dy / len, dx / len
+          local steps = math.max(1, math.ceil(len / 2))
+          local across = math.max(1, math.ceil(half))
+          local maxLack = 0
+          for s = 0, steps do
+            local t = s / steps
+            local x = a[1] + dx * t
+            local y = a[2] + dy * t
+            local z = z0 + (z1 - z0) * t
+            for k = 0, across do
+              local offset = -half + 2 * half * (k / across)
+              local px, py = x + nx * offset, y + ny * offset
+              local col = bins[math.floor(px / DECK_CLEAR.bin)]
+              local list = col and col[math.floor(py / DECK_CLEAR.bin)]
+              if list then
+                for _, seg in ipairs(list) do
+                  if seg.owner ~= m and not shares(m, seg.owner) then
+                    local sx, sy = seg.b[1] - seg.a[1], seg.b[2] - seg.a[2]
+                    local l2 = sx * sx + sy * sy
+                    local u = 0
+                    if l2 > EPS then
+                      u = ((px - seg.a[1]) * sx + (py - seg.a[2]) * sy) / l2
+                      if u < 0 then u = 0 elseif u > 1 then u = 1 end
+                    end
+                    local qx, qy = seg.a[1] + sx * u, seg.a[2] + sy * u
+                    local ddx, ddy = px - qx, py - qy
+                    if ddx * ddx + ddy * ddy <= seg.half2 then
+                      local qz = seg.a[3] + (seg.b[3] - seg.a[3]) * u
+                      local need = qz + DECK_CLEAR.gap * (level - seg.level) + DECK_CLEAR.slack - z
+                      if need > maxLack then maxLack = need end
+                    end
+                  end
+                end
+              end
+            end
+          end
+          if maxLack > .01 then
+            add[i - 1] = math.max(add[i - 1] or 0, maxLack)
+            add[i] = math.max(add[i] or 0, maxLack)
+          end
+          end
+        end
+        for i, extra in pairs(add) do
+          local p = m.points[i]
+          p[3] = p[3] + extra
+        end
+        end
+        pause()
+      end
+      -- One hop per shared node. A ramp can cross several short streets before it
+      -- is back at the pack height; stop once a pass changes nothing.
+      for _hop = 1, 24 do
+        local moved = equalize()
+        for _, m in ipairs(meta) do
+          if m.level >= 0 and #m.points >= 2 and sweep(m) then moved = true end
+        end
+        if not moved then break end
+      end
+    end
+  end
+  for _, m in ipairs(meta) do
+    for i, p in ipairs(m.points) do
+      local cap = m.base[i] + DECK_CLEAR.cap
+      if p[3] > cap then p[3] = cap end
+    end
+  end
+end
+
 local function build(cells, i, j, options)
   options = options or {}
   local pause = options.pause or options.yield or function() end
@@ -2356,6 +3030,9 @@ local function build(cells, i, j, options)
     lists, terrain = collect(cells, pause)
     if single then prepared[single] = {lists, terrain} end
   end
+  -- Old country packs store bridge profiles with about a metre under the soffit. Raise those
+  -- decks, and the roads that run up to them, before any mesh or junction reads the points.
+  liftDecks(lists.roads, pause)
   local roads, scene = collector(rect, key, 'road', pause), collector(rect, key, layerName, pause, distant and MIXED_TRIS or nil)
   local roadDecor, sceneDecor = collector(rect, key .. '_marks', 'road', pause), collector(rect, key .. '_cars', 'scene', pause)
   -- mark(name): the stage that just ended (the road quality bench times them)
@@ -4035,8 +4712,18 @@ local function build(cells, i, j, options)
       -- a house (BLD.house): its plinth colour, windows, door, gables and roof guesses
       local dress = kind:find('hw_', 1, true) == 1 and BLD.dress(kind, h) or nil
       if dress then plinth = not lifted and dress.plinth end
+      -- Grammar v0, near tiles at Balanced and above: cornice, porch, one balcony, chimney.
+      if dress and not options.far and BLD.mass(options.detail) then
+        dress.mass = true
+        dress.balcony = height >= BLD.floor * 2 - .2 and h % 4 == 1
+      end
       local plinthKind = type(plinth) == 'string' and plinth or 'plinth'
       local use = tags.building
+      -- City grammar, near tiles at Balanced and above. Houses stay on dress.mass.
+      -- Flat roofs gain a parapet and a crown; street facades and the long yard side gain canopies.
+      BLD.city, BLD.face, BLD.faces = nil, nil, nil
+      BLD.city = (not dress and not options.far and not lifted and BLD.mass(options.detail) and BLD.block(use, height)) or nil
+      if BLD.city then BLD.faces = {} end
       local doors = (use == 'garage' or use == 'garages') and (h % 3 == 0 and 'door_rust' or 'door_garage')
       for _, raw in ipairs(rings) do
         local ring, along = cleanRing(raw), 0
@@ -4089,9 +4776,18 @@ local function build(cells, i, j, options)
                 {a[1] + dx * s0 + ox, a[2] + dy * s0 + oy, z1, 0, 1}}, false)
             end
           end
+          if dress and dress.mass and length > .4 then BLD.cornice(scene, a, b, length, top) end
+          if BLD.city and raw == rings[1] and length > 6 and not plinth then BLD.socle(scene, a, b, length, bottom, base) end
+          if BLD.city and raw == rings[1] and length >= 6 then
+            BLD.probe = wallPoint(a, b, length, length * .5, 8, 0, 0, 0)
+            BLD.onroad = BLD.street(segmentBins, BLD.probe[1], BLD.probe[2], 18)
+            BLD.faces[#BLD.faces + 1] = {a, b, len = length, z = base, road = BLD.onroad and true or false}
+          end
           if doorWall > 0 then
             local isDoor = length * length >= doorWall - 1e-6
-            BLD.openings(scene, a, b, length, base, height, dress, isDoor)
+            BLD.openings(scene, a, b, length, base, height, dress, isDoor, options.detail)
+            if dress.mass and isDoor then BLD.porch(scene, a, b, length, base, dress, options.detail) end
+            if dress.balcony and not isDoor and length >= 5 then BLD.balcony(scene, a, b, length, base, h); dress.balcony = false end
             if isDoor then doorWall = math.huge end
           end
           along = along + length
@@ -4103,7 +4799,15 @@ local function build(cells, i, j, options)
           for _, p in ipairs(tri) do p[3] = top end
           scene.polygon('roof', tri, true)
         end
+        if BLD.city then
+          BLD.parapets(scene, rings, top, height, h)
+          BLD.crown(scene, rings, top, height, h, footprint)
+        end
+      elseif dress and dress.mass then
+        BLD.chimney(scene, rings[1], top, dress, h, tags)
       end
+      if BLD.city then BLD.canopies(scene, h, height) end
+      BLD.city, BLD.face, BLD.faces = nil, nil, nil
     end
     pause()
   end
@@ -4350,7 +5054,7 @@ local function build(cells, i, j, options)
         static(name, shape, x, y, z, yaw, scale)
         local it = scene.items[#scene.items]
         it.prop, it.streetKind, it.collision = true, kind, 'Collision Mesh'
-      end, pause, {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points})
+      end, pause, {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points, look = look})
     scene.streetReservations = reserved
   end
   if decor then

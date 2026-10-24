@@ -20,7 +20,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point, shape
 from shapely.ops import transform
 
-VERSION = 'fast-13'         # source index cache; 12: clearance between stacked bridges; 13: grade limits on approaches
+VERSION = 'fast-14'         # source index cache; 13: grade limits; 14: bridge deck takes the full clearance, spans its abutments
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
