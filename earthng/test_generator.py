@@ -377,6 +377,23 @@ class GeneratorTests(unittest.TestCase):
         self.assertIsNotNone(self.surface_at(asphalt, x0, y0))          # the crown stays on the arc
         self.assertIsNone(self.surface_at(asphalt, x0, y0 + 8))
 
+    def test_a_deck_is_not_raised_by_the_other_carriageways_approach(self):
+        # Two one-way bridges of a dual carriageway, staggered, their roads joined only far away.
+        # Each deck's overhang reaches the other's approach, whose centre line is a lane off to
+        # the side. Only a road that passes under the deck itself asks for clearance.
+        def way(name, nodes, x0, x1, y, bridge=False):
+            tags = {'highway': 'trunk', 'oneway': 'yes', 'sidewalk': 'no'}
+            if bridge:
+                tags.update(bridge='yes', layer='1')
+            return {'id': name, 'nodes': nodes, 'width': 12, 'points': line(x0, y, x1, y, 20), 'tags': tags}
+
+        roads = [way('s0', ['s1', 's2'], 0, 100, 250), way('s1', ['s2', 's3'], 100, 300, 250, True),
+                 way('s2', ['s3', 's4'], 300, 500, 250), way('n0', ['n1', 'n2'], 0, 200, 262),
+                 way('n1', ['n2', 'n3'], 200, 400, 262, True), way('n2', ['n3', 'n4'], 400, 500, 262)]
+        asphalt = list(self.triangles(self.build([{'roads': roads}])[0], 'e2rf_road_major'))
+        for x, y in ((200, 250), (290, 262)):
+            self.assertLess(self.surface_at(asphalt, x, y), 21.5, (x, y))
+
     def test_a_low_pack_bridge_clears_a_truck_and_the_approaches_ramp(self):
         # Installed Ukraine pack, bridge 2149 over road 148723 near 50.45845, 30.42135:
         # the stored deck sits about 2 m above the road, and the soffit is 1 m thick, so the
