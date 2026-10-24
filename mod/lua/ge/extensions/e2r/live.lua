@@ -8,7 +8,7 @@ local coordinates = require('ge/extensions/e2r/coordinates')
 local CELL, GRID = 1000, 25
 local LAND, DRIVE, MAX_M, GROW = 1200, 4500, 12000, 3000
 local LIFT, HALO = 20, 100
-local BRIDGE_CLEAR, CLEARANCE, TUNNEL_DEPTH = 6.5, 5.5, 7
+local BRIDGE_CLEAR, CLEARANCE, TUNNEL_DEPTH = 6.5, 6.0, 7   -- CLEARANCE: 4.5 m under a 1.5 m deck
 local MASK = '1000000000000000'
 local LANDING = {'-1_-1', '-1_0', '0_-1', '0_0'}
 

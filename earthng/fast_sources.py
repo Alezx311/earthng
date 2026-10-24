@@ -20,7 +20,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point, shape
 from shapely.ops import transform
 
-VERSION = 'fast-14'         # source index cache; 13: grade limits; 14: bridge deck takes the full clearance, spans its abutments
+VERSION = 'fast-16'         # source index cache; 14: full clearance and abutments; 15: widths, shoulders, rails, raceways; 16: both, clearance matches a 1.5 m deck
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -28,7 +28,7 @@ LIFT = 20.0                 # absolute DEM heights + lift; never the carrier pla
 CRS = 'EPSG:32636'          # the frame before fast-9 (Kyiv): old replay routes are in it
 ORIGIN = (324000., 5590000.)
 DRIVABLE = {'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'residential',
-            'unclassified', 'service', 'living_street', 'road'}
+            'unclassified', 'service', 'living_street', 'road', 'raceway'}
 
 
 def number(value, default):
@@ -41,7 +41,16 @@ def number(value, default):
 # Lane width (m) by highway class when a way has no width tag. One 3.3 m lane for every class
 # made a residential street as wide as a primary road (6.6 m) and the classes indistinguishable.
 LANE_WIDTH = {'motorway': 3.75, 'trunk': 3.5, 'primary': 3.5, 'secondary': 3.25, 'tertiary': 3.0,
-              'unclassified': 2.75, 'residential': 2.75, 'road': 3.0}
+              'unclassified': 3.0, 'residential': 3.0, 'road': 3.0}
+# A two-way road tagged lanes=1 is an unmarked road both directions share, not one lane wide:
+# cars still pass each other on it (Estonian country roads are mapped so). Its carriageway is
+# this share of two lanes, at least SHARED_MIN.
+SHARED = .9
+SHARED_MIN = 4.5
+ONE_LANE_MIN = 4.0                                    # a one-way carriageway: lane plus margins
+# A race track's carriageway (highway=raceway, sport=karting narrower) where no width is tagged.
+RACEWAY = {'karting': 8.0}
+RACEWAY_WIDTH = 12.0
 NARROW = {'living_street': 4.5, 'service': 4.0}       # whole carriageway, any lane count
 DRIVEWAY = 3.0                                        # service=driveway / alley
 # Paved shoulder (m) outside the edge line, (left, right) of the direction, where a way has no
@@ -63,7 +72,12 @@ def oneway(tags):
 
 
 def shoulder(tags):
-    """(left, right) paved shoulder of a way without a width tag; roundabouts have none."""
+    """(left, right) paved shoulder: tagged (shoulder:left:width and shoulder:right:width, left and
+    right of the node order: est_roads writes them), else by class for a way without a width tag;
+    roundabouts have none."""
+    tagged = number(tags.get('shoulder:left:width'), None), number(tags.get('shoulder:right:width'), None)
+    if None not in tagged:
+        return tagged
     highway = tags.get('highway', '')
     if tags.get('width') is not None or tags.get('junction') in ('roundabout', 'circular'):
         return 0., 0.
@@ -77,13 +91,19 @@ def shoulder(tags):
 def road_width(tags):
     klass = tags.get('highway', '').replace('_link', '')
     one = oneway(tags)
-    if klass in NARROW and tags.get('lanes') is None:
+    if klass == 'raceway':
+        fallback = RACEWAY.get(tags.get('sport'), RACEWAY_WIDTH)
+    elif klass in NARROW and tags.get('lanes') is None:
         fallback = DRIVEWAY if tags.get('service') in ('driveway', 'alley') else NARROW[klass]
     else:
         motorway = tags.get('highway') == 'motorway'
         lanes = max(1., number(tags.get('lanes'), 2 if motorway or not one else 1))
         lane = LANE_WIDTH.get(klass, 3.3)
         fallback = lanes * lane
+        if one:
+            fallback = max(ONE_LANE_MIN, fallback)
+        elif lanes < 2:
+            fallback = max(SHARED_MIN, 2 * lane * SHARED)
         if tags.get('junction') in ('roundabout', 'circular'):
             # a circulating carriageway is wider than its lanes: long vehicles track inside it
             fallback = max(5.5, lanes * 4.)
@@ -222,11 +242,23 @@ def source_identity(source, dem, point=None, box=None):
     index = dict(index, frame=Frame.at(*index['centre']).spec())
     h = hashlib.sha256(VERSION.encode() + json.dumps(index, sort_keys=True).encode())
     for x, y in dem_tiles(index['package_box']):
-        p = dem / 'terrain' / '12' / str(x) / f'{y}.png'
-        if p.exists():
-            st = p.stat()
-            h.update(f'{x}/{y}:{st.st_size}:{st.st_mtime_ns}'.encode())
+        # the z12 tile and its z13 children (a local DEM burnt finer, est_dem)
+        for zoom, a, b in [(12, x, y)] + [(13, 2 * x + i, 2 * y + j) for i in (0, 1) for j in (0, 1)]:
+            p = dem / 'terrain' / str(zoom) / str(a) / f'{b}.png'
+            if p.exists():
+                st = p.stat()
+                h.update(f'{zoom}/{a}/{b}:{st.st_size}:{st.st_mtime_ns}'.encode())
     return VERSION + '-' + h.hexdigest()[:16], index
+
+
+def dem_zoom(dem, box):
+    """13 when a local DEM was burnt into z13 tiles under the box (est_dem), else 12."""
+    for x, y in dem_tiles(box):
+        for i in (0, 1):
+            for j in (0, 1):
+                if (Path(dem) / 'terrain' / '13' / str(2 * x + i) / f'{2 * y + j}.png').exists():
+                    return 13
+    return 12
 
 
 class Terrain:
@@ -234,20 +266,39 @@ class Terrain:
 
     Bilinear sampling crosses PNG boundaries. Missing tiles fail explicitly.
     Roads use a symmetric 5-tap spatial filter; no optional network downloads.
+    zoom 13: a local DEM's ~10 m tiles (est_dem); where none was burnt, the z12 tile
+    bilinearly upsampled, so the two meet without a step.
     """
-    def __init__(self, cache, frame=None):
-        self.cache, self.frame = Path(cache), frame or Frame()
+    def __init__(self, cache, frame=None, zoom=12):
+        self.cache, self.frame, self.zoom = Path(cache), frame or Frame(), zoom
         self.images = OrderedDict()
+        self.coarse = Terrain(cache, self.frame) if zoom == 13 else None
+
+    def has(self, a, b):
+        if (self.cache / 'terrain' / str(self.zoom) / str(a) / f'{b}.png').exists():
+            return True
+        return self.zoom == 13 and self.coarse.has(a // 2, b // 2)
+
+    def upsampled(self, a, b):
+        """z13 tile a/b from the z12 heights: pixel X of z13 is pixel X/2 of z12."""
+        gx, gy = np.meshgrid(np.arange(a * 256, a * 256 + 256) / 2, np.arange(b * 256, b * 256 + 256) / 2)
+        ix, iy = np.floor(gx).astype(int).ravel(), np.floor(gy).astype(int).ravel()
+        u, v, n = (gx.ravel() - ix), (gy.ravel() - iy), ix.size
+        p = self.coarse.pixels(np.concatenate([ix, ix + 1, ix, ix + 1]), np.concatenate([iy, iy, iy + 1, iy + 1]))
+        return ((p[:n] * (1 - u) + p[n:2 * n] * u) * (1 - v) + (p[2 * n:3 * n] * (1 - u) + p[3 * n:] * u) * v).reshape(256, 256)
 
     def image(self, a, b):
         key = (a, b)
         if key not in self.images:
-            path = self.cache / 'terrain' / '12' / str(a) / f'{b}.png'
-            if not path.exists():
+            path = self.cache / 'terrain' / str(self.zoom) / str(a) / f'{b}.png'
+            if not path.exists() and self.zoom == 13:
+                self.images[key] = self.upsampled(a, b)
+            elif not path.exists():
                 raise FileNotFoundError(f'no_dem: {path}')
-            with Image.open(path) as im:
-                rgb = np.asarray(im.convert('RGB'), dtype=float)
-            self.images[key] = rgb[:,:,0]*256 + rgb[:,:,1] + rgb[:,:,2]/256 - 32768
+            else:
+                with Image.open(path) as im:
+                    rgb = np.asarray(im.convert('RGB'), dtype=float)
+                self.images[key] = rgb[:,:,0]*256 + rgb[:,:,1] + rgb[:,:,2]/256 - 32768
             if len(self.images) > 24:
                 self.images.popitem(last=False)
         self.images.move_to_end(key)
@@ -259,7 +310,7 @@ class Terrain:
         if (tx == a0).all() and (ty == b0).all():     # the usual case: one PNG
             return self.image(a0, b0)[y % 256, x % 256]
         out = np.empty(len(x), dtype=float)
-        keys = tx * 65536 + ty                          # z12 tile indices are 0..4095
+        keys = tx * 65536 + ty                          # z12/z13 tile indices are 0..8191
         for key in np.unique(keys).tolist():
             mask = keys == key
             a, b = divmod(key, 65536)
@@ -271,7 +322,7 @@ class Terrain:
         if not len(xy):
             return np.array([])
         lon, lat = self.frame.geographic(xy[:,0], xy[:,1])
-        scale = 256 * 2**12
+        scale = 256 * 2**self.zoom
         x = (lon+180)/360*scale
         y = (1-np.arcsinh(np.tan(np.radians(lat)))/np.pi)/2*scale
         ix, iy = np.floor(x).astype(int), np.floor(y).astype(int)
@@ -557,7 +608,8 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
     del roads, refs
     # one height solve for the whole graph: shared nodes, smooth grades, soft bridges/tunnels
     import fast_profile
-    terrain = Terrain(dem, frame)
+    zoom = dem_zoom(dem, index['package_box'])
+    terrain = Terrain(dem, frame, zoom)
     # a wilderness region (Everest's Tibetan side) has no road at all: nothing to solve
     if segments:
         mosaic = fast_profile.Mosaic(terrain, np.concatenate([np.asarray(seg['xy']) for seg in segments]))
@@ -573,7 +625,7 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
     tmp.unlink(missing_ok=True)         # left by an earlier run of this process
     write_index(segments, arcs, mouths, node_h, tmp, emit)
     meta = {'id':identity,'generator':VERSION,'bbox':index['package_box'],'center':index['centre'],'frame':index['frame'],
-            'dem':str(Path(dem).resolve()), 'source':str(Path(source).resolve()),
+            'dem':str(Path(dem).resolve()), 'demZoom':zoom, 'source':str(Path(source).resolve()),
             'coverage':[v['coverage'] for v in index['tiles'].values()],
             'seconds':time.perf_counter()-started,'roads':len(segments),'scenery':'lazy from raw OSM'}
     (target/'region.json').write_text(json.dumps(meta),encoding='utf8')
@@ -588,7 +640,7 @@ class Store:
         self.meta = json.loads((self.directory/'region.json').read_text())
         self.db = sqlite3.connect((self.directory/'sources.sqlite').as_uri()+'?mode=ro',uri=True)
         self.frame = Frame.of(self.meta)
-        self.terrain = Terrain(self.meta['dem'],self.frame)
+        self.terrain = Terrain(self.meta['dem'],self.frame,self.meta.get('demZoom',12))
         from shapely.geometry import box
         self.coverage = shapely.union_all([box(*r) for r in self.meta['coverage']])
         self.heights = OrderedDict()

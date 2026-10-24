@@ -83,6 +83,23 @@
   Potato/OASIS preserved the road. Post-drive ray smoke: 80/80 rays hit around
   10 solid trees and 10 lamps after collision rebuild. Not a vehicle-impact test.
 
+## 2026-10-23: bridge substructure, Estonian road register, county sections
+
+- Bridges: girder depth by class, piers every 25 m (none on a road under the deck),
+  abutments, guard rails on main-road approaches. OSM railings and guard rails mapped
+  beside a deck are no longer drawn on the ground across the road under it
+  (`ROADS.offDecks`); the lower road's own rails still run under the deck.
+- `--road-register` (Estonia): Transpordiamet carriageway widths, shoulders and guard
+  rails matched onto OSM ways (`est_roads.py`); tagged shoulders win in the widths.
+- Sections: `country_fetch.py sections` / `build --section <id>` writes one
+  administrative area as `earthng_<country>_<section>.zip`. `countries.lua` joins
+  mounted sections into their country and lets a section answer over the
+  whole-country regions it overlaps; the map menu lists sections as jump points.
+  A section's zip leaves the offline map to the country pack.
+- Validation: unit suite 267 passed (3 skipped); native landing harness with the full
+  Estonia pack plus the Harju section ready at Tallinn, Jüri, Tartu, Kuressaare and
+  Narva, 0 failed tiles; driven in BeamNG (Tallinn, Loksa, Pärnu).
+
 ## 2026-10-22: offline map detail, search, stock minimap
 
 - Route: existing GE Lua/ImGui APIs, no new loader. Read installed BeamNG

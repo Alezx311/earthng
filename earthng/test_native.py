@@ -71,10 +71,16 @@ class NativeTests(unittest.TestCase):
 
         files = deepcopy(files if files is not None else fixture())
         lua.globals().files = convert(files)
-        lua.globals().manifestPaths = convert([p for p in files if p.endswith('/manifest.json')])
+        lua.globals().manifestPaths = convert([p for p in files if p.endswith(('/manifest.json', '/section.json'))])
         lua.execute('''
           FS={fileExists=function(_,p) return files[p]~=nil end,
-              findFiles=function() return manifestPaths end}
+              findFiles=function(_, root, name)
+                local found = {}
+                for _, p in ipairs(manifestPaths) do
+                  if p:sub(-#name - 1) == '/' .. name then found[#found + 1] = p end
+                end
+                return found
+              end}
           jsonReadFile=function(p) return files[p] end
           io.open=function(p, mode)
             local data = files[p]
@@ -117,6 +123,9 @@ class NativeTests(unittest.TestCase):
     def test_landing_uses_budgeted_generation_and_direct_manifests(self):
         lua, mod, cv = self.make()
         self.assertEqual(mod.refresh().countryCount, 1)
+        region = mod.status().regions[1]   # the map lists a country's regions at their landings
+        self.assertEqual((region.landing.lat, region.landing.lon), (mod.status().countries[1].landing.lat,
+                                                                    mod.status().countries[1].landing.lon))
         lat, lon = geographic(1750, 1750)
         job = mod.land(cv(dict(seq=7, lat=lat, lon=lon)))
         self.assertEqual(job.state, 'working')

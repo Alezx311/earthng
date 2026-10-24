@@ -177,6 +177,40 @@ class BuildLifecycleTests(unittest.TestCase):
             export.assert_called_once()
             self.assertEqual(export_result.read_text(encoding='utf-8'), str(root / 'earthng_test.zip'))
 
+    def test_a_section_job_keeps_its_outline_through_the_export(self):
+        import build_country
+        import shapely
+        outline = shapely.box(24.5, 59.3, 25.0, 59.6)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            index_job = root / 'index-job.json'
+            index_result = root / 'regions.json'
+            index_job.write_text(json.dumps({
+                'command': 'index', 'sources': 'src', 'dem': 'dem', 'work': str(root),
+                'result': str(index_result),
+                'section': {'id': 'harju', 'box': [24.5, 59.3, 25.0, 59.6],
+                            'geometry': shapely.geometry.mapping(outline)},
+            }), encoding='utf-8')
+            with patch.object(build_country, 'section_region', return_value={
+                    'dir': root / 'idx', 'core': [24.5, 59.3, 25.0, 59.6], 'id': 'harju', 'shape': outline}):
+                build_country.run_job(index_job)
+            saved = json.loads(index_result.read_text(encoding='utf-8'))
+            self.assertEqual(saved[0]['id'], 'harju')
+            self.assertEqual(saved[0]['shape']['type'], 'Polygon')
+            self.assertNotIn('geometry', saved[0])
+            export_job = root / 'export-job.json'
+            export_result = root / 'export-path.txt'
+            export_job.write_text(json.dumps({
+                'command': 'export', 'id': 'ee', 'title': 'Estonia', 'version': '0.4.0',
+                'regions': saved, 'out': str(root), 'jobs': 1, 'work': str(root),
+                'result': str(export_result), 'section': {'id': 'harju', 'title': 'Harju'},
+            }), encoding='utf-8')
+            with patch.object(build_country, 'build_country', return_value=root / 'earthng_ee_harju.zip') as export:
+                build_country.run_job(export_job)
+            regions = export.call_args.args[3]
+            self.assertTrue(regions[0]['shape'].equals(outline))
+            self.assertEqual(export.call_args.kwargs['section'], {'id': 'harju', 'title': 'Harju'})
+
     def test_cancel_before_sources_never_downloads_or_installs(self):
         cancel = threading.Event()
         cancel.set()

@@ -2432,9 +2432,15 @@ local function packInfo()
   if status == packsFrom and status and status.countries == packs.countries then return packs end
   packsFrom, packs = status, {countries = status and status.countries, byId = {}}
   for _, region in ipairs(status and status.regions or {}) do
-    local p = packs.byId[region.country] or {regions = 0, presets = {}}
+    local p = packs.byId[region.country] or {regions = 0, presets = {}, sections = {}}
     packs.byId[region.country] = p
     p.regions = p.regions + 1
+    -- a country of several regions (sections: one zip per county) lists them as places
+    local at = region.landing
+    if at then
+      local title = region.title or region.id
+      p.sections[#p.sections + 1] = {title, at.lat, at.lon, region.country, title}
+    end
     for _, c in ipairs(region.coverage or {}) do
       p.box = p.box and {math.min(p.box[1], c[1]), math.min(p.box[2], c[2]), math.max(p.box[3], c[3]), math.max(p.box[4], c[4])}
         or {c[1], c[2], c[3], c[4]}
@@ -3034,6 +3040,13 @@ local function drawSidebar(mapW, mapH)
             local selected = S.selectedPack == country.id
             if im.Selectable1(country.title .. '##pack_' .. country.id, selected) then flyToPack(country, mapW, mapH) end
             local p = info.byId[country.id]
+            if selected and p and #p.sections > 1 then
+              im.Indent(10)
+              im.TextColored(theme.muted, L('Частини пакета', 'Sections'))
+              flowButtons(p.sections, function(section) goTo(section[2], section[3], 13) end)
+              im.Unindent(10)
+              im.Spacing()
+            end
             if selected and p and #p.presets > 0 then
               im.Indent(10)
               flowButtons(p.presets, function(preset) goTo(preset[2], preset[3], 15) end)

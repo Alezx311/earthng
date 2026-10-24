@@ -17,6 +17,10 @@ from lupa.luajit21 import LuaRuntime
 
 
 class AssetTests(unittest.TestCase):
+    def test_guard_rails_are_lines(self):
+        self.assertEqual(style.line_kind({'barrier': 'guard_rail'}), 'guard_rail')
+        self.assertEqual(style.line_kind({'barrier': 'fence'}), 'fence')
+
     def test_road_detail_nodes_have_kinds(self):
         kind = style.point_kind
         self.assertEqual(kind({'highway': 'crossing', 'crossing': 'uncontrolled'}), 'crossing')
@@ -28,6 +32,11 @@ class AssetTests(unittest.TestCase):
         self.assertEqual(kind({'highway': 'turning_loop'}), 'turning_circle')
         self.assertEqual(kind({'highway': 'mini_roundabout'}), 'mini_roundabout')
         self.assertEqual(kind({'highway': 'bus_stop'}), 'stop')
+
+    def test_traffic_islands_and_gantries_have_kinds(self):
+        self.assertEqual(style.ground_kind({'area:highway': 'traffic_island'}), 'island')
+        self.assertEqual(style.ground_kind({'traffic_calming': 'island', 'landuse': 'grass'}), 'island')
+        self.assertEqual(style.line_kind({'man_made': 'gantry'}), 'gantry')
 
     def test_dark_surfaces_are_not_light_sources(self):
         for pack in ('night', 'rain', 'cyber'):

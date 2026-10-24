@@ -16,14 +16,26 @@ class SourceTests(unittest.TestCase):
     def test_road_width_follows_class_and_implied_oneway(self):
         w = sources.road_width
         self.assertGreater(w({'highway': 'primary'}), w({'highway': 'tertiary'}))
-        self.assertGreater(w({'highway': 'tertiary'}), w({'highway': 'residential'}))
+        self.assertGreater(w({'highway': 'tertiary', 'lanes': '2'}), w({'highway': 'unclassified', 'lanes': '1'}))
         # two lanes, implied one-way, shoulders 0.75 + 2.5 m
         self.assertEqual(w({'highway': 'motorway'}), 10.75)
         self.assertEqual(w({'highway': 'trunk', 'lanes': '2', 'oneway': 'yes'}), 9.0)
         self.assertEqual(w({'highway': 'trunk'}), 9.0)                # two lanes, 1 m shoulders
         self.assertEqual(sources.shoulder({'highway': 'trunk', 'oneway': 'yes'}), (.5, 1.5))
         self.assertEqual(sources.shoulder({'highway': 'trunk', 'width': '8'}), (0., 0.))
-        self.assertEqual(w({'highway': 'primary_link', 'oneway': 'yes'}), 3.5)
+        # the road register's shoulders (est_roads) win over the class, width tag or not
+        self.assertEqual(sources.shoulder({'highway': 'tertiary', 'width': '8', 'shoulder:left:width': '0.5',
+                                           'shoulder:right:width': '1'}), (.5, 1.))
+        self.assertEqual(w({'highway': 'primary_link', 'oneway': 'yes'}), 4.0)   # lane plus margins
+        # lanes=1 on a two-way road: unmarked, both directions share it (Loksa - Hara, 11283)
+        self.assertAlmostEqual(w({'highway': 'tertiary', 'lanes': '1'}), 5.4)
+        self.assertAlmostEqual(w({'highway': 'residential', 'lanes': '1'}), 5.4)
+        self.assertEqual(w({'highway': 'residential'}), 6.0)
+        self.assertEqual(w({'highway': 'tertiary', 'lanes': '1', 'oneway': 'yes'}), 4.0)
+        # race tracks are drivable roads (Porsche Ring): a circuit's width, a kart track's
+        self.assertIn('raceway', sources.DRIVABLE)
+        self.assertEqual(w({'highway': 'raceway', 'sport': 'motor', 'oneway': 'yes'}), 12.0)
+        self.assertEqual(w({'highway': 'raceway', 'sport': 'karting'}), 8.0)
         ring = w({'highway': 'tertiary', 'junction': 'roundabout'})  # implied one-way, one lane
         self.assertGreaterEqual(ring, 5.5)
         self.assertLess(ring, w({'highway': 'tertiary'}) + 1)

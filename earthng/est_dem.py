@@ -6,6 +6,11 @@ sheets are reprojected onto every cached z12 tile they cover and feathered into 
 Terrarium heights over FEATHER metres inside the sheets' edge, so the downstream readers
 (fast_sources.Terrain, fast_profile.Mosaic, build_country) take it unchanged. The first
 burn keeps the original PNG in terrain/12.orig; a burn always starts from that original.
+The sheets are also burnt into the four z13 children of every refined tile (terrain/13,
+~9.6 m pixels): there Terrain reads zoom 13 and build_country exports a 10 m grid. A z13
+pixel X samples the ground at X itself (Terrain's bilinear convention), and where the
+feather fades the LiDAR out, a child is the z12 tile upsampled, as Terrain upsamples
+the tiles no sheet reaches.
 
 Map data: Republic of Estonia Land and Spatial Development Board (Maa- ja Ruumiamet),
 https://geoportaal.maaruum.ee/opendata-licence
@@ -89,7 +94,7 @@ def fetch_sheet(code, cache, kind=KIND):
     if data[:4] not in (b'II*\x00', b'MM\x00*'):      # an HTML page: "no sheet with this number"
         none.write_bytes(b'')
         return None
-    part = path.with_suffix('.tif.part')
+    part = path.with_suffix(f'.{os.getpid()}.tif.part')   # builds running side by side
     part.write_bytes(data)
     import rasterio
     with rasterio.open(part) as source:
@@ -158,6 +163,40 @@ def burn_tile(path, near, original):
     return np.where(weight > 0, base + (np.nan_to_num(lidar) - base) * weight, base)
 
 
+def burn_fine(x, y, near, upsampled):
+    """{(a, b): heights} of the four z13 children of z12 tile x/y with the sheets near it
+    feathered into upsampled(a, b), the z12 heights at z13 pixels; children without data skipped."""
+    import rasterio
+    from rasterio.transform import from_origin
+    from rasterio.warp import Resampling, reproject
+    from pyproj import Transformer
+
+    out = {}
+    size = TILE / 2
+    px = size / 256
+    to_est = Transformer.from_crs(3857, 3301, always_xy=True)
+    for a, b in [(2 * x + i, 2 * y + j) for i in (0, 1) for j in (0, 1)]:
+        left, top = -R + a * size, R - b * size
+        # pixel centres on the pixel corners: pixel X samples the ground at X
+        transform = from_origin(left - px / 2, top + px / 2, px, px)
+        lidar = np.full((256, 256), np.nan, np.float32)
+        for _bounds, sheet in near.values():
+            with rasterio.open(sheet) as source:
+                part = np.full((256, 256), np.nan, np.float32)
+                reproject(rasterio.band(source, 1), part, src_nodata=source.nodata, dst_transform=transform,
+                          dst_crs='EPSG:3857', dst_nodata=np.nan, resampling=Resampling.bilinear)
+            lidar = np.where(np.isnan(lidar), part, lidar)
+        if np.isnan(lidar).all():
+            continue
+        mx, my = np.meshgrid(left + np.arange(256) * px, top - np.arange(256) * px)
+        e, n = to_est.transform(mx, my)
+        weight = feather(np.asarray(e), np.asarray(n), [bounds for bounds, _ in near.values()])
+        weight = np.where(np.isnan(lidar), 0, weight)
+        base = upsampled(a, b)
+        out[(a, b)] = np.where(weight > 0, base + (np.nan_to_num(lidar) - base) * weight, base)
+    return out
+
+
 def refine(tiles, cache, emit=print, kind=KIND, fetch=fetch_sheet):
     """Burn the DTM into the given cached z12 tile paths (fast_dem.audit). Returns the number of
     tiles changed. A tile is re-burnt only when its sheets change (cache/est/burnt.json)."""
@@ -210,7 +249,7 @@ def refine(tiles, cache, emit=print, kind=KIND, fetch=fetch_sheet):
         if heights is None:
             continue
         from PIL import Image
-        part = path.with_suffix('.png.part')
+        part = path.with_suffix(f'.{os.getpid()}.png.part')
         Image.fromarray(encode(heights), 'RGB').save(part, format='PNG')
         os.replace(part, path)
         burnt[f'{x}/{y}'] = stamp
@@ -218,7 +257,35 @@ def refine(tiles, cache, emit=print, kind=KIND, fetch=fetch_sheet):
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text(json.dumps(burnt, sort_keys=True, indent=0))
     emit(f'Estonian DTM: {changed} terrain tiles refined')
-    return changed
+    # z13 children once every z12 tile is final (the upsampled base reads the neighbours)
+    from fast_sources import Terrain
+    from PIL import Image
+    fine, done, todo = Terrain(cache, zoom=13), 0, []
+    for path in tiles:
+        x, y = tile_of(path)
+        stamp = burnt.get(f'{x}/{y}')
+        if stamp and burnt.get(f'13/{x}/{y}') != stamp:
+            todo.append((x, y, stamp))
+    for k, (x, y, stamp) in enumerate(todo):
+        near = {code: covered[code] for code in sheets(est_box(x, y, SHEET)) if code in covered}
+        try:
+            children = burn_fine(x, y, near, fine.upsampled)
+        except FileNotFoundError:          # a neighbour at the cache's edge: z12 serves here
+            continue
+        for (a, b), heights in children.items():
+            path = cache / 'terrain' / '13' / str(a) / f'{b}.png'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            part = path.with_suffix(f'.{os.getpid()}.png.part')
+            Image.fromarray(encode(heights), 'RGB').save(part, format='PNG')
+            os.replace(part, path)
+        burnt[f'13/{x}/{y}'] = stamp
+        done += 1
+        if done % 100 == 0:
+            emit(f'Estonian DTM: {k + 1}/{len(todo)} fine tiles')
+            record.write_text(json.dumps(burnt, sort_keys=True, indent=0))
+    record.write_text(json.dumps(burnt, sort_keys=True, indent=0))
+    emit(f'Estonian DTM: {done} tiles refined at z13')
+    return changed + done
 
 
 def restore(cache):
@@ -232,6 +299,7 @@ def restore(cache):
         shutil.copy2(original, target)
         os.utime(target)            # a new mtime: the region index rebuilds
         count += 1
+    shutil.rmtree(cache / 'terrain' / '13', ignore_errors=True)
     record = cache / 'est' / 'burnt.json'
     if record.exists():
         record.unlink()
