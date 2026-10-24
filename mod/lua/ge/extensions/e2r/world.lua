@@ -2435,18 +2435,16 @@ local function packInfo()
     local p = packs.byId[region.country] or {regions = 0, presets = {}, sections = {}}
     packs.byId[region.country] = p
     p.regions = p.regions + 1
-    -- a country of several regions (sections: one zip per county) lists them as places
-    local at = region.landing
-    if at then
-      local title = region.title or region.id
-      p.sections[#p.sections + 1] = {title, at.lat, at.lon, region.country, title}
-    end
     for _, c in ipairs(region.coverage or {}) do
       p.box = p.box and {math.min(p.box[1], c[1]), math.min(p.box[2], c[2]), math.max(p.box[3], c[3]), math.max(p.box[4], c[4])}
         or {c[1], c[2], c[3], c[4]}
     end
   end
   if NATIVE then
+    for _, place in ipairs(native.sectionPlaces(status and status.regions)) do
+      local pack = packs.byId[place[4]]
+      if pack then pack.sections[#pack.sections + 1] = place end
+    end
     for _, preset in ipairs(PRESETS) do
       local country = native.at(preset[2], preset[3])
       local p = country and packs.byId[country.id]

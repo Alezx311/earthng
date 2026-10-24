@@ -267,8 +267,14 @@ local function refresh()
           accepted = accepted + 1
           local lon, lat = geographic(r, r.landing[1], r.landing[2])
           if not country.landing then country.landing = {lat = lat, lon = lon} end
-          state.regions[#state.regions + 1] = {id = descriptor.id, country = country.id, title = descriptor.title or country.title,
+          -- A grid region has no title of its own. The country name there made one button per
+          -- cell, all labelled the same. A section zip names its county and is the only jump.
+          local section = descriptor.section == true
+          local entry = {id = descriptor.id, country = country.id,
+            title = section and (descriptor.title or descriptor.id) or (descriptor.title or country.title),
             bounds = r.data.bounds, coverage = r.coverage, landing = {lat = lat, lon = lon}}
+          if section then entry.section = true end
+          state.regions[#state.regions + 1] = entry
           for _, box in ipairs(r.coverage) do
             state.coverage[#state.coverage + 1] = box
             local b = state.packageBox
@@ -1339,6 +1345,21 @@ function M.horizonShow(candidates, ready)
     if ready[candidate.key] and not hidden[candidate.key] then show[#show + 1] = candidate.key end
   end
   return show
+end
+
+-- Jump buttons for a country: county zips only. Grid regions stay in the catalog (coverage,
+-- landing) and are not places. A section with no landing is skipped; one with no title uses its id.
+function M.sectionPlaces(regions)
+  local places = {}
+  if type(regions) ~= 'table' then return places end
+  for _, region in ipairs(regions) do
+    local at = type(region) == 'table' and region.section == true and region.landing
+    if type(at) == 'table' and type(at.lat) == 'number' and type(at.lon) == 'number' then
+      local title = region.title or region.id
+      places[#places + 1] = {title, at.lat, at.lon, region.country, title}
+    end
+  end
+  return places
 end
 
 M.refresh = refresh

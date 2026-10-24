@@ -120,6 +120,19 @@ class NativeTests(unittest.TestCase):
                 return job
         self.fail('native landing did not finish')
 
+    def test_section_places_are_counties_not_grid_tiles(self):
+        _, mod, cv = self.make()
+        places = mod.sectionPlaces(cv([
+            dict(id='e0300-n5040', country='ukraine', title='Україна', landing=dict(lat=50.4, lon=30.3)),
+            dict(id='e0310-n5050', country='ukraine', title='Україна', landing=dict(lat=50.5, lon=30.5)),
+            dict(id='lviv', country='ukraine', title='Львів', section=True, landing=dict(lat=49.84, lon=24.03)),
+            dict(id='harju', country='estonia', title='Harju', section=True, landing=dict(lat=59.4, lon=24.7)),
+            dict(id='noland', country='estonia', title='Saare', section=True),
+        ]))
+        got = [(places[i][1], places[i][2], places[i][3], places[i][4]) for i in range(1, len(places) + 1)]
+        self.assertEqual(got, [('Львів', 49.84, 24.03, 'ukraine'), ('Harju', 59.4, 24.7, 'estonia')])
+        self.assertEqual(len(mod.sectionPlaces(None)), 0)
+
     def test_landing_uses_budgeted_generation_and_direct_manifests(self):
         lua, mod, cv = self.make()
         self.assertEqual(mod.refresh().countryCount, 1)
