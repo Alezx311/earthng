@@ -245,8 +245,6 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
                 landing=None, by_id=None, emit=print, cancel=None, progress=None, local_dem=False):
     """Download sources if needed and write the country zip, then copy it into mods.
     local_dem: burn the Estonian Land Board's 10 m LiDAR terrain into the elevation tiles."""
-    import build_country
-
     slug_id = places.slug(place['id'])
     known = dict(by_id or {})
     known.setdefault(place['id'], place)
@@ -298,7 +296,10 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     work = Path(root) / 'out' / 'world'
     emit('region index')
     with stage('Region index'):
-        regions = build_country.grid_regions(tiles, dem, work, emit=emit, cancel=cancel)
+        regions_path = work / 'regions.json'
+        run_build_job({'command': 'index', 'sources': str(tiles), 'dem': str(dem),
+                       'work': str(work), 'result': str(regions_path)}, emit, cancel)
+        regions = json.loads(regions_path.read_text(encoding='utf-8'))
     out = Path(root) / 'out' / 'country-setup'
     map_data = tiles / 'map'
     if not (map_data / 'index.json').is_file():
@@ -312,15 +313,34 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
             map_data = None
     emit(f"building earthng_{slug_id}.zip, block {look['block']}")
     with stage('Export'):
-        archive = build_country.build_country(
-            slug_id, place['name'], '0.4.0', regions, out, emit=emit, jobs=jobs,
-            landing=landing, look=look, include=include, cancel=cancel, map_data=map_data)
+        # Same process as the index: export's block pool dies in the detached window too.
+        export_path = work / 'export-path.txt'
+        run_build_job({'command': 'export', 'id': slug_id, 'title': place['name'], 'version': '0.4.0',
+                       'regions': regions, 'out': str(out), 'jobs': jobs, 'landing': landing,
+                       'look': look, 'include': include,
+                       'map_data': None if map_data is None else str(map_data),
+                       'work': str(work), 'result': str(export_path)}, emit, cancel)
+        archive = Path(export_path.read_text(encoding='utf-8').strip())
     if cancel is not None and cancel.is_set():
         raise InterruptedError('build stopped; completed ZIP retained, not installed')
     with stage('Install'):
         installed = install_zip(archive, mods, slug_id)
     emit(f'installed {installed}')
     return installed
+
+
+def run_build_job(job, emit=print, cancel=None):
+    """Index or export in a normal python.exe, not in the Map Builder window.
+
+    The window is a detached pythonw process and its stdout is the startup log.
+    A process pool created there dies on Windows and is reported only as a child
+    that terminated abruptly. Tile cutting already goes through run_step, and
+    that pool finishes."""
+    folder = Path(job['work'])
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{job['command']}-job.json"
+    path.write_text(json.dumps(job), encoding='utf-8')
+    run_step([_python(), str(HERE / 'build_country.py'), '--job', str(path)], emit, cancel)
 
 
 def run_step(command, emit=print, cancel=None):
@@ -345,7 +365,7 @@ def run_step(command, emit=print, cancel=None):
                     process.terminate()
                 process.wait()
                 reader.join()
-                raise InterruptedError('tile cutting stopped')
+                raise InterruptedError('build stopped')
             if cancel is None:
                 time.sleep(0.2)
         reader.join()

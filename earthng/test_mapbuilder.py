@@ -117,26 +117,65 @@ class EstimateTests(unittest.TestCase):
 
 class BuildLifecycleTests(unittest.TestCase):
     def test_cached_tiles_skip_pbf_and_report_ordered_stages(self):
-        import build_country
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             tiles = country_fetch.tiles_dir(root, 'test', None)
             tiles.mkdir(parents=True)
             (tiles / 'index.json').write_text('{}')
             events = []
+            commands = []
+
+            def fake_step(command, emit=None, cancel=None):
+                commands.append(command)
+                if '--job' not in command:
+                    return
+                job = json.loads(Path(command[command.index('--job') + 1]).read_text(encoding='utf-8'))
+                if job['command'] == 'index':
+                    Path(job['result']).write_text('[]', encoding='utf-8')
+                else:
+                    Path(job['result']).write_text(str(root / 'pack.zip'), encoding='utf-8')
+
             with patch.object(country_fetch, 'download') as download, \
-                    patch.object(country_fetch, 'run_step') as cut, \
+                    patch.object(country_fetch, 'run_step', side_effect=fake_step), \
                     patch.object(country_fetch, 'fetch_dem'), \
-                    patch.object(build_country, 'grid_regions', return_value=[]), \
-                    patch.object(build_country, 'build_country', return_value=root/'pack.zip'), \
                     patch.object(country_fetch, 'install_zip', return_value=root/'installed.zip'):
                 country_fetch.build_place({'id':'test', 'name':'Test', 'pbf':'unused'}, root,
                                           root=root, emit=lambda _: None,
                                           progress=lambda name, seconds: events.append((name, seconds)))
             download.assert_not_called()
-            cut.assert_not_called()
+            self.assertTrue(commands)
+            self.assertFalse(any('osm_tiles_country.py' in str(part) for command in commands for part in command))
+            self.assertEqual([part for command in commands for part in command if str(part).endswith('--job')],
+                             ['--job', '--job'])
             self.assertEqual([name for name, seconds in events if seconds is None], list(timing.STAGES))
             self.assertTrue(all(seconds >= 0 for _, seconds in events if seconds is not None))
+
+    def test_build_job_writes_the_index_then_the_archive_path(self):
+        import build_country
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            index_job = root / 'index-job.json'
+            index_result = root / 'regions.json'
+            index_job.write_text(json.dumps({
+                'command': 'index', 'sources': 'src', 'dem': 'dem', 'work': str(root),
+                'result': str(index_result),
+            }), encoding='utf-8')
+            with patch.object(build_country, 'grid_regions', return_value=[
+                    {'dir': root / 'idx', 'core': [1, 2, 3, 4], 'id': 'e0100-n0200'}]):
+                build_country.run_job(index_job)
+            self.assertEqual(json.loads(index_result.read_text(encoding='utf-8')),
+                             [{'dir': str(root / 'idx'), 'core': [1, 2, 3, 4], 'id': 'e0100-n0200'}])
+            export_job = root / 'export-job.json'
+            export_result = root / 'export-path.txt'
+            export_job.write_text(json.dumps({
+                'command': 'export', 'id': 'test', 'title': 'Test', 'version': '0.4.0',
+                'regions': [], 'out': str(root), 'jobs': 2, 'landing': None, 'look': None,
+                'include': None, 'map_data': None, 'work': str(root), 'result': str(export_result),
+            }), encoding='utf-8')
+            with patch.object(build_country, 'build_country', return_value=root / 'earthng_test.zip') as export:
+                build_country.run_job(export_job)
+            export.assert_called_once()
+            self.assertEqual(export_result.read_text(encoding='utf-8'), str(root / 'earthng_test.zip'))
 
     def test_cancel_before_sources_never_downloads_or_installs(self):
         cancel = threading.Event()

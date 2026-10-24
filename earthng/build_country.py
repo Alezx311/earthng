@@ -773,13 +773,36 @@ def grid_regions(source, dem, work, step=None, emit=print, cancel=None):
     return regions
 
 
+def run_job(path):
+    """One GUI build step. The caller is python.exe started by country_fetch.run_step."""
+    job = json.loads(Path(path).read_text(encoding='utf-8'))
+    command = job['command']
+    destination = Path(job['result'])
+    destination.unlink(missing_ok=True)
+    if command == 'index':
+        regions = grid_regions(job['sources'], job['dem'], job['work'])
+        text = [{'dir': str(region['dir']), 'core': region['core'], 'id': region['id']} for region in regions]
+        destination.write_text(json.dumps(text), encoding='utf-8')
+        return
+    if command == 'export':
+        archive = build_country(
+            job['id'], job['title'], job['version'], job['regions'], job['out'],
+            jobs=job.get('jobs') or 1, landing=job.get('landing'), look=job.get('look'),
+            include=job.get('include'), map_data=job.get('map_data'))
+        destination.write_text(str(archive), encoding='utf-8')
+        return
+    raise ValueError(f'unknown build job {command}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--id', required=True)
-    parser.add_argument('--title', required=True)
+    parser.add_argument('--job', type=Path,
+                        help='GUI step: index or export, as written by country_fetch.run_build_job')
+    parser.add_argument('--id')
+    parser.add_argument('--title')
     parser.add_argument('--version', default='0.2.0')
     parser.add_argument('--region', action='append', default=[], help='prepared source-index directory')
-    parser.add_argument('--out', required=True)
+    parser.add_argument('--out')
     parser.add_argument('--bbox', type=float, nargs=4, metavar=('X0', 'Y0', 'X1', 'Y1'))
     parser.add_argument('--sources', help='OSM tile package: export all of it as a grid of regions')
     parser.add_argument('--dem', help='offline DEM cache for --sources')
@@ -793,6 +816,14 @@ def main():
     parser.add_argument('--tree-line', type=float, help='regional forest limit in metres above sea level')
     parser.add_argument('--conifer-start', type=float, help='altitude at which untagged forest begins mixing conifers')
     args = parser.parse_args()
+    if args.job:
+        try:
+            run_job(args.job)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
+        return
+    if not args.id or not args.title or not args.out:
+        parser.error('the following arguments are required: --id, --title, --out')
     try:
         regions = list(args.region)
         if args.sources:
