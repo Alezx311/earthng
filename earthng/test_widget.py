@@ -115,6 +115,18 @@ class WidgetTests(unittest.TestCase):
             regions={{country='ukraine', coverage={{22, 44.3, 40.3, 52.4}}}, {country='zanzibar', coverage={{39.1, -6.4, 39.6, -5.7}}}}}
           fakeNative={status=function() return status end, refresh=function() end,
             mapRoads=function() return {} end,
+            sectionPlaces=function(regions)
+              local places = {}
+              if type(regions) ~= 'table' then return places end
+              for _, region in ipairs(regions) do
+                local at = type(region) == 'table' and region.section == true and region.landing
+                if type(at) == 'table' and type(at.lat) == 'number' and type(at.lon) == 'number' then
+                  local title = region.title or region.id
+                  places[#places + 1] = {title, at.lat, at.lon, region.country, title}
+                end
+              end
+              return places
+            end,
             at=function(lat, lon)
               for _, r in ipairs(status.regions) do
                 local c = r.coverage[1]
