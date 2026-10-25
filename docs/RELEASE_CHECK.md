@@ -3,7 +3,7 @@
 ## Planet 0.6.2 — 2026-10-25
 
 The `EarthNG` player line stays on the 0.6.1 download. This planet is a separate
-GitHub release, tag `0.6.2` (manifest 0.6.2). `earthng_albania.zip` is still the
+GitHub release, tag `0.6.2` (manifest 0.6.2, built from aca4265). `earthng_albania.zip` is still the
 0.4.0 file on the `EarthNG` release. Country packs are not rebuilt and are not
 replaced in the live mods folder.
 
