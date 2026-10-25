@@ -1,5 +1,28 @@
 # EarthNG native mod migration
 
+## 2026-10-25: the whole of Estonia at 10 m
+
+- `build --place estonia --local-dem` over the whole country died or took every byte of RAM at
+  z13: the profile solve stitched one dense DEM grid over the bounding box of every road
+  (`fast_profile.Mosaic`: 4.7 GiB over Estonia, sea and empty bog included), and past that the
+  four export workers grew to 3.6 GB each on the islands and filled the machine.
+- `Mosaic` now stitches 8 x 8 tiles at a time and reads only the tiles its points reach (the
+  grid never read the others: at the edge of a downloaded DEM a z13 tile upsamples from z12
+  neighbours that may not be on disk). On 766,337 real Harju stations the heights equal the
+  grid's exactly (max difference 0, 5 s, 157 MB).
+- `_coastlines` kept every source tile's coastline for the life of a worker, as lists of
+  tuples. On an island every tile carries the whole coastline (about 250k vertices, the same
+  ways), so a worker over Saaremaa and Hiiumaa reached 4.9 GB in 40 blocks. Each way is now
+  stored once, as an array; a worker holds ~200 MB over the same blocks. Exported blocks are
+  byte-identical (same CRC and size on three blocks, Kuressaare among them).
+- Result: `earthng_estonia.zip`, 527 MB, 18 regions; the export took 42 minutes with the
+  region indexes already built (about 20 more to build them), Python memory 0.6-0.8 GB
+  throughout. All 15 regions with land are on the 10 m grid; the 3 open-sea regions west of
+  Saaremaa have no road and stay at 25 m. 4,778 sampled tiles of all regions build with
+  generator.lua, none failed. Not driven in the game.
+- Unit check: 354 OK (3 skipped), two new tests (the block sampler against a reference grid
+  and its memory, the shared coastline cache).
+
 ## 2026-10-25: packs carry their data credits
 
 - A map pack shared on its own (a Drive download) named only OpenStreetMap in its
