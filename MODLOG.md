@@ -1,5 +1,27 @@
 # EarthNG native mod migration
 
+## 2026-10-25: rails beside the road, concrete at deck ends
+
+- OSM guard rails mapped off the road the pack draws (an old alignment, a ramp since rebuilt,
+  a mapping offset) stood out in the grass: 8 to 17 m off round the Assaku - Juri overpass of
+  the Tallinna ringtee, and one looped through the field inside a ringtee cloverleaf.
+  `ROADS.besideRoads` (`generator.lua`) keeps a rail only within 4 m of a carriageway's edge;
+  a short weave out to 7 m stays, so a rail along that line is not chopped into stubs.
+  Harju-maakond: 6.8 of 83 km of OSM rail is dropped; the 291 km from the road register
+  already stood on the edge.
+- Decks barely longer than the road under them left the ground between the approach's bank
+  and that road at 60-70 degrees on the 10 m lattice, a wall of grass by the abutment (Parnu
+  mnt over Jarvevana tee, Tartu mnt at Pildikula). Ground and cover steeper than 55 degrees
+  within 15 m of an abutment is now drawn in its concrete, a wing wall (`ROADS.wing`, through
+  a hook in the mesh collector); the grass edge decals over it are left out, and a viaduct's
+  valley sides between its ends stay ground. Round those two bridges: 259 and 179 m2 of ground
+  over 55 degrees before, none now. Build time unchanged (36 tiles: 415 ms a tile before,
+  410 after).
+- A 5 m ground lattice would smooth those banks for real, but costs about 27 % more build
+  time and 50 % more triangles a tile; not done.
+- Unit check: `test_generator.py` 99 (two new tests; three rail tests now have a road beside
+  their rail). Checked in offline 3D renders of the generated tiles; not driven in the game.
+
 ## 2026-10-24: no runaway hills at bridges
 
 - The bridge clearance solve (`fast_profile.py`) and the runtime deck lift (`liftDecks`) both
