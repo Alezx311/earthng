@@ -4054,7 +4054,12 @@ local function liftDecks(roads, pause)
                     end
                     local qx, qy = seg.a[1] + sx * u, seg.a[2] + sy * u
                     local ddx, ddy = px - qx, py - qy
-                    if ddx * ddx + ddy * ddy <= seg.half2 then
+                    -- The road must pass under the deck itself. Its ribbon grazing the overhang
+                    -- is not a crossing: the other carriageway of a dual bridge lies a few
+                    -- metres off, and its approach ran this deck up, which ran its own bridge
+                    -- up in turn (a 12 m hill at the Tallinna ringtee bridges).
+                    local under = math.abs((qx - x) * nx + (qy - y) * ny) <= m.width / 2
+                    if under and ddx * ddx + ddy * ddy <= seg.half2 then
                       local qz = seg.a[3] + (seg.b[3] - seg.a[3]) * u
                       local need = qz + DECK_CLEAR.gap * (level - seg.level) + DECK_CLEAR.slack - z
                       if need > maxLack then maxLack = need end

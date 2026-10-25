@@ -161,8 +161,9 @@ class ProfileTests(unittest.TestCase):
         deck=np.interp(25,prof[2][0],prof[2][1])
         road=np.interp(400,prof[5][0],prof[5][1])
         self.assertGreater(deck-road,fast_profile.CLEARANCE-.15)
-        self.assertGreater(deck-40,fast_profile.CLEARANCE-.4)   # the deck takes the whole rise
-        self.assertGreater(road,39.6)                             # the road underneath stays on the ground
+        self.assertGreater(deck-40,fast_profile.CLEARANCE/2-.5)  # the deck and the road share the rise
+        self.assertLess(deck-40,fast_profile.CLEARANCE-1)         # ... it is not all the deck's
+        self.assertGreater(road,40-fast_profile.CLEARANCE)        # the cutting is shallower than the clearance
         for k,(s,h) in enumerate(prof):
             # ramps a car can drive
             self.assertLess(np.abs(np.diff(h)/np.maximum(np.diff(s),.5)).max(),.1,k)
@@ -171,6 +172,41 @@ class ProfileTests(unittest.TestCase):
         free,_=fast_profile.solve(over,valley)
         held,_=fast_profile.solve(over+under,valley)
         self.assertLess(abs(np.interp(25,free[2][0],free[2][1])-np.interp(25,held[2][0],held[2][1])),.05)
+
+    def test_dual_carriageway_bridges_do_not_lift_each_other(self):
+        # Tallinna ringtee at Jyri (OSM ways 112582273, 648255699 and their approaches): two
+        # one-way bridges diverge from one end, each deck ribbon overlaps the other
+        # carriageway's approach and the roads are joined at the bridge nodes. The clearance
+        # springs once chased each other 730 m up the hill over a flat DEM.
+        trunk = {'highway': 'trunk'}
+        bridge = {'highway': 'trunk', 'bridge': 'yes', 'layer': '1'}
+        way = lambda xy, nodes, tags: {'xy': xy, 'nodes': nodes, 'tags': tags, 'width': 8.}
+        segments = [
+            way([[19.2, -.6], [29.7, 18.1]], [1, 2], bridge),
+            way([[29.7, 18.1], [76.7, 101.1], [112.5, 167.5]], [2, 3], trunk),
+            way([[103.3, 169.7], [69.2, 105.3], [19.9, 18.9]], [4, 5], trunk),
+            way([[19.9, 18.9], [9.3, -.4]], [5, 6], bridge),
+            way([[9.3, -.4], [-123.4, -234.9]], [6, 7], trunk),
+            way([[-82.5, -180.8], [19.2, -.6]], [8, 1], trunk)]
+        profiles, _ = fast_profile.solve(segments, lambda xy: np.full(len(xy), 40.))
+        self.assertLess(max(np.abs(h - 40).max() for _, h in profiles), fast_profile.CLEARANCE)
+
+    def test_parallel_bridges_of_unconnected_carriageways_stay_level(self):
+        # Tallinna ringtee at Lasnamae: the two carriageways meet again only kilometres away.
+        # Their staggered decks overlap each other's approach ribbons, but no centre line crosses
+        # another, so nothing is an overpass: the decks keep their own small rise over flat ground.
+        bridge = {'highway': 'trunk', 'bridge': 'yes', 'layer': '1'}
+        trunk = {'highway': 'trunk'}
+        way = lambda xy, nodes, tags: {'xy': xy, 'nodes': nodes, 'tags': tags, 'width': 12.}
+        segments = [
+            way([[-200., 0.], [0., 0.]], [1, 2], trunk),
+            way([[0., 0.], [80., 0.]], [2, 3], bridge),
+            way([[80., 0.], [300., 0.]], [3, 4], trunk),
+            way([[-200., 10.], [20., 10.]], [11, 12], trunk),
+            way([[20., 10.], [100., 10.]], [12, 13], bridge),
+            way([[100., 10.], [300., 10.]], [13, 14], trunk)]
+        profiles, _ = fast_profile.solve(segments, lambda xy: np.full(len(xy), 40.))
+        self.assertLess(max(np.abs(h - 40).max() for _, h in profiles), 2.)
 
     def test_a_road_under_the_bridge_end_is_not_tied_to_the_approach(self):
         # Juri bensiinijaama tee passes 2 m from the end of a 14 m trunk bridge: in plan it
@@ -237,7 +273,7 @@ class ProfileTests(unittest.TestCase):
         ground_z = np.interp(350, *profiles[6])
         self.assertGreaterEqual(upper_z - lower_z, fast_profile.CLEARANCE - .02)
         self.assertGreaterEqual(np.interp(12, *profiles[4]) - ground_z, fast_profile.CLEARANCE - .02)
-        self.assertGreater(ground_z, 39.8)
+        self.assertGreater(ground_z, 40 - fast_profile.CLEARANCE - .5)   # a cutting, not a pit
         for start in (0, 3):
             self.assertEqual(profiles[start][1][-1], profiles[start + 1][1][0])
             self.assertEqual(profiles[start + 1][1][-1], profiles[start + 2][1][0])

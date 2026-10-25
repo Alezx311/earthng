@@ -1,5 +1,22 @@
 # EarthNG native mod migration
 
+## 2026-10-24: no runaway hills at bridges
+
+- The bridge clearance solve (`fast_profile.py`) and the runtime deck lift (`liftDecks`) both
+  took any lower road whose ribbon touched a deck's overhang for something to clear. The
+  two bridges of a dual carriageway sit a lane apart, so each one lifted the other's approach,
+  and that lifted the first deck again: the Tallinna ringtee climbed to 866 m in the pack,
+  and in the game 11 m hills stood at the ringtee bridges at Lasnamae and Pildikula.
+- Now only a road whose centre line crosses the deck's centre line in plan is an overpass
+  (`fast_profile.py`), and the runtime lift counts a road only when its centre line passes
+  under the deck itself. The deck and the road beneath it share the 6 m of clearance, with
+  the deck's extra lift capped at 6 m. Cache version `fast-18`.
+- Harju-maakond, non-bridge segments against the terrain: more than 5 m off 2123 before,
+  11 now (the largest 6.2 m, was 810 m). All 2318 bridge crossings reach full clearance
+  (21 fell short). Parallel carriageway bridges are level again, and the Jarvevana
+  Parnu mnt bridge profile is flat at 54.4-54.8 m.
+- Unit check: `test_fast.py` 22, `test_generator.py` 81. Not driven in the game.
+
 ## 2026-10-24: city block silhouette
 
 - Blocks from 8 m that are not houses or sheds, on a near tile at detail 40 and above,
