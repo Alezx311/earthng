@@ -184,7 +184,8 @@ def fields(base):
                    'hw_boards': 'fence_wall',
                    'hw_siding': 'wall_stucco', 'hw_wood': 'fence_wall', 'win_pvc': 'water', 'win_wood': 'water',
                    'door_house': 'wall_block', 'plinth_brown': 'paved',
-                   'chimney': 'wall_brick_red'}.get(kind, kind)
+                   'chimney': 'wall_brick_red', 'yard': 'car', 'sand': 'trodden', 'railing_blue': 'fence_mesh',
+                   'railing_green': 'fence_mesh', 'railing_dark': 'fence_mesh'}.get(kind, kind)
         f.update(baseColorMap=f'{base}/pixel/{texture}.color.png', baseColorFactor='1 1 1 1',
                  emissiveFactor='0 0 0', roughnessFactor=.9, metallicFactor=0)
         if kind == 'mark_yellow':
@@ -192,6 +193,8 @@ def fields(base):
         fast_art.stylised_decal(kind, f)
         if kind == 'fence_mesh':
             f['opacityMap'] = f'{base}/real/chainlink_o.data.png'
+        if kind in style.RAILINGS:
+            f['opacityMap'] = f'{base}/real/railing_o.data.png'
         out['e2rf_' + kind] = f
     for mat in fast_packs.LEAF_NAMES:
         out[mat] = {'baseColorFactor': '0.68 0.82 0.64 1', 'roughnessFactor': .95}

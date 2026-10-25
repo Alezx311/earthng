@@ -3214,24 +3214,108 @@ local function pitchedRoof(scene, rings, tags, top, base, kind, height, material
   return true
 end
 
-local function parkedCar(mesh, x, y, z, yaw, colour)
-  local cosine, sine = math.cos(yaw), math.sin(yaw)
-  local function box(x0, y0, z0, x1, y1, z1, tx0, ty0, tx1, ty1, body, windows)
-    local bottom = {{x0, y0, z0}, {x1, y0, z0}, {x1, y1, z0}, {x0, y1, z0}}
-    local top = {{tx0 or x0, ty0 or y0, z1}, {tx1 or x1, ty0 or y0, z1}, {tx1 or x1, ty1 or y1, z1}, {tx0 or x0, ty1 or y1, z1}}
-    local faces = {{top[1], top[2], top[3], top[4]}}
-    for index = 1, 4 do faces[#faces + 1] = {bottom[index], bottom[index % 4 + 1], top[index % 4 + 1], top[index]} end
-    for index, face in ipairs(faces) do
-      local cell = index == 1 and body or windows or body
-      local polygon = {}
-      for _, p in ipairs(face) do polygon[#polygon + 1] = {x + p[1] * cosine - p[2] * sine,
-        y + p[1] * sine + p[2] * cosine, z + p[3], (cell + .5) / 16, .5} end
-      mesh.polygon('car', polygon, index == 1)
-    end
+-- Low-poly solids in one paint atlas (cars: car_art.CAR_COLOURS, then glass 8 and tyre 9; the
+-- yard: fast_art.YARD_COLOURS). A piece is placed by a frame (x, y, z, yaw counter-clockwise),
+-- its faces wound counter-clockwise from outside, each in the middle of its atlas cell.
+local SOLID = {}
+function SOLID.frame(x, y, z, yaw)
+  local c, s = math.cos(yaw), math.sin(yaw)
+  return function(px, py, pz) return {x + px * c - py * s, y + px * s + py * c, z + pz} end
+end
+function SOLID.face(mesh, material, cell, T, pts, up)
+  local u, poly = (cell + .5) / 16, {}
+  for k, p in ipairs(pts) do
+    local w = T(p[1], p[2], p[3])
+    poly[k] = {w[1], w[2], w[3], u, .5}
   end
-  box(-2.15, -.88, .32, 2.15, .88, .86, nil, nil, nil, nil, colour)
-  box(-1.25, -.8, .86, .85, .8, 1.4, -1, -.72, .3, .72, colour, 8)
-  box(-1.55, -.84, .04, 1.55, .84, .32, nil, nil, nil, nil, 9)
+  mesh.polygon(material, poly, up)
+end
+-- A side profile (x along, z up; counter-clockwise) extruded across y0..y1: the caps in capCell,
+-- the edge from point k in edgeCell(k) (or capCell). noCap0: leave the -y cap out.
+function SOLID.extrude(mesh, material, T, ring, y0, y1, capCell, edgeCell, noCap0)
+  local n, low, high = #ring, {}, {}
+  for k = 1, n do
+    low[k] = {ring[k][1], y0, ring[k][2]}
+    high[n + 1 - k] = {ring[k][1], y1, ring[k][2]}
+  end
+  if not noCap0 then SOLID.face(mesh, material, capCell, T, low) end
+  SOLID.face(mesh, material, capCell, T, high)
+  for k = 1, n do
+    local p, q = ring[k], ring[k % n + 1]
+    SOLID.face(mesh, material, edgeCell and edgeCell(k) or capCell, T,
+      {{p[1], y1, p[2]}, {q[1], y1, q[2]}, {q[1], y0, q[2]}, {p[1], y0, p[2]}})
+  end
+end
+-- A box x0..x1, y0..y1, z0..z1 without its underside
+function SOLID.box(mesh, material, cell, T, x0, y0, z0, x1, y1, z1)
+  SOLID.extrude(mesh, material, T, {{x0, z0}, {x1, z0}, {x1, z1}, {x0, z1}}, y0, y1, cell, function(k)
+    return cell end)
+end
+-- A square beam w thick from p to q ({x, y, z} in the frame), its ends open
+function SOLID.beam(mesh, material, cell, T, p, q, w)
+  local dx, dy, dz = q[1] - p[1], q[2] - p[2], q[3] - p[3]
+  local l = math.sqrt(dx * dx + dy * dy + dz * dz)
+  if l < EPS then return end
+  dx, dy, dz = dx / l, dy / l, dz / l
+  local ax, ay, az = dy, -dx, 0           -- d x up
+  local al = math.sqrt(ax * ax + ay * ay)
+  if al < .1 then ax, ay, az, al = 1, 0, 0, 1 end
+  ax, ay, az = ax / al, ay / al, az / al
+  local bx, by, bz = dy * az - dz * ay, dz * ax - dx * az, dx * ay - dy * ax   -- d x a
+  local h, c = w / 2, {}
+  for k = 1, 4 do
+    local t = (k - .5) * math.pi / 2
+    local ca, sb = math.cos(t) * h * 1.414, math.sin(t) * h * 1.414
+    c[k] = {ax * ca + bx * sb, ay * ca + by * sb, az * ca + bz * sb}
+  end
+  for k = 1, 4 do
+    local e, f = c[k], c[k % 4 + 1]
+    SOLID.face(mesh, material, cell, T, {{p[1] + e[1], p[2] + e[2], p[3] + e[3]}, {p[1] + f[1], p[2] + f[2], p[3] + f[3]},
+      {q[1] + f[1], q[2] + f[2], q[3] + f[3]}, {q[1] + e[1], q[2] + e[2], q[3] + e[3]}})
+  end
+end
+-- An n-sided frustum round the frame's z axis from radius r0 at z0 to r1 at z1 (0: a cone),
+-- a lid on top when r1 > 0, a floor under it when under (a mushroom's roof seen from below)
+function SOLID.prism(mesh, material, cell, T, n, z0, z1, r0, r1, under)
+  local bottom, top = {}, {}
+  for k = 1, n do
+    local t = (k - 1) * 2 * math.pi / n
+    bottom[k] = {math.cos(t) * r0, math.sin(t) * r0, z0}
+    top[k] = {math.cos(t) * r1, math.sin(t) * r1, z1}
+  end
+  for k = 1, n do
+    local m = k % n + 1
+    SOLID.face(mesh, material, cell, T, {bottom[k], bottom[m], top[m], top[k]})
+  end
+  if r1 > EPS then SOLID.face(mesh, material, cell, T, top, true) end
+  if under then
+    local floorRing = {}
+    for k = n, 1, -1 do floorRing[#floorRing + 1] = bottom[k] end
+    SOLID.face(mesh, material, under, T, floorRing)
+  end
+end
+
+-- A parked car, 4.4 x 1.76 m: a body with a sloped bonnet and boot, a glasshouse with its
+-- windscreen and roof, six-sided wheels. ~100 triangles.
+local CAR_BODY = {{-2.15, .30}, {2.15, .30}, {2.22, .52}, {2.12, .74}, {1.05, .84}, {-1.75, .87}, {-2.17, .80},
+  {-2.22, .52}}
+local CAR_GLASS = {{-1.72, .84}, {1.02, .82}, {.22, 1.38}, {-1.22, 1.41}}
+local function parkedCar(mesh, x, y, z, yaw, colour)
+  local T = SOLID.frame(x, y, z, yaw)
+  SOLID.extrude(mesh, 'car', T, CAR_BODY, -.88, .88, colour)
+  SOLID.extrude(mesh, 'car', T, CAR_GLASS, -.76, .76, 8, function(k) return k == 3 and colour or 8 end)
+  local wheel = {}
+  for k = 1, 6 do
+    local t = (k - 1) * math.pi / 3 + math.pi / 6
+    wheel[k] = {math.cos(t) * .31, .31 + math.sin(t) * .31}
+  end
+  for _, wx in ipairs({-1.36, 1.36}) do
+    local ring = {}
+    for k, p in ipairs(wheel) do ring[k] = {p[1] + wx, p[2]} end
+    SOLID.extrude(mesh, 'car', T, ring, .70, .92, 9, nil, true)
+    -- the other side's wheel, the car turned round: its outer face is the +y cap again
+    SOLID.extrude(mesh, 'car', SOLID.frame(x, y, z, yaw + math.pi), ring, .70, .92, 9, nil, true)
+  end
 end
 
 -- Per source cell, once: its features deduplicated by id and sorted. The renderer's cell cache
@@ -3824,7 +3908,8 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
                 local n = math.max(1, math.floor(length / 25))
                 for e = 1, n do
                   if ihash(seed, k, e, 5) % 100 < 55 * dense then
-                    place(seed, k * 100 + e, p, (e - .5) * length / n, ux, uy, out, function(c) return 1 + c.near, true end,
+                    -- beside the door (YARD.porch puts the step and canopy on it)
+                    place(seed, k * 100 + e, p, (e - .5) * length / n + 2.6, ux, uy, out, function(c) return 1 + c.near, true end,
                       ground, 'entrance_' .. id .. '_' .. k .. '_' .. e, false, sets.entrance)
                   end
                 end
@@ -3934,6 +4019,580 @@ function VEG.streetBlocked(bins, x, y)
     if pointSegment2(x, y, s.a[1], s.a[2], s.a[1] + s.dx, s.a[2] + s.dy) < s.r * s.r then return true end
   end
   return false
+end
+
+-- The yard of a block of flats as a Kyiv one looks from a window: cars along every driveway,
+-- a playground (sand, swings, a slide, a sandpit under a mushroom, a carousel, a climbing frame)
+-- with benches and a hedge on its road side, front gardens with shrubs behind a low railing under
+-- the windows, a screen round the containers, lamps over the driveways and a spruce by some
+-- doors. Runs after the street furniture and keeps out of its places; what it puts is reserved
+-- against the tree scatter in turn. Procedural pieces take the 'yard' atlas (YARD.cell) and the
+-- railing kinds (fast_style.RAILINGS); hedges, shrubs, lamps and trees are stock shapes.
+local YARD = {cell = {red = 0, yellow = 1, blue = 2, green = 3, orange = 4, wood = 5, metal = 6, dark = 7,
+  sand = 8, paint = 9, white = 10, rubber = 11, concrete = 12, bollard = 13, light = 14, brown = 15},
+  hedge = '/levels/italy/art/shapes/trees/trees_italy/cypress_hedge_3m.dae', hedgeLong = 2.38, hedgeScale = .7,
+  -- parallel bays along a driveway: one every carStep m, the car's side carGap m off its edge
+  carStep = 5.7, carGap = .95, carsMax = 360, lampStep = 34, railH = .75,
+  railings = {'railing_blue', 'railing_green', 'railing_dark'}, bench = BENCH[1],
+  driveways = {service = true, living_street = true}}
+
+-- a bin key as VEG.streetProps keeps its own (no offset)
+local function yardBin(x, y) return math.floor(x / 50) * 65536 + math.floor(y / 50) end
+-- a keep-out band a-b of radius r in bins as VEG.streetProps returns them (VEG.streetBlocked)
+function YARD.reserve(bins, a, b, r)
+  local dx, dy = b[1] - a[1], b[2] - a[2]
+  local entry = {a = a, dx = dx, dy = dy, len2 = math.max(EPS, dx * dx + dy * dy), r = r}
+  for by = math.floor((math.min(a[2], b[2]) - r) / 50), math.floor((math.max(a[2], b[2]) + r) / 50) do
+    for bx = math.floor((math.min(a[1], b[1]) - r) / 50), math.floor((math.max(a[1], b[1]) + r) / 50) do
+      local bin = bins[bx * 65536 + by] or {}
+      bins[bx * 65536 + by], bin[#bin + 1] = bin, entry
+    end
+  end
+end
+
+-- Playground pieces round their own origin, x along the frame. Returns the radius they reach.
+YARD.kit = {}
+function YARD.kit.swing(mesh, T, h)
+  local c, paint = YARD.cell, (h % 3 == 0) and YARD.cell.red or (h % 3 == 1) and YARD.cell.blue or YARD.cell.green
+  for _, x in ipairs({-1.5, 1.5}) do
+    SOLID.beam(mesh, 'yard', paint, T, {x, -.9, 0}, {x, 0, 2.3}, .08)
+    SOLID.beam(mesh, 'yard', paint, T, {x, .9, 0}, {x, 0, 2.3}, .08)
+  end
+  SOLID.beam(mesh, 'yard', c.metal, T, {-1.6, 0, 2.3}, {1.6, 0, 2.3}, .09)
+  for _, x in ipairs({-.65, .65}) do
+    SOLID.beam(mesh, 'yard', c.metal, T, {x - .2, 0, 2.25}, {x - .2, 0, .5}, .025)
+    SOLID.beam(mesh, 'yard', c.metal, T, {x + .2, 0, 2.25}, {x + .2, 0, .5}, .025)
+    SOLID.box(mesh, 'yard', c.wood, T, x - .25, -.13, .44, x + .25, .13, .5)
+  end
+  return 2.1
+end
+function YARD.kit.slide(mesh, T, h)
+  local c = YARD.cell
+  local paint = (h % 2 == 0) and c.yellow or c.orange
+  for _, p in ipairs({{-1.2, -.45}, {-1.2, .45}, {-.4, -.45}, {-.4, .45}}) do
+    SOLID.beam(mesh, 'yard', c.blue, T, {p[1], p[2], 0}, {p[1], p[2], 1.9}, .08)
+  end
+  SOLID.box(mesh, 'yard', c.wood, T, -1.25, -.5, 1.1, -.35, .5, 1.16)
+  -- a little pyramid roof over the deck and the ladder at the back
+  local top = T(-.8, 0, 0)
+  SOLID.prism(mesh, 'yard', paint, SOLID.frame(top[1], top[2], top[3], 0), 4, 1.9, 2.4, .75, 0, paint)
+  for k = 0, 4 do SOLID.beam(mesh, 'yard', c.metal, T, {-1.2 - .02 * k, -.4, .22 * k}, {-1.2 - .02 * k, .4, .22 * k}, .04) end
+  -- the chute: a sloped plank with its sides, down to +x
+  local z0, z1 = 1.16, .3
+  SOLID.face(mesh, 'yard', paint, T, {{-.35, -.3, z0}, {1.9, -.3, z1}, {1.9, .3, z1}, {-.35, .3, z0}}, true)
+  SOLID.face(mesh, 'yard', paint, T, {{-.35, .3, z0}, {1.9, .3, z1}, {1.9, -.3, z1}, {-.35, -.3, z0}})
+  for _, y in ipairs({-.32, .32}) do
+    SOLID.box(mesh, 'yard', paint, T, -.35, y - .03, z0 - .1, -.3, y + .03, z0 + .2)
+    SOLID.beam(mesh, 'yard', paint, T, {-.35, y, z0 + .12}, {1.9, y, z1 + .12}, .06)
+  end
+  SOLID.box(mesh, 'yard', paint, T, 1.9, -.32, 0, 2.3, .32, z1)
+  return 2.4
+end
+function YARD.kit.sandpit(mesh, T, h)
+  local c = YARD.cell
+  for _, s in ipairs({{-1.3, -1.3, 1.3, -1.18}, {-1.3, 1.18, 1.3, 1.3}, {-1.3, -1.18, -1.18, 1.18}, {1.18, -1.18, 1.3, 1.18}}) do
+    SOLID.box(mesh, 'yard', c.wood, T, s[1], s[2], -.05, s[3], s[4], .3)
+  end
+  SOLID.face(mesh, 'yard', c.sand, T, {{-1.18, -1.18, .18}, {1.18, -1.18, .18}, {1.18, 1.18, .18}, {-1.18, 1.18, .18}}, true)
+  -- the mushroom over it: a post and an eight-sided cap, red or green
+  SOLID.beam(mesh, 'yard', c.wood, T, {.95, .95, 0}, {.95, .95, 2.1}, .12)
+  local cap = SOLID.frame(T(.95, .95, 0)[1], T(.95, .95, 0)[2], T(.95, .95, 0)[3], 0)
+  SOLID.prism(mesh, 'yard', (h % 2 == 0) and c.red or c.green, cap, 8, 2.0, 2.65, 1.35, 0, c.brown)
+  return 1.9
+end
+function YARD.kit.carousel(mesh, T, h)
+  local c = YARD.cell
+  SOLID.prism(mesh, 'yard', c.metal, T, 4, 0, .2, .25, .2)
+  SOLID.prism(mesh, 'yard', (h % 2 == 0) and c.blue or c.red, T, 10, .2, .3, 1.05, 1.05)
+  SOLID.beam(mesh, 'yard', c.metal, T, {0, 0, .3}, {0, 0, .9}, .07)
+  for k = 0, 3 do
+    local t = k * math.pi / 2
+    SOLID.beam(mesh, 'yard', c.yellow, T, {0, 0, .85}, {math.cos(t) * .85, math.sin(t) * .85, .85}, .04)
+    SOLID.beam(mesh, 'yard', c.yellow, T, {math.cos(t) * .85, math.sin(t) * .85, .85}, {math.cos(t) * .85, math.sin(t) * .85, .3}, .04)
+  end
+  return 1.3
+end
+function YARD.kit.climber(mesh, T, h)
+  local c = YARD.cell
+  local paint = (h % 3 == 0) and c.green or (h % 3 == 1) and c.red or c.blue
+  for _, p in ipairs({{-1.2, -.6}, {1.2, -.6}, {-1.2, .6}, {1.2, .6}}) do
+    SOLID.beam(mesh, 'yard', paint, T, {p[1], p[2], 0}, {p[1], p[2], 2.0}, .07)
+  end
+  for _, y in ipairs({-.6, .6}) do SOLID.beam(mesh, 'yard', paint, T, {-1.2, y, 2.0}, {1.2, y, 2.0}, .06) end
+  for k = 0, 6 do
+    local x = -1.05 + k * .35
+    SOLID.beam(mesh, 'yard', c.metal, T, {x, -.6, 2.0}, {x, .6, 2.0}, .035)
+  end
+  for k = 1, 4 do
+    for _, x in ipairs({-1.2, 1.2}) do SOLID.beam(mesh, 'yard', c.metal, T, {x, -.6, k * .4}, {x, .6, k * .4}, .035) end
+  end
+  return 1.6
+end
+function YARD.kit.springer(mesh, T, h)
+  local c = YARD.cell
+  SOLID.beam(mesh, 'yard', c.dark, T, {0, 0, 0}, {0, 0, .4}, .12)
+  SOLID.box(mesh, 'yard', (h % 2 == 0) and c.yellow or c.light, T, -.4, -.12, .4, .4, .12, .7)
+  SOLID.box(mesh, 'yard', (h % 2 == 0) and c.yellow or c.light, T, .2, -.1, .7, .4, .1, 1.0)
+  return .7
+end
+function YARD.kit.bench(mesh, T)
+  local c = YARD.cell
+  -- a yard table under its own little mushroom, as in the photo's wooden pavilions
+  SOLID.prism(mesh, 'yard', c.wood, T, 8, 0, .75, .1, .1)
+  SOLID.prism(mesh, 'yard', c.wood, T, 8, .75, .8, .6, .6)
+  SOLID.beam(mesh, 'yard', c.wood, T, {0, 0, .8}, {0, 0, 2.2}, .1)
+  SOLID.prism(mesh, 'yard', c.brown, T, 8, 2.15, 2.75, 1.5, 0, c.wood)
+  return 1.6
+end
+YARD.kitOrder = {'swing', 'slide', 'sandpit', 'carousel', 'climber', 'springer', 'bench', 'springer'}
+-- A block's stair door at (x, y) on a wall along (ux, uy), its outside to side `out` of it (as
+-- VEG.streetProps): a door leaf, a concrete step and a painted canopy over it
+function YARD.porch(mesh, x, y, z, ux, uy, out, h)
+  local c = YARD.cell
+  local T = SOLID.frame(x, y, z, math.atan2(uy, ux))
+  local function yy(a, b) return math.min(a * out, b * out), math.max(a * out, b * out) end
+  local y0, y1 = yy(0, 1.7)
+  SOLID.box(mesh, 'yard', c.concrete, T, -1.3, y0, -.3, 1.3, y1, .16)
+  y0, y1 = yy(0, 1.45)
+  local paint = ({c.paint, c.blue, c.concrete, c.green})[h % 4 + 1]
+  SOLID.box(mesh, 'yard', paint, T, -1.45, y0, 2.78, 1.45, y1, 2.94)
+  local yo = .03 * out
+  local leaf = {{-.65, yo, .16}, {.65, yo, .16}, {.65, yo, 2.3}, {-.65, yo, 2.3}}
+  if out > 0 then leaf = {leaf[4], leaf[3], leaf[2], leaf[1]} end
+  SOLID.face(mesh, 'yard', (h % 3 == 0) and c.brown or c.dark, T, leaf)
+end
+-- A half-sphere bollard (the yellow or bare concrete domes that keep cars off a yard's corners)
+function YARD.dome(mesh, T, cell)
+  SOLID.prism(mesh, 'yard', cell, T, 6, -.05, .28, .34, .16)
+end
+
+-- ctx: rect, scene, decor (no collision: cars), ground, drapeRings, put(name, shape, x, y, z,
+-- yaw, scale, kind), lists, strips, segmentBins, reserved (VEG.streetProps' bins or nil), spacing,
+-- pause, have(set name), names (put names of the street furniture: container rows)
+function YARD.build(ctx)
+  local rect, lists, pause = ctx.rect, ctx.lists, ctx.pause
+  local reserved = ctx.reserved or {}
+  ctx.cars, ctx.kit = {}, {}
+  local dense = ctx.spacing > 0 and math.min(1.5, 12 / ctx.spacing) or 0
+  if dense <= 0 then return reserved, 0 end
+  local halo = {rect[1] - 30, rect[2] - 30, rect[3] + 30, rect[4] + 30}
+  -- blocks of flats (a yard is within 40 m of one) and every building as an obstacle, 50 m bins
+  local flatsBins, wallBins = {}, {}
+  local function addTo(bins, entry, b, m)
+    for by = math.floor((b[2] - m) / 50), math.floor((b[4] + m) / 50) do
+      for bx = math.floor((b[1] - m) / 50), math.floor((b[3] + m) / 50) do
+        local bin = bins[bx * 65536 + by] or {}
+        bins[bx * 65536 + by], bin[#bin + 1] = bin, entry
+      end
+    end
+  end
+  local blocks = {}
+  for _, building in ipairs(lists.buildings) do
+    local b = ringBounds(building.rings)
+    if boundsTouch(b, halo, 40) then
+      local entry = {rings = building.rings, bounds = b, building = building}
+      addTo(wallBins, entry, b, 1)
+      local kind = (building.tags or NONE).building
+      if FLATS[kind] or kind == 'yes' and (building.height or 0) >= 12 then
+        addTo(flatsBins, entry, b, 40)
+        blocks[#blocks + 1] = entry
+      end
+    end
+  end
+  if #blocks == 0 then return reserved, 0 end
+  local function yard(x, y)
+    for _, e in ipairs(flatsBins[yardBin(x, y)] or NONE) do
+      local b = e.bounds
+      if x > b[1] - 40 and x < b[3] + 40 and y > b[2] - 40 and y < b[4] + 40 then return true end
+    end
+    return false
+  end
+  local function inBuilding(x, y, m)
+    for _, e in ipairs(wallBins[yardBin(x, y)] or NONE) do
+      local b = e.bounds
+      if x >= b[1] - m and x <= b[3] + m and y >= b[2] - m and y <= b[4] + m
+          and (inside(e.rings, x, y) or m > 0 and nearEdge(e.rings, x, y, m)) then return true end
+    end
+    return false
+  end
+  -- carriageways on the ground within `m` of their edge
+  local function onRoad(x, y, m)
+    for _, s in ipairs(ctx.segmentBins[(math.floor(x / 50) + 32768) * 65536 + math.floor(y / 50) + 32768] or NONE) do
+      if s.surface then
+        local t = math.max(0, math.min(1, ((x - s.a[1]) * s.dx + (y - s.a[2]) * s.dy) / s.len2))
+        if (s.a[1] + t * s.dx - x) ^ 2 + (s.a[2] + t * s.dy - y) ^ 2 < (s.width / 2 + m) ^ 2 then return true end
+      end
+    end
+    return false
+  end
+  -- footpaths, playgrounds, car parks, water and mapped doors as keep-outs
+  local paths, places = {}, {}
+  for _, line in ipairs(lists.lines) do
+    local tags = line.tags or NONE
+    if line.kind == 'path' and pathOnGround(tags) and boundsTouch(ringBounds({line.points}), halo, 5) then
+      local r = (tonumber(tags.width) or 2) / 2 + .2
+      for k = 1, #line.points - 1 do YARD.reserve(paths, line.points[k], line.points[k + 1], r) end
+    end
+  end
+  local playgrounds = {}
+  for _, area in ipairs(lists.areas) do
+    local tags = area.tags or NONE
+    if (area.kind == 'playground' or area.kind == 'water' or area.kind == 'parking' or tags.amenity == 'parking')
+        and ringsTouch(area.rings, halo) then
+      local entry = {rings = area.rings, bounds = ringBounds(area.rings), area = area}
+      addTo(places, entry, entry.bounds, 1)
+      if area.kind == 'playground' then playgrounds[#playgrounds + 1] = entry end
+    end
+  end
+  local doors = {}
+  for _, point in ipairs(lists.points) do
+    local p = point.pos
+    if p and p[1] > halo[1] and p[1] < halo[3] and p[2] > halo[2] and p[2] < halo[4] then
+      if point.kind == 'entrance' then
+        doors[#doors + 1] = point
+        YARD.reserve(paths, {p[1] - .001, p[2]}, {p[1] + .001, p[2]}, 2.5)
+      elseif point.kind == 'playground' then
+        -- a playground drawn as a node: a 9 m round one
+        local ring = {}
+        for k = 1, 12 do
+          local t = k * math.pi / 6
+          ring[k] = {p[1] + math.cos(t) * 9, p[2] + math.sin(t) * 9}
+        end
+        local entry = {rings = {ring}, bounds = ringBounds({ring}), area = point}
+        addTo(places, entry, entry.bounds, 1)
+        playgrounds[#playgrounds + 1] = entry
+      end
+    end
+  end
+  local function inPlace(x, y)
+    for _, e in ipairs(places[yardBin(x, y)] or NONE) do
+      local b = e.bounds
+      if x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] and inside(e.rings, x, y) then return true end
+    end
+    return false
+  end
+  local function free(x, y)
+    return not VEG.streetBlocked(reserved, x, y) and not VEG.streetBlocked(paths, x, y) and not inPlace(x, y)
+  end
+  local count = 0
+  local function stock(name, shape, x, y, yaw, scale, kind)
+    if x < rect[1] or x >= rect[3] or y < rect[2] or y >= rect[4] then return end
+    ctx.put(name, shape, x, y, ctx.ground(x, y), yaw, scale, kind)
+    count = count + 1
+  end
+
+  -- the container rows the street furniture put (their sites stay open)
+  local function nearBins(x, y)
+    for _, row in ipairs(ctx.containers or NONE) do
+      if (row.x - x) ^ 2 + (row.y - y) ^ 2 < 16 then return true end
+    end
+    return false
+  end
+  -- 1. Front gardens under the windows of a block's yard walls: shrubs in a strip .6-4.5 m out,
+  -- a low railing round it, a gap at every door (mapped, or every 25 m as the benches stand)
+  for _, e in ipairs(blocks) do
+    local ring = cleanRing(e.rings[1])
+    if #ring >= 3 and boundsTouch(e.bounds, rect, 10) then
+      local id = tostring(e.building.id or ''):gsub('[^%w_]', '_')
+      local seed = hash('garden' .. id)
+      local area2 = 0
+      for k = 1, #ring do
+        local p, q = ring[k], ring[k % #ring + 1]
+        area2 = area2 + p[1] * q[2] - q[1] * p[2]
+      end
+      local out = area2 > 0 and -1 or 1
+      local railing = YARD.railings[seed % #YARD.railings + 1]
+      for k = 1, #ring do
+        local p, q = ring[k], ring[k % #ring + 1]
+        local length = math.sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2)
+        if length >= 12 then
+          local ux, uy = (q[1] - p[1]) / length, (q[2] - p[2]) / length
+          local nx, ny = -uy * out, ux * out      -- to the outside, as VEG.streetProps' side `out`
+          local mx, my = (p[1] + q[1]) / 2, (p[2] + q[2]) / 2
+          -- a yard wall: no street (a driveway does not count) within 14 m
+          local street = false
+          for _, s in ipairs(ctx.segmentBins[(math.floor((mx + nx * 8) / 50) + 32768) * 65536 + math.floor((my + ny * 8) / 50) + 32768] or NONE) do
+            local way = (s.tags or NONE).highway
+            if s.surface and not YARD.driveways[way] then
+              local t = math.max(0, math.min(1, ((mx + nx * 8 - s.a[1]) * s.dx + (my + ny * 8 - s.a[2]) * s.dy) / s.len2))
+              if (s.a[1] + t * s.dx - mx - nx * 8) ^ 2 + (s.a[2] + t * s.dy - my - ny * 8) ^ 2 < (s.width / 2 + 6) ^ 2 then street = true end
+            end
+          end
+          if not street then
+            -- doors on this wall: mapped ones, else the benches' every 25 m; a porch at each
+            local gaps = {}
+            for _, door in ipairs(doors) do
+              local dx, dy = door.pos[1] - p[1], door.pos[2] - p[2]
+              local s, o = dx * ux + dy * uy, dx * nx + dy * ny
+              if s > 1.5 and s < length - 1.5 and math.abs(o) < 1.5 then gaps[#gaps + 1] = s end
+            end
+            if #gaps == 0 then
+              local m = math.max(1, math.floor(length / 25))
+              for g = 1, m do gaps[#gaps + 1] = (g - .5) * length / m end
+            end
+            table.sort(gaps)
+            for g, s in ipairs(gaps) do
+              local x, y = p[1] + ux * s, p[2] + uy * s
+              YARD.porch(ctx.scene, x, y, ctx.ground(x + nx * .8, y + ny * .8), ux, uy, out, ihash(seed, k, g, 7))
+              YARD.reserve(reserved, {x - ux * 1.3 + nx, y - uy * 1.3 + ny}, {x + ux * 1.3 + nx, y + uy * 1.3 + ny}, 1)
+            end
+            -- how deep the garden can be here: up to 4.5 m, 60 cm short of a road, path or wall
+            local depth = 4.5
+            for _, f in ipairs({.25, .5, .75}) do
+              local bx, by = p[1] + ux * length * f, p[2] + uy * length * f
+              for dd = 1.25, 4.5, .25 do
+                local x, y = bx + nx * (dd + .6), by + ny * (dd + .6)
+                if dd < depth and (onRoad(x, y, 0) or VEG.streetBlocked(paths, x, y) or inPlace(x, y)
+                    or nearBins(x, y) or inBuilding(x, y, 0)) then depth = dd end
+              end
+            end
+            if depth >= 1.6 and ihash(seed, k, 1, 1) % 100 < 70 then
+              local runs, from = {}, 1.5
+              for _, g in ipairs(gaps) do
+                if g - 2.2 - from >= 3 then runs[#runs + 1] = {from, g - 2.2} end
+                from = math.max(from, g + 2.2)
+              end
+              if length - 1.5 - from >= 3 then runs[#runs + 1] = {from, length - 1.5} end
+              for r, run in ipairs(runs) do
+                local z0, z1 = run[1], run[2]
+                -- the railing: along the front and back to the wall at both ends
+                local corners = {{z0, .6}, {z0, depth}, {z1, depth}, {z1, .6}}
+                for c = 1, 3 do
+                  local a, b = corners[c], corners[c + 1]
+                  local ax, ay = p[1] + ux * a[1] + nx * a[2], p[2] + uy * a[1] + ny * a[2]
+                  local bx, by = p[1] + ux * b[1] + nx * b[2], p[2] + uy * b[1] + ny * b[2]
+                  local seg = math.sqrt((bx - ax) ^ 2 + (by - ay) ^ 2)
+                  local pieces = math.max(1, math.ceil(seg / 4))
+                  for m = 0, pieces - 1 do
+                    local fa, fb = m / pieces, (m + 1) / pieces
+                    local x0, y0 = ax + (bx - ax) * fa, ay + (by - ay) * fa
+                    local x1, y1 = ax + (bx - ax) * fb, ay + (by - ay) * fb
+                    local g0, g1 = ctx.ground(x0, y0) - .05, ctx.ground(x1, y1) - .05
+                    local u0, u1 = seg * fa, seg * fb
+                    ctx.scene.polygon(railing, {{x0, y0, g0, u0, 0}, {x1, y1, g1, u1, 0}, {x1, y1, g1 + YARD.railH, u1, 1},
+                      {x0, y0, g0 + YARD.railH, u0, 1}}, false)
+                  end
+                end
+                YARD.reserve(reserved, {p[1] + ux * z0 + nx * depth, p[2] + uy * z0 + ny * depth},
+                  {p[1] + ux * z1 + nx * depth, p[2] + uy * z1 + ny * depth}, .8)
+                -- shrubs inside: one every ~2.6 m in two loose rows, now and then a spruce
+                local shrubs = ctx.have and ctx.have('bush') or NONE
+                if #shrubs > 0 then
+                  for s = z0 + 1.2, z1 - 1, 2.6 do
+                    local h = ihash(seed, k * 1000 + r, math.floor(s * 10), 3)
+                    local o = (h % 2 == 0) and math.min(2, depth / 2) or math.max(1.6, depth - 1.2)
+                    local x, y = p[1] + ux * s + nx * o, p[2] + uy * s + ny * o
+                    if h % 100 < 70 then
+                      stock('shrub_' .. id .. '_' .. k .. '_' .. math.floor(s * 10), shrubs[h % #shrubs + 1], x, y,
+                        (h % 628) / 100, .45 + (h % 30) / 100, 'tree')
+                    end
+                  end
+                end
+                pause()
+              end
+              -- a spruce by a door now and then (the blue spruces of Soviet yards)
+              local firs = ctx.have and ctx.have('fir') or NONE
+              if #firs > 0 then
+                for g, s in ipairs(gaps) do
+                  if ihash(seed, k, g, 9) % 100 < 22 then
+                    local x, y = p[1] + ux * (s + 3.4) + nx * 3, p[2] + uy * (s + 3.4) + ny * 3
+                    if not onRoad(x, y, 1.5) and free(x, y) then
+                      stock('spruce_' .. id .. '_' .. k .. '_' .. g, firs[#firs], x, y, ihash(seed, k, g, 8) % 628 / 100,
+                        .55, 'tree')
+                      YARD.reserve(reserved, {x - .001, y}, {x + .001, y}, 3)
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  -- 2. Lamps over the driveways: one side, every lampStep m, kept clear of the cars after them
+  local lamps = ctx.lamp and (not FS or FS:fileExists(ctx.lamp))
+  -- 3. Cars along both sides of a wide driveway, one side (by the way's hash) of a narrow one
+  local cars = 0
+  for s, strip in ipairs(ctx.strips) do
+    local tags = strip.tags or NONE
+    local length = strip.dist[#strip.dist] or 0
+    if strip.surface and YARD.driveways[tags.highway] and length > 12
+        and boundsTouch(ringBounds({strip.points}), halo, 5) then
+      local id = tostring(strip.road.id or s)
+      local seed = hash('yard' .. id)
+      local both = strip.hw * 2 >= 5.5
+      local oneSide = seed % 2 == 0 and 1 or -1
+      local points, dist = strip.points, strip.dist
+      -- two domes either side of the mouth where it meets another way, now and then
+      local joints = strip.joints or NONE
+      for e = 1, 2 do
+        local a = e == 1 and points[1] or points[#points]
+        local b = e == 1 and points[2] or points[#points - 1]
+        local l = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+        if not joints[e] and l > 3 and ihash(seed, e, 0, 41) % 100 < 45 then
+          local ux, uy = (b[1] - a[1]) / l, (b[2] - a[2]) / l
+          local cell = ihash(seed, e, 1, 41) % 3 == 0 and YARD.cell.concrete or YARD.cell.bollard
+          for _, side in ipairs({1, -1}) do
+            for m = 0, 1 do
+              local along, off = .9 + m * 1.3, strip.hw + .55
+              local x, y = a[1] + ux * along - uy * off * side, a[2] + uy * along + ux * off * side
+              if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and not onRoad(x, y, .3)
+                  and not inBuilding(x, y, .5) and free(x, y) then
+                YARD.dome(ctx.scene, SOLID.frame(x, y, ctx.ground(x, y), 0), cell)
+                YARD.reserve(reserved, {x - .001, y}, {x + .001, y}, .7)
+              end
+            end
+          end
+        end
+      end
+      for k = 1, #points - 1 do
+        local a, b = points[k], points[k + 1]
+        local seg = dist[k + 1] - dist[k]
+        if seg > .5 then
+          local ux, uy = (b[1] - a[1]) / seg, (b[2] - a[2]) / seg
+          local d = math.ceil((dist[k] + (strip.start or 0)) / YARD.carStep) * YARD.carStep - (strip.start or 0)
+          while d < dist[k + 1] do
+            local t = d - dist[k]
+            if d > 6 and d < length - 6 then
+              local cx, cy = a[1] + ux * t, a[2] + uy * t
+              if lamps and math.floor(d / YARD.carStep) % math.floor(YARD.lampStep / YARD.carStep) == seed % 6 then
+                local side = -oneSide
+                local off = strip.hw + .5
+                local lx, ly = cx - uy * off * side, cy + ux * off * side
+                if yard(lx, ly) and not inBuilding(lx, ly, .8) and free(lx, ly) and not onRoad(lx, ly, .2) then
+                  YARD.reserve(reserved, {lx - .001, ly}, {lx + .001, ly}, 1.2)
+                  -- the lamp's arm over the driveway (lamp1: its +Y)
+                  stock('yardlamp_' .. id .. '_' .. math.floor(d), ctx.lamp, lx, ly, math.atan2(uy * side, -ux * side), 1, 'lamp')
+                end
+              end
+              -- a narrow one: its side by the hash, or the other where that one has no room
+              local done = false
+              for _, side in ipairs({oneSide, -oneSide}) do
+                local h = ihash(seed, math.floor(d * 10 + .5), side + 2, 31)
+                if (both or not done) and h % 100 < 74 * math.min(1, dense) and cars < YARD.carsMax then
+                  local off = strip.hw + YARD.carGap + .88
+                  local x, y = cx - uy * off * side, cy + ux * off * side
+                  local yaw = math.atan2(uy, ux) + (h % 7 < 2 and math.pi or 0)
+                  local ok = x > rect[1] - 3 and x < rect[3] + 3 and y > rect[2] - 3 and y < rect[4] + 3 and yard(x, y)
+                  local c, sn = math.cos(yaw), math.sin(yaw)
+                  if ok then
+                    for _, q in ipairs({{0, 0}, {-2.2, -.9}, {2.2, -.9}, {2.2, .9}, {-2.2, .9}, {-1.1, 0}, {1.1, 0}}) do
+                      local px, py = x + q[1] * c - q[2] * sn, y + q[1] * sn + q[2] * c
+                      if inBuilding(px, py, .6) or onRoad(px, py, .05) or not free(px, py) then ok = false; break end
+                    end
+                  end
+                  if ok then
+                    parkedCar(ctx.decor, x, y, ctx.ground(x, y) + .02, yaw, math.floor(h / 100) % 8)
+                    ctx.cars[#ctx.cars + 1] = {x, y, yaw}
+                    done = true
+                    YARD.reserve(reserved, {x - c * 2.2, y - sn * 2.2}, {x + c * 2.2, y + sn * 2.2}, 1)
+                    cars = cars + 1
+                  end
+                end
+              end
+            end
+            d = d + YARD.carStep
+          end
+        end
+      end
+      pause()
+    end
+  end
+
+  -- 4. Playgrounds: sand, a piece of the kit on each free 5.5 m slot inside, benches round the
+  -- edge looking in, a hedge on the sides that face a road
+  for index, e in ipairs(playgrounds) do
+    local ring = cleanRing(e.rings[1])
+    if #ring >= 3 and boundsTouch(e.bounds, rect, 4) then
+      ctx.drapeRings('sand', e.rings, .03)
+      local id = tostring((e.area or NONE).id or index):gsub('[^%w_]', '_')
+      local seed = hash('play' .. id)
+      local frame = footprintFrame(ring)
+      local placed, n = {}, 0
+      local maxKit = math.max(1, math.min(9, math.floor(frame.area / 28 * math.min(1, dense))))
+      for v = frame.v0 + 2.6, frame.v1 - 2.4, 5.5 do
+        for u = frame.u0 + 2.6, frame.u1 - 2.4, 5.5 do
+          if n < maxKit then
+            local x, y = u * frame.ax + v * frame.bx, u * frame.ay + v * frame.by
+            local kind = YARD.kitOrder[(n + seed) % #YARD.kitOrder + 1]
+            local r = ({swing = 2.1, slide = 2.4, sandpit = 1.9, carousel = 1.3, climber = 1.6, springer = .7, bench = 1.6})[kind]
+            local fits = inside(e.rings, x, y) and not nearEdge(e.rings, x, y, r + .3) and not inBuilding(x, y, r + .5)
+              and not onRoad(x, y, r)
+            for _, q in ipairs(placed) do
+              if (q[1] - x) ^ 2 + (q[2] - y) ^ 2 < (q[3] + r + .8) ^ 2 then fits = false end
+            end
+            if fits then
+              n = n + 1
+              placed[#placed + 1] = {x, y, r}
+              local yaw = math.atan2(frame.ay, frame.ax) + (ihash(seed, n, 1, 2) % 2) * math.pi
+              YARD.kit[kind](ctx.scene, SOLID.frame(x, y, ctx.ground(x, y), yaw), ihash(seed, n, 3, 4))
+              ctx.kit[#ctx.kit + 1] = {x, y, kind}
+            end
+          end
+        end
+        pause()
+      end
+      -- round the edge: benches inside looking in; a hedge just inside where a carriageway runs
+      -- within 8 m outside
+      local area2 = 0
+      for k = 1, #ring do
+        local p, q = ring[k], ring[k % #ring + 1]
+        area2 = area2 + p[1] * q[2] - q[1] * p[2]
+      end
+      local inward = area2 > 0 and 1 or -1      -- the inside is left of a counter-clockwise edge
+      for k = 1, #ring do
+        local p, q = ring[k], ring[k % #ring + 1]
+        local length = math.sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2)
+        if length >= 4 then
+          local ux, uy = (q[1] - p[1]) / length, (q[2] - p[2]) / length
+          local nx, ny = -uy * inward, ux * inward
+          local mx, my = (p[1] + q[1]) / 2, (p[2] + q[2]) / 2
+          if onRoad(mx - nx * 8, my - ny * 8, 0) or onRoad(mx - nx * 4, my - ny * 4, 0) then
+            local step = YARD.hedgeLong * YARD.hedgeScale
+            for s = step / 2 + .6, length - step / 2 - .6, step do
+              local x, y = p[1] + ux * s + nx * .7, p[2] + uy * s + ny * .7
+              if not VEG.streetBlocked(reserved, x, y) and not VEG.streetBlocked(paths, x, y) and not onRoad(x, y, .5) then
+                stock('playhedge_' .. id .. '_' .. k .. '_' .. math.floor(s * 10), YARD.hedge, x, y, math.atan2(-uy, ux),
+                  YARD.hedgeScale, 'hedge')
+                YARD.reserve(reserved, {x - ux, y - uy}, {x + ux, y + uy}, .6)
+              end
+            end
+          elseif ihash(seed, k, 5, 6) % 100 < 60 then
+            local x, y = mx + nx * 1.1, my + ny * 1.1
+            local clear = true
+            for _, q in ipairs(placed) do
+              if (q[1] - x) ^ 2 + (q[2] - y) ^ 2 < (q[3] + 1.6) ^ 2 then clear = false end
+            end
+            if clear then stock('playbench_' .. id .. '_' .. k, YARD.bench, x, y, math.atan2(nx, ny), 1, 'furniture') end
+          end
+        end
+      end
+      -- trees keep off the sand: the whole playground is reserved (a band per edge would leave
+      -- its middle open; the tree scatter tests the playground areas itself, see blockers)
+    end
+  end
+
+  -- 5. The container site: a screen of the same railing behind the row and at its ends
+  for _, row in ipairs(ctx.containers or NONE) do
+    local x, y, yaw = row.x, row.y, row.yaw
+    -- stock yaw: +Y is (sin, cos); the row runs along local X (cos, -sin); the screen is behind
+    local ax, ay, bx, by = math.cos(yaw), -math.sin(yaw), math.sin(yaw), math.cos(yaw)
+    local railing = 'railing_blue'
+    local half, back, front = 3.1, -.85, .9
+    local pts = {{-half, front}, {-half, back}, {half, back}, {half, front}}
+    for c = 1, 3 do
+      local a, b = pts[c], pts[c + 1]
+      local x0, y0 = x + ax * a[1] + bx * a[2], y + ay * a[1] + by * a[2]
+      local x1, y1 = x + ax * b[1] + bx * b[2], y + ay * b[1] + by * b[2]
+      local seg = math.sqrt((x1 - x0) ^ 2 + (y1 - y0) ^ 2)
+      local g0, g1 = ctx.ground(x0, y0) - .05, ctx.ground(x1, y1) - .05
+      ctx.scene.polygon(railing, {{x0, y0, g0, 0, 0}, {x1, y1, g1, seg, 0}, {x1, y1, g1 + 1.5, seg, 1}, {x0, y0, g0 + 1.5, 0, 1}}, false)
+    end
+  end
+  ctx.yardCars = cars
+  return reserved, count
 end
 
 -- Same numbers as fast_profile: 4.5 m of headroom under the deepest soffit (a main road's
@@ -6656,13 +7315,35 @@ local function build(cells, i, j, options)
     end
     local tree = (options.maxTrees or 2400) > 0 and {TREE, kind = 'tree', priority = 2, scale = .65,
       fp = {-2, 2, -2, 2}} or nil
+    local containers = {}
+    local function put(name, shape, x, y, z, yaw, scale, kind)
+      static(name, shape, x, y, z, yaw, scale)
+      local it = scene.items[#scene.items]
+      it.prop, it.streetKind, it.collision = true, kind, 'Collision Mesh'
+      -- the middle container of a row (YARD screens the site)
+      if name:sub(1, 5) == 'bins_' and name:sub(-2) == '_1' then containers[#containers + 1] = {x = x, y = y, yaw = yaw} end
+    end
     local _, reserved = VEG.streetProps(strips, lists.lines, lists.buildings, segmentBins, rect,
-      options.propSpacing, lift, tune.sidewalk, ground, function(name, shape, x, y, z, yaw, scale, kind)
-        static(name, shape, x, y, z, yaw, scale)
-        local it = scene.items[#scene.items]
-        it.prop, it.streetKind, it.collision = true, kind, 'Collision Mesh'
-      end, pause, {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points, look = look})
+      options.propSpacing, lift, tune.sidewalk, ground, put, pause,
+      {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points, look = look})
+    local yardCtx = {rect = rect, scene = scene, decor = sceneDecor, ground = ground, drapeRings = drapeRings,
+      put = put, lists = lists, strips = strips, segmentBins = segmentBins, reserved = reserved,
+      spacing = options.propSpacing or 0, pause = pause, have = VEG.have, lamp = LAMP, containers = containers}
+    local before = #sceneDecor.items
+    -- options.yard == false leaves the yards as the street furniture left them (A/B benches)
+    if options.yard ~= false then reserved = YARD.build(yardCtx) end
+    -- the scene was finished before the furniture: flush what the yard drew, its cars as decor
+    scene.finish()
+    sceneDecor.finish()
+    for k = before + 1, #sceneDecor.items do
+      local item = sceneDecor.items[k]
+      item.decor = true
+      scene.items[#scene.items + 1] = item
+    end
+    for material in pairs(sceneDecor.used) do scene.used[material] = true end
     scene.streetReservations = reserved
+    -- what the yard laid out, for the offline maps and tests (cars and kit are mesh, not items)
+    scene.yard = {cars = yardCtx.cars, kit = yardCtx.kit, containers = containers}
   end
   if decor then
     local WALL = 3
@@ -6673,7 +7354,8 @@ local function build(cells, i, j, options)
       if index % 256 == 0 then pause() end
     end
     for _, area in ipairs(lists.areas) do
-      if (area.kind == 'water' or area.kind == 'paved') and ringsTouch(area.rings, rect) then
+      -- a playground keeps its sand free of the tree scatter (YARD)
+      if (area.kind == 'water' or area.kind == 'paved' or area.kind == 'playground') and ringsTouch(area.rings, rect) then
         blockers[#blockers + 1] = {rings = area.rings, bounds = ringBounds(area.rings), paved = area.kind == 'paved'}
       end
     end
@@ -7459,7 +8141,7 @@ local function build(cells, i, j, options)
     return {version = 1, generator = 'earthng-lua-v1', source = options.regionId, layer = layer,
       tile = {i, j}, rect = rect, materials = options.materials or '/earthng/planet/materials.json',
       items = collector.items, mats = mats, triangles = total, packs = options.packs,
-      warmShapes = warm, stockMaterials = VEG.stockFor(collector.items, warm)}
+      warmShapes = warm, stockMaterials = VEG.stockFor(collector.items, warm), yard = collector.yard}
   end
   local roadManifest, sceneManifest = manifest(roads, 'road'), manifest(scene, 'scene')
   -- No road: the car stands on the ground at the landing (native.lua's off-road landing). The
@@ -7498,6 +8180,7 @@ local function build(cells, i, j, options)
 end
 
 M.build = build
+M.YARD = YARD
 M.triangulate = triangulate
 M.clip = clip
 M.EDGE_MAPS = EDGE_MAPS

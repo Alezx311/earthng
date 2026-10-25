@@ -33,6 +33,28 @@ class AssetTests(unittest.TestCase):
         self.assertEqual(kind({'highway': 'mini_roundabout'}), 'mini_roundabout')
         self.assertEqual(kind({'highway': 'bus_stop'}), 'stop')
 
+    def test_yard_features_have_kinds(self):
+        # a playground (area or node), a hedge and a block's stair doors reach the pack
+        self.assertEqual(style.ground_kind({'leisure': 'playground', 'landuse': 'residential'}), 'playground')
+        self.assertEqual(style.point_kind({'leisure': 'playground'}), 'playground')
+        self.assertEqual(style.line_kind({'barrier': 'hedge'}), 'hedge')
+        self.assertEqual(style.point_kind({'entrance': 'staircase', 'ref': '2'}), 'entrance')
+        self.assertIsNone(style.point_kind({'entrance': 'service'}))
+        for kind in ('yard', *style.RAILINGS):
+            self.assertIn('e2rf_' + kind, style.MATERIALS)
+        self.assertTrue(style.MATERIALS['e2rf_railing_blue']['alphaTest'])
+
+    def test_yard_art_has_a_cell_per_colour_and_see_through_bars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            art.yard_art(Path(tmp))
+            atlas = Image.open(Path(tmp) / 'yard.color.png')
+            self.assertEqual(atlas.size, (32 * 16, 32))
+            self.assertEqual(atlas.getpixel((16 + 32 * 8, 16)), art.YARD_COLOURS[8])
+            bars = np.asarray(Image.open(Path(tmp) / 'railing_o.data.png').convert('L')) > 127
+            self.assertTrue(.15 < bars.mean() < .6)
+            self.assertTrue(bars[16].all() and bars[240].all())     # the rails
+            self.assertFalse(bars[128].all())                        # bars, not a board
+
     def test_traffic_islands_and_gantries_have_kinds(self):
         self.assertEqual(style.ground_kind({'area:highway': 'traffic_island'}), 'island')
         self.assertEqual(style.ground_kind({'traffic_calming': 'island', 'landuse': 'grass'}), 'island')

@@ -1372,7 +1372,9 @@ class GeneratorTests(unittest.TestCase):
             if shape.endswith('bench_wood.dae'):
                 # local +Y (sin, cos) turned out from the wall it stands at
                 cx, cy = (ring[0][0] + ring[1][0]) / 2, (ring[0][1] + ring[2][1]) / 2
-                out = (x - cx, 0) if abs(abs(x - cx) - 6) < 4 else (0, y - cy)
+                # the wall it stands out from: the side it is furthest past (a bench now stands
+                # beside the door, 2.6 m along the wall, so it can be near a corner)
+                out = (x - cx, 0) if abs(x - cx) - 6 > abs(y - cy) - 30 else (0, y - cy)
                 self.assertGreater(math.sin(yaw) * out[0] + math.cos(yaw) * out[1], 0, (x, y))
         rows = {}
         for p in bins:
@@ -1382,6 +1384,75 @@ class GeneratorTests(unittest.TestCase):
             row.sort(key=lambda p: (p[0], p[1]))
             for a, b in zip(row, row[1:]):
                 self.assertAlmostEqual(math.hypot(b[0] - a[0], b[1] - a[1]), 1.85, 6)
+
+    def yard(self, cells, **options):
+        """The near scene of tile 0, 0 and what YARD laid out there (cars, kit) as plain lists."""
+        scene = self.build(cells, 0, 0, terrainStep=100, propSpacing=options.pop('propSpacing', 12), **options)[1]
+        return scene, self.plain(scene['yard'])
+
+    def test_a_yard_driveway_gets_cars_parked_beside_it(self):
+        # a block of flats and a 3 m driveway 13 m off its yard wall: cars along it, off the
+        # asphalt, clear of the block, lengthwise; none along the same lane far from any flats
+        block = {'id': 'flats', 'height': 27, 'tags': {'building': 'apartments'},
+                 'rings': [[[200, 200], [215, 200], [215, 280], [200, 280]]]}
+        drive = {'id': 'drive', 'width': 3, 'tags': {'highway': 'service', 'service': 'driveway'},
+                 'points': [[228, 150, 10], [228, 330, 10]]}
+        lane = {'id': 'lane', 'width': 3, 'tags': {'highway': 'service'}, 'points': [[420, 20, 10], [420, 480, 10]]}
+        scene, yard = self.yard([{'buildings': [block], 'roads': [drive, lane]}], maxTrees=0)
+        cars = yard['cars']
+        self.assertGreater(len(cars), 8)
+        for x, y, yaw in cars:
+            self.assertLess(abs(x - 228), 6, (x, y))
+            self.assertGreater(abs(x - 228), 1.5 + .88 + .5, (x, y))
+            self.assertAlmostEqual(abs(math.sin(yaw)), 1, 3)
+            self.assertGreater(min(abs(x - 200), abs(x - 215)) if 200 - 3 < y < 280 + 3 else 9, 1.5)
+        self.assertTrue(list(self.triangles(scene, 'e2rf_car')))
+
+    def test_a_playground_has_sand_and_kit_inside_it_and_no_trees(self):
+        block = {'id': 'flats', 'height': 27, 'tags': {'building': 'apartments'},
+                 'rings': [[[200, 200], [215, 200], [215, 280], [200, 280]]]}
+        play = {'id': 'play', 'kind': 'playground', 'tags': {'leisure': 'playground'},
+                'rings': [[[240, 215], [272, 215], [272, 247], [240, 247]]]}
+        green = {'id': 'yard', 'kind': 'residential', 'tags': {'landuse': 'residential'},
+                 'rings': [[[150, 150], [350, 150], [350, 350], [150, 350]]]}
+        scene, yard = self.yard([{'buildings': [block], 'areas': [green, play]}])
+        kinds = {kind for _, _, kind in yard['kit']}
+        self.assertGreaterEqual(len(yard['kit']), 4)
+        self.assertGreaterEqual(len(kinds), 4)
+        for x, y, _kind in yard['kit']:
+            self.assertTrue(241 < x < 271 and 216 < y < 246, (x, y))
+        kit = [t for t in self.triangles(scene, 'e2rf_yard') if all(238 < p[0] < 274 and 213 < p[1] < 249 for p in t)]
+        self.assertGreater(len(kit), 200)
+        sand = list(self.triangles(scene, 'e2rf_sand'))
+        self.assertTrue(sand)
+        self.assertTrue(all(240 - 1e-6 <= p[0] <= 272 + 1e-6 and 215 - 1e-6 <= p[1] <= 247 + 1e-6 for t in sand for p in t))
+        for item in scene['items'].values():
+            if item.shape and not item.prop and '/trees' in item.shape:
+                self.assertFalse(240 < item.pos[1] < 272 and 215 < item.pos[2] < 247, item.shape)
+
+    def test_front_gardens_leave_a_gap_and_a_porch_at_each_mapped_door(self):
+        # six blocks with two stair doors each on the yard (east) wall
+        cells, doors = [{'buildings': [], 'points': []}], []
+        for k in range(6):
+            x0, y0 = 40 + 140 * (k % 3), 60 + 220 * (k // 3)
+            cells[0]['buildings'].append({'id': f'flats{k}', 'height': 27, 'tags': {'building': 'apartments'},
+                                          'rings': [[[x0, y0], [x0 + 14, y0], [x0 + 14, y0 + 80], [x0, y0 + 80]]]})
+            for n, dy in enumerate((22, 57)):
+                doors.append((x0 + 14, y0 + dy))
+                cells[0]['points'].append({'id': f'door{k}_{n}', 'kind': 'entrance', 'tags': {'entrance': 'staircase'},
+                                           'pos': [x0 + 14, y0 + dy, 10]})
+        scene, _ = self.yard(cells, maxTrees=0)
+        rails = [p for kind in ('railing_blue', 'railing_green', 'railing_dark')
+                 for t in self.triangles(scene, 'e2rf_' + kind) for p in t]
+        self.assertTrue(rails)
+        porch = [p for t in self.triangles(scene, 'e2rf_yard') for p in t]
+        for dx, dy in doors:
+            # the railing keeps 2 m either side of the door clear in front of it
+            self.assertFalse([p for p in rails if dx < p[0] < dx + 5 and abs(p[1] - dy) < 2.1], (dx, dy))
+            # a step in front of the door and a canopy ~2.9 m over it
+            here = [p for p in porch if dx - .1 < p[0] < dx + 1.8 and abs(p[1] - dy) < 1.5]
+            self.assertTrue(here, (dx, dy))
+            self.assertAlmostEqual(max(p[2] for p in here) - min(p[2] for p in here), 2.94 + .3, 1)
 
     def test_street_furniture_follows_the_ground_a_path_runs_through(self):
         # a footway through a park, one past a building, one in the fields beyond the town

@@ -508,6 +508,10 @@ def prebuild(distributable=False):
                 im, nm = ground_sheet(kind)
                 im.save(shared / 'real' / f'ground_{kind}.color.png'); nm.save(shared / 'real' / f'ground_{kind}.normal.png')
             to_dds(shared / 'real')
+        # and the yard's paint and railing (generator.lua YARD)
+        if not (shared / 'real' / 'railing_o.data.dds').exists():
+            yard_art(shared / 'real')
+            to_dds(shared / 'real')
         write_manifest(shared)  # environment/fields are code, not a texture cache
     return shared
 
@@ -550,6 +554,7 @@ def build(r, game_assets=True):
     for k, rgb in enumerate(car_art.CAR_COLOURS + [(36, 44, 52), (22, 22, 22)]):
         d.rectangle([32 * k, 0, 32 * k + 31, 31], fill=rgb)
     cars.save(r / 'real' / 'cars.color.png')
+    yard_art(r / 'real')
     # the PO-2 concrete fence: one 2.5 m x 2 m slab... laid over a 2.5 m repeat, the slab in the
     # lower 0.8 of it (fences are 2 m tall), upside down like the facades
     slab = Image.open(photo.TEXTURES / 'panelka_fence/albedo.jpg').convert('RGB')
@@ -581,7 +586,34 @@ def build(r, game_assets=True):
 
 
 # alphaRef per opacity map whose mips keep its coverage (fast_dds.keep_coverage)
-MIP_REFS = {'chainlink_o.data.png': style.CHAINLINK_MIP_REF, 'line_o.data.png': style.EXTRA['mark']['alphaRef']}
+MIP_REFS = {'chainlink_o.data.png': style.CHAINLINK_MIP_REF, 'line_o.data.png': style.EXTRA['mark']['alphaRef'],
+            'railing_o.data.png': style.RAILING_MIP_REF}
+# The yard atlas (generator.lua YARD.cell keeps the same order): playground paint, wood, metal,
+# sand, container screens and the yellow of the hemisphere bollards.
+YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (228, 118, 40), (146, 104, 62),
+                (126, 128, 130), (44, 44, 46), (204, 180, 132), (52, 98, 150), (226, 226, 220), (128, 62, 50),
+                (162, 160, 152), (214, 184, 58), (122, 178, 92), (92, 62, 40)]
+
+
+def yard_art(r):
+    """The yard paint atlas and the low railing (white paint, its bars as opacity: 1 m a repeat,
+    a bar every 12.5 cm, a thicker post at the seam, a rail near the top and the bottom)."""
+    atlas = Image.new('RGB', (32 * len(YARD_COLOURS), 32))
+    d = ImageDraw.Draw(atlas)
+    for k, rgb in enumerate(YARD_COLOURS):
+        d.rectangle([32 * k, 0, 32 * k + 31, 31], fill=rgb)
+    atlas.save(r / 'yard.color.png')
+    Image.new('RGB', (64, 64), (255, 255, 255)).save(r / 'railing.color.png')
+    bars = Image.new('RGB', (256, 256), (0, 0, 0))
+    d = ImageDraw.Draw(bars)
+    for k in range(8):
+        x = k * 32 + 16
+        d.rectangle([x - 5, 0, x + 5, 255], fill=(255, 255, 255))
+    d.rectangle([0, 0, 11, 255], fill=(255, 255, 255))
+    d.rectangle([244, 0, 255, 255], fill=(255, 255, 255))
+    for v0, v1 in ((8, 24), (232, 248)):
+        d.rectangle([0, v0, 255, v1], fill=(255, 255, 255))
+    bars.save(r / 'railing_o.data.png')
 
 
 def to_dds(r):

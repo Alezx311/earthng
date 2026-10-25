@@ -297,6 +297,20 @@ KINDS['trodden'] = ('trodden', [.42, .36, .28, 1], 'DIRT', 3.0, 'plan')
 KINDS['fence_wall'] = ('fence_po2', [.62, .62, .60, 1], 'ROCK', 2.5, 'wall')
 KINDS['fence_mesh'] = ('fence_mesh', [.30, .32, .30, 1], 'METAL', 2.0, 'wall')
 KINDS['car'] = ('car', [.6, .6, .62, 1], 'METAL', 1.0, 'wall')       # parked cars carry their own UVs
+# A yard's own things (generator.lua YARD): playground frames, sandpits, mushrooms and container
+# screens take a cell of the paint atlas (fast_art.YARD_COLOURS), as cars do. Front gardens and
+# playgrounds are fenced with a low railing of bars: one quad, the bars cut by opacity, the paint
+# a tint over a white map (an sRGB factor: the colour itself over 255).
+TEXTURES['yard'] = {'baseColorMap': f'{ART}/real/yard.color.png'}
+KINDS['yard'] = ('yard', [.6, .6, .6, 1], 'METAL', 1.0, 'wall')
+TEXTURES['railing'] = {'baseColorMap': f'{ART}/real/railing.color.png', 'opacityMap': f'{ART}/real/railing_o.data.png'}
+RAILINGS = {'railing_blue': (52, 98, 150), 'railing_green': (46, 104, 70), 'railing_dark': (52, 54, 56)}
+for _k, _rgb in RAILINGS.items():
+    KINDS[_k] = ('railing', [_c / 255 for _c in _rgb] + [1], 'METAL', 1.0, 'wall')
+    EXTRA[_k] = {'alphaTest': True, 'alphaRef': 60, 'doubleSided': True, 'castShadows': False}
+RAILING_MIP_REF = 80
+# a playground's sand: a flat colour (the beach sheet read as grey asphalt in the yard)
+KINDS['sand'] = (None, [.80, .71, .53, 1], 'SAND', 3.0, 'plan')
 # the photo ground covers a 24 m sheet (fast_photo.GROUND_M)
 for _k in ('ground', 'forest'):
     KINDS[_k] = KINDS[_k][:3] + (_photo.GROUND_M,) + KINDS[_k][4:]
@@ -305,6 +319,7 @@ KINDS['park'] = ('grass', [.30, .40, .22, 1], 'GRASS', _photo.GROUND_M, 'plan')
 
 # baseColorFactor per kind: the game's grass is dry West Coast grass; Kyiv's is green
 TINT = {'ground': [.55, .85, .42, 1], 'forest': [.36, .58, .28, 1], 'paved': [.62, .62, .60, 1]}
+TINT.update({_k: [_c / 255 for _c in _rgb] + [1] for _k, _rgb in RAILINGS.items()})
 # Lines as East Coast paints them. The edge grass tint was set from linear means but acts as an
 # sRGB factor (_factor below); in game it sits at .9 of the verge, so it stays. The dirt edge is
 # twice as bright as the asphalt: a little darker and less yellow reads as a gravel shoulder; a
@@ -404,6 +419,8 @@ def ground_kind(tags):
     'park', 'residential' or None for an OSM area's tags."""
     if any(tags.get(k) == v for k, v in ISLANDS.items()) and tags.get('area') != 'no':
         return 'island'
+    if tags.get('leisure') == 'playground':
+        return 'playground'           # a yard's sandpit and swings (generator.lua YARD.playground)
     if tags.get('landuse') in PAVED or tags.get('amenity') == 'parking' or tags.get('place') == 'square':
         return 'paved'
     if tags.get('landuse') in WOODS or tags.get('natural') in WOODS:
@@ -437,6 +454,8 @@ def line_kind(tags):
         return 'fence'
     if tags.get('barrier') == 'guard_rail':
         return 'guard_rail'
+    if tags.get('barrier') == 'hedge':
+        return 'hedge'
     return None
 
 
@@ -467,7 +486,16 @@ def point_kind(tags):
     if tags.get('highway') == 'bus_stop' or (tags.get('public_transport') == 'platform' and
                                               any(tags.get(k) == 'yes' for k in ('bus', 'trolleybus', 'tram'))):
         return 'stop'
+    # a block's stair doors (benches, a canopy and a gap in the front garden) and a playground
+    # drawn as a node
+    if tags.get('entrance') in ENTRANCES:
+        return 'entrance'
+    if tags.get('leisure') == 'playground':
+        return 'playground'
     return None
+
+
+ENTRANCES = ('staircase', 'main', 'home')
 
 
 SIGNALS = False
