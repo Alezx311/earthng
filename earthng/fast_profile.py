@@ -447,13 +447,16 @@ class Mosaic:
         self.zoom = getattr(terrain, 'zoom', 12)
         self.terrain = terrain
 
-    def _grid(self, tx0, ty0, tx1, ty1):
-        """The pixels of tiles tx0..tx1, ty0..ty1 (NaN where a tile is missing)."""
+    def _grid(self, tx0, ty0, tx1, ty1, needed):
+        """The pixels of tiles tx0..tx1, ty0..ty1, of those in `needed` only (NaN where a tile is
+        missing or not asked for). The edge tiles of a downloaded DEM may be missing on disk, and
+        z13 upsamples from z12 neighbours: reading just what the points reach keeps to the tiles
+        a grid over them read."""
         # a z13 grid has four times the pixels: single precision (millimetres at 1000 m)
         grid = np.full(((ty1 - ty0 + 1) * 256, (tx1 - tx0 + 1) * 256), np.nan,
                        dtype=np.float32 if self.zoom > 12 else float)
-        for a in range(tx0, tx1 + 1):
-            for b in range(ty0, ty1 + 1):
+        for a, b in sorted(needed):
+            if tx0 <= a <= tx1 and ty0 <= b <= ty1:
                 if self.terrain.has(a, b):
                     ix = np.arange(a * 256, a * 256 + 256); iy = np.arange(b * 256, b * 256 + 256)
                     gx, gy = np.meshgrid(ix, iy)
@@ -485,7 +488,11 @@ class Mosaic:
             at = order[first:last]
             # a tile of margin each side: the 5-tap filter and the bilinear corner reach one pixel out
             x0, y0 = int(bx[at[0]]) * self.BLOCK - 1, int(by[at[0]]) * self.BLOCK - 1
-            g = self._grid(x0, y0, x0 + self.BLOCK + 1, y0 + self.BLOCK + 1)
+            # the pixels the filter reads: from one before (ix, iy) to two after, in 256 px tiles
+            reach = np.unique(np.concatenate([((ix[at] + dx) // 256) * 65536 + (iy[at] + dy) // 256
+                                              for dx in (-1, 2) for dy in (-1, 2)]))
+            g = self._grid(x0, y0, x0 + self.BLOCK + 1, y0 + self.BLOCK + 1,
+                           [divmod(int(k), 65536) for k in reach])
             gx, gy = ix[at] - x0 * 256, iy[at] - y0 * 256
             for dx, dy, w in offsets:
                 a, b = gx + dx, gy + dy

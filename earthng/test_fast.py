@@ -145,6 +145,10 @@ class SourceTests(unittest.TestCase):
         tracemalloc.stop()
         self.assertLess(peak, 60e6)                          # that grid held 277 MB
         self.assertLess(len(terrain.asked), 400)
+        # only tiles within one of a point's own: the DEM's edge tiles beyond that may be missing on
+        # disk (z13 upsamples from z12 neighbours), and the grid never reached them
+        own = {(int(a) // 256, int(b) // 256) for a, b in zip(px, py)}
+        self.assertTrue(all(any(abs(t[0] - o[0]) <= 1 and abs(t[1] - o[1]) <= 1 for o in own) for t in terrain.asked))
         self.assertGreater((ty1 - ty0 + 1) * (tx1 - tx0 + 1) * 65536 * 4, 2e8)    # the grid: 277 MB
         # reference: the same filter on a grid of just the two clusters' tiles
         want = np.empty(len(xy))
