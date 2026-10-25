@@ -49,5 +49,26 @@ class GradeTests(unittest.TestCase):
         self.assertEqual(kinds, [('missing', 12), ('missing', 6), ('buried', 6)])
 
 
+class BarrierTests(unittest.TestCase):
+    def setUp(self):
+        self.asphalt = np.full((100, 100), np.nan)
+        self.asphalt[40:60, :] = 10.
+
+    def test_a_rail_standing_on_the_asphalt_is_found_and_one_beside_it_is_not(self):
+        top, low = np.full((100, 100), np.nan), np.full((100, 100), np.nan)
+        top[48:52, 20:80], low[48:52, 20:80] = 10.75, 9.7               # across the lane, base sunk in the road
+        top[10:12, 20:80], low[10:12, 20:80] = 10.75, 9.7               # beside it, off the asphalt
+        pixels = audit.barrier_pixels(self.asphalt, top, low)
+        self.assertEqual(int(pixels.sum()), 4 * 60)
+        self.assertTrue(pixels[48:52, 20:80].all() and not pixels[10:12].any())
+        cells = audit.barrier_cells(pixels, [0, 0, 100, 100])
+        self.assertAlmostEqual(sum(c[2] for c in cells), 240, delta=1)
+
+    def test_a_barrier_high_over_the_road_or_too_tall_is_not_standing_on_it(self):
+        top, low = np.full((100, 100), np.nan), np.full((100, 100), np.nan)
+        top[48:52, 20:80], low[48:52, 20:80] = 16., 14.                 # a gantry 4 m over the lane
+        self.assertEqual(int(audit.barrier_pixels(self.asphalt, top, low).sum()), 0)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -23,8 +23,15 @@
   3 missing and 78 buried (was 9 and 419 before the deck fix and the tunnel rule); far tiles 29,015
   roads, 379,524 samples, 103 missing (the Peterburi tee tunnel, before the checker skipped it)
   and 107 buried (6.8 % before the lift).
-- Unit check: 368 OK (3 skipped); new: far roads and their lift in a cutting, staggered decks, and
-  the audit's grading. Not driven in the game.
+- The audit also finds a guard rail or mesh fence standing on a carriageway (kind `barrier`, its
+  footprint on the asphalt in m2): none in the Tallinn area.
+- `earthng/model_viewer.py` writes one HTML page of the tiles round a place (all meshes, built by
+  generator.lua through road_quality, `tune.all = 1`): orbit, switch layers, click to measure, and
+  paint the ground and roads by their deviation from the Land Board's LiDAR terrain (green within
+  0.5 m, a model-minus-LiDAR height at every click). It replaces driving a road to check it.
+- Unit check: 376 OK (3 skipped); new: far roads and their lift in a cutting, staggered decks, the
+  audit's grading and barrier check, and the viewer's layers, raster sampling and page. Not driven in
+  the game.
 
 ## 2026-10-25: packs carry their data credits
 

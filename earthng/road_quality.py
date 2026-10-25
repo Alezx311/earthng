@@ -80,16 +80,18 @@ end
 local out, fmt, tris = {}, string.format, 0
 local items = {}
 for _, item in ipairs(road.items) do items[#items + 1] = item end
+-- tune.all = 1: every scene mesh too (buildings, rails, fences, cars: the 3D model viewer)
+local all = tune and tune.all == 1
 for _, item in ipairs(scene.items) do
   if item.kind == 'proc' then
     -- a far tile's roads are in its scene layer too (generator.lua ROADS.far)
-    for _, mesh in ipairs(item.meshes or {}) do if cover[mesh.material] or mesh.material:find('^e2rf_road') then items[#items + 1] = item; break end end
+    for _, mesh in ipairs(item.meshes or {}) do if all or cover[mesh.material] or mesh.material:find('^e2rf_road') then items[#items + 1] = item; break end end
   end
 end
 for _, item in ipairs(items) do
   local p = item.pos
   for _, mesh in ipairs(item.meshes or {}) do
-    if item.layer ~= 'scene' or cover[mesh.material] or mesh.material:find('^e2rf_road') then
+    if all or item.layer ~= 'scene' or cover[mesh.material] or mesh.material:find('^e2rf_road') then
     local parts = out[mesh.material] or {}
     out[mesh.material] = parts
     local verts, faces = mesh.verts, mesh.faces
