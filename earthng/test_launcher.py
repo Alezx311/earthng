@@ -1,4 +1,5 @@
 """MapBuilder start: checks, visible failures, window handshake and the release bundle (issue #4)."""
+import ast
 import json
 import os
 import subprocess
@@ -128,6 +129,23 @@ class BundleTests(unittest.TestCase):
         batch = selected['MapBuilder.bat'].decode('ascii')
         self.assertIn('launch_builder.py', batch)
         self.assertNotIn('start ""', batch)  # silent pythonw start was the issue #4 failure
+
+    def test_release_bundle_contains_scripts_started_as_subprocesses(self):
+        names = subprocess.check_output(['git', 'ls-files'], cwd=ROOT, text=True).splitlines()
+        files = {n: (ROOT / n).read_bytes() for n in names if (ROOT / n).is_file()}
+        selected = prepare_release.builder_files(files)
+        # country_fetch starts these by file name; build_country also needs the modules it imports.
+        for module in ('osm_tiles_country', 'build_map', 'build_country', 'country_format', 'landcover'):
+            self.assertIn(f'earthng/{module}.py', selected)
+        # Every 'name.py' a bundled module mentions must be bundled too, or the build stops mid-way.
+        for name, data in selected.items():
+            if not name.endswith('.py'):
+                continue
+            for node in ast.walk(ast.parse(data.decode('utf-8-sig'))):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    script = prepare_release._script_name(node.value)
+                    if script and f'earthng/{script}.py' in files:
+                        self.assertIn(f'earthng/{script}.py', selected, f'{name} starts {node.value}')
 
 
 if __name__ == '__main__':
