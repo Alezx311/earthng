@@ -1,5 +1,20 @@
 # EarthNG native mod migration
 
+## 2026-10-25: packs carry their data credits
+
+- A map pack shared on its own (a Drive download) named only OpenStreetMap in its
+  manifest. Every pack now carries `credits` in its country or section manifest and a
+  `CREDITS.txt` beside it: OpenStreetMap (ODbL) and the Terrarium elevation tiles always,
+  the Estonian Land Board's DTM with its licence link and extraction year whenever the
+  pack's elevation tiles hold the burnt LiDAR (`est_dem.credit`, read from
+  `cache/est/burnt.json`: a burn outlives the build that made it), and Transpordiamet's
+  road register (CC BY 4.0, what was changed) when built with `--road-register`.
+- The road register is open data, CC BY 4.0 on andmed.eesti.ee: the "keep register-built
+  packs for local use" caveat is gone from README, ESTONIA.md and THIRD_PARTY_NOTICES.
+- Unit check: 354 OK (three new tests: the pack's credits, the Land Board credit from the
+  burn record, the export job's credits). On the local cache all six Estonian source
+  indexes are credited to the Land Board.
+
 ## 2026-10-25: rails beside the road, concrete at deck ends
 
 - OSM guard rails mapped off the road the pack draws (an old alignment, a ramp since rebuilt,

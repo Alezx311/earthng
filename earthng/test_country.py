@@ -112,8 +112,9 @@ class CountryTests(unittest.TestCase):
         with zipfile.ZipFile(result) as archive:
             names = archive.namelist()
             self.assertTrue(all(name.startswith('earthng/countries/ua/') and name.endswith(('.json', '.bin'))
-                                for name in names))
-            self.assertEqual(len(names), 3)  # country, region and one block of two source cells
+                                for name in names if name != 'earthng/countries/ua/CREDITS.txt'))
+            self.assertIn('earthng/countries/ua/CREDITS.txt', names)     # the data's credits travel along
+            self.assertEqual(len(names), 4)  # country, region, one block of two source cells and the credits
             index = json.loads(archive.read('earthng/countries/ua/manifest.json'))
             self.assertEqual(index['runtime'], 'native')
             self.assertEqual(index['sourceFormat'], country.FORMAT)
@@ -303,6 +304,31 @@ class CountryTests(unittest.TestCase):
         self.assertNotIn('/private', json.dumps(fields))
         fields = country._provenance(self.meta, {'source': 'area-261399.osm.pbf'})
         self.assertNotIn('sourceDate', fields)
+
+    def test_a_pack_carries_the_credits_of_its_data(self):
+        # a pack shared without the repo still names its sources and their licences
+        land = {'source': 'Republic of Estonia Land and Spatial Development Board (Maa- ja Ruumiamet)',
+                'data': 'Elevation data, 10 m DTM, extracted 2026', 'license': 'Estonian Land Board open data licence',
+                'url': 'https://geoportaal.maaruum.ee/opendata-licence'}
+        region = {'dir': self.region, 'core': None, 'id': 'kyiv'}
+        plain = self.build()
+        with patch.object(sources, 'Store', return_value=self.store):
+            section = country.build_country('ua', 'Україна', '0.1.0', [region], self.root / 'sec',
+                                            (-1000, 0, 2000, 1000), emit=lambda _: None,
+                                            section={'id': 'kyiv', 'title': 'Kyiv'}, credits=[land])
+        with zipfile.ZipFile(plain) as archive:
+            manifest = json.loads(archive.read('earthng/countries/ua/manifest.json'))
+            self.assertEqual(manifest['credits'], list(country.CREDITS))
+            text = archive.read('earthng/countries/ua/CREDITS.txt').decode('utf-8')
+            self.assertIn('OpenStreetMap contributors', text)
+            self.assertIn('ODbL-1.0', text)
+            self.assertNotIn('Maa- ja Ruumiamet', text)
+        with zipfile.ZipFile(section) as archive:
+            manifest = json.loads(archive.read('earthng/countries/ua/sections/kyiv/section.json'))
+            self.assertEqual(manifest['credits'], [*country.CREDITS, land])
+            text = archive.read('earthng/countries/ua/sections/kyiv/CREDITS.txt').decode('utf-8')
+            self.assertIn('Maa- ja Ruumiamet', text)
+            self.assertIn('https://geoportaal.maaruum.ee/opendata-licence', text)
 
     def test_multiple_independent_regions_have_separate_namespaces(self):
         other = self.root / 'other'

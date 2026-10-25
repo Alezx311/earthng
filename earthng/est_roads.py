@@ -15,8 +15,8 @@ Local roads (7-digit numbers) are left alone: their widths are whole metres and 
 lane, not the street. The source tiles are copied, never edited: the enriched copy has its
 own directory and checksums, so the OSM-only cache stays valid.
 
-Data: Transpordiamet, Teeregister (CC BY 4.0 per andmed.eesti.ee; the WFS itself still
-says "private" - confirm before redistributing a pack built with it).
+Data: Transpordiamet, Teeregister, open data under CC BY 4.0 (andmed.eesti.ee); a pack built
+with it credits the register.
 """
 import hashlib
 import json
@@ -43,6 +43,11 @@ SIDE = {'VASAKUL': 1, 'PAREMAL': -1}
 DUPLICATE = 3.0            # m: an OSM-mapped rail already stands there
 ROAD_CLEAR = .2            # m outside another road's asphalt a rail may not reach (< RAIL_OFFSET)
 SYNTHETIC = 4_000_000_000_000_000   # ids of the written rail nodes and ways (< 2**53)
+# a pack built with the register carries this (CC BY 4.0: the source, the licence, what changed)
+CREDIT = {'source': 'Transpordiamet, Teeregister (https://teeregister.mnt.ee/)',
+          'data': 'state road widths, shoulders and guard rails, matched onto OpenStreetMap ways '
+                  '(rails moved to their edge)',
+          'license': 'CC BY 4.0', 'url': 'https://creativecommons.org/licenses/by/4.0/'}
 
 
 def register_box(box):

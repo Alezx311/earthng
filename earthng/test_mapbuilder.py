@@ -150,6 +150,45 @@ class BuildLifecycleTests(unittest.TestCase):
             self.assertEqual([name for name, seconds in events if seconds is None], list(timing.STAGES))
             self.assertTrue(all(seconds >= 0 for _, seconds in events if seconds is not None))
 
+    def test_the_export_job_credits_the_register_and_the_burnt_lidar(self):
+        import est_dem
+        import est_roads
+        import fast_dem
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tiles = country_fetch.tiles_dir(root, 'test', None)
+            tiles.mkdir(parents=True)
+            index = {'tiles': {'a': {'coverage': [24.70, 59.40, 24.71, 59.41]}}, 'package_box': [24.7, 59.4, 24.71, 59.41]}
+            (tiles / 'index.json').write_text(json.dumps(index))
+            dem = root / 'out' / 'world' / 'cache'
+            first = fast_dem.audit(index, dem)[0]
+            (dem / 'est').mkdir(parents=True)
+            (dem / 'est' / 'burnt.json').write_text(json.dumps({f'{first.parent.name}/{first.stem}': 'stamp'}))
+            jobs = []
+
+            def fake_step(command, emit=None, cancel=None):
+                job = json.loads(Path(command[command.index('--job') + 1]).read_text(encoding='utf-8'))
+                jobs.append(job)
+                Path(job['result']).write_text('[]' if job['command'] == 'index' else str(root / 'pack.zip'), encoding='utf-8')
+
+            def build(**flags):
+                jobs.clear()
+                with patch.object(country_fetch, 'run_step', side_effect=fake_step), \
+                        patch.object(country_fetch, 'fetch_dem'), patch.object(est_dem, 'refine'), \
+                        patch.object(est_roads, 'fetch'), patch.object(est_roads, 'enrich', return_value=tiles), \
+                        patch.object(country_fetch, 'install_zip', return_value=root / 'installed.zip'):
+                    country_fetch.build_place({'id': 'test', 'name': 'Test', 'pbf': 'unused'}, root,
+                                              root=root, emit=lambda _: None, **flags)
+                return [c['source'] for c in next(j for j in jobs if j['command'] == 'export')['credits']]
+            # the LiDAR burnt by an earlier build is still in the cache: credited without the flag
+            self.assertEqual(len(build()), 1)
+            self.assertIn('Maa- ja Ruumiamet', build()[0])
+            both = build(road_register=True, local_dem=True)
+            self.assertEqual(len(both), 2)
+            self.assertTrue(any('Transpordiamet' in s for s in both))
+            (dem / 'est' / 'burnt.json').unlink()
+            self.assertEqual(build(), [])
+
     def test_build_job_writes_the_index_then_the_archive_path(self):
         import build_country
         with tempfile.TemporaryDirectory() as tmp:

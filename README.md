@@ -128,8 +128,8 @@ them back.
 
 `--road-register` (Estonia) takes the state roads' carriageway widths and shoulders and
 their guard rails from the Transpordiamet road register (teeregister.mnt.ee WFS, cached
-under `out/world/cache`). Its terms for redistributing derived packs are not yet
-confirmed: keep register-built packs for local use until they are.
+under `out/world/cache`). The register is open data, CC BY 4.0 on the national portal
+(andmed.eesti.ee): a pack built with it may be shared, crediting Transpordiamet, Teeregister.
 
 A large country can be built and improved in sections, one administrative area at a time:
 `country_fetch.py sections --place estonia` lists them, and
@@ -187,4 +187,6 @@ are not FPS. [Native format and architecture](docs/NATIVE_MODS.md).
 ## License
 
 Original code: [MIT](LICENSE). Country data and third-party art retain their
-[separate attribution and terms](THIRD_PARTY_NOTICES.md).
+[separate attribution and terms](THIRD_PARTY_NOTICES.md). Every map pack carries the
+credits of the data it was built from (`CREDITS.txt` beside its manifest, and the
+manifest's `credits`), so a pack shared on its own still names its sources.

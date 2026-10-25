@@ -432,6 +432,22 @@ def _write_json(archive, path, value):
     _write(archive, path, _encode(value))
 
 
+# The data every pack is built from; build_country(credits=) adds the optional sources
+# (est_dem.credit, est_roads.CREDIT). A pack shared without this repo still names them.
+CREDITS = ({'source': 'OpenStreetMap contributors', 'data': 'map data', 'license': 'ODbL-1.0',
+            'url': 'https://www.openstreetmap.org/copyright'},
+           {'source': 'Terrarium elevation tiles (AWS Terrain Tiles)', 'data': 'elevation',
+            'url': 'https://registry.opendata.aws/terrain-tiles/'})
+
+
+def _credits_text(title, credits):
+    lines = [f'EarthNG map pack: {title}', '', 'Built from:']
+    for c in credits:
+        lines.append('- ' + ', '.join(v for v in (c['source'], c.get('data'), c.get('license')) if v))
+        lines.append('  ' + c['url'])
+    return ('\n'.join(lines) + '\n').encode('utf-8')
+
+
 def compile_block(store, cells, include=None):
     """Encoded payloads {slot: bytes} and road counts {slot: n} of the given (i, j) cells."""
     payloads, roads = {}, {}
@@ -674,11 +690,13 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
 
 
 def build_country(country_id, title, version, regions, out, bbox=None, emit=print, jobs=1, landing=None, landcover=(), vegetation=None,
-                  look=None, include=None, cancel=None, map_data=None, section=None):
+                  look=None, include=None, cancel=None, map_data=None, section=None, credits=()):
     """Stream source blocks to ZIP64 and atomically replace the completed archive.
     section: {'id', 'title'}: one region, written as a section of the country
     (earthng_<country>_<section>.zip with sections/<id>/section.json and no country manifest),
-    which the game joins with the country's other mounted sections."""
+    which the game joins with the country's other mounted sections.
+    credits: the optional sources' credits ({source, data, license, url}), after CREDITS in the
+    manifest and in CREDITS.txt beside it."""
     _identifier(country_id, 'country id')
     if not isinstance(title, str) or not title.strip() or not isinstance(version, str) or not version.strip():
         raise ValueError('country title and version must be nonempty strings')
@@ -748,14 +766,19 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
                 manifest['look'] = look
             if include:
                 manifest['include'] = include
+            manifest['credits'] = [*CREDITS, *(credits or ())]
             if section is None:
-                _write_json(archive, f'earthng/countries/{country_id}/manifest.json', manifest)
+                folder = f'earthng/countries/{country_id}'
+                _write_json(archive, f'{folder}/manifest.json', manifest)
             else:
                 region = dict(entries[0], title=section['title'])
                 manifest.update(kind='earthng-section', country=country_id, id=section['id'],
                                 sectionTitle=section['title'], region=region)
                 del manifest['regions']
-                _write_json(archive, f"earthng/countries/{country_id}/sections/{section['id']}/section.json", manifest)
+                folder = f"earthng/countries/{country_id}/sections/{section['id']}"
+                _write_json(archive, f'{folder}/section.json', manifest)
+            label = title.strip() + (f" - {section['title']}" if section else '')
+            _write(archive, f'{folder}/CREDITS.txt', _credits_text(label, manifest['credits']))
             # the offline map is the country's: a section's zip leaves it to the country pack
             if map_data is not None and section is None:
                 from build_map import write_archive
@@ -856,7 +879,8 @@ def run_job(path):
             job['id'], job['title'], job['version'],
             [_revive_region(region) for region in job['regions']], job['out'],
             jobs=job.get('jobs') or 1, landing=job.get('landing'), look=job.get('look'),
-            include=job.get('include'), map_data=job.get('map_data'), section=job.get('section'))
+            include=job.get('include'), map_data=job.get('map_data'), section=job.get('section'),
+            credits=job.get('credits') or ())
         destination.write_text(str(archive), encoding='utf-8')
         return
     raise ValueError(f'unknown build job {command}')
