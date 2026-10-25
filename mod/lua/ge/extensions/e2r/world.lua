@@ -651,12 +651,13 @@ local function spawnItem(it, group, pause, tile, layer)
   end
 end
 
--- A 32 m cell of tufts or rocks as TSStatic without collision (~12 us each once the shape
+-- A streamed cell of tufts or rocks as TSStatic without collision (~12 us each once the shape
 -- is loaded, night-probe-12). Merged ProceduralMesh cells were tried and dropped: every
 -- ProceduralMesh triangle is static collision, so the blades became bumps under the wheels.
 local function grassCell(parts, pause)
   local handle = {}
-  for _, part in ipairs(parts) do
+  for _, source in ipairs(parts) do
+    local part = detail.expand(source, pause)
     local group = part.tile.far and part.tile.group or part.tile.decor
     for k = 1, part.n do
       local half = part.yaw[k] / 2
@@ -3382,7 +3383,7 @@ local function drawTune()
     tuneSlider('maxFarTrees', 0, 1200, 'Крони на далекий тайл', 'Crowns per far tile')
     tuneSlider('maxGrass', 0, 4800, 'Щільність трави на тайл', 'Grass density per tile')
     tuneSlider('maxRocks', 0, 200, 'Каміння на тайл', 'Rocks per tile')
-    tuneSlider('grassBudget', 0, 6000, 'Загальний ліміт трави', 'Total grass limit')
+    tuneSlider('grassBudget', 0, 14000, 'Загальний ліміт трави', 'Total grass limit')
     tuneSlider('rockBudget', 0, 1600, 'Загальний ліміт каміння', 'Total rock limit')
     tuneSlider('forestSpacing', 4, 24, 'Крок лісу, м', 'Forest spacing, m')
     tuneSlider('groundSpacing', 4, 30, 'Крок на відкритому ґрунті, м', 'Open-ground spacing, m')

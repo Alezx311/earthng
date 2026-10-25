@@ -446,14 +446,16 @@ def fields(pack, base, real):
                 tint = [a * b for a, b in zip(style.TINT[kind], (.62, .66, .6))]
                 put(kind, baseColorFactor=_colour(tint))
     if pack == 'winter':
+        bare = dict(detailMap='', detailNormalMap='', roughnessDetailMap='', detailScale='',
+                    detailBaseColorMapStrength=0, detailNormalMapStrength=0, detailRoughnessMapStrength=0)
         for kind in GROUND_KINDS + ('paved',):
             put(kind, baseColorMap=f'{art}/ground_{kind}.color.png', normalMap=f'{art}/ground_{kind}.normal.png',
-                roughnessMap='', ambientOcclusionMap='', baseColorFactor='1 1 1 1')
+                roughnessMap='', ambientOcclusionMap='', baseColorFactor='1 1 1 1', **bare)
         for kind in COVER_KINDS:
             # rock and scree keep a grey cast under the snow
             put(kind, baseColorMap=f'{art}/ground_ground.color.png', normalMap=f'{art}/ground_ground.normal.png',
                 roughnessMap='', ambientOcclusionMap='',
-                baseColorFactor='0.82 0.84 0.88 1' if kind in ('bare_rock', 'scree') else '1 1 1 1')
+                baseColorFactor='0.82 0.84 0.88 1' if kind in ('bare_rock', 'scree') else '1 1 1 1', **bare)
         for kind in UNPAVED_ROADS:
             put(kind, baseColorMap=f'{art}/trodden.color.png', normalMap=f'{art}/trodden.normal.png',
                 roughnessMap='', ambientOcclusionMap='', baseColorFactor='1 1 1 1')
@@ -478,7 +480,9 @@ def fields(pack, base, real):
             put('wall_' + w, baseColorFactor='0.92 0.94 1 1')
     if pack == 'autumn':
         for kind in GROUND_KINDS:
-            put(kind, baseColorMap=f'{art}/ground_{kind}.color.png', normalMap=f'{art}/ground_{kind}.normal.png')
+            put(kind, baseColorMap=f'{art}/ground_{kind}.color.png', normalMap=f'{art}/ground_{kind}.normal.png',
+                detailMap='', detailNormalMap='', roughnessDetailMap='', detailScale='',
+                detailBaseColorMapStrength=0, detailNormalMapStrength=0, detailRoughnessMapStrength=0)
         put('footway', baseColorMap=f'{art}/paving.color.png', normalMap=f'{art}/paving.normal.png')
         for w in walls:
             put('wall_' + w, baseColorFactor='1 0.97 0.92 1')

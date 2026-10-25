@@ -381,7 +381,7 @@ def pack_fields(pack, base):
                 f['emissiveMap'] = f'{base}/synth/{w}.glow.png'; f['emissiveFactor'] = '1 1 1'
             f['baseColorFactor'] = '1 1 1 1'
         elif pack == 'real':
-            if kind in style.PHOTO_GROUND:
+            if kind in style.TURF or kind in style.PHOTO_GROUND:
                 f.update(style.real_stage(kind))
                 f['baseColorFactor'] = '1 1 1 1'
             elif kind in style.nature.NATURAL:

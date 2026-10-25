@@ -122,6 +122,20 @@ class RoadDecalTests(unittest.TestCase):
             self.assertTrue(stage['detailNormalMap'].endswith('.dds'))
         real = art.pack_fields('real', '/e2r_stream/fast-art/' + art.VERSION)
         self.assertEqual(real['e2rf_road']['detailScale'], '15.0 15.0')
+        soil = '/assets/materials/terrain/soil/macro_clumply/t_macro_clumpy_b.color.dds'
+        veg = '/assets/materials/terrain/grass/t_dirt_vegetation/t_dirt_vegetation_b.png'
+        for kind in style.TURF:
+            stage = style.MATERIALS['e2rf_' + kind]['Stages'][0]
+            self.assertEqual(stage['baseColorMap'], soil, kind)
+            self.assertEqual(stage['detailMap'], veg, kind)
+            self.assertEqual(stage['detailScale'], [style.TURF_BASE_M / style.TURF_DETAIL_M] * 2, kind)
+            self.assertEqual(stage['detailNormalMapStrength'], 1.0, kind)
+            self.assertEqual(stage['detailBaseColorMapStrength'], .55 if kind == 'park' else .38, kind)
+            self.assertNotIn('baseColorFactor', stage, kind)
+            self.assertNotIn('ground_ground', stage['baseColorMap'])
+        self.assertEqual(real['e2rf_ground']['detailScale'], '12.0 12.0')
+        self.assertTrue(real['e2rf_ground']['baseColorMap'].endswith('t_macro_clumpy_b.color.dds'))
+        self.assertNotIn('ground_ground', real['e2rf_meadow']['baseColorMap'])
         self.assertEqual(art.pack_fields('toon', '/e2r_stream/fast-art/' + art.VERSION)['e2rf_road']['detailMap'], '')
 
     def test_decal_kinds_fall_back_to_their_old_look(self):
@@ -158,7 +172,11 @@ class RoadDecalTests(unittest.TestCase):
         for kind in style.EDGES:
             self.assertEqual(winter['e2rf_' + kind]['baseColorMap'], f'{base}/winter/ground_ground.color.dds')
             self.assertEqual(winter['e2rf_' + kind]['opacityMap'], style.TEXTURES[kind]['opacityMap'])
+        self.assertEqual(winter['e2rf_ground']['detailMap'], '')
+        self.assertEqual(winter['e2rf_meadow']['detailNormalMap'], '')
         autumn = fast_packs.fields('autumn', base, real)
+        self.assertEqual(autumn['e2rf_ground']['detailMap'], '')
+        self.assertEqual(autumn['e2rf_park']['detailNormalMapStrength'], 0)
         self.assertEqual(autumn['e2rf_edge_grass']['opacityFactor'], 0)
         self.assertNotIn('opacityFactor', autumn['e2rf_edge_dirt'])
 

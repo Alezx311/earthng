@@ -1,5 +1,30 @@
 # Release verification
 
+## Planet 0.6.2 — 2026-10-25
+
+The `EarthNG` player line stays on the 0.6.1 download. This planet is a separate
+GitHub release, tag `0.6.2` (manifest 0.6.2). `earthng_albania.zip` is still the
+0.4.0 file on the `EarthNG` release. Country packs are not rebuilt and are not
+replaced in the live mods folder.
+
+Lawns, parks, meadows and residential yards are stock soil (`t_macro_clumpy`)
+with a 2 m vegetation detail, and a short-grass carpet of the three East Coast
+`short` tufts. The flat lawn photo is no longer the city sheet. Forest, fields,
+orchards and vineyards keep the thin scatter. Dry and cold climates do not get
+the green carpet. Balanced keeps about 9000 live tufts, OASIS about 14000.
+
+- Unit suite before the tag: `test_detail` 15, `test_styles` 20, `test_nature` 18,
+  `test_biome` 4, `test_generator` 96, with `C:\js\Earth2Road\.venv` and
+  `PYTHONPATH=out/test-tools`. The full `discover` was not re-run after the
+  manifest string changed.
+- **Obolon**, 50.5105, 30.4970, Balanced (quality 50), graphics Normal, 1280×720,
+  disposable profile `out/grass-soil-obolon-20261025`, BeamNG 0.40. Drive: 575
+  frames, mean 19.5 ms, p99 55.5 ms, 36 frames over 33 ms, 2 over 100 ms. The
+  worst drive frame was 585 ms at landing. `liveGrass` 8968 of the 9000 budget.
+  Close views show clumpy soil between the tufts; from above the yard is still
+  a green plane once the carpet ends. The run's only harness failure was
+  `frame_over_100ms`.
+
 ## Planet 0.6.1 — 2026-10-24
 
 The `EarthNG` player release gets a new `earthng_planet.zip` (manifest 0.6.1, built

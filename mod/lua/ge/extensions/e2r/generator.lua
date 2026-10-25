@@ -7153,11 +7153,63 @@ local function build(cells, i, j, options)
     local maxGrass = opt('maxGrass', 4000, 4800)
     local maxRocks = opt('maxRocks', 80, 200)
     local maxUnder = opt('maxUnderstory', 220, 400)
-    -- Town tiles spend the grass cap. Forest floor stays thin so those tufts are not
-    -- stolen by the woods, and so the TSStatic count stays off the frame time.
-    scatter('grass', {meadow = 3.2, farmland = 8, heath = 7, park = 2.6, forest = 12, residential = 2.6, orchard = 5, vineyard = 9, ground = 8},
-      {meadow = .94, farmland = .35, heath = .5, park = .98, forest = .2, residential = .98, orchard = .55, vineyard = .28, ground = .35},
+    -- Lawns, parks, meadows and open ground: one descriptor per 8 m cell. detail.lua
+    -- expands it into a short-grass carpet only while that cell is live. Dry and cold
+    -- climates keep their own scatter (bio.layers); these kinds are not in it.
+    local function lawnCarpet()
+      if distant or maxGrass <= 0 then return end
+      local cell, step = 8, 2
+      local lawn = {ground = true, park = true, meadow = true, residential = true}
+      local function climate(x, y)
+        if not bio.on then return true end
+        local p = bio.at(x, y)
+        if not p then return true end
+        local g = p.group
+        if g ~= 'temperate' and g ~= 'boreal' and g ~= 'rainforest' then return false end
+        return rawHeight(x, y) - bio.sea < bio.treeline(p) - 80
+      end
+      local shapes = {VEG.grass[1], VEG.grass[2], VEG.grass[3]}
+      local mesh = VEG.grassMesh
+      local spans = {mesh[shapes[1]].span, mesh[shapes[2]].span, mesh[shapes[3]].span}
+      local bottoms = {mesh[shapes[1]].bottom, mesh[shapes[2]].bottom, mesh[shapes[3]].bottom}
+      local x0, y0 = floor(rect[1] / cell) * cell, floor(rect[2] / cell) * cell
+      for oy = y0, rect[4] - 1e-6, cell do
+        for ox = x0, rect[3] - 1e-6, cell do
+          if ox >= rect[1] and ox < rect[3] and oy >= rect[2] and oy < rect[4] and climate(ox + 4, oy + 4) then
+            local samples, anchor = {}, nil
+            for sy = 0, 3 do
+              for sx = 0, 3 do
+                local x, y = ox + sx * step + 1, oy + sy * step + 1
+                if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and lawn[coverAt(x, y)] then
+                  local z = ground(x, y)
+                  local nx, ny, nz = groundNormal(x, y)
+                  if nz >= .72 and (not sea or z > sea) and not blocked(x, y, 2.4) then
+                    local n = #samples
+                    samples[n + 1], samples[n + 2] = sy * 4 + sx, z
+                    samples[n + 3] = nz > 1e-4 and -nx / nz or 0
+                    samples[n + 4] = nz > 1e-4 and -ny / nz or 0
+                    if not anchor then anchor = {x, y, z} end
+                  end
+                end
+              end
+            end
+            if anchor then
+              static(string.format('lawn_%d_%d', floor(ox), floor(oy)), shapes[1], anchor[1], anchor[2], anchor[3], 0, 1)
+              scene.items[#scene.items].grassPatch = {
+                x = ox, y = oy, shapes = shapes, spans = spans, bottoms = bottoms, samples = samples}
+            end
+          end
+          if ox % 64 == 0 then pause() end
+        end
+        pause()
+      end
+    end
+    -- Forest floor and mapped fields stay a thin scatter. Lawn kinds are absent here,
+    -- so a town tile does not plant a second tuft on the carpet.
+    scatter('grass', {farmland = 8, heath = 7, forest = 12, orchard = 5, vineyard = 9},
+      {farmland = .35, heath = .5, forest = .2, orchard = .55, vineyard = .28},
       VEG.grass, maxGrass, 0, 0.20, 0.30, .72, {forest = treeline + 80})
+    lawnCarpet()
     scatter('bush', {forest = 14, park = 18},
       {forest = .4, park = .22},
       VEG.have('bush'), maxUnder, 0, .85, 1.3, .72, {forest = treeline + 80})

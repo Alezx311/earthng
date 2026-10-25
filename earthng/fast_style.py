@@ -527,10 +527,37 @@ for _k, _ground in BIOME_GROUND.items():
 KINDS['glacier'] = KINDS['glacier'][:3] + (_photo.GROUND_M,) + KINDS['glacier'][4:]
 PHOTO_GROUND = ('ground', 'park', 'forest', *BIOME_GROUND, 'glacier')
 
+# Lawns, parks and meadows are soil with a fine relief, not the flat lawn photo. The mesh UV
+# repeats every COVER_SCALE metre (generator.lua, 24). The detail maps tile every 2 m, the same
+# grain BeamNG uses on a terrain block. Blades are the streamed tufts; this only replaces the sheet.
+TURF = ('ground', 'park', 'meadow')
+_SOIL = '/assets/materials/terrain/soil/macro_clumply/t_macro_clumpy'
+_VEG = '/assets/materials/terrain/grass/t_dirt_vegetation/t_dirt_vegetation'
+TURF_BASE_M, TURF_DETAIL_M = 24.0, 2.0
+
+
+def turf_stage(kind):
+    """Stock soil (macro) plus a 2 m vegetation detail. Parks take a little more of the detail colour."""
+    return {
+        'baseColorMap': _SOIL + '_b.color.dds',
+        'normalMap': _SOIL + '_nm.normal.dds',
+        'roughnessMap': _SOIL + '_r.data.dds',
+        'roughnessFactor': .94,
+        'detailMap': _VEG + '_b.png',
+        'detailNormalMap': _VEG + '_nm.png',
+        'roughnessDetailMap': _VEG + '_r.png',
+        'detailScale': [TURF_BASE_M / TURF_DETAIL_M, TURF_BASE_M / TURF_DETAIL_M],
+        'detailBaseColorMapStrength': .55 if kind == 'park' else .38,
+        'detailNormalMapStrength': 1.0,
+        'detailRoughnessMapStrength': .4,
+    }
+
 
 def real_stage(kind):
     """Stage-0 maps of a kind in the 'real' pack."""
     tex, colour, _, _, _ = KINDS[kind]
+    if kind in TURF:
+        return turf_stage(kind)
     if kind in nature.NATURAL and tex == 'grass':
         return {'baseColorMap': f'{ART}/real/ground_ground.color.png',
                 'normalMap': f'{ART}/real/ground_ground.normal.png', 'roughnessFactor': .95}
@@ -557,7 +584,7 @@ def real_stage(kind):
 def material(kind):
     _, colour, ground, _, _ = KINDS[kind]
     stage = real_stage(kind)
-    if kind in TINT and kind not in PHOTO_GROUND:
+    if kind in TINT and kind not in PHOTO_GROUND and kind not in TURF:
         stage['baseColorFactor'] = TINT[kind]
     if kind == 'road_worn':
         stage['roughnessFactor'] = .96

@@ -52,6 +52,35 @@ class DetailTests(unittest.TestCase):
           p={x=0,y=0,z=500}; step(100); assert(stream.count.grass==0 and next(live)==nil)
         ''')
 
+    def test_lawn_patch_expands_to_an_even_short_carpet(self):
+        lua = self.make()
+        lua.execute(r'''
+          local part = {tile={}, n=10, staticN=1, patches={{
+            x=0, y=0, shapes={'/3d_grass/a.dae','/3d_grass/b.dae','/3d_grass/c.dae'},
+            spans={0.265, 0.258, 0.255}, bottoms={-0.038, -0.033, -0.019},
+            samples={0, 10, 0.1, -0.2}}},
+            x={4}, y={5}, z={6}, yaw={0.2}, scale={1}, shape={'/rocks/kept.dae'}}
+          local out = detail.expand(part)
+          assert(out.n==10 and out.x[1]==4 and out.shape[1]=='/rocks/kept.dae')
+          local minx, maxx, miny, maxy = 1e9, -1e9, 1e9, -1e9
+          for k=2,out.n do
+            local span = out.shape[k]=='/3d_grass/a.dae' and 0.265 or out.shape[k]=='/3d_grass/b.dae' and 0.258 or 0.255
+            local height = out.scale[k] * span
+            assert(height>=0.32-1e-6 and height<=0.50+1e-6, height)
+            local dx, dy = out.x[k]-1, out.y[k]-1
+            local bottom = out.shape[k]=='/3d_grass/a.dae' and -0.038 or out.shape[k]=='/3d_grass/b.dae' and -0.033 or -0.019
+            local expect = 10 + 0.1*dx - 0.2*dy - bottom*out.scale[k]
+            assert(math.abs(out.z[k]-expect)<1e-6, out.z[k])
+            if out.x[k]<minx then minx=out.x[k] end
+            if out.x[k]>maxx then maxx=out.x[k] end
+            if out.y[k]<miny then miny=out.y[k] end
+            if out.y[k]>maxy then maxy=out.y[k] end
+          end
+          assert(maxx-minx>1.2 and maxy-miny>1.2)
+          assert(maxx-minx<1.6 and maxy-miny<1.6)
+          assert(minx>1-0.8 and maxx<1+0.8 and miny>1-0.8 and maxy<1+0.8)
+        ''')
+
     def test_groundcover_patches_stream_with_the_grass(self):
         lua = self.make()
         lua.execute('''
@@ -99,7 +128,7 @@ class DetailTests(unittest.TestCase):
     def test_hysteresis_and_disable(self):
         lua = self.make()
         lua.execute('''
-          tune.grassM=50; add(60,16); step(20); assert(made==1)
+          tune.grassM=50; add(36,8); step(20); assert(made==1)
           p.x=-3; step(30); assert(removed==0)
           p.x=-40; step(30); assert(removed==1)
           p.x=0; step(30); assert(made==2)
