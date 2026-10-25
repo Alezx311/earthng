@@ -12,7 +12,8 @@ at 1 m, and the centre line of every road is walked every 6 m. A sample is
   buried   ground or cover higher than the asphalt there: drawn, but hidden. A road in a tunnel
            (tunnel=*, layer -1) runs under the ground by design and is not checked for this.
 
-and, apart from the roads, a guard rail or mesh fence standing on a carriageway ('barrier': its
+and, apart from the roads, a guard rail with a triangle taller than 3 m ('spike': a vertex at the wrong
+height, a railing running down into the ground; its height as the length column), and a guard rail or mesh fence standing on a carriageway ('barrier': its
 footprint on the asphalt, in m2, as the length column): a rail drawn across the lane under a bridge
 or at a junction mouth. Piers and abutments (fence_wall) are not barriers.
 
@@ -42,6 +43,8 @@ PIXEL = 1.           # m per raster pixel
 ABOVE = .03          # m: ground this much over the asphalt hides it
 BARRIERS = ('e2rf_clad_metal', 'e2rf_fence_mesh')
 CELL = 10.           # m: barrier pixels are reported per cell of this size
+SPIKE = 3.           # m: a rail or fence triangle taller than this has a vertex at the wrong height
+LONGEST = 4.         # m: ... if it is no wider than this (a rail's step is 2 m; a building's wall is wider)
 
 
 def under_ground(tags):
@@ -102,6 +105,23 @@ def barrier_cells(pixels, rect):
     return [(rect[0] + (cx + .5) * CELL, rect[1] + (cy + .5) * CELL, n * PIXEL * PIXEL) for (cx, cy), n in found.items()]
 
 
+def spikes(text, limit=SPIKE):
+    """[(x, y, spread m)] per CELL of a guard rail mesh (text: 'x y z' vertices, three to a triangle) whose triangles
+    are taller than limit: a rail is .75 m high, so one that is not has a vertex at the
+    wrong height (a ground sample off the loaded terrain read as 0), seen as a railing running down into the
+    ground."""
+    xyz = np.asarray(text.split(), dtype=float).reshape(-1, 3, 3)
+    spread = xyz[:, :, 2].max(1) - xyz[:, :, 2].min(1)
+    # a rail's triangle is a 2 m step of the beam: a warehouse's cladding (clad_metal too) is wider than that
+    wide = np.maximum(np.ptp(xyz[:, :, 0], axis=1), np.ptp(xyz[:, :, 1], axis=1))
+    spread = np.where(wide < LONGEST, spread, 0.)
+    found = {}
+    for (x, y, _), s in zip(xyz[spread > limit].mean(1), spread[spread > limit]):
+        key = (int(x // CELL), int(y // CELL))
+        found[key] = max(found.get(key, 0.), float(s))
+    return [((cx + .5) * CELL, (cy + .5) * CELL, s) for (cx, cy), s in found.items()]
+
+
 _open = {}
 
 
@@ -116,7 +136,7 @@ def _runtime(path, region, generator):
 
 def audit_tile(job):
     """One tile: ({road id: [bad samples]}, {road id: samples}, {road id: (name, class, bridge)}, [(x, y, m2) of
-    barriers on the asphalt])."""
+    barriers on the asphalt], [(x, y, m) of rails and fences with a vertex at the wrong height])."""
     path, region, generator, far, i, j = job
     pack, lua, mods, build, data, slots, cover = _runtime(path, region, generator)
     size = pack.size
@@ -125,7 +145,7 @@ def audit_tile(job):
                 pack.region.get('seaLevel'), lua.table_from({'far': 1} if far else {}), cover, 1)
     bad, total, names = {}, defaultdict(int), {}
     if res is None:
-        return bad, total, names, []
+        return bad, total, names, [], []
     rq.RES = PIXEL
     shape = (int(size / PIXEL),) * 2
     mats = dict(res.mats.items())
@@ -143,7 +163,9 @@ def audit_tile(job):
             xyz = np.asarray(mats[m].split(), dtype=float).reshape(-1, 3)
             xyz[:, 2] *= -1
             low = np.fmax(low, rq.raster(' '.join(f'{v:.3f}' for v in xyz.ravel()), rect, shape))
-    standing = barrier_cells(barrier_pixels(asphalt, barrier, -low), rect) if np.isfinite(barrier).any() else []
+    # far tiles draw buildings too, and a warehouse wall is clad_metal: rails and fences are judged on near tiles
+    standing = barrier_cells(barrier_pixels(asphalt, barrier, -low), rect) if np.isfinite(barrier).any() and not far else []
+    tall = spikes(mats['e2rf_clad_metal']) if mats.get('e2rf_clad_metal') else []         # not fences: a noise wall is 7 m
     skip = NOT_FAR if far else set()
     seen = set()
     for rd in (pack.source(int(rect[0] // pack.cell), int(rect[1] // pack.cell)) or {}).get('roads', []):
@@ -158,7 +180,7 @@ def audit_tile(job):
         names[rd['id']] = (tags.get('name') or tags.get('ref') or '', tags.get('highway'), tags.get('bridge') or '')
         if found:
             bad[rd['id']] = found
-    return bad, total, names, standing
+    return bad, total, names, standing, tall
 
 
 def local(pack, lat, lon):
@@ -194,11 +216,13 @@ def main():
         tiles = [t for t in tiles if t[0] * size < x1 and (t[0] + 1) * size > x0 and t[1] * size < y1 and (t[1] + 1) * size > y0]
     tiles = [t for t in tiles if t[0] % a.stride == 0 and t[1] % a.stride == 0]
     jobs = [(str(a.pack), a.region, str(a.generator) if a.generator else None, a.far, i, j) for i, j in tiles]
-    bad, total, names, standing = defaultdict(list), defaultdict(int), {}, defaultdict(float)
+    bad, total, names, standing, tall = defaultdict(list), defaultdict(int), {}, defaultdict(float), {}
     results = ProcessPoolExecutor(a.jobs).map(audit_tile, jobs, chunksize=4) if a.jobs > 1 else map(audit_tile, jobs)
-    for k, (b, t, nm, st) in enumerate(results):
+    for k, (b, t, nm, st, sp) in enumerate(results):
         for x, y, m2 in st:
             standing[(round(x), round(y))] += m2
+        for x, y, s in sp:
+            tall[(round(x), round(y))] = max(tall.get((round(x), round(y)), 0.), s)
         for rid, found in b.items():
             bad[rid].extend(found)
         for rid, c in t.items():
@@ -216,6 +240,10 @@ def main():
         lat, lon = pack.geo(x, y)
         rows.append({'kind': 'barrier', 'length_m': round(m2), 'name': '', 'class': 'rail/fence on asphalt', 'bridge': '',
                      'lat': round(lat, 5), 'lon': round(lon, 5), 'road': ''})
+    for (x, y), s in tall.items():
+        lat, lon = pack.geo(x, y)
+        rows.append({'kind': 'spike', 'length_m': round(s), 'name': '', 'class': 'rail/fence vertex at the wrong height', 'bridge': '',
+                     'lat': round(lat, 5), 'lon': round(lon, 5), 'road': ''})
     rows.sort(key=lambda r: -r['length_m'])
     a.out.parent.mkdir(parents=True, exist_ok=True)
     with open(a.out, 'w', newline='', encoding='utf-8') as f:
@@ -227,7 +255,7 @@ def main():
     print(f"{len(tiles)} tiles{' (far)' if a.far else ''}, {len(total)} roads, {samples} samples: "
           f"missing {count('missing')} ({100 * count('missing') / max(1, samples):.2f} %), "
           f"buried {count('buried')} ({100 * count('buried') / max(1, samples):.2f} %), {len(standing)} cells with a rail or fence on the road, "
-          f"{len(rows)} findings -> {a.out}")
+          f"{len(tall)} cells with a rail or fence running into the ground, {len(rows)} findings -> {a.out}")
     for r in rows[:15]:
         print(f"  {r['kind']:7s} {r['length_m']:5d} {'m2' if r['kind'] == 'barrier' else 'm '} {r['name'][:26]:26s} [{r['class']}{' bridge' if r['bridge'] else ''}]  "
               f"{r['lat']}, {r['lon']}  road {r['road']}")

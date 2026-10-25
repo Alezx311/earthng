@@ -1306,9 +1306,12 @@ end
 -- barrier's stretches within `reach` m of a bridge's edge and running with it are dropped.
 -- A barrier across a carriageway (at least `across` off its line: a gore's rail meeting a
 -- merging road at a shallow angle stays) is dropped there too: at grade it is a gate or a
--- mapping slip, and under a deck less than `clear` m over the ground (a fence mapped under a
--- low bridge) it would stand through the road. Tunnels pass under everything.
-ROADS.onDeck = {reach = 3, parallel = .85, step = 2, cross = .3, across = .5, clear = 3.5}
+-- mapping slip. A barrier under a bridge deck, at any angle and any height, is dropped under it:
+-- a fence mapped under a low bridge would stand through the road, and the median and slip road
+-- rails OSM runs on under an overpass read as rails going down under the bridge (Tallinna ringtee
+-- at Jüri), crossing each other at the piers; they resume past the deck's edge. Tunnels pass
+-- under everything.
+ROADS.onDeck = {reach = 3, parallel = .85, step = 2, cross = .3, across = .5}
 -- the runs of points ({x, y, ...}) off every bridge deck and carriageway in strips; nil when
 -- none is near. ground(x, y): the drawn ground, for a deck's clearance (none: decks only).
 function ROADS.offDecks(strips, points, ground)
@@ -1350,8 +1353,7 @@ function ROADS.offDecks(strips, points, ground)
         local t = math.max(0, math.min(1, ((mx - s[1]) * sx + (my - s[2]) * sy) / l2))
         local d2 = (mx - s[1] - t * sx) ^ 2 + (my - s[2] - t * sy) ^ 2
         if along and d2 < s[5] * s[5] then return true end
-        if cos <= od.across and d2 < s[6] * s[6] and ground
-          and (not s[9] or s[7] + (s[8] - s[7]) * t - ground(mx, my) < od.clear) then return true end
+        if d2 < s[6] * s[6] and (s[9] or ground and cos <= od.across) then return true end
       end
     end
     return false

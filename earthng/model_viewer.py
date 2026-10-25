@@ -11,7 +11,8 @@ the difference; two clicks give the distance and the slope. "Colour by deviation
 and the roads by (model - LiDAR terrain): green within 0.5 m, warm over, cool under (a bridge deck is
 high over the terrain by design). The LiDAR terrain can be shown as a surface of its own. Heights are
 real metres: the pack's +20 m datum lift is removed. URL flags open the page in a state:
-#top, #dev, #dtm, #hide:buildings+cars.
+#top, #dev, #dtm, #hide:buildings+cars, #cam:east+north+back+up+heading (look at that point, in metres from
+the place, from `back` m behind it and `up` m over the terrain, heading in degrees from north).
 
 --lidar: a Land Board terrain GeoTIFF (EPSG:3301, metres), or a folder of them; the finest one that
 covers the place is used. Without it the page shows the model alone.
@@ -301,6 +302,9 @@ for (const flag of location.hash.slice(1).split(',')) {
   if (flag === 'top') topView();
   if (flag === 'dtm' && dtmMesh) { document.getElementById('dtmOn').checked = true; dtmMesh.visible = true; }
   if (flag === 'dev') { const b = document.getElementById('devOn'); b.checked = true; b.onchange({target: b}); }
+  if (flag.startsWith('cam:')) { // cam:east,north,back,up,heading: look at that point from `back` m behind it and `up` m over the terrain
+    const [e, n, back, up, hd] = flag.slice(4).split('+').map(Number), g = lidarAt(e, n) || 0, h = hd * Math.PI / 180;
+    controls.target.set(e, g, -n); camera.position.set(e - back * Math.sin(h), g + up, -(n - back * Math.cos(h))); controls.update(); }
   if (flag.startsWith('hide:')) for (const n of flag.slice(5).split('+')) if (layers[n]) layers[n].visible = false;
 }
 (function loop() { requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();

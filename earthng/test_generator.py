@@ -749,10 +749,30 @@ class GeneratorTests(unittest.TestCase):
                     and not all(abs(p[0] - 254.5) < .6 for p in t)]
         self.assertEqual(across_the_road(metal), [])
         self.assertEqual(across_the_road(mesh), [])
-        # the lower road's rail runs on under the deck; the deck's ones go on past its ends
-        self.assertTrue([t for t in metal if all(abs(p[0] - 254.5) < .6 and abs(p[1] - 250) < 3 for p in t)])
+        # the lower road's rail stops at the deck's edges and goes on past them; the deck's ones go on past its ends
+        self.assertEqual([t for t in metal if all(abs(p[0] - 254.5) < .6 and abs(p[1] - 250) < 3.5 for p in t)], [])
+        self.assertTrue([t for t in metal if all(abs(p[0] - 254.5) < .6 and 7 < abs(p[1] - 250) < 60 for p in t)])
         self.assertTrue([t for t in metal if all(p[0] < 195 and abs(p[1] - 254.5) < .6 for p in t)])
         self.assertTrue([t for t in mesh if all(p[0] > 300 for p in t)])
+
+    def test_a_rail_running_on_under_a_high_deck_at_a_skew_is_cut_under_it(self):
+        # Tallinna ringtee at Jüri: median and slip road rails OSM carries on under the overpass, 10 m up, at an
+        # angle to it (here 45 degrees), crossing each other at the pier: left out under the deck, kept past it
+        bridge = {'id': 'b', 'nodes': ['a', 'b'], 'width': 8, 'points': [[200, 250, 20], [300, 250, 20]],
+                  'tags': {'highway': 'tertiary', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'}}
+        under = {'id': 'u', 'nodes': ['s', 'n'], 'width': 8, 'points': [[100, 100, 10], [400, 400, 10]],
+                 'tags': {'highway': 'trunk', 'sidewalk': 'no'}}
+        west = {'id': 'w', 'nodes': ['w', 'a'], 'width': 8, 'points': [[100, 250, 20], [200, 250, 20]],
+                'tags': {'highway': 'tertiary', 'sidewalk': 'no'}}
+        east = {'id': 'e', 'nodes': ['b', 'e'], 'width': 8, 'points': [[300, 250, 20], [400, 250, 20]],
+                'tags': {'highway': 'tertiary', 'sidewalk': 'no'}}
+        d = 5 / 2 ** .5           # 5 m off the carriageway's line, on its right
+        rail = {'id': 'g', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'},
+                'points': [[150 + d, 150 - d, 0], [350 + d, 350 - d, 0]]}
+        metal = list(self.triangles(self.build([{'roads': [bridge, under, west, east], 'lines': [rail]}])[1], 'e2rf_clad_metal'))
+        self.assertEqual([t for t in metal if all(abs(p[1] - 250) < 4 and abs(p[0] - 255) < 8 for p in t)], [])
+        self.assertTrue([t for t in metal if all(10 < p[1] - 250 < 60 and abs(p[0] - p[1] - 0) < 9 for p in t)])
+        self.assertTrue([t for t in metal if all(-60 < p[1] - 250 < -10 for p in t)])
 
     def test_fences_across_a_carriageway_or_under_a_low_deck_are_cut_there(self):
         # OSM: a fence across a road at grade (a gate the pack does not carry), a fence under a

@@ -70,5 +70,42 @@ class BarrierTests(unittest.TestCase):
         self.assertEqual(int(audit.barrier_pixels(self.asphalt, top, low).sum()), 0)
 
 
+class PackTests(unittest.TestCase):
+    def test_a_one_region_zip_without_a_country_manifest_is_read(self):
+        import json
+        import tempfile
+        import zipfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'county.zip'
+            with zipfile.ZipFile(path, 'w') as z:
+                z.writestr('earthng/countries/estonia/regions/harju-maakond/manifest.json',
+                           json.dumps({'tileSize': 500, 'cellSize': 1000, 'blocks': {}}))
+            pack, named = audit.rq.Pack(path), audit.rq.Pack(path, 'harju-maakond')
+            try:
+                self.assertEqual((pack.size, pack.cell, pack.country['regions'][0]['id']), (500, 1000, 'harju-maakond'))
+                self.assertEqual(named.size, 500)
+            finally:
+                pack.zip.close()
+                named.zip.close()
+
+
+class SpikeTests(unittest.TestCase):
+    def mesh(self, *zs):
+        return ' '.join(f'{x} 5 {z}' for x, z in zip((0, 1, 0.5) * (len(zs) // 3), zs))
+
+    def test_a_rail_with_a_vertex_dropped_to_the_ground_is_found(self):
+        found = audit.spikes(self.mesh(47, 47.3, 47, 22, 47.3, 47))            # a rail triangle, then one with a vertex at 22 m
+        self.assertEqual(len(found), 1)
+        self.assertAlmostEqual(found[0][2], 25.3, delta=.01)
+
+    def test_an_ordinary_rail_or_fence_is_not(self):
+        self.assertEqual(audit.spikes(self.mesh(47, 47.75, 47, 47, 47.75, 47.75)), [])
+        self.assertEqual(audit.spikes(self.mesh(0, 2.4, 0)), [])               # a 2.4 m fence
+
+    def test_a_tall_wide_wall_is_a_building_and_not_a_rail(self):
+        self.assertEqual(audit.spikes('0 5 40  19 5 40  19 5 76'), [])         # a warehouse's clad_metal
+
+
 if __name__ == '__main__':
     unittest.main()

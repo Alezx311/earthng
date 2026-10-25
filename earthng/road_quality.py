@@ -51,17 +51,26 @@ COVER |= {'e2rf_' + k for k in nature.NATURAL}
 BUILD = '''
 local generator, cellformat, data, slots, i, j, size, cellSize, sea, tune, cover, repeats = ...
 local x0, y0 = i * size, j * size
-local cells = {}
-for ci = math.floor(x0 / cellSize), math.ceil((x0 + size) / cellSize) - 1 do
-  for cj = math.floor(y0 / cellSize), math.ceil((y0 + size) / cellSize) - 1 do
-    local range = slots(ci, cj)
-    if range then
-      cells[#cells + 1] = cellformat.cell(data(ci, cj), range[1], range[2], ci * cellSize, cj * cellSize,
-        {ci * cellSize, cj * cellSize, (ci + 1) * cellSize, (cj + 1) * cellSize}, nil, {x0, y0, x0 + size, y0 + size})
-    end
+local cells, seen = {}, {}
+local function add(ci, cj)
+  local key = ci .. '_' .. cj
+  local range = not seen[key] and slots(ci, cj)
+  if range then
+    seen[key] = true
+    cells[#cells + 1] = cellformat.cell(data(ci, cj), range[1], range[2], ci * cellSize, cj * cellSize,
+      {ci * cellSize, cj * cellSize, (ci + 1) * cellSize, (cj + 1) * cellSize}, nil, {x0, y0, x0 + size, y0 + size})
   end
 end
+for ci = math.floor(x0 / cellSize), math.ceil((x0 + size) / cellSize) - 1 do
+  for cj = math.floor(y0 / cellSize), math.ceil((y0 + size) / cellSize) - 1 do add(ci, cj) end
+end
 if #cells == 0 then return nil end
+-- the game also loads the cells one terrain step (40 m) past the tile (native.lua buildTile): a guard rail
+-- or a ground sample just over the edge reads the neighbour's terrain, not the 0 of no terrain at all
+local pad = 40
+for ci = math.floor((x0 - pad) / cellSize), math.ceil((x0 + size + pad) / cellSize) - 1 do
+  for cj = math.floor((y0 - pad) / cellSize), math.ceil((y0 + size + pad) / cellSize) - 1 do add(ci, cj) end
+end
 local road, scene, ms, stages
 for run = 1, repeats do
   -- the fastest of a few runs, each after a full collection: the machine is not idle
@@ -116,7 +125,10 @@ class Pack:
     def __init__(self, path, region=None):
         self.zip = zipfile.ZipFile(path)
         names = self.zip.namelist()
-        country = json.loads(self.zip.read(next(n for n in names if n.count('/') == 3 and n.endswith('manifest.json'))))
+        top = next((n for n in names if n.count('/') == 3 and n.endswith('manifest.json')), None)
+        # one region's ZIP (a county download) has no country manifest: its own region manifest stands in
+        country = json.loads(self.zip.read(top)) if top else {'regions': [
+            {'id': n.split('/')[-2], 'manifest': n} for n in names if '/regions/' in n and n.endswith('/manifest.json')]}
         self.country = country
         entry = country['regions'][0] if region is None else next(r for r in country['regions'] if r['id'] == region)
         self.region = json.loads(self.zip.read(entry['manifest'].lstrip('/')))
