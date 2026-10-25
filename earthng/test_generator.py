@@ -377,6 +377,23 @@ class GeneratorTests(unittest.TestCase):
         self.assertIsNotNone(self.surface_at(asphalt, x0, y0))          # the crown stays on the arc
         self.assertIsNone(self.surface_at(asphalt, x0, y0 + 8))
 
+    def test_a_deck_is_not_raised_by_the_other_carriageways_approach(self):
+        # Two one-way bridges of a dual carriageway, staggered, their roads joined only far away.
+        # Each deck's overhang reaches the other's approach, whose centre line is a lane off to
+        # the side. Only a road that passes under the deck itself asks for clearance.
+        def way(name, nodes, x0, x1, y, bridge=False):
+            tags = {'highway': 'trunk', 'oneway': 'yes', 'sidewalk': 'no'}
+            if bridge:
+                tags.update(bridge='yes', layer='1')
+            return {'id': name, 'nodes': nodes, 'width': 12, 'points': line(x0, y, x1, y, 20), 'tags': tags}
+
+        roads = [way('s0', ['s1', 's2'], 0, 100, 250), way('s1', ['s2', 's3'], 100, 300, 250, True),
+                 way('s2', ['s3', 's4'], 300, 500, 250), way('n0', ['n1', 'n2'], 0, 200, 262),
+                 way('n1', ['n2', 'n3'], 200, 400, 262, True), way('n2', ['n3', 'n4'], 400, 500, 262)]
+        asphalt = list(self.triangles(self.build([{'roads': roads}])[0], 'e2rf_road_major'))
+        for x, y in ((200, 250), (290, 262)):
+            self.assertLess(self.surface_at(asphalt, x, y), 21.5, (x, y))
+
     def test_a_low_pack_bridge_clears_a_truck_and_the_approaches_ramp(self):
         # Installed Ukraine pack, bridge 2149 over road 148723 near 50.45845, 30.42135:
         # the stored deck sits about 2 m above the road, and the soffit is 1 m thick, so the
@@ -557,12 +574,12 @@ class GeneratorTests(unittest.TestCase):
         self.assertAlmostEqual(max(zs), 10 + .1 + .75, places=2)
         self.assertEqual(rails('residential'), [])
         self.assertEqual(rails('trunk', register=True), [])           # the register's own rails stand
-        osm = {'id': 'g', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'}, 'points': [[0, 100, 0], [100, 100, 0]]}
+        osm = {'id': 'g', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'}, 'points': [[100, 254.5, 0], [200, 254.5, 0]]}
         metal = rails('residential', [osm])
         self.assertTrue(metal)
         zs = [p[2] for t in metal for p in t]
         self.assertAlmostEqual(max(zs) - min(zs), .75 + .3, places=2)  # the beam's top over the posts' feet
-        self.assertAlmostEqual(max(p[0] for t in metal for p in t), 100, delta=.2)
+        self.assertAlmostEqual(max(p[0] for t in metal for p in t), 200, delta=.2)
 
     def test_a_main_road_on_a_high_embankment_gets_guard_rails_unless_the_register_covers_it(self):
         terrain = {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [20] * 4}
@@ -583,7 +600,10 @@ class GeneratorTests(unittest.TestCase):
     def test_a_guard_rail_rounds_its_corners_and_shades_smooth(self):
         rail = {'id': 'g', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'},
                 'points': [[100, 100, 0], [200, 100, 0], [200, 200, 0]]}
-        scene = self.build([{'lines': [rail]}])[1]
+        # the road it guards, 1 m inside its bend
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 6, 'points': [[100, 96, 0], [204, 96, 0], [204, 200, 0]],
+                'tags': {'highway': 'residential', 'sidewalk': 'no'}}
+        scene = self.build([{'roads': [road], 'lines': [rail]}])[1]
         metal = [p for t in self.triangles(scene, 'e2rf_clad_metal') for p in t]
         self.assertTrue(metal)
         # the beam cuts the 90 degree corner on an arc (6 m legs): never near the bare vertex
@@ -593,6 +613,64 @@ class GeneratorTests(unittest.TestCase):
                    for _, mesh in self.meshes(scene, 'e2rf_clad_metal') for n in mesh.normals.values()}
         self.assertGreater(len(normals), 40)
         self.assertTrue(any(abs(n[2]) > .3 for n in normals))     # the folds face up and down
+
+    def test_steep_ground_at_a_decks_end_is_drawn_as_its_concrete(self):
+        # OSM draws many decks barely longer than the road under them: on the 10 m lattice the ground
+        # between the approach's bank and that road stood at 60-70 degrees, a wall of grass by the
+        # abutment. Banks of 63 degrees (25 m up over one 12.5 m lattice row) run past a deck's end
+        # and under its middle, where a viaduct's valley side stays ground.
+        n = 41
+        heights = [20 if j * 12.5 <= 200 else 45 if j * 12.5 <= 300 else 70 for j in range(n) for i in range(n)]
+        terrain = {'rect': [0, 0, 500, 500], 'nx': n, 'ny': n, 'heights': heights}
+        deck = {'id': 'b', 'nodes': ['a', 'b'], 'width': 8, 'points': [[250, 150, 90], [250, 220, 90], [250, 290, 90]],
+                'tags': {'highway': 'tertiary', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'}}
+        road = self.build([{'roads': [deck], 'terrain': terrain}])[0]
+
+        def slope(t):
+            (ax, ay, az), (bx, by, bz), (cx, cy, cz) = t
+            nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay)
+            ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az)
+            nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+            return math.degrees(math.acos(min(1, abs(nz) / max(1e-12, math.sqrt(nx * nx + ny * ny + nz * nz)))))
+
+        def off_deck(t):      # from the deck's edge
+            x, y = sum(p[0] for p in t) / 3, sum(p[1] for p in t) / 3
+            return math.hypot(x - 250, max(0, y - 290, 150 - y)) - 4
+        bank = lambda t: all(299 < p[1] < 314 for p in t)
+        concrete = [t for t in self.triangles(road, 'e2rf_fence_wall') if bank(t)]
+        self.assertTrue(concrete)
+        self.assertTrue(all(off_deck(t) <= 15 for t in concrete))
+        steep = [t for t in self.triangles(road, 'e2rf_ground') if bank(t) and slope(t) > 55]
+        self.assertTrue(steep)                                        # away from the deck: still ground
+        self.assertTrue(all(off_deck(t) > 15 for t in steep))
+        valley = lambda t: all(199 < p[1] < 214 and abs(p[0] - 250) < 20 for p in t)
+        self.assertTrue([t for t in self.triangles(road, 'e2rf_ground') if valley(t) and slope(t) > 55])
+        self.assertEqual([t for t in self.triangles(road, 'e2rf_fence_wall') if valley(t) and slope(t) < 85], [])
+
+    def test_an_osm_guard_rail_is_drawn_only_beside_a_carriageway(self):
+        # OSM maps a rail where the imagery showed it; some stand metres off the road the pack
+        # draws (an old alignment, a ramp since rebuilt) and were drawn out in the grass
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'points': line(0, 250, 500, 250, 0),
+                'tags': {'highway': 'trunk', 'sidewalk': 'no'}}
+        # 1 m off the asphalt from x 100 to 200, then out to 15 m off it by x 260
+        drifting = {'id': 'g', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'},
+                    'points': [[100, 255, 0], [200, 255, 0], [260, 269, 0], [400, 269, 0]]}
+        lone = {'id': 'f', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'},
+                'points': [[100, 100, 0], [300, 100, 0]]}       # in a field, no road near
+        # weaving 3.4 to 4.6 m off the far edge, a vertex every 8 m: its 8 m stretches past 4 m
+        # do not chop it up
+        weaving = {'id': 'v', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'},
+                   'points': [[100 + 8 * k, 242.6 if k % 2 == 0 else 241.4, 0] for k in range(13)]}
+        scene = self.build([{'roads': [road], 'lines': [drifting, lone, weaving]}])[1]
+        metal = [p for t in self.triangles(scene, 'e2rf_clad_metal') for p in t]
+        beside = [p[0] for p in metal if abs(p[1] - 255) < .5]
+        self.assertTrue(beside)
+        self.assertAlmostEqual(min(beside), 100, delta=.5)
+        self.assertGreater(max(p[0] for p in metal), 205)          # on along the bend while near
+        self.assertEqual([p for p in metal if p[1] > 258.5], [])    # never more than 4 m off
+        self.assertEqual([p for p in metal if p[1] < 200], [])      # the lone one: none
+        woven = [p[0] for p in metal if 240 < p[1] < 244]
+        self.assertTrue(all(any(x <= q < x + 2 for q in woven) for x in range(100, 196, 2)))
 
     def test_a_slip_road_leaving_a_trunk_road_gets_a_hatched_gore(self):
         tags = {'highway': 'trunk', 'oneway': 'yes', 'lanes': '2', 'sidewalk': 'no'}
@@ -636,7 +714,12 @@ class GeneratorTests(unittest.TestCase):
                    'points': [[190, 245.5, 0], [310, 245.5, 0]]}
         low_rail = {'id': 'l', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'},
                     'points': [[254.5, 150, 0], [254.5, 350, 0]]}
-        scene = self.build([{'roads': [bridge, under], 'lines': [deck_rail, railing, low_rail]}])[1]
+        # the deck's approaches: a rail stands only beside a road
+        west = {'id': 'w', 'nodes': ['w', 'a'], 'width': 8, 'points': [[100, 250, 20], [200, 250, 20]],
+                'tags': {'highway': 'tertiary', 'sidewalk': 'no'}}
+        east = {'id': 'e', 'nodes': ['b', 'e'], 'width': 8, 'points': [[300, 250, 20], [400, 250, 20]],
+                'tags': {'highway': 'tertiary', 'sidewalk': 'no'}}
+        scene = self.build([{'roads': [bridge, under, west, east], 'lines': [deck_rail, railing, low_rail]}])[1]
         metal = list(self.triangles(scene, 'e2rf_clad_metal'))
         mesh = list(self.triangles(scene, 'e2rf_fence_mesh'))
 

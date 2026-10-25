@@ -1000,6 +1000,9 @@ local function collector(rect, key, layer, pause, mixed)
     faces[#faces + 1] = face
   end
   local scales = {}
+  -- hooks.steep(kind, a, b, c): another material for a piece steeper than acos(hooks.nz), drawn
+  -- flat shaded and box-mapped hooks.scale m a repeat, or false to leave it out (ROADS.wing)
+  local hooks = {}
   local function triangle(kind, a, b, c, up)
     local a3, b3, c3 = a[3] or 0, b[3] or 0, c[3] or 0
     local ux, uy, uz = b[1] - a[1], b[2] - a[2], b3 - a3
@@ -1010,6 +1013,12 @@ local function collector(rect, key, layer, pause, mixed)
     if up and nz < 0 then b, c, nx, ny, nz = c, b, -nx, -ny, -nz end
     nx, ny, nz = nx / len, ny / len, nz / len
     if up == 'flat' then nx, ny, nz = 0, 0, 1 end
+    local plain = false
+    if hooks.steep and math.abs(nz) < hooks.nz then
+      local swap = hooks.steep(kind, a, b, c)
+      if swap == false then return end
+      if swap then kind, plain = swap, true end
+    end
     local material = 'e2rf_' .. kind
     if mixed and total >= mixed then flush() end
     local mesh = groups[material]
@@ -1019,7 +1028,7 @@ local function collector(rect, key, layer, pause, mixed)
         vmap = {}, nmap = {}, umap = {}, fmap = {}, tris = 0}
       groups[material], used[material] = mesh, true
     end
-    local scale = scales[kind]
+    local scale = plain and hooks.scale or scales[kind]
     if not scale then
       scale = COVER_SCALE[kind] or 6
       if kind == 'sidewalk' or kind:find('wall_', 1, true) == 1 then scale = 3 end
@@ -1029,14 +1038,14 @@ local function collector(rect, key, layer, pause, mixed)
     -- Ground passes a per-corner normal in p[6..8] (nx can be 0, so the type is the test).
     -- Walls, curbs and roads leave it unset and keep this face normal.
     local function cornerNormal(p)
-      if type(p[6]) == 'number' and type(p[7]) == 'number' and type(p[8]) == 'number' then
+      if not plain and type(p[6]) == 'number' and type(p[7]) == 'number' and type(p[8]) == 'number' then
         return normalIndex(mesh, p[6], p[7], p[8])
       end
       return n
     end
     -- BeamNG ProceduralMesh expects clockwise face indices and zero-based indices.
     local axis
-    if kind == 'bare_rock' or kind == 'scree' then
+    if plain or kind == 'bare_rock' or kind == 'scree' then
       local ax, ay, az = math.abs(nx), math.abs(ny), math.abs(nz)
       if ax > az and ax >= ay then axis = 'x' elseif ay > az then axis = 'y' end
     end
@@ -1051,7 +1060,7 @@ local function collector(rect, key, layer, pause, mixed)
     local first = clipped[1]
     for k = 2, #clipped - 1 do triangle(kind, first, clipped[k], clipped[k + 1], up) end
   end
-  return {items = items, used = used, polygon = polygon, triangle = triangle, finish = flush}
+  return {items = items, used = used, polygon = polygon, triangle = triangle, finish = flush, hooks = hooks}
 end
 
 -- Road semantics shared by the strips, junctions, markings, sidewalks and navgraph (one table:
@@ -1095,6 +1104,16 @@ end
 -- `thick` along the road, kept `clear` m off any road under it; abutments `thick` deep.
 ROADS.deck = {depth = 1, parapet = .9, thick = .3, repeatU = 2.5,
   pier = {every = 25, min = 16, across = .85, thick = 1.6, clear = 1.5, gap = 1, sink = .5}}
+-- A deck's ends: OSM draws many decks barely longer than the road under them, and on the 10 m
+-- lattice the ground between the approach's bank and that road stood at 60-70 degrees, a wall
+-- of grass by the abutment (Pärnu mnt over Järvevana tee, Tartu mnt at Pildiküla). Ground and
+-- cover steeper than `steep` degrees within `reach` m of an abutment (a deck's end that is no
+-- other deck's, past its half width) is drawn in the abutment's concrete, a wing wall; the
+-- grass edge decals over it are left out. A viaduct's valley sides between its ends stay ground.
+ROADS.wing = {steep = 55, reach = 15, material = 'fence_wall', decals = {edge_grass = true, edge_dirt = true},
+  covers = {ground = true, forest = true, park = true, meadow = true, orchard = true, scrub = true, heath = true,
+    farmland = true, vineyard = true, wetland = true, bare_ground = true, beach = true, desert = true, dune = true,
+    steppe = true, dry_grass = true, tundra = true, alpine = true, snow = true, snow_edge = true}}
 -- main roads' decks are girders deeper than a street's slab (fast_profile.CLEARANCE leaves
 -- 4.5 m under the deepest)
 function ROADS.deckDepth(tags)
@@ -1348,6 +1367,103 @@ function ROADS.offDecks(strips, points, ground)
       end
     end
   end
+  return runs
+end
+-- OSM maps a guard rail where the imagery showed it, and some stand metres off the road the pack
+-- draws (an old alignment, a ramp since rebuilt, a mapping offset): out in the grass they read
+-- as junk (round the Assaku - Jüri overpass of Tallinna ringtee, 8 to 17 m off). A rail is kept
+-- only within `far` m of a carriageway's edge (a deck's too, its sidewalk included), cut where
+-- a sample `step` m along it leaves that; a stretch under `hole` m and within far + `slack`
+-- between kept ones stays (a rail weaving round `far` m off is not chopped into stubs), and
+-- pieces under `min` m go. The kept pieces keep the rail's own vertices, so its corners round
+-- as before.
+ROADS.byRoad = {far = 4, step = 2, min = 4, hole = 10, slack = 3}
+function ROADS.besideRoads(strips, points, sidewalk)
+  local br = ROADS.byRoad
+  local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+  for _, p in ipairs(points) do
+    x0, y0, x1, y1 = math.min(x0, p[1]), math.min(y0, p[2]), math.max(x1, p[1]), math.max(y1, p[2])
+  end
+  local near = {}
+  for _, strip in ipairs(strips) do
+    if not ROADS.tunnel(strip.tags) then
+      local walk = false
+      for _, w in pairs(strip.walk or NONE) do
+        if w[1] or w[-1] then walk = true; break end
+      end
+      local edge = strip.hw + (walk and sidewalk or 0)
+      local r = edge + br.far + br.slack
+      -- the road's own line: its strip stops at a junction's mouth
+      local ps = strip.road and strip.road.points or strip.points
+      for k = 1, #ps - 1 do
+        local a, b = ps[k], ps[k + 1]
+        if math.max(a[1], b[1]) + r > x0 and math.min(a[1], b[1]) - r < x1
+          and math.max(a[2], b[2]) + r > y0 and math.min(a[2], b[2]) - r < y1 then
+          near[#near + 1] = {a[1], a[2], b[1], b[2], edge}
+        end
+      end
+    end
+  end
+  -- metres outside the nearest carriageway's edge
+  local function gap(x, y)
+    local best = math.huge
+    for _, s in ipairs(near) do
+      local dx, dy = s[3] - s[1], s[4] - s[2]
+      local l2 = dx * dx + dy * dy
+      local t = l2 > EPS and math.max(0, math.min(1, ((x - s[1]) * dx + (y - s[2]) * dy) / l2)) or 0
+      local d = math.sqrt((x - s[1] - t * dx) ^ 2 + (y - s[2] - t * dy) ^ 2) - s[5]
+      if d < best then best = d end
+    end
+    return best
+  end
+  local samples = {}
+  for k = 1, #points - 1 do
+    local a, b = points[k], points[k + 1]
+    local n = math.max(1, math.ceil(math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2) / br.step))
+    for i = k == 1 and 0 or 1, n do
+      local p = i == 0 and a or i == n and b or {a[1] + (b[1] - a[1]) * i / n, a[2] + (b[2] - a[2]) * i / n}
+      local g = gap(p[1], p[2])
+      samples[#samples + 1] = {p = p, gap = g, vertex = i == 0 or i == n, keep = g <= br.far}
+    end
+  end
+  local i = 1
+  while i <= #samples do
+    if samples[i].keep then
+      i = i + 1
+    else
+      local j, worst, length = i, 0, 0
+      while j <= #samples and not samples[j].keep do worst = math.max(worst, samples[j].gap); j = j + 1 end
+      if i > 1 and j <= #samples and worst <= br.far + br.slack then
+        for m = i, j do
+          local p, q = samples[m - 1].p, samples[m].p
+          length = length + math.sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2)
+        end
+        if length <= br.hole then
+          for m = i, j - 1 do samples[m].keep = true end
+        end
+      end
+      i = j
+    end
+  end
+  local runs, run, last = {}, nil, nil
+  local function close()
+    if run and last ~= run[#run] then run[#run + 1] = last end
+    if run then
+      local length = 0
+      for k = 2, #run do length = length + math.sqrt((run[k][1] - run[k - 1][1]) ^ 2 + (run[k][2] - run[k - 1][2]) ^ 2) end
+      if length >= br.min then runs[#runs + 1] = run end
+    end
+    run = nil
+  end
+  for _, s in ipairs(samples) do
+    if s.keep then
+      if not run then run = {s.p} elseif s.vertex then run[#run + 1] = s.p end
+      last = s.p
+    else
+      close()
+    end
+  end
+  close()
   return runs
 end
 
@@ -4054,7 +4170,12 @@ local function liftDecks(roads, pause)
                     end
                     local qx, qy = seg.a[1] + sx * u, seg.a[2] + sy * u
                     local ddx, ddy = px - qx, py - qy
-                    if ddx * ddx + ddy * ddy <= seg.half2 then
+                    -- The road must pass under the deck itself. Its ribbon grazing the overhang
+                    -- is not a crossing: the other carriageway of a dual bridge lies a few
+                    -- metres off, and its approach ran this deck up, which ran its own bridge
+                    -- up in turn (a 12 m hill at the Tallinna ringtee bridges).
+                    local under = math.abs((qx - x) * nx + (qy - y) * ny) <= m.width / 2
+                    if under and ddx * ddx + ddy * ddy <= seg.half2 then
                       local qz = seg.a[3] + (seg.b[3] - seg.a[3]) * u
                       local need = qz + DECK_CLEAR.gap * (level - seg.level) + DECK_CLEAR.slack - z
                       if need > maxLack then maxLack = need end
@@ -5275,6 +5396,49 @@ local function build(cells, i, j, options)
       end})
   end
   mark('strips')
+  -- ROADS.wing: the steep ground at an abutment is drawn as its concrete
+  do
+    local wing, bins, deckEnds = ROADS.wing, nil, {}
+    for _, strip in ipairs(strips) do
+      local nodes = ROADS.bridge(strip.tags) and strip.road and strip.road.nodes or NONE
+      for e = 1, 2 do
+        if nodes[e] ~= nil then deckEnds[tostring(nodes[e])] = (deckEnds[tostring(nodes[e])] or 0) + 1 end
+      end
+    end
+    for _, strip in ipairs(strips) do
+      local nodes, raw = strip.road and strip.road.nodes or NONE, strip.road and strip.road.points or strip.points
+      for e = 1, 2 do
+        if ROADS.bridge(strip.tags) and nodes[e] ~= nil and deckEnds[tostring(nodes[e])] == 1 and #raw >= 2 then
+          local p, r = raw[e == 1 and 1 or #raw], strip.hw + wing.reach
+          local s = {p[1], p[2], strip.hw}
+          bins = bins or {}
+          for bx = floor((p[1] - r) / 50), floor((p[1] + r) / 50) do
+            for by = floor((p[2] - r) / 50), floor((p[2] + r) / 50) do
+              local key = (bx + 32768) * 65536 + by + 32768
+              local bin = bins[key] or {}
+              bins[key], bin[#bin + 1] = bin, s
+            end
+          end
+        end
+      end
+    end
+    if bins then
+      local function steep(kind, a, b, c)
+        local decal = wing.decals[kind]
+        if not decal and not wing.covers[kind] then return nil end
+        local x, y = (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3
+        for _, s in ipairs(bins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE) do
+          if math.sqrt((x - s[1]) ^ 2 + (y - s[2]) ^ 2) - s[3] <= wing.reach then
+            return not decal and wing.material
+          end
+        end
+        return nil
+      end
+      for _, c in ipairs({roads, scene, roadDecor}) do
+        c.hooks.steep, c.hooks.nz, c.hooks.scale = steep, math.cos(math.rad(wing.steep)), ROADS.deck.repeatU
+      end
+    end
+  end
   -- Strip ends of streets with sidewalks, by the metre: a junction with one of them at a mouth
   -- gets a sidewalk ring.
   local walkEnds = {}
@@ -6327,11 +6491,13 @@ local function build(cells, i, j, options)
       if #run >= 2 and line.kind == 'fence' then
         fence(run == points and line or {tags = line.tags, points = run})
       elseif #run >= 2 then
-        local path = {}
-        for k, p in ipairs(run) do path[k] = {p[1], p[2], 0} end
-        ROADS.guardRail({rect = rect, ground = ground, face = function(poly, ox, oy, oz, material)
-          ROADS.orient(scene.polygon, material, poly, ox, oy, oz)
-        end}, path)
+        for _, piece in ipairs(ROADS.besideRoads(strips, run, tune.sidewalk)) do
+          local path = {}
+          for k, p in ipairs(piece) do path[k] = {p[1], p[2], 0} end
+          ROADS.guardRail({rect = rect, ground = ground, face = function(poly, ox, oy, oz, material)
+            ROADS.orient(scene.polygon, material, poly, ox, oy, oz)
+          end}, path)
+        end
         pause()
       end
     end

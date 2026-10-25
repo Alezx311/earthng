@@ -10,10 +10,11 @@ nodes) and the heights minimise
 has one height for every road that meets there, so tiles and junction mouths agree by
 construction. Bridges pull up and real tunnels pull down only softly; their approaches become
 ramps. A bridge spans the height of its abutments: it does not follow the river bed under
-the span. Where it crosses a road in plan, only the deck rises, by the full CLEARANCE above
-the road underneath. The lower road stays on the DEM. Sharing that step dug a cutting and
-left the deck about half as high as the clearance (2.7 m of a 5.5 m gap). A 24 m DEM has no
-cuttings, and the soft pull alone left Juri's overpasses 1.3 m over the ring road.
+the span. Where it crosses a road in plan, the deck and the road under it share the
+CLEARANCE: the deck rises and the lower road dips into a cutting. A 24 m DEM has no cuttings,
+and the soft pull alone left Juri's overpasses 1.3 m over the ring road. Letting only the deck
+rise made an 11 m hill of every short overpass, and a dual carriageway's two bridges (their
+ribbons overlap, their roads are joined) lifted each other 800 m on the Tallinna ringtee.
 tunnel=building_passage is an arch through a house, at ground level.
 """
 import math
@@ -39,6 +40,7 @@ CLEARANCE, CLEAR_WEIGHT, CLEAR_PASSES = 6.0, 1e4, 12
 # soffit over the whole lower carriageway, including skew crossings. Numerical slack
 # stays above the 4.5 m headroom rather than silently accepting a shortfall from it.
 DECK_OVERHANG, CLEAR_SLACK, CLEAR_TOL = 2., .1, .05
+CLEAR_EXTRA = 6.
 # Steepest grade the solve may make by class, where the ground itself is gentler. The clearance
 # springs alone raised a deck over 50-80 m: Kyiv's Borshchahivska bridge 14 %, the Povitrianykh
 # Syl overpass 11 %. An edge over its limit gets a stiffer grade weight and the solve runs again,
@@ -285,13 +287,34 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
         for j in range(2, 4):
             apart &= xv[i] != xv[j]                # not a ramp leaving the bridge's own node
     xa, xb, xu, xt = xa[apart], xb[apart], xu[apart], xt[apart]
-    # Lift only the deck. A spring on the gap also dug the lower road down, so a 5.5 m
-    # clearance showed up as a 2.7 m bridge over a 2.7 m cutting.
-    xv = (ids[xa], ids[xa + 1])
-    xc = (1 - xu, xu)
+    # A dual carriageway's two bridges run side by side: each one's deck ribbon overlaps the other
+    # direction's approach, whose road is joined to the first by the carriageway's own nodes. Lifting
+    # that road to clear the deck lifts the deck again (a feedback of 800 m on the Tallinna ringtee).
+    # Only a pair whose centre lines really cross in plan is an overpass.
+    if len(xa):
+        def centre_lines_cross(u, w):
+            a, b = np.asarray(segments[u]['xy'], float), np.asarray(segments[w]['xy'], float)
+            p, r = a[:-1, None, :], (a[1:] - a[:-1])[:, None, :]
+            q, t = b[None, :-1, :], (b[1:] - b[:-1])[None, :, :]
+            cross = r[..., 0] * t[..., 1] - r[..., 1] * t[..., 0]
+            d = q - p
+            with np.errstate(divide='ignore', invalid='ignore'):
+                su = (d[..., 0] * t[..., 1] - d[..., 1] * t[..., 0]) / cross
+                sv = (d[..., 0] * r[..., 1] - d[..., 1] * r[..., 0]) / cross
+            return bool(np.any((np.abs(cross) > 1e-9) & (su >= 0) & (su <= 1) & (sv >= 0) & (sv <= 1)))
+        verdict = {}
+        for u, w in set(zip(seg_of[xa].tolist(), seg_of[xb].tolist())):
+            verdict[u, w] = centre_lines_cross(u, w)
+        genuine = np.array([verdict[u, w] for u, w in zip(seg_of[xa].tolist(), seg_of[xb].tolist())], bool)
+        xa, xb, xu, xt = xa[genuine], xb[genuine], xu[genuine], xt[genuine]
+    # The deck and the road under it share the clearance, each taking its part: a deck alone
+    # lifted the full 6 m over a 24 m DEM that has no cutting (an 11 m hill at every short
+    # overpass of the Tartu mnt), and a lower road tied to its own deck then raised it again.
+    xv = (ids[xa], ids[xa + 1], ids[xb], ids[xb + 1])
+    xc = (1 - xu, xu, -(1 - xt), -xt)
     separation = CLEARANCE * (levels[seg_of[xa]] - levels[seg_of[xb]]) + CLEAR_SLACK
     def clearance(h):
-        return (1 - xt) * h[ids[xb]] + xt * h[ids[xb + 1]] + separation
+        return separation + 0 * h[ids[xb]]
     clear = clearance(target)
     # the road under a bridge passes close to the bridge's approaches in plan: they are not
     # one surface, so no coupling ties them (it dragged the trunk down to the underpass)
@@ -372,6 +395,7 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     # gives part of the clearance only: its target is raised by the shortfall and solved again.
     base = mw * target
     aim = clear.copy()
+    ceiling = aim + CLEAR_EXTRA
     steep = 0
     for grade_pass in range(GRADE_PASSES + 1):
         for _ in range(CLEAR_PASSES + 1):
@@ -386,7 +410,9 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
             if not len(xa) or short.max() < CLEAR_TOL:
                 break
             # a low crossing joins the set; an active one aims higher by what it still lacks
-            aim = np.where(active > 0, aim + np.maximum(short, 0), clear)
+            # The aim stops CLEAR_EXTRA m over the first one: a crossing whose lower road is tied to
+            # the deck (an interchange's ramps) would otherwise chase it up a hill.
+            aim = np.minimum(np.where(active > 0, aim + np.maximum(short, 0), clear), ceiling)
             active = np.where(short > CLEAR_TOL, 1., active)
         h = dem + x
         grade = np.abs(h[eb] - h[ea]) / el
