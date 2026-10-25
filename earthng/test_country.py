@@ -385,6 +385,34 @@ class CountryTests(unittest.TestCase):
         self.assertTrue((low[21:33] >= sources.LIFT + 0.6).all())
         self.assertTrue((low[33:] == sources.LIFT - 2.0).all())
 
+    def test_a_coastline_way_held_by_several_tiles_is_cached_once(self):
+        # Every source tile of an island carries the island's whole coastline; a worker visits
+        # hundreds of tiles, and each tile's copy (a list of tuples, ~110 bytes a vertex) kept in
+        # a cache that never shrank took gigabytes of an export worker (Saaremaa: 4.9 GB).
+        import types
+        folder = self.root / 'coast'
+        folder.mkdir()
+        osm = ('<?xml version="1.0"?><osm version="0.6">'
+               '<node id="1" lat="59.000" lon="24.000" version="1"/>'
+               '<node id="2" lat="59.000" lon="24.020" version="1"/>'
+               '<node id="3" lat="59.010" lon="24.040" version="1"/>'
+               '<way id="10" version="1"><nd ref="1"/><nd ref="2"/><nd ref="3"/>'
+               '<tag k="natural" v="coastline"/></way></osm>')
+        for name in ('a.osm', 'b.osm'):
+            (folder / name).write_text(osm, encoding='utf8')
+        frame = sources.Frame.at(24.02, 59.0)
+        store = types.SimpleNamespace(
+            frame=frame, meta={'source': str(folder)},
+            source_index={'tiles': {'a': {'file': 'a.osm', 'coverage': [23.95, 58.95, 24.025, 59.05]},
+                                    'b': {'file': 'b.osm', 'coverage': [24.015, 58.95, 24.1, 59.05]}}})
+        box = country._local_bbox(frame, [23.99, 58.99, 24.05, 59.02])
+        lines = country._coastlines(store, box)
+        self.assertEqual(len(lines), 1)
+        x, y = frame.local([24.000, 24.020, 24.040], [59.000, 59.000, 59.010])
+        self.assertTrue(np.allclose(np.asarray(lines[0].coords), np.column_stack([x, y])))
+        self.assertEqual(len(store._coast_ways), 1)          # one copy, though two tiles hold it
+        self.assertEqual(len(country._coastlines(store, box)), 1)       # and the cache answers again
+
     def test_coastline_nearest_shore_decides_beside_a_narrow_cape(self):
         # a cape 200 m wide pointing north (land inside, counter-clockwise outline): the sea 300 m
         # east of it is still sea although the cape's far shore is within the band
