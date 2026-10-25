@@ -1,5 +1,31 @@
 # EarthNG native mod migration
 
+## 2026-10-25: roads in the far ring, no holes in staggered decks, a road audit
+
+- A free camera past the near radius (nearM, ~1 km round the car) saw the Tallinna ringtee as
+  grass between two lines of guard rail: far tiles drew ground, trees, buildings, rails and
+  fences, but no road. A far tile now draws the surface of every road of class unclassified and
+  up (and its junction plates), as decoration without collision (`ROADS.far`); service streets,
+  tunnels and the horizon draw none. The far ground is coarse (100 m triangles, a fan to the fine
+  lattice at the border) and ignores a road's cutting, so each far road vertex is lifted
+  `ROADS.far.clear` (.25 m) over the far ground's own triangle under it, never lowered: Laagna tee,
+  with the ground 4 m over its asphalt, stays on top. Cost: +4 to +19 % triangles a far tile (about
+  1,700 road triangles a tile in the city, 40 in open country).
+- The 0.6.1 united deck is one slab along the longer bridge of a dual carriageway and takes the other
+  only where it runs beside it. A staggered deck sticking out past that end had no slab and, being
+  in a group, no asphalt of its own: a hole with the lane marks floating over it (Tallinna ringtee,
+  59.3126, 24.7376). A pair whose decks stick out more than 8 m past the host stays two whole decks.
+- `earthng/road_audit.py` checks roads automatically instead of by eye: it builds every tile of an
+  area with generator.lua (near or far tiles), walks every road every 6 m, and lists the stretches
+  with no asphalt (missing) or ground over it (buried; tunnels are skipped), longest first with
+  lat/lon. `road_quality.py` can read one region of a country pack and build far tiles for it.
+- Tallinn area (59.30-59.52 N, 24.55-25.00 E, 2,808 tiles): near tiles 66,465 roads, 722,437 samples,
+  3 missing and 78 buried (was 9 and 419 before the deck fix and the tunnel rule); far tiles 29,015
+  roads, 379,524 samples, 103 missing (the Peterburi tee tunnel, before the checker skipped it)
+  and 107 buried (6.8 % before the lift).
+- Unit check: 368 OK (3 skipped); new: far roads and their lift in a cutting, staggered decks, and
+  the audit's grading. Not driven in the game.
+
 ## 2026-10-25: packs carry their data credits
 
 - A map pack shared on its own (a Drive download) named only OpenStreetMap in its

@@ -352,6 +352,27 @@ class GeneratorTests(unittest.TestCase):
         tops = [p[1] for t in walls for p in t if all(abs(q[2] - 21.0) < .02 for q in t)]
         self.assertTrue(any(250 < y < 258 for y in tops) and any(272 < y < 280 for y in tops), tops)
 
+    def test_staggered_carriageway_bridges_leave_no_hole_past_the_longer_ones_end(self):
+        # The united slab runs along the host, the longer bridge, and takes the other only where it
+        # runs beside it; a deck sticking out past the host's end had its own asphalt suppressed and
+        # no slab: a hole with the lane markings floating over it (Tallinna ringtee, 59.3126,
+        # 24.7376). Such a pair stays two decks, each whole.
+        def bridge(name, x0, x1, y):
+            return {'id': name, 'nodes': [name + 'a', name + 'b'], 'width': 8,
+                    'tags': {'highway': 'trunk', 'oneway': 'yes', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'},
+                    'points': line(x0, y, x1, y, 20)}
+        for south, north in (((0, 300), (120, 420)), ((0, 300), (120, 400)), ((0, 320), (120, 400))):
+            road, walls = self.build([{'roads': [bridge('s', *south, 250), bridge('n', *north, 262)]}])[:2]
+            asphalt = list(self.triangles(road, 'e2rf_road_major'))
+            walls = list(self.triangles(walls, 'e2rf_fence_wall'))
+            for (x0, x1), y in ((south, 250), (north, 262)):
+                for x in (x0 + 10, (x0 + x1) // 2, x1 - 10):
+                    self.assertAlmostEqual(self.surface_at(asphalt, x, y), 20.1, places=2, msg=(south, north, x, y))
+                    self.assertIsNotNone(self.surface_at(walls, x, y), (south, north, x, y))   # and a soffit
+        # beside each other along the whole length they are still one deck
+        road, walls = self.build([{'roads': [bridge('s', 0, 300, 250), bridge('n', 20, 280, 262)]}])[:2]
+        self.assertIsNotNone(self.surface_at(list(self.triangles(walls, 'e2rf_fence_wall')), 150, 256))
+
     def test_a_bridge_line_loses_a_spike_and_keeps_a_bend(self):
         pts = line(0, 250, 400, 250, 20)
         for p in pts:
@@ -2210,6 +2231,40 @@ class GeneratorTests(unittest.TestCase):
         self.assertGreater(len(trees), 40)
         self.assertLessEqual(len(trees), 800)
         self.assertTrue(all(item.decor and item.layer == 'far' for item in trees))
+
+    def test_far_tiles_draw_the_roads_that_the_guard_rails_beside_them_stand_by(self):
+        # Past the near radius the car's surroundings are far tiles. They kept the rails and fences
+        # but drew no road, so from a free camera the ringtee was grass between two lines of
+        # guard rail. A far tile draws each road's surface, as plain decoration without collision;
+        # service streets and parking aisles stay out (the far ring's triangle budget).
+        def road(name, highway, y, width):
+            return {'id': name, 'nodes': [name + 'a', name + 'b'], 'width': width,
+                    'tags': {'highway': highway, 'sidewalk': 'no'}, 'points': [[0, y, 30], [500, y, 30]]}
+        trunk, lane = road('t', 'trunk', 150, 12), road('s', 'service', 350, 4)
+        terrain = {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [30] * 4}
+        cell = {'roads': [trunk, lane], 'terrain': terrain}
+        far = self.build([cell], far=True)[2]
+        asphalt = [t for m in ('e2rf_road', 'e2rf_road_major', 'e2rf_road_worn') for t in self.triangles(far, m)]
+        self.assertTrue(asphalt)
+        ys = [p[1] for t in asphalt for p in t]
+        self.assertAlmostEqual(min(ys), 144, delta=.3)                  # the trunk road's width
+        self.assertAlmostEqual(max(ys), 156, delta=.3)
+        self.assertGreater(min(p[2] for t in asphalt for p in t), 30)    # over the ground, not in it
+        self.assertTrue(all(item.decor and item.layer == 'far' for item in far['items'].values()))
+        horizon = self.build([cell], horizon=True)[2]
+        self.assertFalse([t for m in ('e2rf_road', 'e2rf_road_major') for t in self.triangles(horizon, m)])
+        # in a 10 m cutting the coarse far terrain (100 m triangles) stands over the road: the far
+        # road is lifted to just over it, never hidden under it (Laagna tee: ground 4 m over the road)
+        cutting = {'roads': [trunk], 'terrain': {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [40] * 4}}
+        far = self.build([cutting], far=True)[2]
+        asphalt = [t for m in ('e2rf_road', 'e2rf_road_major', 'e2rf_road_worn') for t in self.triangles(far, m)]
+        ground = list(self.triangles(far, 'e2rf_ground'))
+        self.assertTrue(asphalt and ground)
+        for x in (60, 150, 250, 350, 440):
+            for y in (146, 150, 154):
+                road_z, ground_z = self.surface_at(asphalt, x, y), self.surface_at(ground, x, y)
+                self.assertIsNotNone(road_z, (x, y))
+                self.assertGreaterEqual(road_z, ground_z - .005, (x, y, road_z, ground_z))
 
     def test_far_tiles_keep_fences_and_horizon_does_not(self):
         cell = {'lines': [{'id': 'w', 'kind': 'fence', 'tags': {'barrier': 'wall'},

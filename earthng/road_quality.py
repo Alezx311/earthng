@@ -67,11 +67,13 @@ for run = 1, repeats do
   -- the fastest of a few runs, each after a full collection: the machine is not idle
   collectgarbage('collect')
   local marks, last = {}, os.clock()
-  local options = {tileSize = size, seaLevel = sea, pause = function() end, tune = tune,
+  -- tune.far = 1: a far tile (the ring past the near radius), whose content is the third manifest
+  local options = {tileSize = size, seaLevel = sea, pause = function() end, tune = tune, far = tune and tune.far == 1 or nil,
     mark = function(name) local now = os.clock(); marks[name] = (marks[name] or 0) + (now - last) * 1000; last = now end}
   local t = os.clock()
   last = t
-  local r, s = generator.build(cells, i, j, options)
+  local r, s, far = generator.build(cells, i, j, options)
+  if far then s = far end
   local took = (os.clock() - t) * 1000
   if not ms or took < ms then road, scene, ms, stages = r, s, took, marks end
 end
@@ -80,13 +82,14 @@ local items = {}
 for _, item in ipairs(road.items) do items[#items + 1] = item end
 for _, item in ipairs(scene.items) do
   if item.kind == 'proc' then
-    for _, mesh in ipairs(item.meshes or {}) do if cover[mesh.material] then items[#items + 1] = item; break end end
+    -- a far tile's roads are in its scene layer too (generator.lua ROADS.far)
+    for _, mesh in ipairs(item.meshes or {}) do if cover[mesh.material] or mesh.material:find('^e2rf_road') then items[#items + 1] = item; break end end
   end
 end
 for _, item in ipairs(items) do
   local p = item.pos
   for _, mesh in ipairs(item.meshes or {}) do
-    if item.layer ~= 'scene' or cover[mesh.material] then
+    if item.layer ~= 'scene' or cover[mesh.material] or mesh.material:find('^e2rf_road') then
     local parts = out[mesh.material] or {}
     out[mesh.material] = parts
     local verts, faces = mesh.verts, mesh.faces
@@ -105,14 +108,16 @@ return result
 
 
 class Pack:
-    """The region of a country ZIP and its source cells (Python and Lua views of the same bytes)."""
+    """The region of a country ZIP and its source cells (Python and Lua views of the same bytes).
+    region: the id of the region to read in a country of several (default: the first)."""
 
-    def __init__(self, path):
+    def __init__(self, path, region=None):
         self.zip = zipfile.ZipFile(path)
         names = self.zip.namelist()
         country = json.loads(self.zip.read(next(n for n in names if n.count('/') == 3 and n.endswith('manifest.json'))))
         self.country = country
-        self.region = json.loads(self.zip.read(country['regions'][0]['manifest'].lstrip('/')))
+        entry = country['regions'][0] if region is None else next(r for r in country['regions'] if r['id'] == region)
+        self.region = json.loads(self.zip.read(entry['manifest'].lstrip('/')))
         r = self.region
         self.size, self.cell = r['tileSize'], r['cellSize']
         self.blocks = {}
