@@ -68,8 +68,15 @@ def source_snapshot(ref):
     return commit, files
 
 
+def _script_name(value):
+    """'build_country.py' or 'earthng/build_country.py' -> 'build_country'; anything else -> None."""
+    if not value.endswith('.py') or any(c.isspace() for c in value):
+        return None
+    return value.replace('\\', '/').rsplit('/', 1)[-1][:-3]
+
+
 def builder_files(files):
-    """Follow local imports, including worker functions and the subprocess entry point."""
+    """Follow local imports and scripts started by file name (HERE / 'build_country.py')."""
     pending = ['launch_builder', 'country_ui', 'osm_tiles_country']
     selected = set()
     while pending:
@@ -83,6 +90,11 @@ def builder_files(files):
                 imports = [a.name.split('.')[0] for a in node.names]
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imports = [node.module.split('.')[0]]
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                # country_fetch runs build_map.py and build_country.py as subprocesses, which no
+                # import names; without this the release shipped without build_country.py.
+                script = _script_name(node.value)
+                imports = [script] if script else []
             else:
                 continue
             pending.extend(m for m in imports if f'earthng/{m}.py' in files
