@@ -1126,6 +1126,10 @@ end
 ROADS.rail = {height = .75, beam = .32, thick = .1, post = .14, step = 2, posts = 4, sink = .3,
   round = 6, ease = 2, profile = {{0, 0}, {.05, .04}, {.05, .09}, {.015, .155}, {.05, .22}, {.05, .27}, {0, .32}},
   approach = 40, offset = .5, rank = 4.5, material = 'clad_metal'}
+-- A far tile draws the surface of every road of this class (ROADS.rankOf) or above, decoration
+-- only: the far ring is ~130 tiles of the triangle budget, so service streets stay out. `clear`:
+-- how far over the coarse far ground a road's surface is kept where that ground would hide it.
+ROADS.far = {minRank = 2, clear = .25}
 -- A quad turned to face (ox, oy, oz) by Newell's normal, through polygon(material, poly, up).
 function ROADS.orient(polygon, material, poly, ox, oy, oz)
   local nx, ny, nz = 0, 0, 0
@@ -1302,9 +1306,12 @@ end
 -- barrier's stretches within `reach` m of a bridge's edge and running with it are dropped.
 -- A barrier across a carriageway (at least `across` off its line: a gore's rail meeting a
 -- merging road at a shallow angle stays) is dropped there too: at grade it is a gate or a
--- mapping slip, and under a deck less than `clear` m over the ground (a fence mapped under a
--- low bridge) it would stand through the road. Tunnels pass under everything.
-ROADS.onDeck = {reach = 3, parallel = .85, step = 2, cross = .3, across = .5, clear = 3.5}
+-- mapping slip. A barrier under a bridge deck, at any angle and any height, is dropped under it:
+-- a fence mapped under a low bridge would stand through the road, and the median and slip road
+-- rails OSM runs on under an overpass read as rails going down under the bridge (Tallinna ringtee
+-- at Jüri), crossing each other at the piers; they resume past the deck's edge. Tunnels pass
+-- under everything.
+ROADS.onDeck = {reach = 3, parallel = .85, step = 2, cross = .3, across = .5}
 -- the runs of points ({x, y, ...}) off every bridge deck and carriageway in strips; nil when
 -- none is near. ground(x, y): the drawn ground, for a deck's clearance (none: decks only).
 function ROADS.offDecks(strips, points, ground)
@@ -1346,8 +1353,7 @@ function ROADS.offDecks(strips, points, ground)
         local t = math.max(0, math.min(1, ((mx - s[1]) * sx + (my - s[2]) * sy) / l2))
         local d2 = (mx - s[1] - t * sx) ^ 2 + (my - s[2] - t * sy) ^ 2
         if along and d2 < s[5] * s[5] then return true end
-        if cos <= od.across and d2 < s[6] * s[6] and ground
-          and (not s[9] or s[7] + (s[8] - s[7]) * t - ground(mx, my) < od.clear) then return true end
+        if d2 < s[6] * s[6] and (s[9] or ground and cos <= od.across) then return true end
       end
     end
     return false
@@ -5004,6 +5010,24 @@ local function liftDecks(roads, pause)
           for k, z in ipairs(want) do m.points[k][3] = z end
         end
       end
+      -- The united slab runs along the host and takes a mate only where it runs beside it: a
+      -- deck sticking out past the host's end would have neither slab nor (its own are
+      -- suppressed in a group) asphalt and soffit, a hole with the lane marks floating over it.
+      -- Such a group stays separate decks, each whole.
+      local loose = false
+      for _, i in ipairs(list) do
+        if i ~= host then
+          local m, out = meta[i], 0
+          for s = 0, m.dist[#m.dist], 4 do
+            local x, y = pointAt(m, s)
+            if not project(meta[host], x, y) then out = out + 4 end
+          end
+          if out > 8 then loose = true end
+        end
+      end
+      if loose then
+        for _, i in ipairs(list) do meta[i].road.deckGroup, meta[i].road.deckHost = nil, nil end
+      end
     end
     pause()
   end
@@ -5164,6 +5188,19 @@ local function build(cells, i, j, options)
   liftDecks(lists.roads, pause)
   local roads, scene = collector(rect, key, 'road', pause), collector(rect, key, layerName, pause, distant and MIXED_TRIS or nil)
   local roadDecor, sceneDecor = collector(rect, key .. '_marks', 'road', pause), collector(rect, key .. '_cars', 'scene', pause)
+  -- A far tile (the ring past the near radius, ~1 km) draws each road's surface into its scene layer,
+  -- decoration without collision: it kept the guard rails and fences, and from a free camera the
+  -- Tallinna ringtee was grass between two lines of rail. The horizon draws no road.
+  local farRoads = options.far and not options.horizon
+  local function drawn(strip)
+    return visualRoads or (farRoads and not ROADS.tunnel(strip.tags) and ROADS.rankOf(strip.tags) >= ROADS.far.minRank)
+  end
+  -- a far road's surfaces wait for the far ground to exist: they are lifted over its triangles where
+  -- the coarse terrain would hide them (before the collectors finish)
+  local farQuads, farTris = {}, {}
+  local function emitSurface(material, poly)
+    if farRoads then farQuads[#farQuads + 1] = {material, poly} else roads.polygon(material, poly, 'flat') end
+  end
   -- mark(name): the stage that just ended (the road quality bench times them)
   local mark = options.mark or function() end
   local look = type(options.look) == 'table' and options.look or NONE
@@ -5906,8 +5943,8 @@ local function build(cells, i, j, options)
         local box = ringBounds({quad})
         if boundsTouch(rect, box, stripReach) then
           if surfaceRoad then addAsphalt(quad, strip, k) end
-          if visualRoads and boundsTouch(rect, box, 0) and not road.deckGroup then
-            roads.polygon(strip.material, quad, 'flat')
+          if drawn(strip) and boundsTouch(rect, box, 0) and (farRoads or not road.deckGroup) then
+            emitSurface(strip.material, quad)
           end
           local dx, dy = b[1] - a[1], b[2] - a[2]
           local length = math.sqrt(dx * dx + dy * dy)
@@ -6227,7 +6264,7 @@ local function build(cells, i, j, options)
       for k = 1, #corners do
         local tri = {{cx, cy, centre}, corners[k], corners[k % #corners + 1]}
         addAsphalt(tri, nil, nil)
-        if visualRoads and touches then roads.polygon(junction.material or minorRoad, tri, 'flat') end
+        if (visualRoads or farRoads) and touches then emitSurface(junction.material or minorRoad, tri) end
       end
       -- round a ground-level star (fast.junction_verge): a sidewalk ring when a street with
       -- sidewalks meets here, then the verge down to the ground, both away from the node
@@ -6262,7 +6299,7 @@ local function build(cells, i, j, options)
       local box = ringBounds({c.quad})
       if boundsTouch(rect, box, stripReach) then
         addAsphalt(c.quad, nil, nil)
-        if visualRoads and boundsTouch(rect, box, 0) then roads.polygon(c.material, c.quad, 'flat') end
+        if (visualRoads or farRoads) and boundsTouch(rect, box, 0) then emitSurface(c.material, c.quad) end
       end
     end
   end
@@ -6779,6 +6816,7 @@ local function build(cells, i, j, options)
     local x0, y0, x1, y1 = rect[1], rect[2], rect[3], rect[4]
     local function emitTri(a, b, c)
       if not a or not b or not c then return end
+      if farRoads then farTris[#farTris + 1] = {a, b, c} end
       scene.triangle(surfaceKind((a[1]+b[1]+c[1])/3, (a[2]+b[2]+c[2])/3), a, b, c, true)
     end
     local function at(x, y)
@@ -7252,6 +7290,60 @@ local function build(cells, i, j, options)
     end
   end
   mark('decor')
+  -- The far ground is coarse triangles (options.farStep, 100 m) inside the tile and a fan to the fine
+  -- lattice at its border: it ignores a road's cutting. Each far road surface vertex is lifted to
+  -- ROADS.far.clear over the far ground's own triangle under it (never lowered), so it is not hidden.
+  if farRoads and #farQuads > 0 then
+    local BIN, bins = 50, {}
+    for _, t in ipairs(farTris) do
+      local x0, y0 = math.min(t[1][1], t[2][1], t[3][1]), math.min(t[1][2], t[2][2], t[3][2])
+      local x1, y1 = math.max(t[1][1], t[2][1], t[3][1]), math.max(t[1][2], t[2][2], t[3][2])
+      for bx = floor(x0 / BIN), floor(x1 / BIN) do
+        for by = floor(y0 / BIN), floor(y1 / BIN) do
+          local key = (bx + 32768) * 65536 + by + 32768
+          local bin = bins[key] or {}
+          bins[key], bin[#bin + 1] = bin, t
+        end
+      end
+    end
+    local function farHeight(x, y)
+      for _, t in ipairs(bins[(floor(x / BIN) + 32768) * 65536 + floor(y / BIN) + 32768] or NONE) do
+        local a, b, c = t[1], t[2], t[3]
+        local den = (b[2] - c[2]) * (a[1] - c[1]) + (c[1] - b[1]) * (a[2] - c[2])
+        if math.abs(den) > 1e-9 then
+          local u = ((b[2] - c[2]) * (x - c[1]) + (c[1] - b[1]) * (y - c[2])) / den
+          local v = ((c[2] - a[2]) * (x - c[1]) + (a[1] - c[1]) * (y - c[2])) / den
+          if u >= -1e-6 and v >= -1e-6 and u + v <= 1 + 1e-6 then return u * a[3] + v * b[3] + (1 - u - v) * c[3] end
+        end
+      end
+      return nil
+    end
+    local function lifted(p)
+      local h = farHeight(p[1], p[2])
+      return {p[1], p[2], h and math.max(p[3], h + ROADS.far.clear) or p[3]}
+    end
+    for _, item in ipairs(farQuads) do
+      local material, poly = item[1], item[2]
+      if #poly == 4 then
+        -- cut along the road every 10 m: the far ground bends at its triangle edges, a long quad would not
+        local len = math.sqrt((poly[4][1] - poly[1][1]) ^ 2 + (poly[4][2] - poly[1][2]) ^ 2)
+        local n = math.max(1, math.ceil(len / 10))
+        local function at(t)
+          return lifted(lerp(poly[1], poly[4], t)), lifted(lerp(poly[2], poly[3], t))
+        end
+        local l0, r0 = at(0)
+        for i = 1, n do
+          local l1, r1 = at(i / n)
+          scene.polygon(material, {l0, r0, r1, l1}, 'flat')
+          l0, r0 = l1, r1
+        end
+      else
+        local out = {}
+        for k, p in ipairs(poly) do out[k] = lifted(p) end
+        scene.polygon(material, out, 'flat')
+      end
+    end
+  end
   roads.finish()
   scene.finish()
   roadDecor.finish()

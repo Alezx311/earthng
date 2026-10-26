@@ -1,5 +1,50 @@
 # EarthNG native mod migration
 
+## 2026-10-25: roads in the far ring, no holes in staggered decks, a road audit
+
+- A free camera past the near radius (nearM, ~1 km round the car) saw the Tallinna ringtee as
+  grass between two lines of guard rail: far tiles drew ground, trees, buildings, rails and
+  fences, but no road. A far tile now draws the surface of every road of class unclassified and
+  up (and its junction plates), as decoration without collision (`ROADS.far`); service streets,
+  tunnels and the horizon draw none. The far ground is coarse (100 m triangles, a fan to the fine
+  lattice at the border) and ignores a road's cutting, so each far road vertex is lifted
+  `ROADS.far.clear` (.25 m) over the far ground's own triangle under it, never lowered: Laagna tee,
+  with the ground 4 m over its asphalt, stays on top. Cost: +4 to +19 % triangles a far tile (about
+  1,700 road triangles a tile in the city, 40 in open country).
+- The 0.6.1 united deck is one slab along the longer bridge of a dual carriageway and takes the other
+  only where it runs beside it. A staggered deck sticking out past that end had no slab and, being
+  in a group, no asphalt of its own: a hole with the lane marks floating over it (Tallinna ringtee,
+  59.3126, 24.7376). A pair whose decks stick out more than 8 m past the host stays two whole decks.
+- `earthng/road_audit.py` checks roads automatically instead of by eye: it builds every tile of an
+  area with generator.lua (near or far tiles), walks every road every 6 m, and lists the stretches
+  with no asphalt (missing) or ground over it (buried; tunnels are skipped), longest first with
+  lat/lon. `road_quality.py` can read one region of a country pack and build far tiles for it.
+- Tallinn area (59.30-59.52 N, 24.55-25.00 E, 2,808 tiles): near tiles 66,465 roads, 722,437 samples,
+  3 missing and 76 buried (was 9 and 419 before the deck fix and the tunnel rule); far tiles 29,015
+  roads, 379,524 samples, 103 missing (the Peterburi tee tunnel, before the checker skipped it)
+  and 107 buried (6.8 % before the lift).
+- The audit also finds a guard rail or mesh fence standing on a carriageway (kind `barrier`, its
+  footprint on the asphalt in m2): none in the Tallinn area.
+- road_quality's offline build now loads the 40 m of neighbouring cells round a tile as the game does
+  (native.lua buildTile, `pad`). Without them a guard rail across a tile edge sampled a ground of 0 past
+  the loaded terrain and dived 40 m into the ground there: an offline-only artefact (the game has the
+  pad), seen first as railings running down under a bridge. The audit now reports such a rail (kind
+  `spike`: a guard rail triangle taller than 3 m and no wider than 4 m); none in the Tallinn area.
+  `Pack` also reads a one-region ZIP (a county download) that has no country manifest.
+- `earthng/model_viewer.py` writes one HTML page of the tiles round a place (all meshes, built by
+  generator.lua through road_quality, `tune.all = 1`): orbit, switch layers, click to measure, and
+  paint the ground and roads by their deviation from the Land Board's LiDAR terrain (green within
+  0.5 m, a model-minus-LiDAR height at every click). It replaces driving a road to check it.
+- A guard rail or fence under a bridge deck is left out under it, at any angle and height (`ROADS.onDeck`;
+  it was only a barrier across a carriageway or under a deck less than 3.5 m up). OSM carries the median
+  and slip road rails of an overpass on under it, and at the Tallinna ringtee at Jüri they read as rails
+  running down under the bridge and crossing each other at the piers (every rail drawn there is a
+  mapped way). They stop at the deck's edges and go on past them. This reverses the earlier rule that
+  kept the lower road's rail under a high deck: the old test now asserts the cut.
+- Unit check: 381 OK (3 skipped); new: far roads and their lift in a cutting, staggered decks, the
+  audit's grading, barrier and spike checks, a one-region ZIP, rails cut under a skewed deck, and the
+  viewer's layers, raster sampling and page. Not driven in the game.
+
 ## 2026-10-25: the whole of Estonia at 10 m
 
 - `build --place estonia --local-dem` over the whole country died or took every byte of RAM at

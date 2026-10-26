@@ -51,42 +51,56 @@ COVER |= {'e2rf_' + k for k in nature.NATURAL}
 BUILD = '''
 local generator, cellformat, data, slots, i, j, size, cellSize, sea, tune, cover, repeats = ...
 local x0, y0 = i * size, j * size
-local cells = {}
-for ci = math.floor(x0 / cellSize), math.ceil((x0 + size) / cellSize) - 1 do
-  for cj = math.floor(y0 / cellSize), math.ceil((y0 + size) / cellSize) - 1 do
-    local range = slots(ci, cj)
-    if range then
-      cells[#cells + 1] = cellformat.cell(data(ci, cj), range[1], range[2], ci * cellSize, cj * cellSize,
-        {ci * cellSize, cj * cellSize, (ci + 1) * cellSize, (cj + 1) * cellSize}, nil, {x0, y0, x0 + size, y0 + size})
-    end
+local cells, seen = {}, {}
+local function add(ci, cj)
+  local key = ci .. '_' .. cj
+  local range = not seen[key] and slots(ci, cj)
+  if range then
+    seen[key] = true
+    cells[#cells + 1] = cellformat.cell(data(ci, cj), range[1], range[2], ci * cellSize, cj * cellSize,
+      {ci * cellSize, cj * cellSize, (ci + 1) * cellSize, (cj + 1) * cellSize}, nil, {x0, y0, x0 + size, y0 + size})
   end
 end
+for ci = math.floor(x0 / cellSize), math.ceil((x0 + size) / cellSize) - 1 do
+  for cj = math.floor(y0 / cellSize), math.ceil((y0 + size) / cellSize) - 1 do add(ci, cj) end
+end
 if #cells == 0 then return nil end
+-- the game also loads the cells one terrain step (40 m) past the tile (native.lua buildTile): a guard rail
+-- or a ground sample just over the edge reads the neighbour's terrain, not the 0 of no terrain at all
+local pad = 40
+for ci = math.floor((x0 - pad) / cellSize), math.ceil((x0 + size + pad) / cellSize) - 1 do
+  for cj = math.floor((y0 - pad) / cellSize), math.ceil((y0 + size + pad) / cellSize) - 1 do add(ci, cj) end
+end
 local road, scene, ms, stages
 for run = 1, repeats do
   -- the fastest of a few runs, each after a full collection: the machine is not idle
   collectgarbage('collect')
   local marks, last = {}, os.clock()
-  local options = {tileSize = size, seaLevel = sea, pause = function() end, tune = tune,
+  -- tune.far = 1: a far tile (the ring past the near radius), whose content is the third manifest
+  local options = {tileSize = size, seaLevel = sea, pause = function() end, tune = tune, far = tune and tune.far == 1 or nil,
     mark = function(name) local now = os.clock(); marks[name] = (marks[name] or 0) + (now - last) * 1000; last = now end}
   local t = os.clock()
   last = t
-  local r, s = generator.build(cells, i, j, options)
+  local r, s, far = generator.build(cells, i, j, options)
+  if far then s = far end
   local took = (os.clock() - t) * 1000
   if not ms or took < ms then road, scene, ms, stages = r, s, took, marks end
 end
 local out, fmt, tris = {}, string.format, 0
 local items = {}
 for _, item in ipairs(road.items) do items[#items + 1] = item end
+-- tune.all = 1: every scene mesh too (buildings, rails, fences, cars: the 3D model viewer)
+local all = tune and tune.all == 1
 for _, item in ipairs(scene.items) do
   if item.kind == 'proc' then
-    for _, mesh in ipairs(item.meshes or {}) do if cover[mesh.material] then items[#items + 1] = item; break end end
+    -- a far tile's roads are in its scene layer too (generator.lua ROADS.far)
+    for _, mesh in ipairs(item.meshes or {}) do if all or cover[mesh.material] or mesh.material:find('^e2rf_road') then items[#items + 1] = item; break end end
   end
 end
 for _, item in ipairs(items) do
   local p = item.pos
   for _, mesh in ipairs(item.meshes or {}) do
-    if item.layer ~= 'scene' or cover[mesh.material] then
+    if all or item.layer ~= 'scene' or cover[mesh.material] or mesh.material:find('^e2rf_road') then
     local parts = out[mesh.material] or {}
     out[mesh.material] = parts
     local verts, faces = mesh.verts, mesh.faces
@@ -105,14 +119,19 @@ return result
 
 
 class Pack:
-    """The region of a country ZIP and its source cells (Python and Lua views of the same bytes)."""
+    """The region of a country ZIP and its source cells (Python and Lua views of the same bytes).
+    region: the id of the region to read in a country of several (default: the first)."""
 
-    def __init__(self, path):
+    def __init__(self, path, region=None):
         self.zip = zipfile.ZipFile(path)
         names = self.zip.namelist()
-        country = json.loads(self.zip.read(next(n for n in names if n.count('/') == 3 and n.endswith('manifest.json'))))
+        top = next((n for n in names if n.count('/') == 3 and n.endswith('manifest.json')), None)
+        # one region's ZIP (a county download) has no country manifest: its own region manifest stands in
+        country = json.loads(self.zip.read(top)) if top else {'regions': [
+            {'id': n.split('/')[-2], 'manifest': n} for n in names if '/regions/' in n and n.endswith('/manifest.json')]}
         self.country = country
-        self.region = json.loads(self.zip.read(country['regions'][0]['manifest'].lstrip('/')))
+        entry = country['regions'][0] if region is None else next(r for r in country['regions'] if r['id'] == region)
+        self.region = json.loads(self.zip.read(entry['manifest'].lstrip('/')))
         r = self.region
         self.size, self.cell = r['tileSize'], r['cellSize']
         self.blocks = {}
