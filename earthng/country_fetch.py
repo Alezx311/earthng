@@ -365,9 +365,40 @@ def fetch_dem(index, dem, emit=print, cancel=None):
                 future.cancel()
 
 
-def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=None,
-                landing=None, by_id=None, emit=print, cancel=None, progress=None, local_dem=False,
-                road_register=False, section=None):
+@contextmanager
+def build_lock(work):
+    """One build at a time per checkout: two windows wrote the same out/world job and region
+    files. The operating system drops the lock with the process, so a crash leaves none."""
+    work = Path(work)
+    work.mkdir(parents=True, exist_ok=True)
+    handle = open(work / 'build.lock', 'a+b')
+    try:
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise RuntimeError('Another Map Builder build is running from this folder. Wait for it '
+                               'to finish or stop it, then build again.') from None
+        yield
+    finally:
+        handle.close()
+
+
+def build_place(place, mods, root=ROOT, **options):
+    """Download sources if needed and write the country zip, then copy it into mods
+    (_build_place), one build at a time per checkout."""
+    with build_lock(Path(root) / 'out' / 'world'):
+        return _build_place(place, mods, root=root, **options)
+
+
+def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=None,
+                 landing=None, by_id=None, emit=print, cancel=None, progress=None, local_dem=False,
+                 road_register=False, section=None):
     """Download sources if needed and write the country zip, then copy it into mods.
     local_dem: burn the Estonian Land Board's 10 m LiDAR terrain into the elevation tiles.
     road_register: join Transpordiamet's road register (state road widths, shoulders, guard

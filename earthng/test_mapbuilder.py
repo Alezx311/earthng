@@ -200,6 +200,24 @@ class DiskTests(unittest.TestCase):
             self.assertEqual(left, ['fast-18-kept', 'fast-18-new', 'fast-18-other'])
 
 
+class LockTests(unittest.TestCase):
+    def test_a_second_build_from_the_same_folder_is_refused_until_the_first_ends(self):
+        import subprocess
+        import sys
+        here = Path(country_fetch.__file__).parent
+        probe = ('import sys; sys.path.insert(0, sys.argv[1]); import country_fetch\n'
+                 'from pathlib import Path\n'
+                 'try:\n'
+                 '    with country_fetch.build_lock(Path(sys.argv[2])): print("built")\n'
+                 'except RuntimeError: print("refused")')
+        with tempfile.TemporaryDirectory() as tmp:
+            with country_fetch.build_lock(Path(tmp)):
+                second = subprocess.run([sys.executable, '-c', probe, str(here), tmp], capture_output=True, text=True)
+            self.assertEqual(second.stdout.strip(), 'refused')
+            after = subprocess.run([sys.executable, '-c', probe, str(here), tmp], capture_output=True, text=True)
+            self.assertEqual(after.stdout.strip(), 'built')
+
+
 class AssemblyTests(unittest.TestCase):
     def test_failed_assembly_preserves_blocks_for_retry(self):
         import osm_tiles_country as cutter
