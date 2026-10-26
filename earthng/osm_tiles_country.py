@@ -142,6 +142,8 @@ def main():
     p.add_argument('--work', type=Path, help='intermediate extracts and blocks (default <out>.work)')
     p.add_argument('--block', type=float, default=1.5, help='block side in degrees, a multiple of the cell')
     p.add_argument('--jobs', type=int, default=4)
+    p.add_argument('--heavy-jobs', type=int, default=0,
+                   help='tasks reading the whole source at once (default --jobs); the rest read a part of it')
     p.add_argument('--package-box', type=float, nargs=4, metavar=('W', 'S', 'E', 'N'))
     a = p.parse_args()
     if a.out.exists():
@@ -174,14 +176,26 @@ def main():
     print(f'{total} blocks of {a.block} deg, package {package_box}', flush=True)
     with ProcessPoolExecutor(a.jobs) as pool:
         running = {}
+        # A task that reads the whole source (the first level: Ukraine, up to 4.4 GB each) waits
+        # for a heavy slot; group extracts and block cuts take about 1.5 GB and use every job.
+        heavy_jobs = max(1, min(a.jobs, a.heavy_jobs or a.jobs))
+        heavy, waiting = set(), []
+
+        def submit(fn, args, meta):
+            if args[0] == a.pbf and len(heavy) >= heavy_jobs:
+                waiting.append((fn, args, meta))
+                return
+            f = pool.submit(fn, *args)
+            running[f] = meta
+            if args[0] == a.pbf:
+                heavy.add(f)
 
         def start(n, src):
             """n's data is in src: cut it (a block) or extract its children from it."""
             if done(n):
                 return
             if not n['children']:
-                f = pool.submit(run_cut, src, work / 'blocks' / name(n), n['box'])
-                running[f] = (n, src, 'cut')
+                submit(run_cut, (src, work / 'blocks' / name(n), n['box']), (n, src, 'cut'))
             else:
                 todo = [c for c in n['children'] if not done(c)]
                 n['pending'] = len(todo)
@@ -194,8 +208,7 @@ def main():
                         fresh.append(c)
                 if fresh:
                     picks = [work / 'extracts' / f'{name(c)}.pick' for c in fresh]
-                    f = pool.submit(run_select, src, [c['box'] for c in fresh], picks)
-                    running[f] = (fresh, src, 'select')
+                    submit(run_select, (src, [c['box'] for c in fresh], picks), (fresh, src, 'select'))
                 return
             n['pending'] = sum(1 for c in n['children'] if not done(c))
 
@@ -226,11 +239,14 @@ def main():
             for f in ready:
                 n, src, kind = running.pop(f)
                 f.result()
+                if f in heavy:
+                    heavy.discard(f)
+                    if waiting:
+                        submit(*waiting.pop(0))
                 if kind == 'select':
                     for c in n:
                         dst = work / 'extracts' / f'{name(c)}.osm.pbf'
-                        g = pool.submit(run_write, src, dst, work / 'extracts' / f'{name(c)}.pick')
-                        running[g] = (c, src, 'extract')
+                        submit(run_write, (src, dst, work / 'extracts' / f'{name(c)}.pick'), (c, src, 'extract'))
                 elif kind == 'extract':
                     n['pending'] = 0
                     start(n, work / 'extracts' / f'{name(n)}.osm.pbf')

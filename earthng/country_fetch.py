@@ -299,16 +299,26 @@ def tiles_current(tiles):
         return False
 
 
-def cut_tiles(pbf, tiles, box=None, jobs=4, emit=print, cancel=None):
-    """Cut pbf into tiles. A cut by older rules stays usable until its replacement is done."""
+def cut_tiles(pbf, tiles, box=None, jobs=None, emit=print, cancel=None, heavy_jobs=None):
+    """Cut pbf into tiles. A cut by older rules stays usable until its replacement is done.
+    jobs: cut workers; heavy_jobs: of them, how many may read the whole PBF at once. None: sized
+    to the free memory (a whole-PBF task takes about 5 bytes per PBF byte, Ukraine 4.4 GB; the
+    others, extracts of a block group and block cuts, about 1.5 GB)."""
+    import sysmem
     tiles = Path(tiles)
+    try:
+        whole = max(1.5, 5 * Path(pbf).stat().st_size / 2**30)
+    except OSError:
+        whole = 4.4
+    jobs = jobs or sysmem.jobs(1.5, 12)
+    heavy_jobs = min(jobs, heavy_jobs or sysmem.jobs(whole, 4))
     target = tiles.with_name(tiles.name + '.recut') if tiles.exists() else tiles
     if not tiles_current(target):
         if target.exists():
             shutil.rmtree(target)
         emit(f'cutting tiles into {tiles.name}')
         command = [_python(), str(HERE / 'osm_tiles_country.py'), str(pbf), '--out', str(target),
-                   '--jobs', str(jobs)]
+                   '--jobs', str(jobs), '--heavy-jobs', str(heavy_jobs)]
         if box:
             command += ['--package-box', *(str(v) for v in box)]
         run_step(command, emit, cancel)
@@ -439,7 +449,7 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
     include = looks.canonical_include(include if include is not None else {})
     # None: sized to the cores and the memory free when each stage starts (sysmem.jobs); a
     # fixed 4 left 12 of 16 cores idle in the export and nearly ran a country cut out of RAM.
-    # Measured on Ukraine: an export worker peaks near 0.7 GB, a cut worker near 4.4 GB.
+    # Measured on Ukraine: an export worker peaks near 0.7 GB, a whole-country cut task near 4.4 GB.
     import sysmem
     if section is not None:
         import sections
@@ -482,7 +492,7 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
             download(place['pbf'], pbf, emit, cancel)
     with stage('Cut tiles'):
         if not cached_tiles:
-            cut_tiles(pbf, tiles, box, min(jobs, 4) if jobs else sysmem.jobs(4, 4), emit, cancel)
+            cut_tiles(pbf, tiles, box, jobs, emit, cancel, min(jobs, 4) if jobs else None)
     if road_register:
         with stage('Road register'):
             import est_roads
