@@ -1,5 +1,44 @@
 # EarthNG native mod migration
 
+## 2026-10-26: the road ahead first
+
+- The user, driving at 300 km/h: tiles appeared in front of the car, and at times the road was not
+  there yet and the car fell. A central Kyiv near tile cost 531 ms of Lua on 19.10 and 1024 ms now
+  (`bench_native.py`, 9 tiles round Khreshchatyk): house massing and deck clearance +120 ms, city
+  lawns +100, the yards +90 ms and +38 MB of garbage, the lamp rules +70. No single bug; at the
+  game's 4 ms a frame one tile is ~4 s, and the tile was given out only when its scene was done.
+  The road and its ground are ~230 of those ms, the scene the rest.
+- generator.lua `options.roadReady(road, nav)`: the road layer is closed into its manifest as soon
+  as nothing writes it any more (after the ground lattice) and handed out; the scene is built
+  after it. The manifests are the same as a whole build (18 Kyiv and Bila Tserkva tiles: items,
+  vertices, faces, materials, spawn, navgraph).
+- native.lua (`AHEAD`): a near tile's priority is the seconds the car takes to reach it, along its
+  heading, a step sideways or back counting 3x, blended in from 10 to 30 m/s (the old distance
+  below). At speed the tiles 15 s ahead (within 150 m of the heading line, 2 km at most) are near
+  even past nearM. While driving a build yields once its road is out and is parked; its scene
+  waits 3 s plus 0.1 s per m/s over 10 behind the roads, at most 3 scenes are parked (a road due
+  first gives up the latest, which is built again if its tile is wanted near once more), and at
+  each frame's first step a scene build, or a far one while a road is urgent, goes back to the
+  parked so a road due since goes first. A road due within 6 s raises the frame's generator budget
+  from 4 to 6 ms. The landing still builds whole tiles.
+- world.lua: the ready road started first is the one due first (native's seconds); a road due
+  within 15 s starts however long the queue of scenes is (it waited for the queue to drop under
+  400 items), and a corridor tile past loadR is not unloaded. A road due within 8 s at the queue's
+  head gets 2.5 ms of spawning even when the generator took the frame (it had 0.5 ms).
+- `bench_native.py` now releases every delivered layer as the renderer does (left in the generator
+  they were evicted by its triangle budget: a Kyiv tile is ~65k of 80k) and reports the road ahead
+  of the car driving along +x: the frames on a tile with no road and the lead in seconds.
+  West to east across Kyiv from 50.45, 30.43 (5,200 frames of driving, generator only):
+  - 83 m/s: before, from ~60 s in, every frame on a tile without road; now none, lead min 7.3 s.
+  - 50 m/s: before 1,677 frames without road (lead p5 0); now none, lead min 12.1 s.
+  - 25 m/s: none either way, lead min 13.5 -> 21.5 s; 32 full tiles built against 31.
+  - Rural, west of Kyiv (50.40, 29.85), 83 m/s: lead min 1.4 -> 11.0 s (p5 5.6 -> 14.8), 264 full
+    tiles against 270.
+  At 300 km/h through central Kyiv about half as many scenes are finished (14 against 28 in the
+  same time): the buildings beside the road come later, the road does not.
+- Unit check: 419 OK; new: arrival-time priorities and the corridor, road before scene with at most
+  3 parked, the urgent budget. Not driven in the game.
+
 ## 2026-10-25: roads in the far ring, no holes in staggered decks, a road audit
 
 - A free camera past the near radius (nearM, ~1 km round the car) saw the Tallinna ringtee as

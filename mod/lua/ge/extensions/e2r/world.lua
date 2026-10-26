@@ -138,7 +138,8 @@ local frameTimer = hptimer()
 -- Streaming limits; see the comments where each is used.
 local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128,
   forestStep = 0.12, forestKind = 1.5, forestMax = 2500, propMax = 600,
-  collisionWant = 200, collisionLead = 6, collisionMargin = 200, vehicleCollision = {100, 300}}
+  collisionWant = 200, collisionLead = 6, collisionMargin = 200, vehicleCollision = {100, 300},
+  roadAhead = 15, roadUrgent = 8, roadFloorMs = 2.5}
 -- Read-only view for the development probe (earthng/probe.py); nothing in the mod calls it.
 function M.dbg() return {S = S, result = result, native = native, detail = detailStream, test = test} end
 
@@ -1276,13 +1277,21 @@ local function updateTiles()
     if not fast or speed < 15 then return false end
     return ((cx - p.x) * v.x + (cy - p.y) * v.y) < 0 and d > loadR * 0.6 + 250
   end
+  -- native: a near tile's wanted value is the seconds until the car reaches it (native.lua AHEAD;
+  -- far tiles and the horizon are 1e6 and up). At speed the near set runs on along the heading
+  -- past loadR: such a road is kept and started like one inside it.
+  local wantedNow = NATIVE and st.wanted or {}
+  local function dueNear(key)
+    local due = wantedNow[key]
+    return due and due < 1e6 and due or nil
+  end
   -- unload far tiles (their queued items are skipped)
   for key, tile in pairs(S.tiles) do
     local cx, cy = tileCentre(tile.i, tile.j)
     local d = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
     -- A free camera far from the car owns the bubble; the tiles under the parked car used to
     -- unload with the rest and it fell through the world (night-fence-02, z 179 -> 0.2).
-    local held = S.heldCar and (cx - S.heldCar[1]) ^ 2 + (cy - S.heldCar[2]) ^ 2 <= 600 * 600
+    local held = (S.heldCar and (cx - S.heldCar[1]) ^ 2 + (cy - S.heldCar[2]) ^ 2 <= 600 * 600) or dueNear(key)
     if not held and (d > unloadR or behind(cx, cy, d)) then
       retireForest(tile)
       dropGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
@@ -1298,9 +1307,11 @@ local function updateTiles()
     end
   end
   -- start the nearest ready tile in range (one per call keeps the material loads apart);
-  -- the look-ahead point counts the speed, so the tile ahead comes before the one behind
+  -- the look-ahead point counts the speed, so the tile ahead comes before the one behind.
+  -- Natively the first is the one the car reaches first (its wanted seconds), and a road due
+  -- within LIMIT.roadAhead s starts however long the queue of scenes is.
   local ax, ay = p.x + v.x * 3, p.y + v.y * 3
-  local best, bestD
+  local best, bestD, bestRank
   for key, n in pairs(st.ready or {}) do
     if not S.tiles[key] then
       local i, j = key:match('^(-?%d+)_(-?%d+)$')
@@ -1308,10 +1319,15 @@ local function updateTiles()
       local cx, cy = tileCentre(i, j)
       local dp = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
       local d = math.min(dp, math.sqrt((cx - ax) ^ 2 + (cy - ay) ^ 2))
-      if d <= loadR and not behind(cx, cy, dp) and (not bestD or d < bestD) then best, bestD = {key, i, j}, d end
+      local due = dueNear(key)
+      local rank = due or d
+      if (d <= loadR or due) and not behind(cx, cy, dp) and (not bestRank or rank < bestRank) then
+        best, bestD, bestRank = {key, i, j}, d, rank
+      end
     end
   end
-  if best and #S.queue < 400 then startTile(best[1], best[2], best[3]) end
+  local soon = best and dueNear(best[1])
+  if best and (#S.queue < 400 or (soon and soon < LIMIT.roadAhead)) then startTile(best[1], best[2], best[3]) end
   -- the nearest scene (look-ahead point too) whose road is in: it used to wait for every road tile
   -- in loadR and then took any one, so buildings next to the car came after roads 1 km away
   if fast and #S.queue < 300 and st.scenes then
@@ -1478,7 +1494,12 @@ local function stepQueue()
   local frame = hptimer()
   -- Retires queued by updateTiles this frame start before new crowns are added.
   -- test.genBudget (showcase stills): frame time does not matter, the place must finish loading
-  local budget = test and test.genBudget or math.max(.5, BUDGET_MS - (S.nativeMs or 0))
+  -- A road due within LIMIT.roadUrgent s at the head of the queue (updateTiles sorts it) gets
+  -- LIMIT.roadFloorMs however much the generator took: at 0.5 ms it spawned a piece a frame.
+  local head, wanted = S.queue[1], S.status and S.status.stream and S.status.stream.wanted
+  local urgent = NATIVE and head and not (head.scene or head.far or head.horizon) and wanted
+    and (wanted[head.key] or 1e6) < LIMIT.roadUrgent
+  local budget = test and test.genBudget or math.max(urgent and LIMIT.roadFloorMs or .5, BUDGET_MS - (S.nativeMs or 0))
   local function over() return frame:stop() >= budget end
   local function pause() if over() then coroutine.yield() end end
   if S.co and S.job and S.job.tile.dropped then S.co, S.job = nil, nil end

@@ -6805,6 +6805,57 @@ local function build(cells, i, j, options)
     end
     pause()
   end
+  local function manifest(collector, layer)
+    local mats, total = {}, 0
+    for material in pairs(collector.used) do mats[#mats + 1] = material end
+    table.sort(mats)
+    for _, item in ipairs(collector.items) do total = total + (item.triangles or 0) end
+    local warm = VEG.warm(LAMP, BUS_STOP)
+    return {version = 1, generator = 'earthng-lua-v1', source = options.regionId, layer = layer,
+      tile = {i, j}, rect = rect, materials = options.materials or '/earthng/planet/materials.json',
+      items = collector.items, mats = mats, triangles = total, packs = options.packs,
+      warmShapes = warm, stockMaterials = VEG.stockFor(collector.items, warm), yard = collector.yard}
+  end
+  -- No road: the car stands on the ground at the landing (native.lua's off-road landing). The
+  -- gentlest ground within ~80 m of it, the car across the slope: on Everest's summit ridge it
+  -- rolled off the point itself.
+  local function groundSpawn()
+    local best, bestScore
+    for dy = -80, 80, 10 do
+      for dx = -80, 80, 10 do
+        local x, y = target[1] + dx, target[2] + dy
+        local d = math.sqrt(dx * dx + dy * dy)
+        if d <= 80 and heightAt(x, y) and coverAt(x, y) ~= 'water' then
+          local nx, ny, nz = groundNormal(x, y)
+          local score = nz - d / 4000
+          if not bestScore or score > bestScore then best, bestScore = {x, y, nx, ny}, score end
+        end
+      end
+    end
+    if not best then return {pos = {target[1], target[2], ground(target[1], target[2]) + ROAD_LIFT}, yaw = 0} end
+    local x, y = best[1], best[2]
+    -- along the contour (-ny, nx), as a road spawn's yaw = atan2(-dx, dy) of its direction
+    local yaw = (math.abs(best[3]) + math.abs(best[4]) > 1e-3) and math.atan2(best[4], best[3]) or 0
+    return {pos = {x, y, ground(x, y) + ROAD_LIFT}, yaw = yaw}
+  end
+  -- Nothing writes the road layer past this point. options.roadReady(road, nav) (native.lua,
+  -- while driving) takes it now, and the scene is built when the coroutine is resumed again:
+  -- the scene is ~3/4 of a near tile (central Kyiv: 230 of 820 ms is the road), and at 300 km/h
+  -- the road ahead could not wait for the buildings of the tiles beside it.
+  local roadManifest
+  local function finishRoad()
+    roads.finish()
+    roadDecor.finish()
+    for _, item in ipairs(roadDecor.items) do item.decor = true; roads.items[#roads.items + 1] = item end
+    for material in pairs(roadDecor.used) do roads.used[material] = true end
+    roadManifest = manifest(roads, 'road')
+    roadManifest.spawn = bestSpawn or groundSpawn()
+    roadManifest.drivable = bestSpawn ~= nil
+  end
+  if options.roadReady and not distant then
+    finishRoad()
+    options.roadReady(roadManifest, nav)
+  end
   -- Distant ground is render-only and lives in the far/horizon manifest. The tile border is
   -- sampled at the near step so it shares that edge; the interior is the coarse step. A fan
   -- joins them. Corners belong to one fan, so two strips never cover the same quad.
@@ -7344,14 +7395,11 @@ local function build(cells, i, j, options)
       end
     end
   end
-  roads.finish()
+  if not roadManifest then finishRoad() end
   scene.finish()
-  roadDecor.finish()
   sceneDecor.finish()
-  for _, pair in ipairs({{roads, roadDecor}, {scene, sceneDecor}}) do
-    for _, item in ipairs(pair[2].items) do item.decor = true; pair[1].items[#pair[1].items + 1] = item end
-    for material in pairs(pair[2].used) do pair[1].used[material] = true end
-  end
+  for _, item in ipairs(sceneDecor.items) do item.decor = true; scene.items[#scene.items + 1] = item end
+  for material in pairs(sceneDecor.used) do scene.used[material] = true end
   -- A bus shelter stands beyond the curb (and sidewalk) of the nearest ground-level road, its open
   -- side to the road (fast.add_street_points): OSM puts most stops on the carriageway itself.
   -- A platform and its stop position nearby make one shelter.
@@ -8232,42 +8280,7 @@ local function build(cells, i, j, options)
     bio.layers(math.floor(maxGrass * .6), math.min(600, maxRocks * 3), spread)
   end
   mark('trees')
-  local function manifest(collector, layer)
-    local mats, total = {}, 0
-    for material in pairs(collector.used) do mats[#mats + 1] = material end
-    table.sort(mats)
-    for _, item in ipairs(collector.items) do total = total + (item.triangles or 0) end
-    local warm = VEG.warm(LAMP, BUS_STOP)
-    return {version = 1, generator = 'earthng-lua-v1', source = options.regionId, layer = layer,
-      tile = {i, j}, rect = rect, materials = options.materials or '/earthng/planet/materials.json',
-      items = collector.items, mats = mats, triangles = total, packs = options.packs,
-      warmShapes = warm, stockMaterials = VEG.stockFor(collector.items, warm), yard = collector.yard}
-  end
-  local roadManifest, sceneManifest = manifest(roads, 'road'), manifest(scene, 'scene')
-  -- No road: the car stands on the ground at the landing (native.lua's off-road landing). The
-  -- gentlest ground within ~80 m of it, the car across the slope: on Everest's summit ridge it
-  -- rolled off the point itself.
-  local function groundSpawn()
-    local best, bestScore
-    for dy = -80, 80, 10 do
-      for dx = -80, 80, 10 do
-        local x, y = target[1] + dx, target[2] + dy
-        local d = math.sqrt(dx * dx + dy * dy)
-        if d <= 80 and heightAt(x, y) and coverAt(x, y) ~= 'water' then
-          local nx, ny, nz = groundNormal(x, y)
-          local score = nz - d / 4000
-          if not bestScore or score > bestScore then best, bestScore = {x, y, nx, ny}, score end
-        end
-      end
-    end
-    if not best then return {pos = {target[1], target[2], ground(target[1], target[2]) + ROAD_LIFT}, yaw = 0} end
-    local x, y = best[1], best[2]
-    -- along the contour (-ny, nx), as a road spawn's yaw = atan2(-dx, dy) of its direction
-    local yaw = (math.abs(best[3]) + math.abs(best[4]) > 1e-3) and math.atan2(best[4], best[3]) or 0
-    return {pos = {x, y, ground(x, y) + ROAD_LIFT}, yaw = yaw}
-  end
-  roadManifest.spawn = bestSpawn or groundSpawn()
-  roadManifest.drivable = bestSpawn ~= nil
+  local sceneManifest = manifest(scene, 'scene')
   sceneManifest.parking = parking
   if distant then
     sceneManifest.layer = layerName

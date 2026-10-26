@@ -96,8 +96,12 @@ class NativeTests(unittest.TestCase):
             local t=options.tileSize
             local road={items=fakeTriangles>0 and {{triangles=fakeTriangles,meshes={}}} or {},mats={'earthng_ground'},drivable=true,
               spawn={pos={(i+0.5)*t,(j+0.5)*t,5},dir={0,1,0}}}
+            local nav={segments={{'segment'}}}
+            -- the road goes out before the scene, as generator.lua does
+            if options.roadReady then options.roadReady(road, nav) end
+            for n=1,5 do options.pause() end
             local far=options.far and {items=fakeFarTriangles>0 and {{triangles=fakeFarTriangles,meshes={}}} or {},mats={}} or nil
-            return road,{items={},mats={}},far,{segments={{'segment'}}}
+            return road,{items={},mats={}},far,nav
           end}
         ''')
         if real_generator:
@@ -621,6 +625,61 @@ class NativeV2Tests(NativeTests.__base__):
                 far += 1
         self.assertGreater(far, 0)
         self.assertGreater(horizon, 0)
+
+    def test_at_speed_the_road_ahead_comes_before_the_tiles_beside(self):
+        _, mod, cv = self.make(fixture(12))
+        lat, lon = geographic(2750, 5250)
+        mod.land(cv(dict(seq=12, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        mod.pose(cv(dict(x=2750, y=5250, vx=100, vy=0, state='driving')))
+        mod.update(.016, 2)
+        wanted = mod.status().stream.wanted
+        # a near priority is the seconds to reach the tile: 750 m ahead, 750 m beside counting 3x
+        self.assertAlmostEqual(wanted['7_10'], 7.5)
+        self.assertAlmostEqual(wanted['5_12'], 22.5)
+        self.assertLess(wanted['5_8'] - wanted['7_10'], 1e6)
+        # past the 1 km radius the 15 s corridor ahead is near, the tile past its end is far
+        self.assertAlmostEqual(wanted['8_10'], 12.5)
+        self.assertGreaterEqual(wanted['9_10'], 1_000_000)
+        # standing still it is the distance again, the same all round
+        mod.pose(cv(dict(x=2750, y=5250, vx=0, vy=0, state='driving')))
+        mod.update(.016, 2)
+        wanted = mod.status().stream.wanted
+        self.assertAlmostEqual(wanted['7_10'], wanted['5_12'])
+        self.assertGreaterEqual(wanted['8_10'], 1_000_000)
+
+    def test_while_driving_a_road_goes_out_before_its_scene(self):
+        lua, mod, cv = self.make(fixture(10))
+        lat, lon = geographic(1250, 4750)
+        mod.land(cv(dict(seq=13, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        x, early, parked = 1250.0, set(), 0
+        for frame in range(1500):
+            x += 60 / 60
+            mod.pose(cv(dict(x=x, y=4750, vx=60, vy=0, state='driving')))
+            mod.update(.016, 4)
+            stream = mod.status().stream
+            for key in stream.ready.keys():
+                if stream.scenes[key] is None:
+                    early.add(key)
+            parked = max(parked, stream.parked or 0)
+        self.assertTrue(early)
+        self.assertLessEqual(parked, 3)
+        self.assertLess(mod.status().stream.budgetMs, 6)
+        # the car where no road is built yet: a road due within 6 s raises the budget to 6 ms
+        mod.pose(cv(dict(x=7250, y=4750, vx=60, vy=0, state='driving')))
+        mod.update(.016, 4)
+        self.assertEqual(mod.status().stream.budgetMs, 6)
+        # stopped, every near tile gets its scene; none is built twice for it
+        built = mod.status().stream.built
+        for _ in range(3000):
+            mod.update(.016, 4)
+        stream = mod.status().stream
+        for key in stream.ready.keys():
+            self.assertTrue(stream.scenes[key], key)
+        self.assertEqual(stream.parked, 0)
+        self.assertEqual(len(list(stream.failed.keys())), 0)
+        self.assertGreater(stream.built, built)
 
     def test_terrain_only_decoder_reads_the_grid_of_a_full_cell(self):
         lua, _, _ = self.make()
