@@ -362,6 +362,7 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     include = looks.canonical_include(include if include is not None else {})
     # None: sized to the cores and the memory free when each stage starts (sysmem.jobs); a
     # fixed 4 left 12 of 16 cores idle in the export and nearly ran a country cut out of RAM.
+    # Measured on Ukraine: an export worker peaks near 0.7 GB, a cut worker near 4.4 GB.
     import sysmem
     if section is not None:
         import sections
@@ -456,7 +457,7 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
         # Same process as the index: export's block pool dies in the detached window too.
         export_path = work / 'export-path.txt'
         run_build_job({'command': 'export', 'id': slug_id, 'title': place['name'], 'version': '0.4.0',
-                       'regions': regions, 'out': str(out), 'jobs': jobs or sysmem.jobs(2), 'landing': landing,
+                       'regions': regions, 'out': str(out), 'jobs': jobs or sysmem.jobs(1.5), 'landing': landing,
                        'look': look, 'include': include,
                        'map_data': None if map_data is None else str(map_data),
                        'work': str(work), 'result': str(export_path), 'credits': credits,

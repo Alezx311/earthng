@@ -3647,12 +3647,15 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
     end
     return list
   end
-  -- Surveyed trees, lamps and bus stops take precedence over inferred furniture.
+  -- Surveyed trees, lamps and bus stops take precedence over inferred furniture. A street
+  -- whose lamps are mapped gets no inferred lamp within 12 m of one (the row is every 30 m).
+  local surveyedLamps = {}
   for _, p in ipairs(context.points or NONE) do
     if p.pos and (p.kind == 'tree' or p.kind == 'lamp' or p.kind == 'stop') then
       local x, y = p.pos[1], p.pos[2]
       local r = p.kind == 'tree' and 3 or p.kind == 'stop' and 5 or 2
       band(occupied, {x - .001, y}, {x + .001, y}, r)
+      if p.kind == 'lamp' then band(surveyedLamps, {x - .001, y}, {x + .001, y}, 12) end
     end
   end
   -- paths on the ground (their paving and 0.3 m more; a crossing 2 m either side) and the
@@ -3725,6 +3728,7 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
     local cx, cy = x + c.y * sn, y + c.y * cs
     local ax, ay, bx, by = cx + c.x0 * cs, cy - c.x0 * sn, cx + c.x1 * cs, cy - c.x1 * sn
     local r, mx, my, hl = c.r, (ax + bx) / 2, (ay + by) / 2, (c.x1 - c.x0) / 2
+    if prop.kind == 'lamp' and inBand(near(surveyedLamps, ax, ay, bx, by, r, 0), ax, ay, bx, by, mx, my, hl, r) then return end
     if inWall(near(walls, ax, ay, bx, by, r + .6, 0), ax, ay, bx, by, mx, my, hl, r, not prop.kind)
         or inBand(near(occupied, ax, ay, bx, by, r, 0), ax, ay, bx, by, mx, my, hl, r)
         or inBand(near(paths, ax, ay, bx, by, r, 0), ax, ay, bx, by, mx, my, hl, r)
@@ -4244,11 +4248,14 @@ function YARD.build(ctx)
       if area.kind == 'playground' then playgrounds[#playgrounds + 1] = entry end
     end
   end
-  local doors = {}
+  local doors, surveyedLamps = {}, {}
   for _, point in ipairs(lists.points) do
     local p = point.pos
     if p and p[1] > halo[1] and p[1] < halo[3] and p[2] > halo[2] and p[2] < halo[4] then
-      if point.kind == 'entrance' then
+      if point.kind == 'lamp' then
+        -- a mapped yard lamp stands for the driveway's own (one every 34 m)
+        YARD.reserve(surveyedLamps, {p[1] - .001, p[2]}, {p[1] + .001, p[2]}, 14)
+      elseif point.kind == 'entrance' then
         doors[#doors + 1] = point
         YARD.reserve(paths, {p[1] - .001, p[2]}, {p[1] + .001, p[2]}, 2.5)
       elseif point.kind == 'playground' then
@@ -4461,7 +4468,8 @@ function YARD.build(ctx)
                 local side = -oneSide
                 local off = strip.hw + .5
                 local lx, ly = cx - uy * off * side, cy + ux * off * side
-                if yard(lx, ly) and not inBuilding(lx, ly, .8) and free(lx, ly) and not onRoad(lx, ly, .2) then
+                if yard(lx, ly) and not inBuilding(lx, ly, .8) and free(lx, ly) and not onRoad(lx, ly, .2)
+                    and not VEG.streetBlocked(surveyedLamps, lx, ly) then
                   YARD.reserve(reserved, {lx - .001, ly}, {lx + .001, ly}, 1.2)
                   -- the lamp's arm over the driveway (lamp1: its +Y)
                   stock('yardlamp_' .. id .. '_' .. math.floor(d), ctx.lamp, lx, ly, math.atan2(uy * side, -ux * side), 1, 'lamp')

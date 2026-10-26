@@ -1093,6 +1093,23 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(all(item.shape == '/art/shapes/objects/lamp1.dae' for item in lamps))
         self.assertTrue(all(item.decor and abs(item.pos[3] - 10.1) < 1e-8 for item in lamps))
 
+    def test_surveyed_lamps_replace_the_inferred_row_beside_them(self):
+        # OSM maps Kyiv's lamps (203 k in its region): the street's own row must not double them
+        road = {'id': 'street', 'width': 7, 'points': [[0, 250, 10], [500, 250, 10]],
+                'tags': {'highway': 'residential', 'lit': 'yes', 'sidewalk': 'both'}}
+        mapped = [{'id': f'l{k}', 'kind': 'lamp', 'tags': {'highway': 'street_lamp'}, 'pos': [x, 245, 10]}
+                  for k, x in enumerate(range(20, 260, 30))]
+        scene = self.build([{'roads': [road], 'points': mapped}], terrainStep=100)[1]
+        lamps = [item for item in scene['items'].values() if item.kind == 'static' and item.shape.endswith('lamp1.dae')]
+        at = {(p['pos'][0], p['pos'][1]) for p in mapped}
+        surveyed = [item for item in lamps if (item.pos[1], item.pos[2]) in at]
+        inferred = [item for item in lamps if (item.pos[1], item.pos[2]) not in at]
+        self.assertEqual(len(surveyed), len(mapped))
+        self.assertTrue(inferred)                                        # the unmapped half keeps its row
+        for item in inferred:
+            self.assertTrue(all(math.hypot(item.pos[1] - x, item.pos[2] - y) > 12 for x, y in at))
+        self.assertTrue(all(item.pos[1] > 242 for item in inferred))
+
     def test_street_props_line_sidewalks_and_footways_but_not_carriageways(self):
         # four arms meeting at a junction node (250, 250)
         roads = [{'id': arm, 'nodes': ['j', arm], 'width': 8, 'tags': {'highway': 'residential', 'sidewalk': 'both'},
