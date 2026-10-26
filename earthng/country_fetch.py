@@ -303,14 +303,14 @@ def cut_tiles(pbf, tiles, box=None, jobs=None, emit=print, cancel=None, heavy_jo
     """Cut pbf into tiles. A cut by older rules stays usable until its replacement is done.
     jobs: cut workers; heavy_jobs: of them, how many may read the whole PBF at once. None: sized
     to the free memory (a whole-PBF task takes about 5 bytes per PBF byte, Ukraine 4.4 GB; the
-    others, extracts of a block group and block cuts, about 1.5 GB)."""
+    others, extracts of a block group and block cuts, 1.6 GB on average, more in a city)."""
     import sysmem
     tiles = Path(tiles)
     try:
         whole = max(1.5, 5 * Path(pbf).stat().st_size / 2**30)
     except OSError:
         whole = 4.4
-    jobs = jobs or sysmem.jobs(1.5, 12)
+    jobs = jobs or sysmem.jobs(2, 12)
     heavy_jobs = min(jobs, heavy_jobs or sysmem.jobs(whole, 4))
     target = tiles.with_name(tiles.name + '.recut') if tiles.exists() else tiles
     if not tiles_current(target):

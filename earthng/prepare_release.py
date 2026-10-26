@@ -41,8 +41,8 @@ Build your own map
 
 Install earthng_planet.zip first: it supplies the offline map, city labels,
 preview materials and the game's runtime. Internet is required for initial
-setup and new source data. A whole country can take a few hours: Ukraine
-took about two on a 16-core PC. Before it starts, a build checks the disk
+setup and new source data. A whole country can take hours: Ukraine took
+1.5 hours on a 16-core PC with 32 GB. Before it starts, a build checks the disk
 (about 24 GB per GB of source data) and refuses rather than fill it.
 Stop cancels a build before installation. Build again and it continues where
 it stopped: finished blocks, regions and parts of the pack are kept.

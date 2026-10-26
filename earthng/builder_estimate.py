@@ -34,6 +34,12 @@ def signature(place_id, box, include, cached_pbf, cached_tiles):
     return json.dumps([place_id, box, include, cached_pbf, cached_tiles], sort_keys=True)
 
 
+# Seconds per MB of source PBF, measured on Ukraine (841 MB, 16 cores, 2026-10-26): the cut
+# reads the whole PBF once (SCAN) and writes the part kept (CUT); DEM is a first download.
+KM2_PER_MB = 718        # Ukraine: 603 600 km2 in 841 MB
+DOWNLOAD, SCAN, CUT, DEM, INDEX, EXPORT, INSTALL = .3, .65, 1.15, .45, 2.75, 3.3, .005
+
+
 def estimate(size, box, include, cached_pbf=False, cached_tiles=False, previous=None):
     if isinstance(previous, (list, tuple)) and len(previous) == len(STAGES) and all(
             not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in previous):
@@ -41,14 +47,16 @@ def estimate(size, box, include, cached_pbf=False, cached_tiles=False, previous=
     if not size:
         return None, 'waiting for source size'
     mb = size / 2**20
-    area = area_km2(box) if box else mb * 30
+    # the part of the source a selection keeps: its area at Ukraine's density, at most all of it
+    share = min(1., area_km2(box) / (mb * KM2_PER_MB)) if box else 1.
+    part = mb * share
     layers = .55 + .45 * sum(include.values()) / max(1, len(include))
     # Broad planning baseline, deliberately displayed as a range (0.5–2.5x).
     # Even a tiny selection requires scanning the entire source PBF on first use.
-    times = [2 if cached_pbf or cached_tiles else mb / 5 + 5,
-             1 if cached_tiles else 20 + mb * .5 + area * .004,
-             5 + area * .006, 10 + area * .02,
-             15 + area * .07 * layers, 3 + area * .001]
+    times = [2 if cached_pbf or cached_tiles else 5 + mb * DOWNLOAD,
+             1 if cached_tiles else 20 + mb * SCAN + part * CUT,
+             5 + part * DEM, 10 + part * INDEX,
+             15 + part * EXPORT * layers, 3 + part * INSTALL]
     return times, 'rough estimate; network, disk and OSM density vary'
 
 

@@ -28,10 +28,12 @@ import osmium
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import osm_tiles  # noqa: E402
+import sysmem  # noqa: E402
 from sysmem import replace_dir  # noqa: E402
 from osm_tiles import BUFFER, CELL, SELECT  # noqa: E402
 
 FANOUT = 16
+RESERVE_GB = 3      # free memory a cut task needs before it starts (see main)
 
 
 def block_box(cells, package_box):
@@ -182,14 +184,28 @@ def main():
         heavy_jobs = max(1, min(a.jobs, a.heavy_jobs or a.jobs))
         heavy, waiting = set(), []
 
-        def submit(fn, args, meta):
+        def allowed(args):
             if args[0] == a.pbf and len(heavy) >= heavy_jobs:
+                return False
+            # dense blocks (Kyiv) take more than the planned share: with 12 jobs Ukraine's cut
+            # once left no free memory. A task starts only with RESERVE_GB free, or alone.
+            return not running or sysmem.free_memory_gb() >= RESERVE_GB
+
+        def submit(fn, args, meta):
+            if waiting or not allowed(args):
                 waiting.append((fn, args, meta))
                 return
+            launch(fn, args, meta)
+
+        def launch(fn, args, meta):
             f = pool.submit(fn, *args)
             running[f] = meta
             if args[0] == a.pbf:
                 heavy.add(f)
+
+        def drain():
+            while waiting and allowed(waiting[0][1]):
+                launch(*waiting.pop(0))
 
         def start(n, src):
             """n's data is in src: cut it (a block) or extract its children from it."""
@@ -240,10 +256,7 @@ def main():
             for f in ready:
                 n, src, kind = running.pop(f)
                 f.result()
-                if f in heavy:
-                    heavy.discard(f)
-                    if waiting:
-                        submit(*waiting.pop(0))
+                heavy.discard(f)
                 if kind == 'select':
                     for c in n:
                         dst = work / 'extracts' / f'{name(c)}.osm.pbf'
@@ -255,6 +268,7 @@ def main():
                     blocks_done += 1
                     print(f'block {name(n)} cut: {blocks_done}/{total} ({time.monotonic()-t0:.0f} s)', flush=True)
                     finished(n)
+            drain()
 
     index = {'cell': CELL, 'buffer': BUFFER, 'source': a.pbf.name, 'package_box': package_box,
              'block': a.block, 'select': SELECT, 'tiles': {}}
