@@ -164,6 +164,31 @@ class PackFileTests(unittest.TestCase):
             self.assertIsNone(opened.call_args.args[0].get_header('Range'))
             self.assertEqual(dest.read_bytes(), b'new')
 
+    def test_without_head_a_complete_copy_is_kept_while_the_server_has_no_newer_one(self):
+        import urllib.error
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            dest = Path(folder) / 'extract.pbf'
+            dest.write_bytes(b'complete')
+            not_modified = urllib.error.HTTPError('https://example.com/extract.pbf', 304, 'Not Modified', {}, None)
+            with patch.object(country_fetch, 'content_length', side_effect=OSError('HEAD timed out')), \
+                    patch.object(country_fetch.urllib.request, 'urlopen', side_effect=not_modified) as opened:
+                country_fetch.download('https://example.com/extract.pbf', dest, emit=lambda _: None)
+            self.assertEqual(opened.call_count, 1)
+            self.assertTrue(opened.call_args.args[0].get_header('If-modified-since'))
+            self.assertEqual(dest.read_bytes(), b'complete')
+            # a newer file on the server: the 200 answer means fetch it again
+            newer = io.BytesIO(b'')
+            newer.status = 200
+            newer.headers = {}
+            fresh = io.BytesIO(b'newer data')
+            fresh.status = 200
+            fresh.headers = {'Content-Length': '10'}
+            with patch.object(country_fetch, 'content_length', side_effect=OSError('HEAD timed out')), \
+                    patch.object(country_fetch.urllib.request, 'urlopen', side_effect=[newer, fresh]):
+                country_fetch.download('https://example.com/extract.pbf', dest, emit=lambda _: None)
+            self.assertEqual(dest.read_bytes(), b'newer data')
+
     def test_changed_source_restarts_instead_of_appending(self):
         from tempfile import TemporaryDirectory
         with TemporaryDirectory() as folder:

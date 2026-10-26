@@ -96,6 +96,21 @@ def content_length(url, timeout=30):
     return int(length) if length and length.isdigit() else None
 
 
+def unchanged_since(url, dest, timeout=60):
+    """True when the server answers 304 Not Modified for a file as old as dest."""
+    import email.utils
+    stamp = email.utils.formatdate(Path(dest).stat().st_mtime, usegmt=True)
+    request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT, 'If-Modified-Since': stamp})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout, context=tls.context()):
+            return False
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        return exc.code == 304
+    except OSError:
+        return False
+
+
 def download(url, dest, emit=print, cancel=None):
     """Resume only a validated version of a file; publish complete transfers atomically."""
     def check_cancel():
@@ -114,6 +129,12 @@ def download(url, dest, emit=print, cancel=None):
     if dest.exists() and total and dest.stat().st_size == total:
         emit(f'already have {dest.name} ({total} bytes)')
         return dest
+    if dest.exists() and not total and unchanged_since(url, dest):
+        # HEAD failed (Geofabrik let it time out on 2026-10-26): the complete copy we have is
+        # still the server's, so it is not fetched again
+        emit(f'already have {dest.name} (unchanged on the server)')
+        return dest
+    check_cancel()
     part = dest.with_suffix(dest.suffix + '.part')
     metadata = part.with_suffix(part.suffix + '.json')
     have = part.stat().st_size if part.exists() else 0
