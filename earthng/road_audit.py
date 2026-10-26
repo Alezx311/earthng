@@ -368,8 +368,13 @@ def main():
           f"{len(tall)} cells with a rail or fence running into the ground, {len(walls)} cells with a deck wall on the road, "
           f"{len(props)} props on the carriageway, {len(jumps)} steps in the asphalt, {len(rows)} findings -> {a.out}")
     for r in rows[:15]:
-        print(f"  {r['kind']:7s} {r['length_m']:5d} {'m2' if r['kind'] in ('barrier', 'parapet') else 'm '} {r['name'][:26]:26s} [{r['class']}{' bridge' if r['bridge'] else ''}]  "
-              f"{r['lat']}, {r['lon']}  road {r['road']}")
+        print(row_line(r))
+
+
+def row_line(r):
+    # length_m is a float for the findings measured in m2 or by a prop's depth (a lamp 1.0 m in)
+    return (f"  {r['kind']:7s} {r['length_m']:5.0f} {'m2' if r['kind'] in ('barrier', 'parapet') else 'm '} {r['name'][:26]:26s} "
+            f"[{r['class']}{' bridge' if r['bridge'] else ''}]  {r['lat']}, {r['lon']}  road {r['road']}")
 
 
 if __name__ == '__main__':
