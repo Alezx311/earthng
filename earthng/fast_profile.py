@@ -438,24 +438,31 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
 
 
 class Mosaic:
-    """Terrain.sample for millions of points: the needed PNG tiles stitched once."""
-    def __init__(self, terrain, xy):
+    """Terrain.sample for millions of points: the PNG tiles round them stitched, BLOCK x BLOCK
+    tiles at a time. One grid over all the points' bounding box was 4.7 GiB for Estonia at z13
+    (the sea and the empty bogs included), and the solve samples the DEM once."""
+    BLOCK = 8
+
+    def __init__(self, terrain, xy=None):
         self.zoom = getattr(terrain, 'zoom', 12)
-        lon, lat = terrain.frame.geographic(xy[:, 0], xy[:, 1])
-        x, y = self._px(lon, lat, self.zoom)
-        self.tx0, self.ty0 = int(x.min() // 256) - 1, int(y.min() // 256) - 1
-        tx1, ty1 = int(x.max() // 256) + 1, int(y.max() // 256) + 1
         self.terrain = terrain
+
+    def _grid(self, tx0, ty0, tx1, ty1, needed):
+        """The pixels of tiles tx0..tx1, ty0..ty1, of those in `needed` only (NaN where a tile is
+        missing or not asked for). The edge tiles of a downloaded DEM may be missing on disk, and
+        z13 upsamples from z12 neighbours: reading just what the points reach keeps to the tiles
+        a grid over them read."""
         # a z13 grid has four times the pixels: single precision (millimetres at 1000 m)
-        self.grid = np.full(((ty1 - self.ty0 + 1) * 256, (tx1 - self.tx0 + 1) * 256), np.nan,
-                            dtype=np.float32 if self.zoom > 12 else float)
-        for a in range(self.tx0, tx1 + 1):
-            for b in range(self.ty0, ty1 + 1):
-                if terrain.has(a, b):
+        grid = np.full(((ty1 - ty0 + 1) * 256, (tx1 - tx0 + 1) * 256), np.nan,
+                       dtype=np.float32 if self.zoom > 12 else float)
+        for a, b in sorted(needed):
+            if tx0 <= a <= tx1 and ty0 <= b <= ty1:
+                if self.terrain.has(a, b):
                     ix = np.arange(a * 256, a * 256 + 256); iy = np.arange(b * 256, b * 256 + 256)
                     gx, gy = np.meshgrid(ix, iy)
-                    self.grid[(b - self.ty0) * 256:(b - self.ty0 + 1) * 256,
-                              (a - self.tx0) * 256:(a - self.tx0 + 1) * 256] = terrain.pixels(gx.ravel(), gy.ravel()).reshape(256, 256)
+                    grid[(b - ty0) * 256:(b - ty0 + 1) * 256,
+                         (a - tx0) * 256:(a - tx0 + 1) * 256] = self.terrain.pixels(gx.ravel(), gy.ravel()).reshape(256, 256)
+        return grid
 
     @staticmethod
     def _px(lon, lat, zoom=12):
@@ -470,13 +477,27 @@ class Mosaic:
         x, y = self._px(lon, lat, self.zoom)
         ix, iy = np.floor(x).astype(int), np.floor(y).astype(int)
         u, v = x - ix, y - iy
-        gx, gy = ix - self.tx0 * 256, iy - self.ty0 * 256
-        g = self.grid
         offsets = [(0, 0, 1.)] if not smooth else [(0, 0, .5), (-1, 0, .125), (1, 0, .125), (0, -1, .125), (0, 1, .125)]
         z = np.zeros(len(x))
-        for dx, dy, w in offsets:
-            a, b = gx + dx, gy + dy
-            z += w * ((g[b, a] * (1 - u) + g[b, a + 1] * u) * (1 - v) + (g[b + 1, a] * (1 - u) + g[b + 1, a + 1] * u) * v)
+        # the points of one block of tiles at a time, in the order of their block key
+        bx, by = ix // 256 // self.BLOCK, iy // 256 // self.BLOCK
+        key = bx * 65536 + by
+        order = np.argsort(key, kind='stable')
+        starts = np.flatnonzero(np.r_[True, key[order][1:] != key[order][:-1]])
+        for first, last in zip(starts, np.r_[starts[1:], len(order)]):
+            at = order[first:last]
+            # a tile of margin each side: the 5-tap filter and the bilinear corner reach one pixel out
+            x0, y0 = int(bx[at[0]]) * self.BLOCK - 1, int(by[at[0]]) * self.BLOCK - 1
+            # the pixels the filter reads: from one before (ix, iy) to two after, in 256 px tiles
+            reach = np.unique(np.concatenate([((ix[at] + dx) // 256) * 65536 + (iy[at] + dy) // 256
+                                              for dx in (-1, 2) for dy in (-1, 2)]))
+            g = self._grid(x0, y0, x0 + self.BLOCK + 1, y0 + self.BLOCK + 1,
+                           [divmod(int(k), 65536) for k in reach])
+            gx, gy = ix[at] - x0 * 256, iy[at] - y0 * 256
+            for dx, dy, w in offsets:
+                a, b = gx + dx, gy + dy
+                z[at] += w * ((g[b, a] * (1 - u[at]) + g[b, a + 1] * u[at]) * (1 - v[at])
+                              + (g[b + 1, a] * (1 - u[at]) + g[b + 1, a + 1] * u[at]) * v[at])
         if not missing and not np.isfinite(z).all():
             raise FileNotFoundError('no_dem: profile stations outside the downloaded DEM')
         return z + LIFT

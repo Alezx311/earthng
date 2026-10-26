@@ -110,6 +110,74 @@ class SourceTests(unittest.TestCase):
         want=np.array([np.interp(v,xp[i],fp[i]) for v,i in zip(x,k)])
         self.assertTrue(np.array_equal(got,want))
 
+    def test_a_mosaic_over_far_apart_roads_holds_only_their_tiles(self):
+        # The profile solve samples the DEM once, for all stations. A country's roads span
+        # 400 km, and a grid over their bounding box was 4.7 GiB (Estonia, z13): the sampler
+        # reads the tiles near each point, answers equal that grid's.
+        import tracemalloc
+        frame = sources.Frame.at(25.0, 59.0)
+
+        class Tiles:
+            zoom = 13
+            def __init__(self):
+                self.frame, self.asked = frame, set()
+            def has(self, a, b):
+                return (a, b) not in self.hole
+            hole = set()
+            def pixels(self, x, y):
+                self.asked.add((int(x[0]) // 256, int(y[0]) // 256))
+                return 40. + .013 * x - .007 * y + 3 * np.sin(x / 37.) * np.cos(y / 53.)
+        terrain = Tiles()
+        rng = np.random.default_rng(5)
+        # two clusters about 550 km apart, points near tile edges
+        a = frame.local(25.0 + rng.uniform(0, .05, 400), 59.0 + rng.uniform(0, .03, 400))
+        far = frame.local(25.0 + rng.uniform(0, .05, 400), 54.0 + rng.uniform(0, .03, 400))
+        xy = np.column_stack([np.r_[a[0], far[0]], np.r_[a[1], far[1]]])
+        # the grid over their bounding box, as the sampler was first written
+        lon, lat = frame.geographic(xy[:, 0], xy[:, 1])
+        px, py = fast_profile.Mosaic._px(lon, lat, 13)
+        tx0, ty0, tx1, ty1 = int(px.min() // 256) - 1, int(py.min() // 256) - 1, int(px.max() // 256) + 1, int(py.max() // 256) + 1
+        terrain.hole = {(int(px[0] // 256), int(py[0] // 256))}     # a missing tile under the first point
+        tracemalloc.start()
+        mosaic = fast_profile.Mosaic(terrain, xy)
+        got = mosaic.sample(xy, missing=True)
+        peak = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        self.assertLess(peak, 60e6)                          # that grid held 277 MB
+        self.assertLess(len(terrain.asked), 400)
+        # only tiles within one of a point's own: the DEM's edge tiles beyond that may be missing on
+        # disk (z13 upsamples from z12 neighbours), and the grid never reached them
+        own = {(int(a) // 256, int(b) // 256) for a, b in zip(px, py)}
+        self.assertTrue(all(any(abs(t[0] - o[0]) <= 1 and abs(t[1] - o[1]) <= 1 for o in own) for t in terrain.asked))
+        self.assertGreater((ty1 - ty0 + 1) * (tx1 - tx0 + 1) * 65536 * 4, 2e8)    # the grid: 277 MB
+        # reference: the same filter on a grid of just the two clusters' tiles
+        want = np.empty(len(xy))
+        for part in (slice(0, 400), slice(400, 800)):
+            sub = xy[part]
+            lon, lat = frame.geographic(sub[:, 0], sub[:, 1])
+            x, y = fast_profile.Mosaic._px(lon, lat, 13)
+            x0, y0 = int(x.min() // 256) - 1, int(y.min() // 256) - 1
+            x1, y1 = int(x.max() // 256) + 1, int(y.max() // 256) + 1
+            grid = np.full(((y1 - y0 + 1) * 256, (x1 - x0 + 1) * 256), np.nan, dtype=np.float32)
+            for p in range(x0, x1 + 1):
+                for q in range(y0, y1 + 1):
+                    if terrain.has(p, q):
+                        gx, gy = np.meshgrid(np.arange(p * 256, p * 256 + 256), np.arange(q * 256, q * 256 + 256))
+                        grid[(q - y0) * 256:(q - y0 + 1) * 256, (p - x0) * 256:(p - x0 + 1) * 256] = \
+                            terrain.pixels(gx.ravel(), gy.ravel()).reshape(256, 256)
+            ix, iy = np.floor(x).astype(int), np.floor(y).astype(int)
+            u, v = x - ix, y - iy
+            gx, gy = ix - x0 * 256, iy - y0 * 256
+            z = np.zeros(len(x))
+            for dx, dy, w in [(0, 0, .5), (-1, 0, .125), (1, 0, .125), (0, -1, .125), (0, 1, .125)]:
+                s, t = gx + dx, gy + dy
+                z += w * ((grid[t, s] * (1 - u) + grid[t, s + 1] * u) * (1 - v) + (grid[t + 1, s] * (1 - u) + grid[t + 1, s + 1] * u) * v)
+            want[part] = z + sources.LIFT
+        self.assertTrue(np.array_equal(got, want, equal_nan=True))
+        self.assertTrue(np.isnan(got).any())
+        with self.assertRaises(FileNotFoundError):
+            mosaic.sample(xy, missing=False)               # the hole's points have no height
+
 
 class ProfileTests(unittest.TestCase):
     @staticmethod

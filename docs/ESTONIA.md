@@ -22,7 +22,7 @@ other Estonian players are welcome.
 ## Build
 
 ```powershell
-# the whole country (about 1 h on a desktop, ~330 MB)
+# the whole country at 10 m (about 1 h on a desktop, ~530 MB, under 1 GB of RAM)
 .venv\Scripts\python.exe earthng/country_fetch.py build --place estonia --mods "<BeamNG user folder>" --local-dem
 # one county, after a fix there (10–15 min)
 .venv\Scripts\python.exe earthng/country_fetch.py sections --place estonia

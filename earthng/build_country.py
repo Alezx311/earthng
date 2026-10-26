@@ -288,7 +288,11 @@ def _coastlines(store, box):
     if not tiles or not hasattr(store, 'meta'):
         return [geometry for _fid, kind, _data, geometry in _scenery(store, box) if kind == 'coastline']
     import osmium
+    # Every tile of an island holds the island's whole coastline, and a worker visits hundreds of
+    # tiles: each way is kept once, as an array (16 bytes a vertex, not ~110 in a list of tuples),
+    # and a tile only remembers which ways it holds.
     cache = store.__dict__.setdefault('_coast_tiles', {})
+    shore = store.__dict__.setdefault('_coast_ways', {})
     w, s, e, n = store.frame.geo_bbox(box)
     ways = {}
     for key, entry in tiles.items():
@@ -296,16 +300,19 @@ def _coastlines(store, box):
         if ce < w or cw > e or cn < s or cs > n:
             continue
         if key not in cache:
-            found = {}
+            held = []
             for obj in osmium.FileProcessor(str(Path(store.meta['source']) / entry['file'])).with_locations()                     .with_filter(osmium.filter.EntityFilter(osmium.osm.WAY)).with_filter(osmium.filter.TagFilter(('natural', 'coastline'))):
                 try:
                     coords = [(nd.lon, nd.lat) for nd in obj.nodes]
                 except osmium.InvalidLocationError:
                     continue
                 if len(coords) >= 2:
-                    found[obj.id] = coords
-            cache[key] = found
-        ways.update(cache[key])
+                    held.append(obj.id)
+                    if obj.id not in shore:
+                        shore[obj.id] = np.array(coords, dtype=float)
+            cache[key] = held
+        for way in cache[key]:
+            ways[way] = shore[way]
     if not ways:
         return []
     lines = [shapely.LineString(ways[k]) for k in sorted(ways)]
