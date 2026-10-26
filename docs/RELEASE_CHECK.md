@@ -1,5 +1,28 @@
 # Release verification
 
+## Planet 0.6.3 and Map Builder — 2026-10-26
+
+The `EarthNG` player release gets a new `earthng_planet.zip` (manifest 0.6.3) and
+`EarthNG-MapBuilder.zip`, both from c7ac7be. `earthng_albania.zip` stays the published
+0.4.0 file. The previous two assets are kept in `out/release/player-0.6.3-backup`.
+Country packs on Drive are not replaced; the live mods folder is not touched.
+
+Since 0.6.1: the 0.6.2 lawns, yards of blocks of flats (cars on driveways,
+playgrounds, porches, front gardens), and an inferred lamp no longer stands within
+12 m of a lamp OSM maps. Map Builder: the fixes of docs/MAPBUILDER_REVIEW.md, packs
+with point lamps and trees, lone stops and entrances, separate sidewalks and pedestrian
+squares, recut of tile caches made by older rules, parallel region index and worker
+counts sized to cores and free memory.
+
+- Full unit suite before packaging: 387 tests OK (`.venv`).
+- Map Builder ZIP unpacked into `out/release/test 0.6.3` (a folder with a space):
+  `test_country` 21, `test_country_setup` 24, `test_mapbuilder` 32, `test_tiles` 5, all
+  OK; the window's modules import from that folder with `python -I`.
+- Ukraine built through Map Builder's own path into a disposable profile
+  (`out/mapbuilder-ukraine-20261025`): 3.32 GB, timings in docs/MAPBUILDER_REVIEW.md.
+  That pack was not driven in BeamNG, and this planet was not driven in a disposable
+  profile before publication.
+
 ## Planet 0.6.2 — 2026-10-25
 
 The `EarthNG` player line stays on the 0.6.1 download. This planet is a separate
