@@ -1,5 +1,24 @@
 # Release verification
 
+## Map Builder — 2026-10-26, morning
+
+Only `EarthNG-MapBuilder.zip` on the `EarthNG` release is replaced, built from e8e2285.
+`earthng_planet.zip` stays the 0.6.3 file: nothing the planet carries (mod/, fast_art,
+fast_packs, materials in fast_style) changed since c7ac7be, so Refresh planet code writes
+the same Lua and materials. The previous Map Builder ZIP is kept in
+`out/release/mapbuilder-20261026-backup`.
+
+The overnight changes are in docs/MAPBUILDER_REVIEW.md: Ukraine from scratch builds in
+1 h 25 min instead of about 4 h, the export resumes after Stop, and a build checks the
+disk, holds a lock and keeps a current PBF when HEAD fails.
+
+- Full unit suite: 395 tests OK (`.venv`).
+- Map Builder ZIP unpacked into `out/release/test mapbuilder 20261026` (a folder with
+  spaces): `test_country` 22, `test_country_setup` 25, `test_mapbuilder` 37, `test_tiles` 6,
+  all OK; the window's modules import there with `python -I`.
+- Ukraine built from scratch with this code into a disposable profile; that pack was not
+  driven in BeamNG.
+
 ## Planet 0.6.3 and Map Builder — 2026-10-26
 
 The `EarthNG` player release gets a new `earthng_planet.zip` (manifest 0.6.3) and
