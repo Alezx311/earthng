@@ -1,5 +1,30 @@
 # Release verification
 
+## Planet 0.6.4 and Map Builder — 2026-10-26, afternoon
+
+The `EarthNG` player release gets a new `earthng_planet.zip` (manifest 0.6.4) and
+`EarthNG-MapBuilder.zip`, both from 26b7be9; release title and notes updated.
+`earthng_albania.zip` stays the published 0.4.0 file. The previous two assets and the
+old notes are kept in `out/release/player-0.6.4-backup`. Country packs are not rebuilt:
+the changes are Lua only.
+
+Since 0.6.3: the road ahead streams first (a tile's road before its scene, tiles by
+arrival time along the heading, urgent budgets), OSM lamps off the carriageway, decks
+not raised over a level slip road, parapets open at slip road mouths; merged PRs #18
+(Map Builder memory for whole countries at 10 m) and #19 (far-tile roads, staggered
+decks, rails under decks, road audit).
+
+- Full unit suite before packaging: 423 tests OK (`.venv`).
+- Offline: `bench_native.py` across Kyiv at 83 m/s, road lead min 0 -> 7.3 s;
+  `road_audit.py` over Kyiv 50.40-50.48 N, 30.45-30.65 E: lamps on a carriageway
+  3,705 -> 6, deck walls on asphalt 23 -> 3, steps 25 -> 7; Lviv centre lamps 43 -> 1.
+- Map Builder ZIP unpacked into `out/release/test 0.6.4` (a folder with a space):
+  `test_country` 23, `test_country_setup` 25, `test_mapbuilder` 37, `test_tiles` 6, all
+  OK; the window's modules import from that folder with `python -I`.
+- In game: the user drove this planet code (the same Lua, built with `--lang en`) in
+  Kyiv at high speed and confirmed the road ahead, the lamps and the bridge joints. The
+  release ZIP itself was not run in a disposable profile.
+
 ## Map Builder — 2026-10-26, morning
 
 Only `EarthNG-MapBuilder.zip` on the `EarthNG` release is replaced, built from e8e2285.
