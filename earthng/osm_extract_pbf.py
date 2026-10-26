@@ -17,22 +17,49 @@ from osm_select import drop_incomplete, landmark_category, poi  # noqa: E402
 
 
 def extract(pbf, out, bbox):
-    w, s, e, n = bbox
-    inside = lambda loc: loc.valid() and w <= loc.lon <= e and s <= loc.lat <= n
+    write(pbf, out, select(pbf, [bbox])[0])
+
+
+def select(pbf, bboxes):
+    """What extract() keeps for each of several boxes, from one read of pbf: a country is read
+    once for all its extracts instead of once per extract (Ukraine: 8 reads of 9 minutes)."""
+    boxes = [tuple(float(v) for v in b) for b in bboxes]
+    full = (1 << len(boxes)) - 1
     t = time.monotonic()
-    ways, relations, member_nodes, inside_nodes = set(), set(), set(), set()
+
+    def mask(loc):
+        if not loc.valid():
+            return 0
+        lon, lat = loc.lon, loc.lat
+        m = 0
+        for c, (w, s, e, n) in enumerate(boxes):
+            if w <= lon <= e and s <= lat <= n:
+                m |= 1 << c
+        return m
+    picks = [{'ways': set(), 'relations': set(), 'member_nodes': set(), 'inside_nodes': set()} for _ in boxes]
     relation_members, relevant = {}, set()
     processor = osmium.FileProcessor(str(pbf)).with_locations().with_filter(
         osmium.filter.EmptyTagFilter().enable_for(osmium.osm.NODE))
     for obj in processor:
         if obj.is_node():
-            if inside(obj.location):
-                inside_nodes.add(obj.id)
-                if obj.tags and (poi(obj.tags) or landmark_category(obj.tags)):
-                    member_nodes.add(obj.id)
+            m = mask(obj.location)
+            if m:
+                keep = bool(obj.tags) and (poi(obj.tags) or landmark_category(obj.tags))
+                for c in range(len(boxes)):
+                    if m >> c & 1:
+                        picks[c]['inside_nodes'].add(obj.id)
+                        if keep:
+                            picks[c]['member_nodes'].add(obj.id)
         elif obj.is_way():
-            if any(inside(nd.location) for nd in obj.nodes):
-                ways.add(obj.id)
+            m = 0
+            for nd in obj.nodes:
+                m |= mask(nd.location)
+                if m == full:
+                    break
+            if m:
+                for c in range(len(boxes)):
+                    if m >> c & 1:
+                        picks[c]['ways'].add(obj.id)
         elif obj.is_relation():
             relation_members[obj.id] = [(m.type, m.ref) for m in obj.members]
             if obj.tags.get('type') in ('restriction', 'multipolygon') or landmark_category(obj.tags):
@@ -40,30 +67,46 @@ def extract(pbf, out, bbox):
                 for member in obj.members:
                     if member.type == 'n':
                         try:
-                            if inside(processor.node_location_storage.get(member.ref)):
-                                inside_nodes.add(member.ref)
+                            m = mask(processor.node_location_storage.get(member.ref))
                         except KeyError:
-                            pass
-    changed = True
-    while changed:
-        hits = {rid for rid, members in relation_members.items() if rid in relevant and any(
-            (kind == 'w' and ref in ways) or (kind == 'n' and ref in inside_nodes)
-            or (kind == 'r' and ref in relations) for kind, ref in members)}
-        changed = bool(hits - relations)
-        relations |= hits
-    pending = list(relations)
-    while pending:
-        rid = pending.pop()
-        for kind, ref in relation_members.get(rid, []):
-            if kind == 'w':
-                ways.add(ref)
-            elif kind == 'n':
-                member_nodes.add(ref)
-            elif kind == 'r' and ref not in relations:
-                relations.add(ref)
-                pending.append(ref)
-    print(f'pass 1: {len(ways)} ways, {len(relations)} relations ({time.monotonic()-t:.0f} s)', flush=True)
-    nodes = set(member_nodes)
+                            continue
+                        for c in range(len(boxes)):
+                            if m >> c & 1:
+                                picks[c]['inside_nodes'].add(member.ref)
+    out = []
+    for pick in picks:
+        ways, relations, member_nodes, inside_nodes = pick['ways'], pick['relations'], pick['member_nodes'], pick['inside_nodes']
+        changed = True
+        while changed:
+            hits = {rid for rid, members in relation_members.items() if rid in relevant and any(
+                (kind == 'w' and ref in ways) or (kind == 'n' and ref in inside_nodes)
+                or (kind == 'r' and ref in relations) for kind, ref in members)}
+            changed = bool(hits - relations)
+            relations |= hits
+        pending = list(relations)
+        while pending:
+            rid = pending.pop()
+            for kind, ref in relation_members.get(rid, []):
+                if kind == 'w':
+                    ways.add(ref)
+                elif kind == 'n':
+                    member_nodes.add(ref)
+                elif kind == 'r' and ref not in relations:
+                    relations.add(ref)
+                    pending.append(ref)
+        out.append({'ways': ways, 'relations': relations, 'member_nodes': member_nodes,
+                    'relation_members': {rid: relation_members[rid] for rid in relations if rid in relation_members}})
+        del pick['inside_nodes']
+    print(f'pass 1: {len(boxes)} extracts, ' + ', '.join(f"{len(o['ways'])} ways" for o in out)
+          + f' ({time.monotonic()-t:.0f} s)', flush=True)
+    return out
+
+
+def write(pbf, out, pick):
+    """The objects one select() pick names, from pbf into out (complete ways and relations)."""
+    t = time.monotonic()
+    ways, relations, relation_members = pick['ways'], pick['relations'], pick['relation_members']
+    nodes = set(pick['member_nodes'])
     for obj in osmium.FileProcessor(str(pbf), osmium.osm.WAY).with_filter(osmium.filter.IdFilter(ways)):
         nodes.update(nd.ref for nd in obj.nodes)
     print(f'pass 2: {len(nodes)} nodes ({time.monotonic()-t:.0f} s)', flush=True)

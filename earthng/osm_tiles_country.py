@@ -78,10 +78,26 @@ def name(n):
     return f'{x0}_{y0}' if (x0, y0) == (x1, y1) else f'{x0}_{y0}-{x1}_{y1}'
 
 
-def run_extract(src, dst, box):
+def run_select(src, boxes, picks):
+    """One read of src picks the objects of every child box; each pick is pickled beside its
+    extract for run_write. A parent used to be read once per child (16 times for a block group)."""
+    import pickle
+    import osm_extract_pbf
+    for pick, path in zip(osm_extract_pbf.select(src, boxes), picks):
+        tmp = path.with_name(path.name + '.part')
+        with open(tmp, 'wb') as f:
+            pickle.dump(pick, f, protocol=pickle.HIGHEST_PROTOCOL)
+        tmp.replace(path)
+    return picks
+
+
+def run_write(src, dst, pick):
+    import pickle
     import osm_extract_pbf
     if not dst.exists():
-        osm_extract_pbf.extract(src, dst, box)
+        with open(pick, 'rb') as f:
+            osm_extract_pbf.write(src, dst, pickle.load(f))
+    pick.unlink(missing_ok=True)
     return dst
 
 
@@ -167,11 +183,20 @@ def main():
                 f = pool.submit(run_cut, src, work / 'blocks' / name(n), n['box'])
                 running[f] = (n, src, 'cut')
             else:
-                for c in n['children']:
-                    if not done(c):
-                        dst = work / 'extracts' / f'{name(c)}.osm.pbf'
-                        f = pool.submit(run_extract, src, dst, c['box'])
-                        running[f] = (c, src, 'extract')
+                todo = [c for c in n['children'] if not done(c)]
+                n['pending'] = len(todo)
+                fresh = []
+                for c in todo:
+                    dst = work / 'extracts' / f'{name(c)}.osm.pbf'
+                    if dst.exists():                  # a resumed run: this child is extracted already
+                        start(c, dst)
+                    else:
+                        fresh.append(c)
+                if fresh:
+                    picks = [work / 'extracts' / f'{name(c)}.pick' for c in fresh]
+                    f = pool.submit(run_select, src, [c['box'] for c in fresh], picks)
+                    running[f] = (fresh, src, 'select')
+                return
             n['pending'] = sum(1 for c in n['children'] if not done(c))
 
         parents = {}
@@ -201,7 +226,12 @@ def main():
             for f in ready:
                 n, src, kind = running.pop(f)
                 f.result()
-                if kind == 'extract':
+                if kind == 'select':
+                    for c in n:
+                        dst = work / 'extracts' / f'{name(c)}.osm.pbf'
+                        g = pool.submit(run_write, src, dst, work / 'extracts' / f'{name(c)}.pick')
+                        running[g] = (c, src, 'extract')
+                elif kind == 'extract':
                     n['pending'] = 0
                     start(n, work / 'extracts' / f'{name(n)}.osm.pbf')
                 else:

@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -124,15 +125,25 @@ def fetch_dem(index, log, pid):
 
 def prepare(p, log, cut_jobs):
     """Tiles and DEM of a pack. Returns the tiles directory, or None after an error."""
+    import country_fetch
     pid, tiles = p['id'], TILES / p['tiles']
-    if not (tiles / 'index.json').exists():
-        source = PBF / p['pbf']
+    source = PBF / p['pbf']
+    stale = (tiles / 'index.json').exists() and not country_fetch.tiles_current(tiles)
+    if stale and not source.exists():
+        # the PBF was deleted after the cut: the pack builds without lone points (lamps, trees)
+        log.say(pid, f'{tiles.name} predates osm_select.VERSION and {source.name} is gone: building from it')
+        stale = False
+    if stale or not (tiles / 'index.json').exists():
         while not source.exists():                      # build_packs runs beside the downloader
             log.set(pid, stage='waiting for pbf')
             time.sleep(30)
         log.set(pid, stage='cutting tiles')
-        log.say(pid, f'cut {source.name}')
-        cmd = [sys.executable, str(HERE / 'osm_tiles_country.py'), str(source), '--out', str(tiles),
+        log.say(pid, f'cut {source.name}' + (' again (older selection rules)' if stale else ''))
+        # a stale cut stays in place until its replacement is done
+        target = tiles.with_name(tiles.name + '.recut') if stale else tiles
+        if target.exists():
+            shutil.rmtree(target)
+        cmd = [sys.executable, str(HERE / 'osm_tiles_country.py'), str(source), '--out', str(target),
                '--jobs', str(cut_jobs), '--block', str(p['block'])]
         if p['box']:
             cmd += ['--package-box', *map(str, p['box'])]
@@ -142,6 +153,9 @@ def prepare(p, log, cut_jobs):
             log.say(pid, f'cut failed ({code})')
             log.set(pid, stage='failed', error=f'cut exit {code}')
             return None
+        if stale:
+            shutil.rmtree(tiles)
+            target.replace(tiles)
     log.set(pid, stage='DEM')
     fetch_dem(json.loads((tiles / 'index.json').read_bytes()), log, pid)
     log.set(pid, stage='prepared')

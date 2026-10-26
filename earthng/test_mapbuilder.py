@@ -163,6 +163,43 @@ class JobSizingTests(unittest.TestCase):
         self.assertGreater(sysmem.free_memory_gb(), 0)
 
 
+class DiskTests(unittest.TestCase):
+    def test_a_step_the_disk_cannot_hold_is_refused_before_it_starts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            usage = Mock(free=5 * 2**30)
+            with patch.object(country_fetch.shutil, 'disk_usage', return_value=usage):
+                country_fetch.ensure_space(Path(tmp) / 'not' / 'yet', 4 * 2**30, 'Export')
+                with self.assertRaisesRegex(OSError, r'Export needs about 6.0 GB free.*only 5.0 GB'):
+                    country_fetch.ensure_space(Path(tmp) / 'not' / 'yet', 6 * 2**30, 'Export')
+
+    def test_install_checks_room_for_the_copy(self):
+        import zipfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pack = root / 'earthng_test.zip'
+            with zipfile.ZipFile(pack, 'w') as z:
+                z.writestr('earthng/countries/test/manifest.json', '{}')
+            with patch.object(country_fetch.shutil, 'disk_usage', return_value=Mock(free=1000)):
+                with self.assertRaisesRegex(OSError, 'Installing earthng_test.zip'):
+                    country_fetch.install_zip(pack, root / 'profile', 'test')
+            self.assertFalse((root / 'profile' / 'mods' / 'earthng_test.zip').exists())
+
+    def test_a_rebuild_removes_only_the_region_index_it_replaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            for name in ('fast-18-old', 'fast-18-kept', 'fast-18-other', 'fast-18-new'):
+                (work / 'fast-index' / name).mkdir(parents=True)
+                (work / 'fast-index' / name / 'sources.sqlite').write_bytes(b'x' * 10)
+            first = [{'dir': str(work / 'fast-index' / 'fast-18-old')}, {'dir': str(work / 'fast-index' / 'fast-18-kept')}]
+            country_fetch.forget_old_index(work, 'test-user', first, emit=lambda _: None)
+            country_fetch.forget_old_index(work, 'other-user', [{'dir': str(work / 'fast-index' / 'fast-18-other')}],
+                                           emit=lambda _: None)
+            second = [{'dir': str(work / 'fast-index' / 'fast-18-kept')}, {'dir': str(work / 'fast-index' / 'fast-18-new')}]
+            country_fetch.forget_old_index(work, 'test-user', second, emit=lambda _: None)
+            left = sorted(p.name for p in (work / 'fast-index').iterdir())
+            self.assertEqual(left, ['fast-18-kept', 'fast-18-new', 'fast-18-other'])
+
+
 class AssemblyTests(unittest.TestCase):
     def test_failed_assembly_preserves_blocks_for_retry(self):
         import osm_tiles_country as cutter

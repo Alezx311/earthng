@@ -75,3 +75,34 @@ class SourceBoxTests(unittest.TestCase):
         box = osm_tiles.source_box([24.793, 59.274, 25.016, 59.374], extract=[24.8, 59.0, 26.0, 60.0])
         self.assertEqual(box[0], 24.8)
         self.assertNotIn(495, {x for x, _ in self.tiles_kept(box)})
+
+
+class SelectTests(unittest.TestCase):
+    def test_one_read_for_several_boxes_picks_what_one_read_per_box_picks(self):
+        import tempfile
+        from pathlib import Path
+        import osmium
+        import osm_extract_pbf
+        with tempfile.TemporaryDirectory() as tmp:
+            pbf = str(Path(tmp) / 'grid.osm.pbf')
+            with osmium.SimpleWriter(pbf) as w:
+                nid = 0
+                for y in range(10):
+                    for x in range(10):
+                        nid += 1
+                        tags = {'highway': 'street_lamp'} if (x + y) % 7 == 0 else {}
+                        w.add_node(osmium.osm.mutable.Node(id=nid, location=(x * .1, y * .1), tags=tags))
+                for y in range(10):        # a street along each row and a short one in each column pair
+                    w.add_way(osmium.osm.mutable.Way(id=y + 1, nodes=[y * 10 + x + 1 for x in range(10)],
+                                                     tags={'highway': 'residential'}))
+                for x in range(0, 10, 2):
+                    w.add_way(osmium.osm.mutable.Way(id=100 + x, nodes=[x + 1, x + 11, x + 21], tags={'barrier': 'fence'}))
+                w.add_relation(osmium.osm.mutable.Relation(id=1, members=[('w', 104, 'outer'), ('w', 3, 'outer')],
+                                                           tags={'type': 'multipolygon', 'landuse': 'forest'}))
+            boxes = [[0, 0, .45, .45], [.4, 0, .95, .45], [0, .4, .45, .95], [.4, .4, .95, .95], [.05, .05, .15, .15]]
+            together = osm_extract_pbf.select(pbf, boxes)
+            for box, pick in zip(boxes, together):
+                alone = osm_extract_pbf.select(pbf, [box])[0]
+                self.assertEqual(pick, alone)
+            self.assertIn(1, together[0]['relations'])         # the forest reaches into the first box
+            self.assertTrue(all(pick['ways'] for pick in together))

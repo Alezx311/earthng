@@ -213,6 +213,24 @@ def copy_stream(source, target, cancel=None):
         target.write(chunk)
 
 
+def ensure_space(path, needed, what):
+    """Refuse a step the disk cannot hold, before it starts: a full disk midway left caches
+    half-written. needed: bytes."""
+    probe = Path(path)
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    free = shutil.disk_usage(probe).free
+    if needed and free < needed:
+        raise OSError(f'{what} needs about {needed / 2**30:.1f} GB free on {probe.anchor or probe}, '
+                      f'but only {free / 2**30:.1f} GB is free. Free some space and press Build again; '
+                      'finished steps are kept.')
+
+
+# Disk a country takes per byte of its PBF (Ukraine, 0.88 GB): source tiles 4.1, extracts while
+# cutting 1.5, the region index 6.6, the pack 3.8 and its installed copy 3.8.
+SPACE_PER_PBF_BYTE = 20
+
+
 def install_zip(source, mods, slug_id, section=None, cancel=None):
     """Copy a country zip, or one section of it, into the BeamNG mods folder."""
     source = Path(source)
@@ -228,6 +246,7 @@ def install_zip(source, mods, slug_id, section=None, cancel=None):
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / (f'earthng_{slug_id}.zip' if section is None else f'earthng_{slug_id}_{section}.zip')
     temporary = target.with_suffix('.zip.part')
+    ensure_space(target_dir, source.stat().st_size + 2**26, f'Installing {target.name}')
     try:
         with source.open('rb') as src, temporary.open('wb') as dst:
             copy_stream(src, dst, cancel)
@@ -395,6 +414,13 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
                 emit('The cached source tiles predate the points the generator now reads '
                      '(lamps, trees, stops, entrances): cutting them again.')
             emit(f"PBF {place['name']}: {place['pbf']}")
+            try:
+                size = pbf.stat().st_size if pbf.is_file() else content_length(place['pbf'])
+            except (OSError, ValueError):
+                size = None
+            if size:
+                share = 1 if box is None else 0.3       # a selection keeps part of the country
+                ensure_space(Path(root) / 'data', int(size * SPACE_PER_PBF_BYTE * share), f"Building {place['name']}")
             download(place['pbf'], pbf, emit, cancel)
     with stage('Cut tiles'):
         if not cached_tiles:
@@ -454,6 +480,8 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     part = f"_{section['id']}" if section else ''
     emit(f"building earthng_{slug_id}{part}.zip, block {look['block']}")
     with stage('Export'):
+        # the pack is about the size of its source tiles (Ukraine: 3.3 GB from 3.6)
+        ensure_space(out, sum(t.get('bytes', 0) for t in index.get('tiles', {}).values()) + 2**28, 'The export')
         # Same process as the index: export's block pool dies in the detached window too.
         export_path = work / 'export-path.txt'
         run_build_job({'command': 'export', 'id': slug_id, 'title': place['name'], 'version': '0.4.0',
@@ -469,7 +497,33 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     with stage('Install'):
         installed = install_zip(archive, mods, slug_id, section and section['id'], cancel=cancel)
     emit(f'installed {installed}')
+    forget_old_index(work, tiles.name + (f"_{section['id']}" if section else ''), regions, emit)
     return installed
+
+
+def forget_old_index(work, key, regions, emit=print):
+    """After a pack is installed, delete the region indexes that the previous build of the same
+    source (key) used and this one does not. A rebuilt country left its old ones behind for good
+    (out/world/fast-index had grown to 75 GB)."""
+    record = Path(work) / 'builds' / f'{key}.json'
+    keep = sorted({Path(r['dir']).name for r in regions if isinstance(r, dict) and r.get('dir')})
+    try:
+        previous = set(json.loads(record.read_text(encoding='utf-8')))
+    except (OSError, ValueError, TypeError):
+        previous = set()
+    freed = 0
+    for name in sorted(previous - set(keep)):
+        folder = Path(work) / 'fast-index' / name
+        if not (isinstance(name, str) and name.startswith('fast-') and folder.is_dir()):
+            continue
+        freed += sum(f.stat().st_size for f in folder.rglob('*') if f.is_file())
+        shutil.rmtree(folder, ignore_errors=True)
+    if freed:
+        emit(f'removed the region index of the previous build ({freed / 2**30:.1f} GB)')
+    record.parent.mkdir(parents=True, exist_ok=True)
+    temporary = record.with_suffix('.json.part')
+    temporary.write_text(json.dumps(keep), encoding='utf-8')
+    temporary.replace(record)
 
 
 def run_build_job(job, emit=print, cancel=None):
