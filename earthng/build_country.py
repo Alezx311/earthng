@@ -800,7 +800,7 @@ def section_region(source, dem, work, core, region_id, outline=None, emit=print)
     return region
 
 
-def grid_regions(source, dem, work, step=None, emit=print, cancel=None):
+def grid_regions(source, dem, work, step=None, emit=print, cancel=None, jobs=None):
     """Cover a whole OSM package: one source index per grid box of step degrees, with its own
     frame at the box centre, so the car stays within ~80 km of its origin. A package small
     enough to index whole stays one region."""
@@ -821,22 +821,61 @@ def grid_regions(source, dem, work, step=None, emit=print, cancel=None):
         for bx in range(math.floor((c[0]+1e-9)/dx), math.floor((c[2]-1e-9)/dx) + 1):
             for by in range(math.floor((c[1]+1e-9)/dy), math.floor((c[3]-1e-9)/dy) + 1):
                 boxes.add((bx, by))
+    cores = [[round(bx*dx, 6), round(by*dy, 6), round((bx+1)*dx, 6), round((by+1)*dy, 6)] for bx, by in sorted(boxes)]
+    # Each region's road profile is one single-threaded solve (Ukraine: 101 regions, ~1.5 h in a
+    # row at a third of the CPU), so regions are indexed side by side; finished ones are cached.
+    workers = jobs or index_jobs(len(cores))
+    found = {}
+    if workers > 1 and len(cores) > 1:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        with ProcessPoolExecutor(workers, initializer=_index_worker, initargs=(workers,)) as pool:
+            futures = {pool.submit(_index_box, source, work, dem, core): n for n, core in enumerate(cores)}
+            for done, future in enumerate(as_completed(futures), 1):
+                if _stopped(cancel):
+                    for other in futures:
+                        other.cancel()
+                    raise InterruptedError('build stopped')
+                n = futures[future]
+                found[n], skipped = future.result()
+                emit(f'index {done}/{len(cores)}: {cores[n]}' + (f' skipped: {skipped}' if skipped else ''))
+    else:
+        for n, core in enumerate(cores):
+            if _stopped(cancel):
+                raise InterruptedError('build stopped')
+            emit(f'index {n+1}/{len(cores)}: {core}')
+            found[n], skipped = _index_box(source, work, dem, core, emit)
+            if skipped:
+                emit(f'skip {core}: {skipped}')
     regions = []
-    for n, (bx, by) in enumerate(sorted(boxes)):
-        if _stopped(cancel):
-            raise InterruptedError('build stopped')
-        core = [round(bx*dx, 6), round(by*dy, 6), round((bx+1)*dx, 6), round((by+1)*dy, 6)]
-        window = [core[0]-PAD[0], core[1]-PAD[1], core[2]+PAD[0], core[3]+PAD[1]]
-        emit(f'index {n+1}/{len(boxes)}: {core}')
-        try:
-            directory, _ = sources.prepare(source, Path(work) / 'fast-index', dem, emit=emit, box=window)
-        except ValueError as exc:
-            emit(f'skip {core}: {exc}')
+    for n, core in enumerate(cores):
+        if found.get(n) is None:
             continue
         lon, lat = core[0], core[1]
         rid = f"{'e' if lon >= 0 else 'w'}{abs(round(lon*10)):04d}-{'n' if lat >= 0 else 's'}{abs(round(lat*10)):03d}"
-        regions.append({'dir': directory, 'core': core, 'id': rid})
+        regions.append({'dir': found[n], 'core': core, 'id': rid})
     return regions
+
+
+def index_jobs(count):
+    """Regions indexed at once: a third of the cores (each parses its tiles on a few more), and
+    about 2 GB of free memory per region."""
+    import sysmem
+    return min(count, sysmem.jobs(2, max(1, (os.cpu_count() or 2) // 3)))
+
+
+def _index_worker(workers):
+    sources.PARSE_WORKERS = max(2, min(6, (os.cpu_count() or 2) // workers))
+
+
+def _index_box(source, work, dem, core, emit=None):
+    """(index directory, None) of one grid region, or (None, why) when it has nothing to index."""
+    window = [core[0]-PAD[0], core[1]-PAD[1], core[2]+PAD[0], core[3]+PAD[1]]
+    try:
+        directory, _ = sources.prepare(source, Path(work) / 'fast-index', dem,
+                                       emit=emit or (lambda _: None), box=window)
+    except ValueError as exc:
+        return None, str(exc)
+    return directory, None
 
 
 def _region_record(region):

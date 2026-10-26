@@ -3,7 +3,9 @@ import unittest
 from pathlib import Path
 import zipfile
 import io
+import json
 import sys
+import threading
 from unittest.mock import patch
 
 import country_fetch
@@ -85,8 +87,161 @@ class LookTests(unittest.TestCase):
         found = places.search(list(self.places.values()), 'ber')
         self.assertEqual([place['id'] for place in found], ['berlin'])
 
+    def test_corrupt_cached_list_is_refetched(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            path = places.cache_path(folder)
+            path.parent.mkdir(parents=True)
+            path.write_text('{broken')
+            response = io.BytesIO(json.dumps(INDEX).encode())
+            with patch.object(places.urllib.request, 'urlopen', return_value=response):
+                loaded = places.load_index(folder, emit=lambda _: None)
+            self.assertEqual(loaded, places.parse_index(INDEX))
+            self.assertEqual(places.load_cached(folder), loaded)
+
+    def test_failed_refresh_keeps_the_working_cached_list(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            path = places.cache_path(folder)
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(INDEX))
+            with patch.object(places.urllib.request, 'urlopen', side_effect=OSError('offline')):
+                loaded = places.load_index(folder, refresh=True, emit=lambda _: None)
+            self.assertEqual(loaded, places.parse_index(INDEX))
+
 
 class PackFileTests(unittest.TestCase):
+    def test_download_resumes_only_matching_version_and_range(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            dest = Path(folder) / 'extract.pbf'
+            part = dest.with_suffix('.pbf.part')
+            meta = part.with_suffix('.part.json')
+            url = 'https://example.com/extract.pbf'
+            part.write_bytes(b'abc')
+            meta.write_text(json.dumps({'url': url, 'validator': '"v1"'}))
+            response = io.BytesIO(b'def')
+            response.status = 206
+            response.headers = {'Content-Range': 'bytes 3-5/6', 'Content-Length': '3', 'ETag': '"v1"'}
+            with patch.object(country_fetch, 'content_length', return_value=6), \
+                    patch.object(country_fetch.urllib.request, 'urlopen', return_value=response) as opened:
+                country_fetch.download(url, dest, emit=lambda _: None)
+            request = opened.call_args.args[0]
+            self.assertEqual(request.get_header('If-range'), '"v1"')
+            self.assertEqual(request.get_header('Range'), 'bytes=3-')
+            self.assertEqual(dest.read_bytes(), b'abcdef')
+            self.assertFalse(meta.exists())
+
+    def test_download_rejects_wrong_resume_offset_without_damaging_partial(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            dest = Path(folder) / 'extract.pbf'
+            part = dest.with_suffix('.pbf.part')
+            url = 'https://example.com/extract.pbf'
+            part.write_bytes(b'abc')
+            part.with_suffix('.part.json').write_text(json.dumps({'url': url, 'validator': '"v1"'}))
+            response = io.BytesIO(b'abcdef')
+            response.status = 206
+            response.headers = {'Content-Range': 'bytes 0-5/6', 'ETag': '"v1"'}
+            with patch.object(country_fetch, 'content_length', return_value=6), \
+                    patch.object(country_fetch.urllib.request, 'urlopen', return_value=response):
+                with self.assertRaisesRegex(OSError, 'Content-Range'):
+                    country_fetch.download(url, dest, emit=lambda _: None)
+            self.assertEqual(part.read_bytes(), b'abc')
+            self.assertFalse(dest.exists())
+
+    def test_get_works_without_head_and_restarts_unverified_partial(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            dest = Path(folder) / 'extract.pbf'
+            dest.with_suffix('.pbf.part').write_bytes(b'old prefix')
+            response = io.BytesIO(b'new')
+            response.status = 200
+            response.headers = {'Content-Length': '3'}
+            with patch.object(country_fetch, 'content_length', side_effect=OSError('HEAD rejected')), \
+                    patch.object(country_fetch.urllib.request, 'urlopen', return_value=response) as opened:
+                country_fetch.download('https://example.com/extract.pbf', dest, emit=lambda _: None)
+            self.assertIsNone(opened.call_args.args[0].get_header('Range'))
+            self.assertEqual(dest.read_bytes(), b'new')
+
+    def test_changed_source_restarts_instead_of_appending(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            dest = Path(folder) / 'extract.pbf'
+            part = dest.with_suffix('.pbf.part')
+            url = 'https://example.com/extract.pbf'
+            part.write_bytes(b'old')
+            part.with_suffix('.part.json').write_text(json.dumps({'url': url, 'validator': '"old"'}))
+            response = io.BytesIO(b'new version')
+            response.status = 200  # If-Range no longer matches
+            response.headers = {'Content-Length': '11', 'ETag': '"new"'}
+            with patch.object(country_fetch, 'content_length', return_value=6), \
+                    patch.object(country_fetch.urllib.request, 'urlopen', return_value=response):
+                country_fetch.download(url, dest, emit=lambda _: None)
+            self.assertEqual(dest.read_bytes(), b'new version')
+
+    def test_cancel_before_download_or_worker_does_no_work(self):
+        cancel = threading.Event()
+        cancel.set()
+        with patch.object(country_fetch, 'content_length') as head, \
+                patch.object(country_fetch.subprocess, 'Popen') as popen:
+            with self.assertRaises(InterruptedError):
+                country_fetch.download('https://example.com/file', 'unused', cancel=cancel)
+            with self.assertRaises(InterruptedError):
+                country_fetch.run_step(['unused'], cancel=cancel)
+        head.assert_not_called()
+        popen.assert_not_called()
+
+    def test_cancel_install_preserves_existing_pack_and_cleans_partial(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'source.zip'
+            with zipfile.ZipFile(source, 'w') as archive:
+                archive.writestr('earthng/countries/test/manifest.json', '{}')
+            target = root / 'mods' / 'earthng_test.zip'
+            target.parent.mkdir()
+            target.write_bytes(b'existing pack')
+            cancel = threading.Event()
+            copy = country_fetch.copy_stream
+            def stopped(src, dst, event):
+                copy(src, dst, event)
+                event.set()
+            with patch.object(country_fetch, 'copy_stream', side_effect=stopped):
+                with self.assertRaises(InterruptedError):
+                    country_fetch.install_zip(source, root, 'test', cancel=cancel)
+            self.assertEqual(target.read_bytes(), b'existing pack')
+            self.assertFalse(target.with_suffix('.zip.part').exists())
+
+    def test_refresh_streams_art_and_cancel_preserves_original(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            planet = root / 'mods' / 'earthng_planet.zip'
+            planet.parent.mkdir()
+            with zipfile.ZipFile(planet, 'w') as archive:
+                archive.writestr('art/large.bin', b'a' * (3 * 1024 * 1024))
+            before = planet.read_bytes()
+            cancel = threading.Event()
+            original_read = zipfile.ZipFile.read
+            def guarded(archive, name, *args, **kwargs):
+                self.assertNotEqual(name, 'art/large.bin', 'art must be streamed')
+                return original_read(archive, name, *args, **kwargs)
+            original_copy = country_fetch.copy_stream
+            def stopped(src, dst, event):
+                original_copy(src, dst, event)
+                event.set()
+            with patch.object(zipfile.ZipFile, 'read', guarded), \
+                    patch.object(country_fetch, 'copy_stream', side_effect=stopped):
+                with self.assertRaises(InterruptedError):
+                    country_fetch.refresh_planet(root, emit=lambda _: None, cancel=cancel)
+            self.assertEqual(planet.read_bytes(), before)
+            self.assertFalse(planet.with_suffix('.zip.tmp').exists())
+            with patch.object(zipfile.ZipFile, 'read', guarded):
+                country_fetch.refresh_planet(root, emit=lambda _: None)
+            with zipfile.ZipFile(planet) as archive:
+                self.assertEqual(archive.read('art/large.bin'), b'a' * (3 * 1024 * 1024))
+
     def test_truncated_download_keeps_partial_and_existing_destination(self):
         from tempfile import TemporaryDirectory
         with TemporaryDirectory() as folder:

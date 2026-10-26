@@ -44,6 +44,24 @@ class AssetTests(unittest.TestCase):
             self.assertIn('e2rf_' + kind, style.MATERIALS)
         self.assertTrue(style.MATERIALS['e2rf_railing_blue']['alphaTest'])
 
+    def test_street_points_and_separate_sidewalks_reach_the_pack(self):
+        # generator.lua places point trees and lamps, and props along a footway=sidewalk
+        self.assertEqual(style.point_kind({'natural': 'tree'}), 'tree')
+        self.assertEqual(style.point_kind({'highway': 'street_lamp'}), 'lamp')
+        self.assertEqual(style.line_kind({'highway': 'footway', 'footway': 'sidewalk'}), 'path')
+        self.assertEqual(style.line_kind({'highway': 'footway', 'footway': 'crossing'}), 'path')
+        self.assertIsNone(style.line_kind({'highway': 'footway', 'bridge': 'yes'}))
+        # a pedestrian area is the generator's square; a pedestrian street is a road
+        self.assertEqual(style.ground_kind({'highway': 'pedestrian', 'area': 'yes'}), 'paved')
+        self.assertIsNone(style.ground_kind({'highway': 'pedestrian'}))
+
+    def test_raw_cut_keeps_every_tagged_point(self):
+        import osm_select
+        self.assertTrue(osm_select.poi({'highway': 'street_lamp'}))
+        self.assertTrue(osm_select.poi({'entrance': 'yes'}))
+        self.assertFalse(osm_select.poi({'created_by': 'JOSM', 'source': 'survey'}))
+        self.assertFalse(osm_select.poi({}))
+
     def test_yard_art_has_a_cell_per_colour_and_see_through_bars(self):
         with tempfile.TemporaryDirectory() as tmp:
             art.yard_art(Path(tmp))

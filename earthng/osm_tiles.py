@@ -23,7 +23,7 @@ import time
 import osmium
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from osm_select import landmark_category, poi  # noqa: E402
+from osm_select import VERSION as SELECT, landmark_category, poi  # noqa: E402
 
 CELL = 0.05
 BUFFER = 0.01
@@ -188,7 +188,7 @@ def cut(pbf, out, package_box=None):
         for w in writers.values():
             w.close()
     index = {'cell': CELL, 'buffer': BUFFER, 'source': Path(pbf).name, 'package_box': package_box,
-             'tiles': {}}
+             'select': SELECT, 'tiles': {}}
     for k in keys:
         part = out / f'{k[0]}_{k[1]}.osm.pbf.part'
         if counts[k]['ways'] == 0:

@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import zipfile
 from contextlib import contextmanager
@@ -96,37 +97,89 @@ def content_length(url, timeout=30):
 
 
 def download(url, dest, emit=print, cancel=None):
-    """Resume a file into dest. Skips the transfer when dest already has the advertised size."""
+    """Resume only a validated version of a file; publish complete transfers atomically."""
+    def check_cancel():
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError('download stopped')
+
+    check_cancel()
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    total = content_length(url)
+    try:
+        total = content_length(url)
+    except OSError:
+        # Some download servers allow GET but reject HEAD.
+        total = None
+    check_cancel()
     if dest.exists() and total and dest.stat().st_size == total:
         emit(f'already have {dest.name} ({total} bytes)')
         return dest
     part = dest.with_suffix(dest.suffix + '.part')
+    metadata = part.with_suffix(part.suffix + '.json')
     have = part.stat().st_size if part.exists() else 0
+    try:
+        saved = json.loads(metadata.read_text(encoding='utf-8'))
+        validator = saved.get('validator') if saved.get('url') == url else None
+    except (OSError, ValueError, AttributeError):
+        validator = None
+    if not isinstance(validator, str) or not validator:
+        have = 0  # old/unknown partials cannot safely be appended to today's extract
     headers = {'User-Agent': USER_AGENT}
     if have:
         headers['Range'] = f'bytes={have}-'
+        headers['If-Range'] = validator
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=60, context=tls.context()) as response:
+    try:
+        response = urllib.request.urlopen(request, timeout=60, context=tls.context())
+    except urllib.error.HTTPError as exc:
+        if exc.code != 416 or not have:
+            raise
+        exc.close()
+        check_cancel()
+        have = 0
+        request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+        response = urllib.request.urlopen(request, timeout=60, context=tls.context())
+    with response:
+        check_cancel()
         status = getattr(response, 'status', 200)
+        response_headers = getattr(response, 'headers', {})
+        length = response_headers.get('Content-Length')
+        length = int(length) if length and length.isdigit() else None
+        expected = length
         if status == 200:
             have = 0
-        elif status not in (200, 206):
+            total = length if length is not None else total
+        elif status == 206:
+            match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', response_headers.get('Content-Range', ''))
+            if not match:
+                raise OSError('invalid Content-Range in resumed download')
+            start, end, total = map(int, match.groups())
+            if start != have or end < start or end >= total:
+                raise OSError('invalid Content-Range in resumed download')
+            expected = end - start + 1
+            if length is not None and length != expected:
+                raise OSError('Content-Length does not match Content-Range')
+        else:
             raise OSError(f'{url}: HTTP {status}')
+        etag = response_headers.get('ETag', '')
+        current_validator = etag if etag and not etag.startswith('W/') else response_headers.get('Last-Modified')
+        if status == 206 and have and current_validator and current_validator != validator:
+            raise OSError('source changed during resumed download; retry the download')
         mode = 'ab' if status == 206 and have else 'wb'
         chunk = 1024 * 256
         last = time.monotonic()
+        received = 0
         with open(part, mode) as handle:
+            metadata.write_text(json.dumps({'url': url, 'validator': current_validator or
+                                           (validator if status == 206 else None)}), encoding='utf-8')
             while True:
-                if cancel is not None and cancel.is_set():
-                    raise InterruptedError('download stopped')
+                check_cancel()
                 data = response.read(chunk)
                 if not data:
                     break
                 handle.write(data)
                 have += len(data)
+                received += len(data)
                 now = time.monotonic()
                 if now - last > 1.5:
                     if total:
@@ -134,18 +187,36 @@ def download(url, dest, emit=print, cancel=None):
                     else:
                         emit(f'{dest.name}: {have / 2**20:.0f} MB')
                     last = now
-    if cancel is not None and cancel.is_set():
-        raise InterruptedError('download stopped')
+    check_cancel()
+    if expected is not None and received != expected:
+        raise OSError(f'incomplete download: expected {expected} response bytes, got {received}')
     if total is not None and part.stat().st_size != total:
         raise OSError(f'incomplete download: expected {total} bytes, got {part.stat().st_size}')
     os.replace(part, dest)
+    metadata.unlink(missing_ok=True)
     emit(f'downloaded {dest.name}')
     return dest
 
 
-def install_zip(source, mods, slug_id, section=None):
+def check_stopped(cancel):
+    if cancel is not None and cancel.is_set():
+        raise InterruptedError('operation stopped')
+
+
+def copy_stream(source, target, cancel=None):
+    """Bound memory and observe Stop even while copying a large local archive."""
+    while True:
+        check_stopped(cancel)
+        chunk = source.read(1024 * 1024)
+        if not chunk:
+            return
+        target.write(chunk)
+
+
+def install_zip(source, mods, slug_id, section=None, cancel=None):
     """Copy a country zip, or one section of it, into the BeamNG mods folder."""
     source = Path(source)
+    check_stopped(cancel)
     if not source.is_file():
         raise FileNotFoundError(source)
     with zipfile.ZipFile(source) as archive:
@@ -157,8 +228,13 @@ def install_zip(source, mods, slug_id, section=None):
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / (f'earthng_{slug_id}.zip' if section is None else f'earthng_{slug_id}_{section}.zip')
     temporary = target.with_suffix('.zip.part')
-    shutil.copyfile(source, temporary)
-    os.replace(temporary, target)
+    try:
+        with source.open('rb') as src, temporary.open('wb') as dst:
+            copy_stream(src, dst, cancel)
+        check_stopped(cancel)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
     return target
 
 
@@ -171,6 +247,34 @@ def tiles_dir(root, slug_id, box):
         digest = hashlib.sha1(','.join(f'{float(v):.5f}' for v in box).encode()).hexdigest()[:8]
         name = f'{name}-{digest}'
     return Path(root) / 'data' / 'osm_tiles' / name
+
+
+def tiles_current(tiles):
+    """A finished cut made by today's selection rules (osm_select.VERSION)."""
+    import osm_select
+    try:
+        return json.loads((Path(tiles) / 'index.json').read_text(encoding='utf-8')).get('select') == osm_select.VERSION
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def cut_tiles(pbf, tiles, box=None, jobs=4, emit=print, cancel=None):
+    """Cut pbf into tiles. A cut by older rules stays usable until its replacement is done."""
+    tiles = Path(tiles)
+    target = tiles.with_name(tiles.name + '.recut') if tiles.exists() else tiles
+    if not tiles_current(target):
+        if target.exists():
+            shutil.rmtree(target)
+        emit(f'cutting tiles into {tiles.name}')
+        command = [_python(), str(HERE / 'osm_tiles_country.py'), str(pbf), '--out', str(target),
+                   '--jobs', str(jobs)]
+        if box:
+            command += ['--package-box', *(str(v) for v in box)]
+        run_step(command, emit, cancel)
+    if target != tiles:
+        shutil.rmtree(tiles)
+        target.replace(tiles)
+    return tiles
 
 
 def pbf_path(root, slug_id):
@@ -256,7 +360,9 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     known.setdefault(place['id'], place)
     look = looks.canonical(look or looks.recommended(place['id'], known))
     include = looks.canonical_include(include if include is not None else {})
-    jobs = jobs or min(4, max(1, (os.cpu_count() or 2) - 1))
+    # None: sized to the cores and the memory free when each stage starts (sysmem.jobs); a
+    # fixed 4 left 12 of 16 cores idle in the export and nearly ran a country cut out of RAM.
+    import sysmem
     if section is not None:
         import sections
         if box is not None:
@@ -279,21 +385,19 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
 
     pbf = pbf_path(root, slug_id)
     tiles = tiles_dir(root, slug_id, box)
-    cached_tiles = (tiles / 'index.json').is_file()
+    cached_tiles = tiles_current(tiles)
     with stage('Sources'):
         if cached_tiles:
             emit('Reusing completed source tiles; no PBF download or scan needed.')
         else:
+            if (tiles / 'index.json').is_file():
+                emit('The cached source tiles predate the points the generator now reads '
+                     '(lamps, trees, stops, entrances): cutting them again.')
             emit(f"PBF {place['name']}: {place['pbf']}")
             download(place['pbf'], pbf, emit, cancel)
     with stage('Cut tiles'):
         if not cached_tiles:
-            emit(f'cutting tiles into {tiles.name}')
-            command = [_python(), str(HERE / 'osm_tiles_country.py'), str(pbf), '--out', str(tiles),
-                       '--jobs', str(min(jobs, 4))]
-            if box:
-                command += ['--package-box', *(str(v) for v in box)]
-            run_step(command, emit, cancel)
+            cut_tiles(pbf, tiles, box, min(jobs, 4) if jobs else sysmem.jobs(4, 4), emit, cancel)
     if road_register:
         with stage('Road register'):
             import est_roads
@@ -352,7 +456,7 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
         # Same process as the index: export's block pool dies in the detached window too.
         export_path = work / 'export-path.txt'
         run_build_job({'command': 'export', 'id': slug_id, 'title': place['name'], 'version': '0.4.0',
-                       'regions': regions, 'out': str(out), 'jobs': jobs, 'landing': landing,
+                       'regions': regions, 'out': str(out), 'jobs': jobs or sysmem.jobs(2), 'landing': landing,
                        'look': look, 'include': include,
                        'map_data': None if map_data is None else str(map_data),
                        'work': str(work), 'result': str(export_path), 'credits': credits,
@@ -362,7 +466,7 @@ def build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=
     if cancel is not None and cancel.is_set():
         raise InterruptedError('build stopped; completed ZIP retained, not installed')
     with stage('Install'):
-        installed = install_zip(archive, mods, slug_id, section and section['id'])
+        installed = install_zip(archive, mods, slug_id, section and section['id'], cancel=cancel)
     emit(f'installed {installed}')
     return installed
 
@@ -384,6 +488,7 @@ def run_build_job(job, emit=print, cancel=None):
 def run_step(command, emit=print, cancel=None):
     """Capture worker output even when MapBuilder.bat uses pythonw; cancel its process tree."""
     import threading
+    check_stopped(cancel)
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
     with subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           text=True, encoding='utf-8', errors='replace',
@@ -407,15 +512,18 @@ def run_step(command, emit=print, cancel=None):
             if cancel is None:
                 time.sleep(0.2)
         reader.join()
+        check_stopped(cancel)
         if process.returncode:
             raise subprocess.CalledProcessError(process.returncode, command)
 
 
-def refresh_planet(mods, emit=print):
+def refresh_planet(mods, emit=print, cancel=None):
     """Replace Lua, materials.json and the packs' settings inside an existing planet zip. Art
     files stay (the settings name only art of the same version, and the game's own maps)."""
     import fast_art
     import fast_style
+
+    check_stopped(cancel)
 
     zip_path = Path(mods) / 'mods' / 'earthng_planet.zip'
     if not zip_path.is_file():
@@ -437,23 +545,31 @@ def refresh_planet(mods, emit=print):
                                      replacements[world].decode('utf-8'), count=1, flags=re.M).encode('utf-8')
     temporary = zip_path.with_suffix('.zip.tmp')
     replaced = 0
-    with zipfile.ZipFile(zip_path) as source, zipfile.ZipFile(temporary, 'w') as dest:
-        for info in source.infolist():
-            data = replacements.pop(info.filename, None)
-            if data is None:
-                data = source.read(info.filename)
-            else:
-                replaced += 1
-            stamp = info.date_time if info.date_time[0] >= 1980 else (2020, 1, 1, 0, 0, 0)
-            copy = zipfile.ZipInfo(info.filename, date_time=stamp)
-            copy.compress_type = info.compress_type
-            copy.external_attr = info.external_attr
-            dest.writestr(copy, data)
-        for name, data in replacements.items():
-            if name.startswith('lua/') or name == 'earthng/planet/materials.json':
-                dest.writestr(name, data)
-                replaced += 1
-    os.replace(temporary, zip_path)
+    try:
+        with zipfile.ZipFile(zip_path) as source, zipfile.ZipFile(temporary, 'w') as dest:
+            for info in source.infolist():
+                check_stopped(cancel)
+                data = replacements.pop(info.filename, None)
+                stamp = info.date_time if info.date_time[0] >= 1980 else (2020, 1, 1, 0, 0, 0)
+                copy = zipfile.ZipInfo(info.filename, date_time=stamp)
+                copy.compress_type = info.compress_type
+                copy.external_attr = info.external_attr
+                if data is None:
+                    copy.file_size = info.file_size
+                    with source.open(info) as src, dest.open(copy, 'w') as dst:
+                        copy_stream(src, dst, cancel)
+                else:
+                    dest.writestr(copy, data)
+                    replaced += 1
+            for name, data in replacements.items():
+                check_stopped(cancel)
+                if name.startswith('lua/') or name == 'earthng/planet/materials.json':
+                    dest.writestr(name, data)
+                    replaced += 1
+        check_stopped(cancel)
+        os.replace(temporary, zip_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     emit(f'planet code updated ({replaced} files) in {zip_path.name}')
     return zip_path
 

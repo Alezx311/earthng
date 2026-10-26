@@ -35,8 +35,8 @@ def signature(place_id, box, include, cached_pbf, cached_tiles):
 
 
 def estimate(size, box, include, cached_pbf=False, cached_tiles=False, previous=None):
-    if previous and len(previous) == len(STAGES) and all(
-            isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in previous):
+    if isinstance(previous, (list, tuple)) and len(previous) == len(STAGES) and all(
+            not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in previous):
         return list(previous), 'previous successful build'
     if not size:
         return None, 'waiting for source size'

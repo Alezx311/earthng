@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import sys
 import threading
 import time
 import webbrowser
@@ -67,6 +68,9 @@ class Setup:
         self.preview_after = None
         self.map_after = None
         self.map_version = 0
+        self.map_future = None
+        self.map_results = {}
+        self.map_result_lock = threading.Lock()
         self.pool = ThreadPoolExecutor(3, thread_name_prefix='mapbuilder')
         self.history = timing.load_history(HISTORY)
         self.stage_times = {}
@@ -220,7 +224,11 @@ class Setup:
             except queue.Empty:
                 break
             if callable(line):
-                line()
+                try:
+                    line()
+                except Exception as exc:
+                    self.root.report_callback_exception(*sys.exc_info())
+                    messages.append(f'Could not apply background result: {exc}')
                 continue
             messages.append(line)
         if messages:
@@ -236,9 +244,11 @@ class Setup:
             elapsed = time.monotonic() - self.started
             label = f'Elapsed {timing.duration(elapsed)}'
             if self.active_stage:
-                index = timing.STAGES.index(self.active_stage)
-                label = f'{index+1}/{len(timing.STAGES)} · {self.active_stage} · {label}'
-                if self.run_estimate:
+                label = f'{self.active_stage} · {label}'
+                index = timing.STAGES.index(self.active_stage) if self.active_stage in timing.STAGES else None
+                if index is not None:
+                    label = f'{index+1}/{len(timing.STAGES)} · {label}'
+                if index is not None and self.run_estimate:
                     remaining = sum(self.run_estimate[index:]) - (time.monotonic()-self.stage_started)
                     label += (f' · roughly {timing.duration(remaining*.5)}–{timing.duration(remaining*2.5)} remaining'
                               if remaining > 5 else ' · finishing this stage; estimate may be exceeded')
@@ -252,7 +262,12 @@ class Setup:
         self.root.after(200, self.pump)
 
     def close(self):
-        self.closing = True
+        with self.map_result_lock:
+            self.closing = True
+            # Results already queued may never be displayed after the window closes.
+            for data in self.map_results.values():
+                data.close()
+            self.map_results.clear()
         self.stop()
         if self.running:
             self.status.set('Stopping safely before closing…')
@@ -263,12 +278,19 @@ class Setup:
             return
         self.map_version += 1
         version, mods = self.map_version, self.mods.get()
-        self.pool.submit(self.load_map, version, mods)
+        if self.map_future:
+            self.map_future.cancel()
+        self.map_future = self.pool.submit(self.load_map, version, mods)
 
     def load_map(self, version, mods):
         try:
             data = MapData(ROOT, mods)
-            self.lines.put(lambda: self.set_map_data(data, version))
+            with self.map_result_lock:
+                if self.closing or version != self.map_version:
+                    data.close()
+                else:
+                    self.map_results[version] = data
+                    self.lines.put(lambda: self.set_map_data(data, version))
         except Exception as exc:
             self.say(f'Offline map unavailable: {exc}')
 
@@ -280,6 +302,8 @@ class Setup:
             self.say(f'Region boundaries unavailable: {exc}. You can still choose a source from the list.')
 
     def set_map_data(self, data, version):
+        with self.map_result_lock:
+            self.map_results.pop(version, None)
         if version != self.map_version or self.closing:
             data.close()
             return
@@ -397,7 +421,7 @@ class Setup:
         area = box or (list(boundary.bounds) if boundary is not None else None)
         slug = places.slug(self.place['id'])
         cached_pbf = country_fetch.pbf_path(ROOT, slug).is_file()
-        cached_tiles = (country_fetch.tiles_dir(ROOT, slug, box) / 'index.json').is_file()
+        cached_tiles = country_fetch.tiles_current(country_fetch.tiles_dir(ROOT, slug, box))
         include = self.chosen_include()
         key = timing.signature(self.place['id'], box, include, cached_pbf, cached_tiles)
         estimate, reason = timing.estimate(self.sizes.get(self.place['id']), area, include,
@@ -644,11 +668,11 @@ class Setup:
             if self.cancel.is_set():
                 raise InterruptedError('install stopped')
             if info.get('state') == 'local':
-                path = country_fetch.install_zip(info['path'], mods, slug_id)
+                path = country_fetch.install_zip(info['path'], mods, slug_id, cancel=self.cancel)
             elif info.get('state') == 'url':
                 dest = ROOT / 'out' / 'country-setup' / f'earthng_{slug_id}.zip'
                 country_fetch.download(info['url'], dest, self.say, self.cancel)
-                path = country_fetch.install_zip(dest, mods, slug_id)
+                path = country_fetch.install_zip(dest, mods, slug_id, cancel=self.cancel)
             else:
                 self.say('no ready pack')
                 return
@@ -709,7 +733,7 @@ class Setup:
 
         def target():
             try:
-                country_fetch.refresh_planet(mods, self.say)
+                country_fetch.refresh_planet(mods, self.say, cancel=self.cancel)
             finally:
                 self.lines.put(self.reload_map)
         self.run(target)

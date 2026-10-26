@@ -5,12 +5,13 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from shapely.geometry import Polygon, box
 
 import builder_estimate as timing
 import builder_map
+import osm_select
 import country_fetch
 import looks
 import places
@@ -48,6 +49,15 @@ class SelectionTests(unittest.TestCase):
 
 
 class OnlineTileTests(unittest.TestCase):
+    def test_close_releases_idle_download_threads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tiles = builder_map.OnlineTiles(tmp)
+            tiles.close()
+            tiles.close()
+            for worker in tiles.workers:
+                worker.join(timeout=2)
+                self.assertFalse(worker.is_alive())
+
     def test_fresh_cache_served_missing_queued_once_and_offscreen_dropped(self):
         from PIL import Image
         with tempfile.TemporaryDirectory() as tmp:
@@ -87,6 +97,27 @@ class OnlineTileTests(unittest.TestCase):
                 tiles.get(key)
             self.assertEqual(tiles.todo.qsize(), 1)
 
+    def test_stale_memory_tile_retries_after_a_failed_refresh(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as tmp:
+            tiles = builder_map.OnlineTiles(tmp, workers=0)
+            key = (5, 1, 2)
+            path = tiles.path(key)
+            path.parent.mkdir(parents=True)
+            Image.new('RGB', (256, 256), 'red').save(path)
+            import os
+            os.utime(path, (1, 1))
+            tiles.visible = {key}
+            self.assertIsNotNone(tiles.get(key))
+            with patch.object(tiles, 'download', side_effect=OSError('offline')):
+                tiles.fetch(tiles.todo.get())
+            tiles.drain()
+            tiles.get(key)
+            self.assertEqual(tiles.todo.qsize(), 0)
+            with patch.object(builder_map.time, 'time', return_value=time.time() + tiles.RETRY + 1):
+                self.assertIsNotNone(tiles.get(key))
+            self.assertEqual(tiles.todo.qsize(), 1)
+
 
 class EstimateTests(unittest.TestCase):
     def test_estimate_accounts_for_cache_source_scan_and_area(self):
@@ -103,6 +134,9 @@ class EstimateTests(unittest.TestCase):
         actual = [1, 2, 3, 4, 5, 6]
         self.assertEqual(timing.estimate(None, None, {}, previous=actual)[0], actual)
         self.assertIsNone(timing.estimate(None, None, {}, previous=[float('nan')]*6)[0])
+        for previous in (42, True, {'bad': 'history'}, [True]*6):
+            with self.subTest(previous=previous):
+                self.assertIsNone(timing.estimate(None, None, {}, previous=previous)[0])
 
     def test_history_corruption_and_retention(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -115,13 +149,93 @@ class EstimateTests(unittest.TestCase):
             self.assertNotIn('0', history)
 
 
+class JobSizingTests(unittest.TestCase):
+    def test_jobs_follow_free_memory_and_cores(self):
+        import sysmem
+        with patch.object(sysmem.os, 'cpu_count', return_value=16):
+            with patch.object(sysmem, 'free_memory_gb', return_value=18.5):
+                self.assertEqual(sysmem.jobs(2), 9)
+                self.assertEqual(sysmem.jobs(4, 4), 4)
+            with patch.object(sysmem, 'free_memory_gb', return_value=40):
+                self.assertEqual(sysmem.jobs(2), 15)          # one core stays for the window
+            with patch.object(sysmem, 'free_memory_gb', return_value=1):
+                self.assertEqual(sysmem.jobs(4), 1)           # never zero
+        self.assertGreater(sysmem.free_memory_gb(), 0)
+
+
+class AssemblyTests(unittest.TestCase):
+    def test_failed_assembly_preserves_blocks_for_retry(self):
+        import osm_tiles_country as cutter
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            block, output = root / 'block', root / 'output'
+            block.mkdir()
+            output.mkdir()
+            tiles = {str(i): {'file': f'{i}.bin', 'bytes': 4} for i in range(3)}
+            (block / 'index.json').write_text(json.dumps({'tiles': tiles}))
+            for tile in tiles.values():
+                (block / tile['file']).write_bytes(b'test')
+            copy = shutil.copyfile
+            def interrupted(src, dst):
+                if src.name == '1.bin':
+                    raise OSError('disk full')
+                return copy(src, dst)
+            with patch.object(cutter.os, 'link', side_effect=OSError('no hardlinks')), \
+                    patch.object(cutter.shutil, 'copyfile', side_effect=interrupted):
+                with self.assertRaisesRegex(OSError, 'disk full'):
+                    cutter.assemble_blocks([block], output)
+            for tile in tiles.values():
+                self.assertEqual((block / tile['file']).read_bytes(), b'test')
+            for path in output.iterdir():
+                path.unlink()
+            self.assertEqual(cutter.assemble_blocks([block], output), tiles)
+            for tile in tiles.values():
+                self.assertEqual((output / tile['file']).read_bytes(), b'test')
+
+
 class BuildLifecycleTests(unittest.TestCase):
+    def test_tiles_cut_by_older_rules_are_cut_again_and_replaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tiles = country_fetch.tiles_dir(root, 'test', None)
+            tiles.mkdir(parents=True)
+            (tiles / 'index.json').write_text('{"tiles": {}}')     # no 'select': before lamps and trees
+            (tiles / 'old.osm.pbf').write_bytes(b'old')
+            self.assertFalse(country_fetch.tiles_current(tiles))
+            commands = []
+
+            def fake_cut(command, emit=None, cancel=None):
+                commands.append(command)
+                out = Path(command[command.index('--out') + 1])
+                self.assertNotEqual(out, tiles)                     # the old cut stays until this one is done
+                self.assertTrue((tiles / 'old.osm.pbf').exists())
+                out.mkdir()
+                (out / 'index.json').write_text(json.dumps({'select': osm_select.VERSION, 'tiles': {}}))
+
+            with patch.object(country_fetch, 'run_step', side_effect=fake_cut):
+                country_fetch.cut_tiles(root / 'test.osm.pbf', tiles, emit=lambda _: None)
+            self.assertEqual(len(commands), 1)
+            self.assertTrue(country_fetch.tiles_current(tiles))
+            self.assertFalse((tiles / 'old.osm.pbf').exists())
+            self.assertFalse(tiles.with_name(tiles.name + '.recut').exists())
+
+    def test_interrupted_cut_never_replaces_the_old_tiles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tiles = Path(tmp) / 'tiles'
+            tiles.mkdir()
+            (tiles / 'index.json').write_text('{}')
+            with patch.object(country_fetch, 'run_step', side_effect=InterruptedError('build stopped')):
+                with self.assertRaises(InterruptedError):
+                    country_fetch.cut_tiles(Path(tmp) / 'x.osm.pbf', tiles, emit=lambda _: None)
+            self.assertEqual((tiles / 'index.json').read_text(), '{}')
+
     def test_cached_tiles_skip_pbf_and_report_ordered_stages(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             tiles = country_fetch.tiles_dir(root, 'test', None)
             tiles.mkdir(parents=True)
-            (tiles / 'index.json').write_text('{}')
+            (tiles / 'index.json').write_text(json.dumps({'select': osm_select.VERSION}))
             events = []
             commands = []
 
@@ -158,7 +272,8 @@ class BuildLifecycleTests(unittest.TestCase):
             root = Path(tmp)
             tiles = country_fetch.tiles_dir(root, 'test', None)
             tiles.mkdir(parents=True)
-            index = {'tiles': {'a': {'coverage': [24.70, 59.40, 24.71, 59.41]}}, 'package_box': [24.7, 59.4, 24.71, 59.41]}
+            index = {'tiles': {'a': {'coverage': [24.70, 59.40, 24.71, 59.41]}}, 'package_box': [24.7, 59.4, 24.71, 59.41],
+                     'select': osm_select.VERSION}
             (tiles / 'index.json').write_text(json.dumps(index))
             dem = root / 'out' / 'world' / 'cache'
             first = fast_dem.audit(index, dem)[0]
@@ -318,6 +433,7 @@ class TkTests(unittest.TestCase):
 
     def tearDown(self):
         if hasattr(self, 'ui'):
+            self.ui.progressbar.stop()
             self.ui.pool.shutdown(wait=False, cancel_futures=True)
             # Cancel scheduled Tk callbacks before destroying the interpreter.
             if self.ui.map.pending:
@@ -382,6 +498,42 @@ class TkTests(unittest.TestCase):
             self.assertIn('Failed', self.ui.progress_text.get())
             self.assertFalse(self.ui.running)
             save.assert_not_called()
+
+    def test_optional_stage_keeps_pump_alive_and_completion_is_delivered(self):
+        self.ui.started = time.monotonic()
+        self.ui.run_estimate = [1] * len(timing.STAGES)
+        self.ui.busy(True)
+        self.ui.stage_progress('Map detail', None)
+        self.ui.pump()
+        self.assertIn('Map detail', self.ui.progress_text.get())
+        self.ui.lines.put(lambda: self.ui.finished('Complete', None))
+        self.ui.pump()
+        self.assertFalse(self.ui.running)
+
+    def test_callback_failure_does_not_strand_the_build(self):
+        self.ui.started = time.monotonic()
+        self.ui.run_estimate = None
+        self.ui.busy(True)
+        def broken():
+            raise ValueError('bad background result')
+        self.ui.lines.put(broken)
+        self.ui.lines.put(lambda: self.ui.finished('Complete', None))
+        with patch.object(self.root, 'report_callback_exception') as report:
+            self.ui.pump()
+        report.assert_called_once()
+        self.assertFalse(self.ui.running)
+
+    def test_close_disposes_queued_and_late_map_archives(self):
+        import country_ui
+        queued, late = Mock(), Mock()
+        with patch.object(country_ui, 'MapData', return_value=queued):
+            self.ui.load_map(self.ui.map_version, '')
+        self.ui.close()
+        queued.close.assert_called_once()
+        with patch.object(country_ui, 'MapData', return_value=late):
+            self.ui.load_map(self.ui.map_version, '')
+        late.close.assert_called_once()
+        self.assertEqual(self.ui.map_results, {})
 
 
 if __name__ == '__main__':

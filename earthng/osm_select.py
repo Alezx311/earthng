@@ -5,6 +5,13 @@ relation completeness), kept here so that cutting tiles and running the fast gen
 nothing from Earth2Road.
 """
 
+# Raw cut selection, recorded in every tile index.json: caches cut by older rules miss facts the
+# exporter now reads and are cut again. 2: every tagged node (lamps, trees, stops, entrances).
+VERSION = 2
+
+# Keys that tag no fact about the place: a node with only these stays out of the cut.
+META_KEYS = {'created_by', 'source', 'note', 'fixme', 'FIXME', 'description'}
+
 # Landmark categories: a relation or node with one of these tags is kept. Name alone does
 # not make a point a landmark.
 LANDMARK_TAGS = {'historic': {'monument', 'memorial', 'castle', 'ruins'},
@@ -19,11 +26,6 @@ LANDMARK_WEIGHT = {'monument': .85, 'memorial': .55, 'castle': .85, 'ruins': .60
                    'mall': .65, 'park': .55, 'stadium': .75, 'square': .8, 'bridge': .75,
                    'tower': .6, 'works': .55, 'museum': .7, 'attraction': .65}
 
-# Tagged points a way-only selection would miss (fuel stations, large shops).
-POI_TAGS = {'amenity': {'fuel'},
-            'shop': {'supermarket', 'hypermarket', 'mall', 'doityourself', 'department_store'}}
-
-
 def landmark_category(tags):
     """The landmark category of an OSM object's tags (the weightiest), or None."""
     values = [tags.get(k) for k, choices in LANDMARK_TAGS.items() if tags.get(k) in choices]
@@ -31,7 +33,13 @@ def landmark_category(tags):
 
 
 def poi(tags):
-    return any(tags.get(key) in values for key, values in POI_TAGS.items())
+    """Keep every tagged point as a source fact, including future scenery classes.
+
+    Classification belongs to the country exporter, not to the irreversible raw
+    cut. Untagged nodes are still retained only when a selected way/relation
+    needs them. This also keeps standalone doors, stops, trees and playgrounds.
+    """
+    return any((tag.k if hasattr(tag, 'k') else tag) not in META_KEYS for tag in tags)
 
 
 def drop_incomplete(relations, members, written):

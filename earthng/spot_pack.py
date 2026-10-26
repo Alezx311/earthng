@@ -65,11 +65,8 @@ def build_spot(spot_id, title, lat, lon, km, source, look, out, jobs=2, landing=
     pbf = source_pbf(source, emit)
     check_extent(pbf, box, emit)
     tiles = country_fetch.tiles_dir(ROOT, country_id, box)
-    if not (tiles / 'index.json').exists():
-        emit(f'cutting tiles into {tiles.name}')
-        country_fetch.run_step([country_fetch._python(), str(HERE / 'osm_tiles_country.py'), str(pbf),
-                                '--out', str(tiles), '--jobs', str(jobs),
-                                '--package-box', *(str(v) for v in box)], emit)
+    if not country_fetch.tiles_current(tiles):
+        country_fetch.cut_tiles(pbf, tiles, box, jobs, emit)
     index = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))
     emit(f"{len(index['tiles'])} tiles")
     dem = ROOT / 'out' / 'world' / 'cache'

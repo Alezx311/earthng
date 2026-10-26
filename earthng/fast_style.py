@@ -421,8 +421,9 @@ def ground_kind(tags):
         return 'island'
     if tags.get('leisure') == 'playground':
         return 'playground'           # a yard's sandpit and swings (generator.lua YARD.playground)
-    if tags.get('landuse') in PAVED or tags.get('amenity') == 'parking' or tags.get('place') == 'square':
-        return 'paved'
+    if (tags.get('landuse') in PAVED or tags.get('amenity') == 'parking' or tags.get('place') == 'square'
+            or tags.get('highway') == 'pedestrian' and tags.get('area') == 'yes'):
+        return 'paved'                # a pedestrian area is a square to the generator
     if tags.get('landuse') in WOODS or tags.get('natural') in WOODS:
         return 'forest'
     if tags.get('leisure') in PARKS or tags.get('landuse') in PARKS:
@@ -446,7 +447,9 @@ def line_kind(tags):
     if tags.get('man_made') == 'gantry':
         return 'gantry'
     h = tags.get('highway')
-    if h in PATHS and tags.get('area') != 'yes' and tags.get('footway') not in ('sidewalk', 'crossing')             and tags.get('bridge') in (None, 'no') and tags.get('tunnel') in (None, 'no') and tags.get('layer', '0') in ('0', ''):
+    if (h in PATHS and tags.get('area') != 'yes'
+            and tags.get('bridge') in (None, 'no') and tags.get('tunnel') in (None, 'no')
+            and tags.get('layer', '0') in ('0', '')):
         return 'path'
     if tags.get('natural') == 'tree_row':
         return 'tree_row'
@@ -468,6 +471,10 @@ UNMARKED = ('no', 'none', 'unmarked')
 def point_kind(tags):
     """'stop', 'signal' or one of ROAD_DETAILS for an OSM node, else None."""
     highway = tags.get('highway')
+    if tags.get('natural') == 'tree':
+        return 'tree'
+    if highway == 'street_lamp':
+        return 'lamp'
     if highway == 'crossing':
         marked = tags.get('crossing:markings', tags.get('crossing'))
         return None if marked in UNMARKED else 'crossing'

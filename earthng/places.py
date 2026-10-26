@@ -64,17 +64,28 @@ def fetch_index(root, emit=print):
     with urllib.request.urlopen(request, timeout=60, context=tls.context()) as response:
         payload = response.read()
     places = parse_index(json.loads(payload.decode('utf-8')))
-    path.write_bytes(payload)
+    temporary = path.with_suffix('.json.part')
+    temporary.write_bytes(payload)
+    temporary.replace(path)
     emit(f'{len(places)} regions in {path}')
     return places
 
 
 def load_index(root, refresh=False, emit=print):
-    if not refresh:
+    try:
         cached = load_cached(root)
+    except (OSError, ValueError) as exc:
+        cached = None
+        emit(f'Could not read cached region list: {exc}. Fetching a new copy.')
+    if cached and not refresh:
+        return cached
+    try:
+        return fetch_index(root, emit)
+    except (OSError, ValueError):
         if cached:
+            emit('Could not refresh region list; using the cached copy.')
             return cached
-    return fetch_index(root, emit)
+        raise
 
 
 def slug(place_id):

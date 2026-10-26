@@ -51,7 +51,7 @@ class MapData:
             self.index = json.loads(self.read('index.json'))
             self.labels = json.loads(self.read('labels.json')).get('places', [])
         except (OSError, KeyError, ValueError, zipfile.BadZipFile):
-            self.index = {}
+            self.close()
 
     def read(self, name):
         if self.archive:
@@ -72,6 +72,8 @@ class MapData:
         self.tile.cache_clear()
         if self.archive:
             self.archive.close()
+            self.archive = None
+        self.index = {}
 
 
 class OnlineTiles:
@@ -88,14 +90,19 @@ class OnlineTiles:
     def __init__(self, cache, workers=2):
         self.cache = Path(cache)
         self.images = OrderedDict()
+        self.expires = {}
         self.queued = set()
-        self.failed = {}
+        self.failed = OrderedDict()
         self.visible = set()
         self.error = None
         self.todo = queue.LifoQueue()   # the latest view first
         self.arrived = queue.SimpleQueue()
+        self.closed = threading.Event()
+        self.workers = []
         for _ in range(workers):
-            threading.Thread(target=self.work, daemon=True).start()
+            worker = threading.Thread(target=self.work, daemon=True)
+            self.workers.append(worker)
+            worker.start()
 
     def path(self, key):
         z, x, y = key
@@ -104,30 +111,46 @@ class OnlineTiles:
     def get(self, key):
         """The tile, or a stale cached copy or None while it downloads (queued once)."""
         image = self.images.get(key)
+        fresh = False
         if image is not None:
             self.images.move_to_end(key)
-            return image
-        path = self.path(key)
-        try:
-            fresh = time.time() - path.stat().st_mtime < self.MAX_AGE
-            image = self.keep(key, rgb(path.read_bytes()))
-        except OSError:
-            fresh = False
-        if not fresh and key not in self.queued and time.time() - self.failed.get(key, 0) > self.RETRY:
+            fresh = time.time() < self.expires.get(key, 0)
+        else:
+            path = self.path(key)
+            try:
+                expires = path.stat().st_mtime + self.MAX_AGE
+                image = self.keep(key, rgb(path.read_bytes()), expires)
+                fresh = time.time() < expires
+            except (OSError, ValueError):
+                pass
+        if not self.closed.is_set() and not fresh and key not in self.queued and time.time() - self.failed.get(key, 0) > self.RETRY:
             self.queued.add(key)
             self.todo.put(key)
         return image
 
-    def keep(self, key, image):
+    def keep(self, key, image, expires=None):
         self.images[key] = image
+        self.expires[key] = time.time() + self.MAX_AGE if expires is None else expires
         self.images.move_to_end(key)
         while len(self.images) > self.KEEP:
-            self.images.popitem(last=False)
+            old, _ = self.images.popitem(last=False)
+            self.expires.pop(old, None)
         return image
 
     def work(self):
         while True:
-            self.fetch(self.todo.get())
+            key = self.todo.get()
+            if key is None or self.closed.is_set():
+                return
+            self.fetch(key)
+
+    def close(self):
+        if self.closed.is_set():
+            return
+        self.closed.set()
+        self.visible = set()
+        for _ in self.workers:
+            self.todo.put(None)
 
     def fetch(self, key):
         # A tile panned off screen before its turn is dropped; it queues again if seen again.
@@ -162,6 +185,9 @@ class OnlineTiles:
             self.queued.discard(key)
             if error is not None:
                 self.failed[key], self.error = time.time(), str(error)
+                self.failed.move_to_end(key)
+                while len(self.failed) > self.KEEP:
+                    self.failed.popitem(last=False)
             elif image is not None:
                 self.keep(key, image)
                 self.failed.pop(key, None)
@@ -222,10 +248,23 @@ class RegionMap(ttk.Frame):
                 self.online = OnlineTiles(paths.OUT / 'osm-tiles')
             self.credit.set('Natural Earth offline; street detail © OpenStreetMap contributors (online)')
         else:
+            if self.online:
+                self.online.visible = set()
             self.credit.set('Natural Earth • offline regional map (no street detail)')
             if self.zoom > MAX_ZOOM:
                 self.change_zoom(MAX_ZOOM - self.zoom)
         self.schedule()
+
+    def destroy(self):
+        for callback in (self.pending, self.polling):
+            if callback is not None:
+                self.after_cancel(callback)
+        self.pending = self.polling = None
+        if self.online:
+            self.online.close()
+        if self.data:
+            self.data.close()
+        super().destroy()
 
     def max_zoom(self):
         return ONLINE_MAX_ZOOM if self.streets.get() else MAX_ZOOM
@@ -350,6 +389,8 @@ class RegionMap(ttk.Frame):
             grid = self.tile_grid(self.zoom, 256, width, height)
             self.online.visible = {(self.zoom, x, y) for x, y, _left, _top in grid}
             streets = [(self.online.get((self.zoom, x, y)), left, top) for x, y, left, top in grid]
+        elif self.online:
+            self.online.visible = set()
         if streets and all(tile is not None for tile, _left, _top in streets):
             pass   # street tiles cover the whole canvas
         elif local is not None:

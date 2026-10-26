@@ -70,12 +70,22 @@ def extract(pbf, out, bbox):
     out = Path(out)
     tmp = out.with_name(out.name + '.part.osm.pbf')
     tmp.parent.mkdir(parents=True, exist_ok=True)
+    # Only relation members are checked for completeness: remembering every written node too
+    # (22 M ids for a quarter of Ukraine) was the cut's memory peak.
+    members = {'n': set(), 'w': set()}
+    for rid in relations:
+        for kind, ref in relation_members.get(rid, []):
+            if kind in members:
+                members[kind].add(ref)
     written = {'n': set(), 'w': set()}
     with osmium.SimpleWriter(osmium.io.File(str(tmp), 'pbf'), overwrite=True) as writer:
         for kind, key, ids, add in ((osmium.osm.NODE, 'n', nodes, writer.add_node), (osmium.osm.WAY, 'w', ways, writer.add_way)):
+            wanted = members[key]
             for obj in osmium.FileProcessor(str(pbf), kind).with_filter(osmium.filter.IdFilter(ids)):
                 add(obj)
-                written[key].add(obj.id)
+                if obj.id in wanted:
+                    written[key].add(obj.id)
+        del nodes
         complete = drop_incomplete(relations, relation_members, written)
         if len(complete) < len(relations):
             print(f'left out {len(relations)-len(complete)} relations with members outside the package', flush=True)

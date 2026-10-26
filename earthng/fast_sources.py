@@ -227,6 +227,9 @@ def dem_tiles(box):
     return [(x, y) for x in range(math.floor(x0) - 1, math.floor(x1) + 2) for y in range(math.floor(y0) - 1, math.floor(y1) + 2)]
 
 
+PARSE_WORKERS = min(6, os.cpu_count() or 2)     # tile parsers of one index (fewer when regions run side by side)
+
+
 def source_identity(source, dem, point=None, box=None):
     """Index checksum (of the window's tiles) plus the DEM files under it (name, size, mtime):
     old geometry cannot survive source replacement. Contents were hashed before: 200 MB of
@@ -561,7 +564,7 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
     if len(files) > 24:
         # tiles parse in parallel; merged in tile order, first copy of a way wins (as before)
         from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(min(6, os.cpu_count() or 2)) as pool:
+        with ProcessPoolExecutor(PARSE_WORKERS) as pool:
             parts = list(pool.map(read_roads, files, shas, chunksize=4))
     else:
         parts = [read_roads(f, h) for f, h in zip(files, shas)]

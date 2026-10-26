@@ -18,6 +18,7 @@ import argparse
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import json
 import math
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -27,7 +28,7 @@ import osmium
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import osm_tiles  # noqa: E402
-from osm_tiles import BUFFER, CELL  # noqa: E402
+from osm_tiles import BUFFER, CELL, SELECT  # noqa: E402
 
 FANOUT = 16
 
@@ -94,6 +95,30 @@ def run_cut(src, block_dir, box):
     return block_dir
 
 
+def assemble_blocks(blocks, destination):
+    """Keep completed blocks intact until the whole package is published.
+
+    Hardlinks cost no second copy on the usual same-volume workspace; fall back to
+    copying across volumes or on filesystems without links. A cancelled assembly
+    can discard destination and retry using the unchanged block caches.
+    """
+    tiles = {}
+    for block in blocks:
+        part = json.loads((block / 'index.json').read_text(encoding='utf8'))
+        for key, tile in part['tiles'].items():
+            if key in tiles:
+                raise ValueError(f'tile {key} in two blocks')
+            source, target = block / tile['file'], destination / tile['file']
+            try:
+                os.link(source, target)
+            except FileExistsError:
+                raise  # never overwrite a hardlink into another completed block
+            except OSError:
+                shutil.copyfile(source, target)
+            tiles[key] = tile
+    return dict(sorted(tiles.items()))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('pbf', type=Path)
@@ -114,7 +139,12 @@ def main():
     if package_box is None:
         raise SystemExit(f'{a.pbf} has no bounding box; pass --package-box')
     work = a.work or a.out.with_name(a.out.name + '.work')
+    # blocks cut by older selection rules are not resumed (osm_select.VERSION)
+    marker = work / 'select.json'
+    if work.exists() and not (marker.is_file() and json.loads(marker.read_text(encoding='utf8')) == SELECT):
+        shutil.rmtree(work)
     (work / 'blocks').mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps(SELECT), encoding='utf8')
     (work / 'extracts').mkdir(exist_ok=True)
     root = plan(package_box, a.block)
 
@@ -180,20 +210,12 @@ def main():
                     finished(n)
 
     index = {'cell': CELL, 'buffer': BUFFER, 'source': a.pbf.name, 'package_box': package_box,
-             'block': a.block, 'tiles': {}}
+             'block': a.block, 'select': SELECT, 'tiles': {}}
     tmp = a.out.with_name(a.out.name + '.part')
     if tmp.exists():
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
-    for leaf in leaves(root):
-        block = work / 'blocks' / name(leaf)
-        part = json.loads((block / 'index.json').read_text(encoding='utf8'))
-        for key, tile in part['tiles'].items():
-            if key in index['tiles']:
-                raise SystemExit(f'tile {key} in two blocks')
-            (block / tile['file']).replace(tmp / tile['file'])
-            index['tiles'][key] = tile
-    index['tiles'] = dict(sorted(index['tiles'].items()))
+    index['tiles'] = assemble_blocks((work / 'blocks' / name(leaf) for leaf in leaves(root)), tmp)
     index['seconds'] = round(time.monotonic() - t0, 1)
     # Retain settlements and simplified roads before the original PBF may be removed.
     from build_map import build as build_map
@@ -203,7 +225,7 @@ def main():
     shutil.rmtree(work)
     sizes = [t['bytes'] for t in index['tiles'].values()]
     print(f"written {len(sizes)} tiles to {a.out}, {sum(sizes)/2**30:.2f} GB total, "
-          f"max {max(sizes)/2**20:.2f} MB ({index['seconds']} s)", flush=True)
+          f"max {max(sizes, default=0)/2**20:.2f} MB ({index['seconds']} s)", flush=True)
 
 
 if __name__ == '__main__':
