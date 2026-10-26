@@ -415,6 +415,36 @@ class GeneratorTests(unittest.TestCase):
         for x, y in ((200, 250), (290, 262)):
             self.assertLess(self.surface_at(asphalt, x, y), 21.5, (x, y))
 
+    def test_a_deck_is_not_raised_over_a_slip_road_level_with_it(self):
+        # Kyiv, Mykoly Mikhnovskoho at the Druzhby Narodiv junction: a one-lane link level with the
+        # deck runs beside it under its overhang and joins it through another way. Read as a road
+        # under the deck it threw the deck 12 m up, a wall across the road for the other carriageway.
+        def way(name, nodes, points, width=16, **tags):
+            return {'id': name, 'nodes': nodes, 'width': width, 'points': points,
+                    'tags': dict(tags, highway=tags.pop('highway', 'trunk'), sidewalk='no')}
+        roads = [way('west', ['w', 'a'], line(0, 250, 200, 250, 20)),
+                 way('deck', ['a', 'b'], line(200, 250, 300, 250, 20), bridge='yes', layer='1'),
+                 way('east', ['b', 'e'], line(300, 250, 500, 250, 20)),
+                 way('link', ['l1', 'l2'], line(150, 255, 290, 255, 20), width=5, highway='primary_link')]
+        asphalt = list(self.triangles(self.build([{'roads': roads}])[0], 'e2rf_road_major'))
+        self.assertLess(self.surface_at(asphalt, 250, 248), 21)
+
+    def test_a_parapet_leaves_the_mouth_of_a_slip_road_open(self):
+        # a link leaving a deck at its own height crosses the deck's parapet line over a few metres
+        # of a long segment: judged whole, the parapet stood across the link's mouth
+        main = {'id': 'main', 'nodes': ['m1', 'm2'], 'width': 12, 'points': line(0, 250, 500, 250, 20),
+                'tags': {'highway': 'trunk', 'oneway': 'yes', 'sidewalk': 'no', 'bridge': 'yes', 'layer': '1'}}
+        link = {'id': 'link', 'nodes': ['k1', 'k2'], 'width': 5, 'points': line(250, 256, 350, 275, 20),
+                'tags': {'highway': 'trunk_link', 'oneway': 'yes', 'sidewalk': 'no', 'bridge': 'yes', 'layer': '1'}}
+        def tops(roads):
+            return [t for t in self.triangles(self.build([{'roads': roads}])[1], 'e2rf_fence_wall')
+                    if all(abs(p[2] - 21.0) < .05 for p in t)]
+        def across(found):
+            return [t for t in found if all(255.5 < p[1] < 256.2 for p in t) and any(256 < p[0] < 266 for p in t)]
+        self.assertTrue(across(tops([main])))                     # alone the deck has its parapet there
+        self.assertFalse(across(tops([main, link])))              # the link's mouth is open
+        self.assertTrue([t for t in tops([main, link]) if all(255.5 < p[1] < 256.2 for p in t) and min(p[0] for p in t) > 300])
+
     def test_a_low_pack_bridge_clears_a_truck_and_the_approaches_ramp(self):
         # Installed Ukraine pack, bridge 2149 over road 148723 near 50.45845, 30.42135:
         # the stored deck sits about 2 m above the road, and the soffit is 1 m thick, so the
@@ -516,7 +546,8 @@ class GeneratorTests(unittest.TestCase):
             return points
 
         west, deck, east = line(0, 250, 200, 250, 20), line(200, 250, 400, 250, 20), line(400, 250, 500, 250, 20)
-        under = line(300, 0, 300, 500, 20)
+        # 2 m under the stored deck, as an old pack keeps it (a road level with a deck joins it)
+        under = line(300, 0, 300, 500, 18)
 
         def scene(west_pts, deck_pts):
             roads = [
@@ -544,7 +575,7 @@ class GeneratorTests(unittest.TestCase):
                 asphalt, soffit = scene(west_pts, deck_pts)
                 self.assertTrue(soffit, name)
                 lower = self.surface_at(asphalt, 300, 40)
-                self.assertAlmostEqual(lower, 20.1, places=2)
+                self.assertAlmostEqual(lower, 18.1, places=2)
                 headroom = min(p[2] for t in soffit for p in t) - lower
                 self.assertGreaterEqual(headroom, 4.5, name)
                 samples = [(x, self.surface_at(asphalt, x, 250)) for x in range(0, 501, 2)]
@@ -1150,6 +1181,37 @@ class GeneratorTests(unittest.TestCase):
         for item in inferred:
             self.assertTrue(all(math.hypot(item.pos[1] - x, item.pos[2] - y) > 12 for x, y in at))
         self.assertTrue(all(item.pos[1] > 242 for item in inferred))
+
+    def test_surveyed_lamps_on_the_carriageway_go_to_its_edge(self):
+        # OSM maps many lamps as nodes of the street or in its lanes: ~3,700 stood in central Kyiv's roads
+        road = {'id': 'street', 'width': 7, 'points': [[0, 250, 10], [500, 250, 10]],
+                'tags': {'highway': 'residential', 'sidewalk': 'both'}}
+        points = [{'id': 'axis', 'kind': 'lamp', 'tags': {}, 'pos': [100, 250, 10]},
+                  {'id': 'north', 'kind': 'lamp', 'tags': {}, 'pos': [200, 252, 10]},
+                  {'id': 'south', 'kind': 'lamp', 'tags': {}, 'pos': [300, 247.5, 10]},
+                  {'id': 'beside', 'kind': 'lamp', 'tags': {}, 'pos': [400, 244, 10]},
+                  {'id': 'lane', 'kind': 'tree', 'tags': {}, 'pos': [150, 251, 10]},
+                  {'id': 'pit', 'kind': 'tree', 'tags': {}, 'pos': [450, 245.5, 10]}]
+        scene = self.build([{'roads': [road], 'points': points}], terrainStep=100)[1]
+        placed = {item.name.split('_point_')[1]: item for item in scene['items'].values()
+                  if item.kind == 'static' and '_point_' in item.name}
+        self.assertEqual(set(placed), {'axis', 'north', 'south', 'beside', 'pit'})
+        for name in ('axis', 'north', 'south'):
+            self.assertGreaterEqual(abs(placed[name].pos[2] - 250), 3.5 + .5, name)
+        self.assertGreater(placed['north'].pos[2], 250)
+        self.assertLess(placed['south'].pos[2], 250)
+        self.assertEqual((placed['north'].pos[1], placed['south'].pos[1]), (200, 300))
+        self.assertEqual((placed['beside'].pos[1], placed['beside'].pos[2]), (400, 244))
+        self.assertEqual((placed['pit'].pos[1], placed['pit'].pos[2]), (450, 245.5))
+
+    def test_a_surveyed_lamp_on_a_deck_stands_on_its_parapet(self):
+        deck = {'id': 'deck', 'nodes': ['a', 'b'], 'width': 8, 'points': line(0, 250, 500, 250, 20),
+                'tags': {'highway': 'primary', 'sidewalk': 'no', 'bridge': 'yes', 'layer': '1'}}
+        lamp = {'id': 'l', 'kind': 'lamp', 'tags': {}, 'pos': [250, 251, 5]}
+        scene = self.build([{'roads': [deck], 'points': [lamp]}], terrainStep=100)[1]
+        item = next(item for item in scene['items'].values() if item.kind == 'static' and '_point_' in item.name)
+        self.assertAlmostEqual(item.pos[2], 254 - .15, places=3)     # in the parapet, 0.3 m thick
+        self.assertAlmostEqual(item.pos[3], 20 + .1 + .9, places=2)  # its top, over the deck
 
     def test_street_props_line_sidewalks_and_footways_but_not_carriageways(self):
         # four arms meeting at a junction node (250, 250)

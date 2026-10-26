@@ -15,7 +15,15 @@ at 1 m, and the centre line of every road is walked every 6 m. A sample is
 and, apart from the roads, a guard rail with a triangle taller than 3 m ('spike': a vertex at the wrong
 height, a railing running down into the ground; its height as the length column), and a guard rail or mesh fence standing on a carriageway ('barrier': its
 footprint on the asphalt, in m2, as the length column): a rail drawn across the lane under a bridge
-or at a junction mouth. Piers and abutments (fence_wall) are not barriers.
+or at a junction mouth. Piers and abutments (fence_wall) are not barriers. On near tiles also:
+
+  parapet  a deck's wall (fence_wall) standing inside a carriageway, on asphalt at its own height
+           all round: a parapet across a slip road's mouth (m2)
+  prop     a lamp, a mapped tree or other street furniture standing a metre or more inside a
+           carriageway, within 1 m of its height (the class names it: 'lamp point' is OSM's)
+  step     the road's own asphalt (of the highest and lowest drawn, the one nearer the road's
+           pack height) jumping by more than JUMP within a metre and not coming back within
+           RETURN m: a deck end above or below its approach, seen as a wall across the road (m)
 
 --far builds the far tiles (the ring past the near radius, where the car's surroundings are
 decoration): there only the roads a far tile draws (generator.lua ROADS.far: no service streets,
@@ -42,6 +50,7 @@ STEP = 6.            # m between the samples of a road
 PIXEL = 1.           # m per raster pixel
 ABOVE = .03          # m: ground this much over the asphalt hides it
 BARRIERS = ('e2rf_clad_metal', 'e2rf_fence_mesh')
+WALL = 'e2rf_fence_wall'   # a deck's parapet and edge face, piers, abutments
 CELL = 10.           # m: barrier pixels are reported per cell of this size
 SPIKE = 3.           # m: a rail or fence triangle taller than this has a vertex at the wrong height
 LONGEST = 4.         # m: ... if it is no wider than this (a rail's step is 2 m; a building's wall is wider)
@@ -72,6 +81,41 @@ def grade(points, tags, rect, asphalt, ground):
         elif np.isfinite(g).any() and np.nanmax(g) > np.nanmax(a) + ABOVE and not under_ground(tags):
             bad.append(('buried', float(x), float(y), float(s)))
     return bad, checked
+
+
+JUMP = .4           # m: the asphalt under a road's centre line rising or falling this much within a metre
+RETURN = 40.         # m: ... and not back within this: a road passing under a deck jumps up and down again
+
+
+def steps(points, rect, asphalt, lowest=None):
+    """[(x, y, m)] where the drawn asphalt along one road's centre line jumps by more than JUMP in a metre
+    and stays there: a deck end above or below its approach, a wall across the road. lowest: the
+    lowest asphalt; of it and the highest, the one nearer the road's own height is the road's."""
+    pts = np.asarray([p[:2] for p in points], dtype=float)
+    along = np.r_[0, np.cumsum(np.hypot(*np.diff(pts, axis=0).T))]
+    if along[-1] < 2:
+        return []
+    s = np.arange(0, along[-1], 1.)
+    x, y = np.interp(s, along, pts[:, 0]), np.interp(s, along, pts[:, 1])
+    inside = (x >= rect[0] + 1) & (x < rect[2] - 1) & (y >= rect[1] + 1) & (y < rect[3] - 1)
+    c = np.clip(((x - rect[0]) / PIXEL).astype(int), 0, asphalt.shape[1] - 1)
+    r = np.clip(((y - rect[1]) / PIXEL).astype(int), 0, asphalt.shape[0] - 1)
+    z = np.where(inside, asphalt[r, c], np.nan)
+    if lowest is not None and np.asarray(points).shape[1] > 2:
+        own = np.interp(s, along, np.asarray([p[2] for p in points], dtype=float))
+        low = np.where(inside, lowest[r, c], np.nan)
+        with np.errstate(invalid='ignore'):
+            z = np.where(np.abs(low - own) < np.abs(z - own), low, z)
+    out = []
+    for k in np.flatnonzero(np.abs(np.diff(z)) > JUMP):
+        d = z[k + 1] - z[k]
+        ahead = z[k + 1:k + 1 + int(RETURN)]
+        behind = z[max(0, k - int(RETURN)):k + 1]
+        # back to the level it left within RETURN m on either side: something passing over
+        if np.nanmin(np.abs(ahead - z[k])) < JUMP / 2 or np.nanmin(np.abs(behind - z[k + 1])) < JUMP / 2:
+            continue
+        out.append((float(x[k]), float(y[k]), float(abs(d))))
+    return out
 
 
 def stretches(bad):
@@ -130,13 +174,32 @@ def _runtime(path, region, generator):
     if key not in _open:
         pack = rq.Pack(Path(path), region)
         lua, mods, build, data, slots = rq.lua_runtime(pack, generator)
-        _open[key] = (pack, lua, mods, build, data, slots, lua.table_from({m: True for m in rq.COVER}))
+        # the scene's walls too: a parapet standing on a carriageway
+        _open[key] = (pack, lua, mods, build, data, slots, lua.table_from({m: True for m in rq.COVER | {WALL}}))
     return _open[key]
+
+
+def props_on_road(text, asphalt, rect):
+    """[(x, y, kind)] of street furniture ('x y z kind' lines) standing on a carriageway: the asphalt
+    covers the pixel round it and its neighbours (a pole by the curb is not on the road) within 1 m of
+    its foot (a lamp on the ground under a bridge is not on the deck)."""
+    out, n = [], asphalt.shape[0]
+    for line in (text or '').splitlines():
+        x, y, z, kind = line.split(' ', 3)
+        kind = kind.split(' ')[0] + ('' if ' ' not in kind else ' ' + kind.split(' ', 1)[1].split('_')[3])
+        x, y, z = float(x), float(y), float(z)
+        c, r = int((x - rect[0]) / PIXEL), int((y - rect[1]) / PIXEL)
+        if 1 <= c < n - 1 and 1 <= r < n - 1:
+            a = asphalt[r - 1:r + 2, c - 1:c + 2]
+            if np.isfinite(a).all() and abs(asphalt[r, c] - z) < 1.:
+                out.append((x, y, kind))
+    return out
 
 
 def audit_tile(job):
     """One tile: ({road id: [bad samples]}, {road id: samples}, {road id: (name, class, bridge)}, [(x, y, m2) of
-    barriers on the asphalt], [(x, y, m) of rails and fences with a vertex at the wrong height])."""
+    barriers on the asphalt], [(x, y, m) of rails and fences with a vertex at the wrong height], [(x, y, m2) of
+    deck walls on the asphalt], [(x, y, kind) of street furniture on a carriageway])."""
     path, region, generator, far, i, j = job
     pack, lua, mods, build, data, slots, cover = _runtime(path, region, generator)
     size = pack.size
@@ -145,7 +208,7 @@ def audit_tile(job):
                 pack.region.get('seaLevel'), lua.table_from({'far': 1} if far else {}), cover, 1)
     bad, total, names = {}, defaultdict(int), {}
     if res is None:
-        return bad, total, names, [], []
+        return bad, total, names, [], [], [], [], []
     rq.RES = PIXEL
     shape = (int(size / PIXEL),) * 2
     mats = dict(res.mats.items())
@@ -166,8 +229,31 @@ def audit_tile(job):
     # far tiles draw buildings too, and a warehouse wall is clad_metal: rails and fences are judged on near tiles
     standing = barrier_cells(barrier_pixels(asphalt, barrier, -low), rect) if np.isfinite(barrier).any() and not far else []
     tall = spikes(mats['e2rf_clad_metal']) if mats.get('e2rf_clad_metal') else []         # not fences: a noise wall is 7 m
+    walls = []
+    if mats.get(WALL) and not far:
+        wall = rq.raster(mats[WALL], rect, shape)
+        xyz = np.asarray(mats[WALL].split(), dtype=float).reshape(-1, 3)
+        xyz[:, 2] *= -1
+        wall_low = -rq.raster(' '.join(f'{v:.3f}' for v in xyz.ravel()), rect, shape)
+        # inside the carriageway only: a parapet stands its thickness inside the deck's edge pixel
+        # (and its neighbours at the same height: a road under a deck's edge is not more of the deck)
+        inner = np.isfinite(asphalt)
+        mid = asphalt[1:-1, 1:-1]
+        with np.errstate(invalid='ignore'):
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)):
+                inner[1:-1, 1:-1] &= np.abs(asphalt[1 + dr:asphalt.shape[0] - 1 + dr, 1 + dc:asphalt.shape[1] - 1 + dc] - mid) < .5
+        inner[0, :] = inner[-1, :] = inner[:, 0] = inner[:, -1] = False
+        walls = barrier_cells(barrier_pixels(np.where(inner, asphalt, np.nan), wall, wall_low), rect)
+    props = [] if far else props_on_road(str(res.props or ''), asphalt, rect)
     skip = NOT_FAR if far else set()
-    seen = set()
+    seen, jumps = set(), []
+    lowest = np.full(shape, np.nan)
+    for m in rq.CARRIAGEWAY:
+        if mats.get(m):
+            xyz = np.asarray(mats[m].split(), dtype=float).reshape(-1, 3)
+            xyz[:, 2] *= -1
+            lowest = np.fmax(lowest, rq.raster(' '.join(f'{v:.3f}' for v in xyz.ravel()), rect, shape))
+    lowest = -lowest
     for rd in (pack.source(int(rect[0] // pack.cell), int(rect[1] // pack.cell)) or {}).get('roads', []):
         tags = rd.get('tags', {})
         if tags.get('highway') not in DRIVEN or tags.get('highway') in skip or rd['id'] in seen:
@@ -176,11 +262,13 @@ def audit_tile(job):
             continue                  # a far tile draws no tunnel
         seen.add(rd['id'])
         found, checked = grade(rd['points'], tags, rect, asphalt, ground)
+        if not far and not under_ground(tags):
+            jumps.extend((x, y, m, rd['id']) for x, y, m in steps(rd['points'], rect, asphalt, lowest))
         total[rd['id']] += checked
         names[rd['id']] = (tags.get('name') or tags.get('ref') or '', tags.get('highway'), tags.get('bridge') or '')
         if found:
             bad[rd['id']] = found
-    return bad, total, names, standing, tall
+    return bad, total, names, standing, tall, walls, props, jumps
 
 
 def local(pack, lat, lon):
@@ -217,8 +305,17 @@ def main():
     tiles = [t for t in tiles if t[0] % a.stride == 0 and t[1] % a.stride == 0]
     jobs = [(str(a.pack), a.region, str(a.generator) if a.generator else None, a.far, i, j) for i, j in tiles]
     bad, total, names, standing, tall = defaultdict(list), defaultdict(int), {}, defaultdict(float), {}
+    walls, props, jumps = defaultdict(float), {}, {}
     results = ProcessPoolExecutor(a.jobs).map(audit_tile, jobs, chunksize=4) if a.jobs > 1 else map(audit_tile, jobs)
-    for k, (b, t, nm, st, sp) in enumerate(results):
+    for k, (b, t, nm, st, sp, wl, pr, jp) in enumerate(results):
+        for x, y, m, rid in jp:
+            key = (round(x / CELL), round(y / CELL))
+            if m > jumps.get(key, (0,))[0]:
+                jumps[key] = (m, x, y, rid)
+        for x, y, m2 in wl:
+            walls[(round(x), round(y))] += m2
+        for x, y, kind in pr:
+            props[(round(x, 1), round(y, 1))] = kind
         for x, y, m2 in st:
             standing[(round(x), round(y))] += m2
         for x, y, s in sp:
@@ -244,6 +341,19 @@ def main():
         lat, lon = pack.geo(x, y)
         rows.append({'kind': 'spike', 'length_m': round(s), 'name': '', 'class': 'rail/fence vertex at the wrong height', 'bridge': '',
                      'lat': round(lat, 5), 'lon': round(lon, 5), 'road': ''})
+    for (x, y), m2 in walls.items():
+        lat, lon = pack.geo(x, y)
+        rows.append({'kind': 'parapet', 'length_m': round(m2), 'name': '', 'class': 'deck wall on asphalt', 'bridge': '',
+                     'lat': round(lat, 5), 'lon': round(lon, 5), 'road': ''})
+    for (x, y), kind in props.items():
+        lat, lon = pack.geo(x, y)
+        rows.append({'kind': 'prop', 'length_m': 1, 'name': '', 'class': f'{kind} on the carriageway', 'bridge': '',
+                     'lat': round(lat, 5), 'lon': round(lon, 5), 'road': ''})
+    for m, x, y, rid in jumps.values():
+        lat, lon = pack.geo(x, y)
+        nm = names.get(rid, ('', '', ''))
+        rows.append({'kind': 'step', 'length_m': round(m, 1), 'name': nm[0], 'class': nm[1], 'bridge': nm[2],
+                     'lat': round(lat, 5), 'lon': round(lon, 5), 'road': rid})
     rows.sort(key=lambda r: -r['length_m'])
     a.out.parent.mkdir(parents=True, exist_ok=True)
     with open(a.out, 'w', newline='', encoding='utf-8') as f:
@@ -255,9 +365,10 @@ def main():
     print(f"{len(tiles)} tiles{' (far)' if a.far else ''}, {len(total)} roads, {samples} samples: "
           f"missing {count('missing')} ({100 * count('missing') / max(1, samples):.2f} %), "
           f"buried {count('buried')} ({100 * count('buried') / max(1, samples):.2f} %), {len(standing)} cells with a rail or fence on the road, "
-          f"{len(tall)} cells with a rail or fence running into the ground, {len(rows)} findings -> {a.out}")
+          f"{len(tall)} cells with a rail or fence running into the ground, {len(walls)} cells with a deck wall on the road, "
+          f"{len(props)} props on the carriageway, {len(jumps)} steps in the asphalt, {len(rows)} findings -> {a.out}")
     for r in rows[:15]:
-        print(f"  {r['kind']:7s} {r['length_m']:5d} {'m2' if r['kind'] == 'barrier' else 'm '} {r['name'][:26]:26s} [{r['class']}{' bridge' if r['bridge'] else ''}]  "
+        print(f"  {r['kind']:7s} {r['length_m']:5d} {'m2' if r['kind'] in ('barrier', 'parapet') else 'm '} {r['name'][:26]:26s} [{r['class']}{' bridge' if r['bridge'] else ''}]  "
               f"{r['lat']}, {r['lon']}  road {r['road']}")
 
 

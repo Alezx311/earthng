@@ -114,6 +114,14 @@ for _, item in ipairs(items) do
 end
 local result = {ms = ms, tris = tris, mats = {}, stages = stages}
 for material, parts in pairs(out) do result.mats[material] = table.concat(parts, ' ') end
+-- street furniture (lamps, OSM trees, poles): 'x y z kind' a line, for road_audit's props on the road
+local props = {}
+for _, item in ipairs(scene.items) do
+  if item.kind == 'static' and (item.prop or item.streetKind) then
+    props[#props + 1] = fmt('%.2f %.2f %.2f %s %s', item.pos[1], item.pos[2], item.pos[3], tostring(item.streetKind or 'prop'), item.name)
+  end
+end
+result.props = table.concat(props, '\\n')
 return result
 '''
 

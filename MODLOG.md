@@ -1,5 +1,39 @@
 # EarthNG native mod migration
 
+## 2026-10-26: lamps off the lanes, no walls at bridge joints
+
+- The user, driving: more lamps standing in the middle of the road, and at bridges and flyovers a
+  barrier across the road as if it were not there.
+- Lamps: from 25.10 the packs carry OSM's surveyed lamps (203 k in the Kyiv region), placed at
+  their node, and OSM maps many as nodes of the street or in its lanes. A lamp on a street at grade
+  (its centre line within half its width, or on the drawn asphalt: junction plates and mouths)
+  goes to that street's edge on its own side, 0.7 m into the sidewalk or 1.2 m onto the verge, and
+  on off the asphalt half a metre at a time; one on a deck with no street at grade under it stands
+  in the deck's parapet at its top. A mapped tree on the asphalt is left out (one in its pit by the
+  curb stays). Kyiv, 570 tiles: 3,705 lamps and 172 trees on a carriageway -> 6 lamps and none; of
+  4,738 OSM lamps in 36 central tiles 20 are left out, the rest moved. Lviv centre: 43 -> 1.
+- Decks: liftDecks raised a deck for clearance over any road under its footprint, and a slip road
+  level with the deck that joins it through another way counted: Mykoly Mikhnovskoho at the
+  Druzhby Narodiv junction rose 12 m (deck 135.9 over a pack height of 123.6) and its ramps with it,
+  a wall across the road from the other carriageway at 125.5. A road passes under a deck only from
+  `DECK_CLEAR.below` (1 m) under it: packs and live.lua always keep a real crossing lower.
+- Parapets: a deck side was drawn or left out whole per segment (2 of 3 samples on another
+  carriageway), so where a slip road leaves a long segment its parapet stood across the mouth;
+  the united deck (0.6.1) had no such check at all. Both now go in ~2 m pieces and leave out the
+  ones over another carriageway at the deck's height (the united deck's own carriageways aside).
+- road_audit.py finds these by itself now: `parapet` (a deck wall inside a carriageway), `prop`
+  (street furniture on a carriageway; road_quality's build exports their positions) and `step`
+  (the road's own asphalt jumping and staying there). Kyiv, 50.40-50.48 N, 30.45-30.65 E:
+  parapet cells 267 (edge noise in) -> 23 with the edge rule -> 3; steps 25 -> 7; missing samples
+  121 -> 42. The rest of the steps are pack heights (the South Bridge's layer 2 deck 2-3.6 m over
+  the layer 1 ramp merging into it) or a junction plate the audit misreads (Karavaivskyi viaduct,
+  whose profile follows the pack to 0.4 m).
+- Cost: a central Kyiv near tile 1017 -> 1047 ms (the lamp checks, all in the scene phase: the road
+  goes out as before). Unit check: 423 OK; new: lamps to the edge and on a parapet, trees on the
+  asphalt, a deck not raised over a level slip road, a parapet open at a slip road's mouth; the
+  repeated-abutment test's road under the deck is now 2 m lower, as an old pack keeps it. Not
+  driven in the game.
+
 ## 2026-10-26: the road ahead first
 
 - The user, driving at 300 km/h: tiles appeared in front of the car, and at times the road was not

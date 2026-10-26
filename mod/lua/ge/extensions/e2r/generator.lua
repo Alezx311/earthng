@@ -1658,6 +1658,8 @@ function ROADS.unitedDecks(ctx)
   for _, members in pairs(groups) do
     if #members >= 2 then
       local host = members[1]
+      local group = {members = {}}
+      for _, strip in ipairs(members) do group.members[strip] = true end
       for _, strip in ipairs(members) do
         if strip.road and strip.road.deckHost then host = strip end
       end
@@ -1711,15 +1713,34 @@ function ROADS.unitedDecks(ctx)
               local outerA, outerB = edgeA + deck.thick * outward, edgeB + deck.thick * outward
               local top, low = deck.parapet, -depth
               local ox, oy = a.nx * outward, a.ny * outward
-              ctx.face({corner(a, outerA, top, u0, 0), corner(b, outerB, top, u1, 0),
-                corner(b, outerB, low, u1, (top - low) / deck.repeatU),
-                corner(a, outerA, low, u0, (top - low) / deck.repeatU)}, ox, oy, 0)
-              ctx.face({corner(a, edgeA, top, u0, 0), corner(b, edgeB, top, u1, 0),
-                corner(b, edgeB, 0, u1, top / deck.repeatU),
-                corner(a, edgeA, 0, u0, top / deck.repeatU)}, -ox, -oy, 0)
-              ctx.face({corner(a, edgeA, top, u0, 0), corner(b, edgeB, top, u1, 0),
-                corner(b, outerB, top, u1, deck.thick / deck.repeatU),
-                corner(a, outerA, top, u0, deck.thick / deck.repeatU)}, 0, 0, 1)
+              -- in 2 m pieces, none over a slip road leaving the deck (a parapet across its mouth)
+              local pieces = 4
+              local function line(f, offA, offB, dz, v)
+                local p, q = corner(a, offA, dz, u0, v), corner(b, offB, dz, u1, v)
+                return {p[1] + (q[1] - p[1]) * f, p[2] + (q[2] - p[2]) * f, p[3] + (q[3] - p[3]) * f, p[4] + (q[4] - p[4]) * f, v}
+              end
+              local free = {}
+              for s = 1, pieces do free[s] = not (ctx.onOther and ctx.onOther(group, line((s - .5) / pieces, edgeA, edgeB, 0, 0))) end
+              local s = 1
+              while s <= pieces do
+                if free[s] then
+                  local e = s
+                  while e < pieces and free[e + 1] do e = e + 1 end
+                  local f0, f1 = (s - 1) / pieces, e / pieces
+                  ctx.face({line(f0, outerA, outerB, top, 0), line(f1, outerA, outerB, top, 0),
+                    line(f1, outerA, outerB, low, (top - low) / deck.repeatU),
+                    line(f0, outerA, outerB, low, (top - low) / deck.repeatU)}, ox, oy, 0)
+                  ctx.face({line(f0, edgeA, edgeB, top, 0), line(f1, edgeA, edgeB, top, 0),
+                    line(f1, edgeA, edgeB, 0, top / deck.repeatU),
+                    line(f0, edgeA, edgeB, 0, top / deck.repeatU)}, -ox, -oy, 0)
+                  ctx.face({line(f0, edgeA, edgeB, top, 0), line(f1, edgeA, edgeB, top, 0),
+                    line(f1, outerA, outerB, top, deck.thick / deck.repeatU),
+                    line(f0, outerA, outerB, top, deck.thick / deck.repeatU)}, 0, 0, 1)
+                  s = e + 1
+                else
+                  s = s + 1
+                end
+              end
             end
           end
         end
@@ -4614,7 +4635,12 @@ end
 -- A street slab is 1 m and keeps a little more air. The grade limits keep the rise on a
 -- ramp a truck can drive; clearance still wins, and the rise is capped so a bad pack
 -- cannot throw the deck up.
-local DECK_CLEAR = {gap = 6.0, slack = .1, overhang = 2, cap = 40, bin = 32}
+-- A road passes under a deck only from `below` m under it: an old pack keeps ~2 m (a pack's
+-- clearance solve and live.lua's BRIDGE_CLEAR more), and a road level with the deck is a slip
+-- road joining or leaving it, at any angle (Mykoly Mikhnovskoho at the Druzhby Narodiv junction
+-- rose 12 m over its own merging link and the trunk at its gore: a wall across the road for the
+-- other carriageway).
+local DECK_CLEAR = {gap = 6.0, slack = .1, overhang = 2, cap = 40, bin = 32, below = 1}
 local DECK_GRADE = {motorway = .05, trunk = .05, primary = .06, secondary = .06, tertiary = .07,
   motorway_link = .07, trunk_link = .07, primary_link = .07, secondary_link = .07}
 
@@ -4850,8 +4876,10 @@ local function liftDecks(roads, pause)
                     local under = math.abs((qx - x) * nx + (qy - y) * ny) <= m.width / 2
                     if under and ddx * ddx + ddy * ddy <= seg.half2 then
                       local qz = seg.a[3] + (seg.b[3] - seg.a[3]) * u
-                      local need = qz + DECK_CLEAR.gap * (level - seg.level) + DECK_CLEAR.slack - z
-                      if need > maxLack then maxLack = need end
+                      if qz <= z - DECK_CLEAR.below then
+                        local need = qz + DECK_CLEAR.gap * (level - seg.level) + DECK_CLEAR.slack - z
+                        if need > maxLack then maxLack = need end
+                      end
                     end
                   end
                 end
@@ -6016,10 +6044,11 @@ local function build(cells, i, j, options)
         end
       end
     end
+    -- own: a strip, or a set of strips (a united deck's carriageways)
     local function onOtherSurface(own, p)
       for _, entry in ipairs(deckBins[floor(p[1] / 50) * 65536 + floor(p[2] / 50)] or NONE) do
         local other, k = entry[1], entry[2]
-        if other ~= own then
+        if other ~= own and not (own.members and own.members[other]) then
           local a, b = other.points[k], other.points[k + 1]
           local dx, dy = b[1] - a[1], b[2] - a[2]
           local len2 = dx * dx + dy * dy
@@ -6053,24 +6082,41 @@ local function build(cells, i, j, options)
               local outer = (hw + (strip.walk[k][sign] and tune.sidewalk or 0)) * sign
               local inner = outer - deck.thick * sign
               local ox, oy = -dy * sign, dx * sign
-              local covered = 0
-              for _, f in ipairs({.1, .5, .9}) do
-                local a, b = edge(k, outer), edge(k + 1, outer)
-                if onOtherSurface(strip, {a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f}) then
-                  covered = covered + 1
+              -- Piece by piece (~2 m): only the stretch over another carriageway goes. A slip road
+              -- leaving the deck, or a deck beside it, covers part of a segment; judged whole (2 of 3
+              -- samples) the parapet stood across the mouth, a barrier across the road.
+              local a0, b0 = edge(k, outer), edge(k + 1, outer)
+              local n = math.max(1, math.ceil(math.sqrt((b0[1] - a0[1]) ^ 2 + (b0[2] - a0[2]) ^ 2) / 2))
+              local free = {}
+              for s = 1, n do
+                local f = (s - .5) / n
+                free[s] = not onOtherSurface(strip, {a0[1] + (b0[1] - a0[1]) * f, a0[2] + (b0[2] - a0[2]) * f, a0[3] + (b0[3] - a0[3]) * f})
+              end
+              -- a point of the parapet line at fraction f of the segment, with its texture u
+              local function along(offset, dz, f, v)
+                local a, b = at(k, offset, dz, u0, v), at(k + 1, offset, dz, u1, v)
+                return {a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f, a[4] + (b[4] - a[4]) * f, v}
+              end
+              local top, low = deck.parapet, -depth
+              local s = 1
+              while s <= n do
+                if free[s] then
+                  local e = s
+                  while e < n and free[e + 1] do e = e + 1 end
+                  local f0, f1 = (s - 1) / n, e / n
+                  -- the edge face, outside, from the parapet's top to the soffit
+                  face({along(outer, top, f0, 0), along(outer, top, f1, 0),
+                    along(outer, low, f1, (top - low) / deck.repeatU), along(outer, low, f0, (top - low) / deck.repeatU)}, ox, oy, 0)
+                  -- the parapet's inner face and its top
+                  face({along(inner, top, f0, 0), along(inner, top, f1, 0),
+                    along(inner, 0, f1, top / deck.repeatU), along(inner, 0, f0, top / deck.repeatU)}, -ox, -oy, 0)
+                  face({along(inner, top, f0, 0), along(inner, top, f1, 0),
+                    along(outer, top, f1, deck.thick / deck.repeatU), along(outer, top, f0, deck.thick / deck.repeatU)}, 0, 0, 1)
+                  s = e + 1
+                else
+                  s = s + 1
                 end
               end
-              if covered >= 2 then goto nextSide end
-              -- the edge face, outside, from the parapet's top to the soffit
-              local top, low = deck.parapet, -depth
-              face({at(k, outer, top, u0, 0), at(k + 1, outer, top, u1, 0),
-                at(k + 1, outer, low, u1, (top - low) / deck.repeatU), at(k, outer, low, u0, (top - low) / deck.repeatU)}, ox, oy, 0)
-              -- the parapet's inner face and its top
-              face({at(k, inner, top, u0, 0), at(k + 1, inner, top, u1, 0),
-                at(k + 1, inner, 0, u1, top / deck.repeatU), at(k, inner, 0, u0, top / deck.repeatU)}, -ox, -oy, 0)
-              face({at(k, inner, top, u0, 0), at(k + 1, inner, top, u1, 0),
-                at(k + 1, outer, top, u1, deck.thick / deck.repeatU), at(k, outer, top, u0, deck.thick / deck.repeatU)}, 0, 0, 1)
-              ::nextSide::
             end
             -- the soffit, seen from the road under the bridge
             local l = (hw + (strip.walk[k][1] and tune.sidewalk or 0))
@@ -6083,7 +6129,7 @@ local function build(cells, i, j, options)
       end
     end
     ROADS.unitedDecks({strips = strips, rect = rect, ground = ground, face = face, roads = roads,
-      lift = lift, pause = pause, sidewalk = tune.sidewalk})
+      lift = lift, pause = pause, sidewalk = tune.sidewalk, onOther = onOtherSurface})
     ROADS.substructure({strips = strips, rect = rect, ground = ground, face = face, pause = pause, sidewalk = tune.sidewalk})
     ROADS.embankmentRails({strips = strips, rect = rect, dem = #terrain > 0 and demAt or nil, face = face, pause = pause, sidewalk = tune.sidewalk,
       crowded = function(x, y, road, clear)
@@ -7438,14 +7484,112 @@ local function build(cells, i, j, options)
     static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), BUS_STOP, x, y, ground(x, y) + .25,
       math.atan2(fx, fy) + math.pi)
   end
+  -- OSM maps many lamps (and some trees) as nodes of the street itself or on its carriageway: from
+  -- 26.10 the packs carry them, and central Kyiv had ~3,700 lamps standing in the lanes. A lamp
+  -- on a street at grade goes to that street's edge on its own side (0.7 m into the sidewalk, or
+  -- 1.2 m onto the verge); one on a deck, with no street at grade under it, stands on the
+  -- parapet at the deck's height. A tree there is left out, and so is a lamp whose new place is
+  -- another carriageway. Returns x, y, z, or nil.
+  -- The whole centre lines (segmentBins: a strip is cut back at a junction, a lamp on its plate is
+  -- still on the road), at grade or on a deck, within 2 m of z when z is given.
+  -- (one table: build() is at LuaJIT's 200 locals)
+  local OFFROAD = {}
+  function OFFROAD.nearestOn(x, y, z, bridges, except, reach)
+    local best, hit = math.huge, nil
+    for _, s in ipairs(segmentBins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE) do
+      if s.road ~= except and ((s.surface and not bridges) or (bridges and ROADS.bridge(s.tags) and not ROADS.tunnel(s.tags))) then
+        local a = s.a
+        local t = math.max(0, math.min(1, ((x - a[1]) * s.dx + (y - a[2]) * s.dy) / s.len2))
+        local qx, qy = a[1] + s.dx * t, a[2] + s.dy * t
+        local d = math.sqrt((x - qx) ^ 2 + (y - qy) ^ 2)
+        local sz = (a[3] or 0) + ((s.b[3] or 0) - (a[3] or 0)) * t + lift
+        if d < s.width / 2 + (reach or .3) and d < best and (not z or math.abs(sz - z) < 2) then
+          local len = math.sqrt(s.len2)
+          best = d
+          hit = {road = s.road, hw = s.width / 2, x = qx, y = qy, z = sz, nx = -s.dy / len, ny = s.dx / len}
+        end
+      end
+    end
+    return hit
+  end
+  -- the drawn asphalt at grade (strips, junction plates, mouths: addAsphalt's convex pieces), and
+  -- within pad m of it
+  function OFFROAD.onAsphalt(x, y)
+    for _, entry in ipairs(asphaltBins[(floor(x / ABIN) + 32768) * 65536 + floor(y / ABIN) + 32768] or NONE) do
+      local b = entry.bounds
+      if x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] then
+        local poly, inside = entry.poly, true
+        for k = 1, #poly do
+          local p, q = poly[k], poly[k % #poly + 1]
+          local cross = (q[1] - p[1]) * (y - p[2]) - (q[2] - p[2]) * (x - p[1])
+          if (entry.ccw and cross < 0) or (not entry.ccw and cross > 0) then inside = false; break end
+        end
+        if inside then return true end
+      end
+    end
+    return false
+  end
+  function OFFROAD.nearAsphalt(x, y, pad)
+    return OFFROAD.onAsphalt(x, y) or OFFROAD.onAsphalt(x + pad, y) or OFFROAD.onAsphalt(x - pad, y) or OFFROAD.onAsphalt(x, y + pad) or OFFROAD.onAsphalt(x, y - pad)
+  end
+  function OFFROAD.walkAt(road, x, y, side)
+    if not OFFROAD.stripOf then
+      OFFROAD.stripOf = {}
+      for _, strip in ipairs(strips) do OFFROAD.stripOf[strip.road] = strip end
+    end
+    local strip, best, walk = OFFROAD.stripOf[road], math.huge, 0
+    for k = 1, strip and #strip.points - 1 or 0 do
+      local q = strip.points[k]
+      local d = (q[1] - x) ^ 2 + (q[2] - y) ^ 2
+      if d < best then best, walk = d, strip.walk[k][side] and tune.sidewalk or 0 end
+    end
+    return walk
+  end
+  function OFFROAD.offCarriageway(point, p)
+    local x, y, z = p[1], p[2], ground(p[1], p[2])
+    -- a street tree in its pit by the curb stays: only one on the asphalt itself goes
+    if point.kind ~= 'lamp' then
+      if OFFROAD.onAsphalt(x, y) then return nil end
+      return x, y, z
+    end
+    -- at the drawn ground's height or the point's own (the pack's DEM, under an embankment or a
+    -- cutting): a street at grade, not a deck over it
+    local h = type(p[3]) == 'number' and p[3] or z
+    local hit = OFFROAD.nearestOn(x, y, z, false) or OFFROAD.nearestOn(x, y, h, false)
+    -- on a junction's corner or a mouth, past the centre line's width: the nearest street's side
+    if not hit and OFFROAD.nearAsphalt(x, y, .3) then
+      hit = OFFROAD.nearestOn(x, y, z, false, nil, 30) or OFFROAD.nearestOn(x, y, h, false, nil, 30)
+    end
+    local bridge = not hit and OFFROAD.nearestOn(x, y, nil, true)
+    hit = hit or bridge
+    if not hit then return x, y, z end
+    if point.kind ~= 'lamp' then return nil end
+    local side = (x - hit.x) * hit.nx + (y - hit.y) * hit.ny >= 0 and 1 or -1
+    local walk = OFFROAD.walkAt(hit.road, hit.x, hit.y, side)
+    local off = bridge and hit.hw + walk - ROADS.deck.thick / 2 or hit.hw + (walk > 0 and .7 or 1.2)
+    local d = (x - hit.x) * hit.nx * side + (y - hit.y) * hit.ny * side
+    off = math.max(off, d)
+    x, y = hit.x + hit.nx * side * off, hit.y + hit.ny * side * off
+    -- off the drawn asphalt, half a metre at a time (a turning lane, a junction's corner)
+    for _ = 1, 16 do
+      if bridge or not OFFROAD.nearAsphalt(x, y, .3) then break end
+      x, y = x + hit.nx * side * .5, y + hit.ny * side * .5
+    end
+    if not bridge and OFFROAD.nearAsphalt(x, y, .3) then return nil end
+    z = bridge and hit.z + ROADS.deck.parapet or ground(x, y)
+    if OFFROAD.nearestOn(x, y, z, false, hit.road) or OFFROAD.nearestOn(x, y, z, true, hit.road) then return nil end
+    return x, y, z
+  end
   for _, point in ipairs(distant and NONE or lists.points) do
     local p = point.pos
     if p and point.kind == 'stop' and wantStops then
       shelter(point, p)
     elseif p and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
       local shape = point.kind == 'tree' and VEG.tree or (point.kind == 'lamp' and wantLamps) and LAMP
-      if shape then
-        static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), shape, p[1], p[2], ground(p[1], p[2]), 0)
+      local x, y, z
+      if shape then x, y, z = OFFROAD.offCarriageway(point, p) end
+      if x then
+        static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), shape, x, y, z, 0)
         local it = scene.items[#scene.items]
         it.prop, it.streetKind, it.collision = true, point.kind, 'Collision Mesh'
       end
