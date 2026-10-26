@@ -19,6 +19,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import tempfile
 import zipfile
 import zlib
@@ -635,8 +636,9 @@ def _worker_run(tasks):
     return [_worker_block(task) for task in tasks]
 
 
-def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None, cancel=None):
-    """Write a begun region's blocks as they finish, then its manifest."""
+def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None, cancel=None, record=None):
+    """Write a begun region's blocks as they finish, then its manifest. record (a list) also
+    collects every written member, for _save_part."""
     store, core, region_id, frame, base = ctx['store'], ctx['core'], ctx['region_id'], ctx['frame'], ctx['base']
     blocks, total, provenance = ctx['blocks'], ctx['total'], ctx['provenance']
     try:
@@ -662,6 +664,8 @@ def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None,
             crc, size, blob, mask = packed
             path = f'{base}/blocks/{bi}_{bj}.bin'
             _write_deflated(archive, path, crc, size, blob)
+            if record is not None:
+                record.append((path, crc, size, blob))
             manifest_blocks[f'{bi}_{bj}'] = {'path': '/' + path, 'mask': mask}
             for slot, n in counts.items():
                 cell = (bi*binary.BLOCK + slot % binary.BLOCK, bj*binary.BLOCK + slot // binary.BLOCK)
@@ -711,11 +715,62 @@ def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None,
             manifest['include'] = include
         path = f'{base}/manifest.json'
         _write_json(archive, path, manifest)
+        if record is not None:
+            record.append((path, manifest))
         return {'id': region_id, 'manifest': '/' + path, 'coverage': coverage, **provenance}
     finally:
         if getattr(store, 'landcover', None) is not None:
             store.landcover.close()
         store.db.close()
+
+
+# What a finished region of an export depends on besides its source index: the exporter's own code.
+_PART_CODE = ('build_country', 'country_format', 'fast_sources', 'fast_style', 'nature', 'looks', 'landcover')
+
+
+def _part_key(region, *settings):
+    """Name of a region's saved part: its source index, core and id, the export settings and the
+    exporter's code. Anything else changed and the region is exported again."""
+    import hashlib
+    import importlib.util
+    digest = hashlib.sha256()
+    for name in _PART_CODE:
+        spec = importlib.util.find_spec(name)
+        if spec is not None and spec.origin:
+            digest.update(Path(spec.origin).read_bytes())
+    directory, core, region_id = _region_spec(region)
+    digest.update(json.dumps([directory.name, core, region_id, FORMAT, nature.VERSION, *settings],
+                             sort_keys=True, default=str).encode())
+    label = re.sub(r'[^A-Za-z0-9-]+', '-', region_id or directory.name)
+    return f'{label}-{digest.hexdigest()[:16]}.part'
+
+
+def _save_part(path, result, members):
+    import pickle
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + '.tmp')
+    with open(temporary, 'wb') as f:
+        pickle.dump({'result': result, 'members': members}, f, protocol=pickle.HIGHEST_PROTOCOL)
+    temporary.replace(path)
+
+
+def _load_part(path):
+    import pickle
+    try:
+        with open(path, 'rb') as f:
+            part = pickle.load(f)
+        return part if isinstance(part, dict) and 'members' in part else None
+    except (OSError, EOFError, ValueError, pickle.UnpicklingError, AttributeError):
+        return None
+
+
+def _replay_part(archive, part):
+    for member in part['members']:
+        if len(member) == 4:
+            _write_deflated(archive, *member)
+        else:
+            _write_json(archive, *member)
+    return part['result']
 
 
 def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=(), cover_meta=None, vegetation=None,
@@ -785,16 +840,38 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
                     raise exc
                 emit(f'skip region: {exc}')
 
+            # Each finished region is kept beside the pack until the pack is complete: a stopped
+            # or failed export (an hour and a half for Ukraine) resumes with the regions it lacks.
+            parts = output / f'.{target.stem}.parts'
+            settings = (bbox, look, include, cover_meta, vegetation, [str(p) for p in landcover or ()])
+
             def end(region, ctx):
+                part = parts / _part_key(region, *settings)
+                members = []
                 try:
-                    entries.append(_region_end(archive, ctx, emit, cover_meta, vegetation, look, cancel))
+                    result = _region_end(archive, ctx, emit, cover_meta, vegetation, look, cancel, members)
                 except ValueError as exc:
                     skipped(region, exc)
+                    _save_part(part, None, [('skip', str(exc))])
+                    return
+                entries.append(result)
+                _save_part(part, result, members)
             begun, failed = None, True
             try:
                 for region in regions:
                     if _stopped(cancel):
                         raise InterruptedError('build stopped')
+                    saved = _load_part(parts / _part_key(region, *settings))
+                    if saved is not None:
+                        if begun is not None:
+                            previous, begun = begun, None
+                            end(*previous)
+                        if saved['result'] is None:
+                            emit(f"skip region: {saved['members'][0][1]}")
+                        else:
+                            entries.append(_replay_part(archive, saved))
+                            emit(f"export {saved['result']['id']}: kept from the interrupted build")
+                        continue
                     try:
                         ctx = _region_begin(country_id, region, bbox, emit, landcover, include, cancel, executor)
                     except ValueError as exc:
@@ -861,6 +938,7 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
                 from build_map import write_archive
                 write_archive(archive, map_data, f'earthng/countries/{country_id}/map')
         os.replace(temporary, target)
+        shutil.rmtree(output / f'.{target.stem}.parts', ignore_errors=True)
     finally:
         Path(temporary).unlink(missing_ok=True)
     return target

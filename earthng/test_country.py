@@ -409,3 +409,24 @@ class CountryTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ResumablePartTests(unittest.TestCase):
+    def test_a_part_is_reused_only_for_the_same_region_and_settings(self):
+        import tempfile
+        from pathlib import Path
+        import build_country
+        region = {'dir': 'C:/x/fast-index/fast-18-abc', 'core': [30, 50, 31.5, 51], 'id': 'e0300-n500'}
+        key = build_country._part_key(region, None, {'block': 'postsoviet'}, None)
+        self.assertEqual(key, build_country._part_key(dict(region), None, {'block': 'postsoviet'}, None))
+        self.assertNotEqual(key, build_country._part_key(region, None, {'block': 'nordic'}, None))
+        self.assertNotEqual(key, build_country._part_key(dict(region, dir='C:/x/fast-index/fast-18-def'),
+                                                         None, {'block': 'postsoviet'}, None))
+        self.assertTrue(key.startswith('e0300-n500-'))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / key
+            build_country._save_part(path, {'id': 'e0300-n500'}, [('a.bin', 1, 2, b'xy'), ('m.json', {'k': 1})])
+            self.assertEqual(build_country._load_part(path)['members'][1], ('m.json', {'k': 1}))
+            path.write_bytes(b'truncated')
+            self.assertIsNone(build_country._load_part(path))          # a torn part is exported again
+            self.assertIsNone(build_country._load_part(Path(tmp) / 'missing.part'))

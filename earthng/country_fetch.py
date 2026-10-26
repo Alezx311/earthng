@@ -248,8 +248,9 @@ def ensure_space(path, needed, what):
 
 
 # Disk a country takes per byte of its PBF (Ukraine, 0.88 GB): source tiles 4.1, extracts while
-# cutting 1.5, the region index 6.6, the pack 3.8 and its installed copy 3.8.
-SPACE_PER_PBF_BYTE = 20
+# cutting 1.5, the region index 6.6, the pack 3.8 with as much in resumable parts, and its
+# installed copy 3.8.
+SPACE_PER_PBF_BYTE = 24
 
 
 def install_zip(source, mods, slug_id, section=None, cancel=None):
@@ -532,8 +533,9 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
     part = f"_{section['id']}" if section else ''
     emit(f"building earthng_{slug_id}{part}.zip, block {look['block']}")
     with stage('Export'):
-        # the pack is about the size of its source tiles (Ukraine: 3.3 GB from 3.6)
-        ensure_space(out, sum(t.get('bytes', 0) for t in index.get('tiles', {}).values()) + 2**28, 'The export')
+        # the pack is about the size of its source tiles (Ukraine: 3.3 GB from 3.6), and the finished
+        # regions it resumes from take as much again until it is complete
+        ensure_space(out, 2 * sum(t.get('bytes', 0) for t in index.get('tiles', {}).values()) + 2**28, 'The export')
         # Same process as the index: export's block pool dies in the detached window too.
         export_path = work / 'export-path.txt'
         run_build_job({'command': 'export', 'id': slug_id, 'title': place['name'], 'version': '0.4.0',
