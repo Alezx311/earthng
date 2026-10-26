@@ -21,7 +21,7 @@ or at a junction mouth. Piers and abutments (fence_wall) are not barriers. On ne
            all round: a parapet across a slip road's mouth (m2)
   prop     a lamp, a mapped tree or other street furniture standing a metre or more inside a
            carriageway, within 1 m of its height (the class names it: 'lamp point' is OSM's)
-  underdeck a guard rail or fence with a carriageway passing over it, more than 2.5 m above its top: a
+  underdeck a guard rail or fence with a carriageway passing over it, more than 4 m above its top: a
            rail standing under a bridge deck (triangles per cell, as the length column)
   step     the road's own asphalt (of the highest and lowest drawn, the one nearer the road's
            pack height) jumping by more than JUMP within a metre and not coming back within
@@ -56,7 +56,9 @@ WALL = 'e2rf_fence_wall'   # a deck's parapet and edge face, piers, abutments
 CELL = 10.           # m: barrier pixels are reported per cell of this size
 SPIKE = 3.           # m: a rail or fence triangle taller than this has a vertex at the wrong height
 LONGEST = 4.         # m: ... if it is no wider than this (a rail's step is 2 m; a building's wall is wider)
-UNDER = 2.5          # m: a rail or fence this far under a carriageway's asphalt stands under a bridge deck
+UNDER = 4.           # m: a rail or fence this far under a carriageway's asphalt stands under a bridge deck (a
+                     # road on an embankment is 3 to 4 m over the ground its rails stand on; a deck clears 4.5 m)
+BUILDING_EDGE = 2.    # m: a tall narrow triangle this close to a building's outline is its wall, not a rail
 
 
 def under_ground(tags):
@@ -138,9 +140,13 @@ def stretches(bad):
 def barrier_pixels(asphalt, top, low):
     """Pixels where a barrier stands on the asphalt: its base is at (or sunk in) the carriageway and
     it rises over it. asphalt, top, low: the tile's rasters of the asphalt's top, the barrier's top
-    and the barrier's lowest surface (NaN: none)."""
+    and the barrier's lowest surface (NaN: none). A rail along a carriageway's edge, its posts a few cm over the
+    asphalt's last pixel, is not on it: the pixel must have asphalt on all four sides."""
+    inner = np.isfinite(asphalt)
+    inner[1:-1, 1:-1] &= inner[:-2, 1:-1] & inner[2:, 1:-1] & inner[1:-1, :-2] & inner[1:-1, 2:]
+    inner[0, :] = inner[-1, :] = inner[:, 0] = inner[:, -1] = False
     with np.errstate(invalid='ignore'):
-        return np.isfinite(asphalt) & np.isfinite(top) & (low <= asphalt + .25) & (top >= asphalt + .3) & (top <= asphalt + 3.)
+        return inner & np.isfinite(top) & (low <= asphalt + .25) & (top >= asphalt + .3) & (top <= asphalt + 3.)
 
 
 def barrier_cells(pixels, rect):
@@ -152,11 +158,24 @@ def barrier_cells(pixels, rect):
     return [(rect[0] + (cx + .5) * CELL, rect[1] + (cy + .5) * CELL, n * PIXEL * PIXEL) for (cx, cy), n in found.items()]
 
 
-def spikes(text, limit=SPIKE):
+def near_rings(x, y, rings, margin=BUILDING_EDGE):
+    """True when (x, y) is within margin m of the edge of a ring ([[x, y, z], ...]: a building's outline)."""
+    for ring in rings:
+        p = np.asarray(ring, dtype=float)[:, :2]
+        a, b = p[:-1], p[1:]
+        ab = b - a
+        t = np.clip(((np.array([x, y]) - a) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-9), 0, 1)
+        if np.hypot(*(a + ab * t[:, None] - (x, y)).T).min() < margin:
+            return True
+    return False
+
+
+def spikes(text, limit=SPIKE, rings=()):
     """[(x, y, spread m)] per CELL of a guard rail mesh (text: 'x y z' vertices, three to a triangle) whose triangles
     are taller than limit: a rail is .75 m high, so one that is not has a vertex at the
     wrong height (a ground sample off the loaded terrain read as 0), seen as a railing running down into the
-    ground."""
+    ground. A triangle at the edge of a building's outline (rings) is that building's wall, a narrow corner of
+    a warehouse's cladding, not a rail."""
     xyz = np.asarray(text.split(), dtype=float).reshape(-1, 3, 3)
     spread = xyz[:, :, 2].max(1) - xyz[:, :, 2].min(1)
     # a rail's triangle is a 2 m step of the beam: a warehouse's cladding (clad_metal too) is wider than that
@@ -164,6 +183,8 @@ def spikes(text, limit=SPIKE):
     spread = np.where(wide < LONGEST, spread, 0.)
     found = {}
     for (x, y, _), s in zip(xyz[spread > limit].mean(1), spread[spread > limit]):
+        if rings and near_rings(x, y, rings):
+            continue
         key = (int(x // CELL), int(y // CELL))
         found[key] = max(found.get(key, 0.), float(s))
     return [((cx + .5) * CELL, (cy + .5) * CELL, s) for (cx, cy), s in found.items()]
@@ -253,7 +274,11 @@ def audit_tile(job):
             low = np.fmax(low, rq.raster(' '.join(f'{v:.3f}' for v in xyz.ravel()), rect, shape))
     # far tiles draw buildings too, and a warehouse wall is clad_metal: rails and fences are judged on near tiles
     standing = barrier_cells(barrier_pixels(asphalt, barrier, -low), rect) if np.isfinite(barrier).any() and not far else []
-    tall = spikes(mats['e2rf_clad_metal']) if mats.get('e2rf_clad_metal') else []         # not fences: a noise wall is 7 m
+    rings = []
+    for ci in {int(rect[0] // pack.cell), int((rect[2] - 1) // pack.cell)}:
+        for cj in {int(rect[1] // pack.cell), int((rect[3] - 1) // pack.cell)}:
+            rings += [r for b in (pack.source(ci, cj) or {}).get('buildings', []) for r in b.get('rings', [])]
+    tall = spikes(mats['e2rf_clad_metal'], rings=rings) if mats.get('e2rf_clad_metal') else []     # not fences: a noise wall is 7 m
     under = rails_under([mats[m] for m in BARRIERS if mats.get(m)], asphalt, rect)
     walls = []
     if mats.get(WALL) and not far:

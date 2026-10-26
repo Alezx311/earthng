@@ -64,6 +64,12 @@ class BarrierTests(unittest.TestCase):
         cells = audit.barrier_cells(pixels, [0, 0, 100, 100])
         self.assertAlmostEqual(sum(c[2] for c in cells), 240, delta=1)
 
+    def test_a_rail_along_the_edge_is_not_on_the_road(self):
+        top, low = np.full((100, 100), np.nan), np.full((100, 100), np.nan)
+        top[40, 20:80], low[40, 20:80] = 10.75, 9.7                     # posts over the asphalt's first row
+        top[59, 20:80], low[59, 20:80] = 10.75, 9.7                     # and its last
+        self.assertEqual(int(audit.barrier_pixels(self.asphalt, top, low).sum()), 0)
+
     def test_a_barrier_high_over_the_road_or_too_tall_is_not_standing_on_it(self):
         top, low = np.full((100, 100), np.nan), np.full((100, 100), np.nan)
         top[48:52, 20:80], low[48:52, 20:80] = 16., 14.                 # a gantry 4 m over the lane
@@ -105,6 +111,15 @@ class SpikeTests(unittest.TestCase):
 
     def test_a_tall_wide_wall_is_a_building_and_not_a_rail(self):
         self.assertEqual(audit.spikes('0 5 40  19 5 40  19 5 76'), [])         # a warehouse's clad_metal
+
+
+class SpikeBuildingTests(unittest.TestCase):
+    def test_a_narrow_tall_triangle_at_a_buildings_outline_is_its_wall(self):
+        ring = [[0, 0, 0], [30, 0, 0], [30, 20, 0], [0, 20, 0], [0, 0, 0]]
+        wall = '30 5 0  30.7 5.3 0  30.7 5.3 18'          # a corner sliver of a warehouse's cladding
+        self.assertEqual(audit.spikes(wall), [(35., 5., 18.)])
+        self.assertEqual(audit.spikes(wall, rings=[ring]), [])
+        self.assertEqual(len(audit.spikes('60 5 0  60.7 5.3 0  60.7 5.3 18', rings=[ring])), 1)       # far from it: a rail
 
 
 class UnderDeckTests(unittest.TestCase):
