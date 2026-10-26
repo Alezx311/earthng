@@ -341,8 +341,13 @@ def _python():
         'need a Python with osmium in this repository .venv (requirements-fast.txt)') from None
 
 
+# Elevation tiles downloaded at once: 8, 16 and 32 fetched 19, 29 and 56 tiles/s from the AWS
+# bucket (2026-10-26); Ukraine needs 21 000 of them.
+DEM_THREADS = 32
+
+
 def fetch_dem(index, dem, emit=print, cancel=None):
-    """Terrarium heights under every tile of a cut index, eight downloads at a time."""
+    """Terrarium heights under every tile of a cut index, DEM_THREADS downloads at a time."""
     import fast_dem
 
     missing = [path for path in fast_dem.audit(index, dem) if not path.exists()]
@@ -366,9 +371,9 @@ def fetch_dem(index, dem, emit=print, cancel=None):
     if not missing:
         return
     from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-    with ThreadPoolExecutor(8) as pool:
+    with ThreadPoolExecutor(DEM_THREADS) as pool:
         remaining = iter(missing)
-        pending = {pool.submit(one, path) for path in islice(remaining, 16)}
+        pending = {pool.submit(one, path) for path in islice(remaining, 2 * DEM_THREADS)}
         completed = 0
         try:
             while pending:

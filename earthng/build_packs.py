@@ -117,7 +117,8 @@ def fetch_dem(index, log, pid):
                 if attempt == 5:
                     log.say(pid, f'DEM failed {path}: {exc}')
                 time.sleep(2 + attempt * 3)
-    with ThreadPoolExecutor(12) as pool:
+    import country_fetch
+    with ThreadPoolExecutor(country_fetch.DEM_THREADS) as pool:
         list(pool.map(one, missing))
     left = sum(1 for p in missing if not p.exists())
     log.say(pid, f'DEM ready, {left} missing')
