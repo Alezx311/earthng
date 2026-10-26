@@ -485,17 +485,30 @@ def _despike(store):
     return store
 
 
-def _worker_open(directory, landcover=(), include=None):
-    _WORKER['store'] = _despike(sources.Store(directory))
-    _WORKER['include'] = include
-    if landcover:
-        from landcover import WorldCover
-        _WORKER['store'].landcover = WorldCover(landcover, _WORKER['store'].frame)
+def _worker_init(landcover=(), include=None):
+    """One export worker serves every region of the country: it opens each region's store when
+    that region's first block arrives and closes the region before it."""
+    _WORKER.update(landcover=tuple(landcover or ()), include=include, directory=None, store=None)
+
+
+def _worker_store(directory):
+    if _WORKER.get('directory') != directory:
+        old = _WORKER.get('store')
+        if old is not None:
+            if getattr(old, 'landcover', None) is not None:
+                old.landcover.close()
+            old.db.close()
+        store = _despike(sources.Store(directory))
+        if _WORKER.get('landcover'):
+            from landcover import WorldCover
+            store.landcover = WorldCover(_WORKER['landcover'], store.frame)
+        _WORKER.update(directory=directory, store=store)
+    return _WORKER['store']
 
 
 def _worker_block(task):
-    key, cells = task
-    return key, _finish_block(_WORKER['store'], cells, _WORKER.get('include'))
+    directory, key, cells = task
+    return key, _finish_block(_worker_store(directory), cells, _WORKER.get('include'))
 
 
 def _region_spec(region):
@@ -555,8 +568,9 @@ def _stopped(cancel):
     return cancel is not None and cancel.is_set()
 
 
-def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=(), cover_meta=None, vegetation=None,
-                   include=None, look=None, cancel=None):
+def _region_begin(country_id, region, bbox, emit, landcover=(), include=None, cancel=None, executor=None):
+    """Open a region and queue its blocks on executor (or none: _region_end compiles them).
+    The next region is begun before this one ends, so the workers never wait on a region's tail."""
     directory, core, region_id = _region_spec(region)
     meta = _source_meta(directory)
     region_id = region_id or meta['id'].replace('_', '-')
@@ -564,6 +578,7 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
     if core is not None:
         core = [float(v) for v in _bounds(list(core), f'{region_id}: core box')]
     store = _despike(sources.Store(directory))
+    ok = False
     try:
         if landcover:
             from landcover import WorldCover
@@ -599,48 +614,62 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
         if _stopped(cancel):
             raise InterruptedError('build stopped')
         tasks = sorted(blocks.items())
-        pool = None
-        if jobs > 1 and len(tasks) > 1:
-            import multiprocessing
-            pool = multiprocessing.get_context('spawn').Pool(
-                min(jobs, len(tasks)), _worker_open, (str(directory), landcover, include))
-            results = pool.imap(_worker_block, tasks)
+        if executor is not None:
+            # four neighbouring blocks to a worker at a time: they share raw OSM tiles (SCENES)
+            futures = [executor.submit(_worker_run, [(str(directory), key, cells) for key, cells in tasks[k:k + 4]])
+                       for k in range(0, len(tasks), 4)]
         else:
-            results = ((key, _finish_block(store, cells, include)) for key, cells in tasks)
+            futures = None
+        ok = True
+        return {'store': store, 'directory': directory, 'core': core, 'region_id': region_id, 'meta': meta,
+                'provenance': provenance, 'frame': frame, 'base': base, 'blocks': blocks, 'total': total,
+                'tasks': tasks, 'futures': futures, 'include': include}
+    finally:
+        if not ok:
+            if getattr(store, 'landcover', None) is not None:
+                store.landcover.close()
+            store.db.close()
+
+
+def _worker_run(tasks):
+    return [_worker_block(task) for task in tasks]
+
+
+def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None, cancel=None):
+    """Write a begun region's blocks as they finish, then its manifest."""
+    store, core, region_id, frame, base = ctx['store'], ctx['core'], ctx['region_id'], ctx['frame'], ctx['base']
+    blocks, total, provenance = ctx['blocks'], ctx['total'], ctx['provenance']
+    try:
+        def finished(future):
+            # Stop is seen while a worker still compiles (a batch of dense blocks takes ~20 s)
+            while True:
+                try:
+                    return future.result(timeout=.5)
+                except TimeoutError:
+                    if _stopped(cancel):
+                        raise InterruptedError('build stopped') from None
+        if ctx['futures'] is not None:
+            results = (result for future in ctx['futures'] for result in finished(future))
+        else:
+            results = ((key, _finish_block(store, cells, ctx['include'])) for key, cells in ctx['tasks'])
         manifest_blocks, present, roads, done = {}, set(), {}, 0
-        stopped = False
-        finished = False
-        try:
-            for (bi, bj), (packed, counts) in results:
-                done += len(blocks[(bi, bj)])
-                if _stopped(cancel):
-                    stopped = True
-                    break
-                if not packed:
-                    continue
-                crc, size, blob, mask = packed
-                path = f'{base}/blocks/{bi}_{bj}.bin'
-                _write_deflated(archive, path, crc, size, blob)
-                manifest_blocks[f'{bi}_{bj}'] = {'path': '/' + path, 'mask': mask}
-                for slot, n in counts.items():
-                    cell = (bi*binary.BLOCK + slot % binary.BLOCK, bj*binary.BLOCK + slot // binary.BLOCK)
-                    present.add(cell)
-                    roads[cell] = n
-                if done == total or len(manifest_blocks) % 50 == 0:
-                    emit(f'export {region_id}: {done}/{total} cells')
-            else:
-                finished = True
-        finally:
-            if pool is not None:
-                # close() waits for every queued block. Stop, or a worker error, leaves
-                # unread results; on Windows that fills the queue and join never returns.
-                if finished:
-                    pool.close()
-                else:
-                    pool.terminate()
-                pool.join()
-        if stopped:
-            raise InterruptedError('build stopped')
+        for (bi, bj), (packed, counts) in results:
+            done += len(blocks[(bi, bj)])
+            if _stopped(cancel):
+                raise InterruptedError('build stopped')
+            if not packed:
+                continue
+            crc, size, blob, mask = packed
+            path = f'{base}/blocks/{bi}_{bj}.bin'
+            _write_deflated(archive, path, crc, size, blob)
+            manifest_blocks[f'{bi}_{bj}'] = {'path': '/' + path, 'mask': mask}
+            for slot, n in counts.items():
+                cell = (bi*binary.BLOCK + slot % binary.BLOCK, bj*binary.BLOCK + slot // binary.BLOCK)
+                present.add(cell)
+                roads[cell] = n
+            if done == total or len(manifest_blocks) % 50 == 0:
+                emit(f'export {region_id}: {done}/{total} cells')
+        include = ctx['include']
         coverage = []
         if not present:
             raise ValueError(f'{region_id}: no cell exported (no_dem under every source cell)')
@@ -689,6 +718,13 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
         store.db.close()
 
 
+def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=(), cover_meta=None, vegetation=None,
+                   include=None, look=None, cancel=None):
+    """One region on its own (tests, one-region builds without a shared pool)."""
+    ctx = _region_begin(country_id, region, bbox, emit, landcover, include, cancel)
+    return _region_end(archive, ctx, emit, cover_meta, vegetation, look, cancel)
+
+
 def build_country(country_id, title, version, regions, out, bbox=None, emit=print, jobs=1, landing=None, landcover=(), vegetation=None,
                   look=None, include=None, cancel=None, map_data=None, section=None, credits=()):
     """Stream source blocks to ZIP64 and atomically replace the completed archive.
@@ -732,18 +768,59 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
     handle, temporary = tempfile.mkstemp(prefix=target.stem + '-', suffix='.zip.tmp', dir=output)
     os.close(handle)
     try:
+        executor = None
+        if jobs > 1:
+            # one pool for the whole country (it was one per region: 80 start-ups, and every
+            # region's last blocks left most workers idle)
+            from concurrent.futures import ProcessPoolExecutor
+            import multiprocessing
+            executor = ProcessPoolExecutor(jobs, multiprocessing.get_context('spawn'),
+                                           initializer=_worker_init, initargs=(landcover, include))
         with zipfile.ZipFile(temporary, 'w', allowZip64=True) as archive:
             entries = []
-            for region in regions:
-                if _stopped(cancel):
-                    raise InterruptedError('build stopped')
+
+            def skipped(region, exc):
+                # A grid box of open sea or a border sliver: the rest of the country stays.
+                if len(regions) == 1 or not isinstance(region, dict) or 'no ' not in str(exc):
+                    raise exc
+                emit(f'skip region: {exc}')
+
+            def end(region, ctx):
                 try:
-                    entries.append(_export_region(archive, country_id, region, bbox, emit, jobs, landcover, cover_meta, vegetation, include, look, cancel))
+                    entries.append(_region_end(archive, ctx, emit, cover_meta, vegetation, look, cancel))
                 except ValueError as exc:
-                    # A grid box of open sea or a border sliver: the rest of the country stays.
-                    if len(regions) == 1 or not isinstance(region, dict) or 'no ' not in str(exc):
-                        raise
-                    emit(f'skip region: {exc}')
+                    skipped(region, exc)
+            begun, failed = None, True
+            try:
+                for region in regions:
+                    if _stopped(cancel):
+                        raise InterruptedError('build stopped')
+                    try:
+                        ctx = _region_begin(country_id, region, bbox, emit, landcover, include, cancel, executor)
+                    except ValueError as exc:
+                        skipped(region, exc)
+                        continue
+                    previous, begun = begun, (region, ctx)
+                    if previous is not None:
+                        end(*previous)
+                if begun is not None:
+                    region, ctx = begun
+                    begun = None
+                    end(region, ctx)
+                failed = False
+            finally:
+                if begun is not None:     # stopped or failed while it was queued
+                    store = begun[1]['store']
+                    if getattr(store, 'landcover', None) is not None:
+                        store.landcover.close()
+                    store.db.close()
+                if executor is not None:
+                    if failed:
+                        # Stop or an error: queued blocks are dropped and running ones killed, as
+                        # Pool.terminate() did; waiting on them took 40 s after a Stop.
+                        for process in list((getattr(executor, '_processes', None) or {}).values()):
+                            process.terminate()
+                    executor.shutdown(wait=True, cancel_futures=True)
             if not entries:
                 raise ValueError('no region has landable cells')
             provenance = {'source': 'OpenStreetMap contributors', 'license': 'ODbL-1.0'}
@@ -828,8 +905,15 @@ def grid_regions(source, dem, work, step=None, emit=print, cancel=None, jobs=Non
     found = {}
     if workers > 1 and len(cores) > 1:
         from concurrent.futures import ProcessPoolExecutor, as_completed
+        # The heaviest regions first (Kyiv's took 7 min): started last, one of them alone kept the
+        # other workers idle. Weight: the ways of the tiles under the region's window.
+        def weight(core):
+            w, s, e, n = core[0]-PAD[0], core[1]-PAD[1], core[2]+PAD[0], core[3]+PAD[1]
+            return sum(t.get('ways', 0) for t in index['tiles'].values()
+                       if t['cell'][0] < e and t['cell'][2] > w and t['cell'][1] < n and t['cell'][3] > s)
+        order = sorted(range(len(cores)), key=lambda n: -weight(cores[n]))
         with ProcessPoolExecutor(workers, initializer=_index_worker, initargs=(workers,)) as pool:
-            futures = {pool.submit(_index_box, source, work, dem, core): n for n, core in enumerate(cores)}
+            futures = {pool.submit(_index_box, source, work, dem, cores[n]): n for n in order}
             for done, future in enumerate(as_completed(futures), 1):
                 if _stopped(cancel):
                     for other in futures:
@@ -857,10 +941,10 @@ def grid_regions(source, dem, work, step=None, emit=print, cancel=None, jobs=Non
 
 
 def index_jobs(count):
-    """Regions indexed at once: a third of the cores (each parses its tiles on a few more), and
-    about 2 GB of free memory per region."""
+    """Regions indexed at once: half the cores (a region's road profile is one thread; its tiles
+    parse on two more for a few seconds), and 2 GB of free memory each (Ukraine: up to 1.4)."""
     import sysmem
-    return min(count, sysmem.jobs(2, max(1, (os.cpu_count() or 2) // 3)))
+    return min(count, sysmem.jobs(2, max(1, (os.cpu_count() or 2) // 2)))
 
 
 def _index_worker(workers):

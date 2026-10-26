@@ -14,6 +14,8 @@ general-purpose compression; the game reads these files with plain string.byte.
 """
 import math
 
+import numpy as np
+
 MAGIC = b'EGB2'
 BLOCK = 8
 SCALE = 100
@@ -42,6 +44,21 @@ class _Writer:
 
     def s(self, value):
         self.u(value * 2 if value >= 0 else -value * 2 - 1)
+
+    def signed_many(self, values):
+        """s() for each of an int64 array at once: the same bytes, without a Python call per number."""
+        v = np.asarray(values, dtype=np.int64)
+        v = np.where(v >= 0, v * 2, -v * 2 - 1).astype(np.uint64)
+        shifts = np.arange(10, dtype=np.uint64) * np.uint64(7)
+        groups = (v[:, None] >> shifts) & np.uint64(0x7f)
+        length = np.maximum(1, (v[:, None] >> shifts).astype(bool).sum(axis=1))
+        keep = np.arange(10) < length[:, None]
+        more = np.arange(10) < (length - 1)[:, None]
+        self.out += (groups | (more * np.uint64(0x80)))[keep].astype(np.uint8).tobytes()
+
+
+# Below this many coordinates a polyline is written number by number (numpy costs more there).
+VECTOR_POINTS = 8
 
 
 def _strings(cell):
@@ -84,6 +101,14 @@ def encode_cell(cell, origin):
         if len(points) < minimum:
             raise ValueError('too few source coordinates')
         w.u(len(points))
+        if len(points) >= VECTOR_POINTS and all(len(p) == 3 for p in points):
+            xyz = np.asarray(points, dtype=float)
+            if not np.isfinite(xyz).all():
+                raise ValueError('non-finite source number')
+            cm = np.round(xyz * SCALE).astype(np.int64)
+            cm = np.diff(np.vstack([[ox, oy, 0], cm]), axis=0)
+            w.signed_many(cm.ravel())
+            return
         px, py, pz = ox, oy, 0
         for p in points:
             if len(p) not in (2, 3):
@@ -104,11 +129,12 @@ def encode_cell(cell, origin):
     if len(heights) != terrain['nx'] * terrain['ny']:
         raise ValueError('terrain size does not match its grid')
     w.u(terrain['nx']); w.u(terrain['ny'])
-    previous = 0
-    for h in heights:
-        h = round(float(h) * TERRAIN)
-        w.s(h - previous)
-        previous = h
+    grid = np.asarray(heights, dtype=float)
+    if len(grid):
+        if not np.isfinite(grid).all():
+            raise ValueError('non-finite terrain height')
+        grid = np.round(grid * TERRAIN).astype(np.int64)
+        w.signed_many(np.diff(grid, prepend=0))
     for kind in KINDS:
         features = cell.get(kind, [])
         w.u(len(features))

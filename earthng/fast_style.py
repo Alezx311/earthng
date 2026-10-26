@@ -468,6 +468,10 @@ ROAD_DETAILS = ('crossing', 'give_way', 'stop_sign', 'mini_roundabout', 'turning
 UNMARKED = ('no', 'none', 'unmarked')
 
 
+# Every key point_kind reads: the exporter hands Python only nodes with one of them.
+POINT_KEYS = ('highway', 'natural', 'public_transport', 'entrance', 'leisure')
+
+
 def point_kind(tags):
     """'stop', 'signal' or one of ROAD_DETAILS for an OSM node, else None."""
     highway = tags.get('highway')

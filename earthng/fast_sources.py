@@ -227,6 +227,9 @@ def dem_tiles(box):
     return [(x, y) for x in range(math.floor(x0) - 1, math.floor(x1) + 2) for y in range(math.floor(y0) - 1, math.floor(y1) + 2)]
 
 
+# Raw OSM tiles kept parsed: an export block with its halo touches up to six, and four made
+# every block parse them all again.
+SCENES = 9
 PARSE_WORKERS = min(6, os.cpu_count() or 2)     # tile parsers of one index (fewer when regions run side by side)
 
 
@@ -718,13 +721,16 @@ class Store:
                             return
                         if len(coords)>=2:
                             lines[-w.id]=(kind,dict(w.tags),LineString(coords))
-            Reader().apply_file(str(Path(self.meta['source'])/entry['file']),locations=True)
+            # Only nodes that can be points reach Python (Kyiv tile: 21 k of 218 k, 0.57 -> 0.25 s);
+            # the location index still sees every node, so ways and areas keep their geometry.
+            Reader().apply_file(str(Path(self.meta['source'])/entry['file']),locations=True,
+                                filters=[osmium.filter.KeyFilter(*fast_style.POINT_KEYS).enable_for(osmium.osm.NODE)])
             found.update(lines)
             ordered=sorted(found.items())
             geoms=shapely.make_valid(shapely.transform([v[1][2] for v in ordered],self.frame.local,interleaved=False))
             records=[(fid,kind,{'tags':tags},geom) for (fid,(kind,tags,_)),geom in zip(ordered,geoms)]
             self.scenes[key]=(records,shapely.STRtree(geoms))
-            if len(self.scenes)>4: self.scenes.popitem(last=False)
+            if len(self.scenes)>SCENES: self.scenes.popitem(last=False)
         self.scenes.move_to_end(key)
         records,tree=self.scenes[key]
         from shapely.geometry import box
