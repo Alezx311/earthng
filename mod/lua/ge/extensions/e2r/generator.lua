@@ -1309,9 +1309,11 @@ end
 -- mapping slip. A barrier under a bridge deck, at any angle and any height, is dropped under it:
 -- a fence mapped under a low bridge would stand through the road, and the median and slip road
 -- rails OSM runs on under an overpass read as rails going down under the bridge (Tallinna ringtee
--- at Jüri), crossing each other at the piers; they resume past the deck's edge. Tunnels pass
--- under everything.
-ROADS.onDeck = {reach = 3, parallel = .85, step = 2, cross = .3, across = .5}
+-- at Jüri), crossing each other at the piers; they resume past the deck's edge. A deck at least
+-- `clear` m over the ground there also keeps barriers `under` m off its edges and ends: the median
+-- rails ran up to the deck's edge and stopped in front of its piers (a rail end across the median
+-- at the pier), which still read as rails under the bridge. Tunnels pass under everything.
+ROADS.onDeck = {reach = 3, parallel = .85, step = 2, cross = .3, across = .5, under = 8, clear = 3.5}
 -- the runs of points ({x, y, ...}) off every bridge deck and carriageway in strips; nil when
 -- none is near. ground(x, y): the drawn ground, for a deck's clearance (none: decks only).
 function ROADS.offDecks(strips, points, ground)
@@ -1324,16 +1326,16 @@ function ROADS.offDecks(strips, points, ground)
     local bridge = ROADS.bridge(strip.tags)
     if bridge or ground and not ROADS.tunnel(strip.tags) then
       local ps = strip.points
-      local r = math.max(bridge and strip.hw + od.reach or 0, strip.hw + od.cross)
+      local r = math.max(bridge and strip.hw + od.under or 0, strip.hw + od.cross)
       for k = 1, #ps - 1 do
         local a, b = ps[k], ps[k + 1]
         if math.max(a[1], b[1]) + r > x0 and math.min(a[1], b[1]) - r < x1
           and math.max(a[2], b[2]) + r > y0 and math.min(a[2], b[2]) - r < y1 then
           decks = decks or {}
-          -- {ax, ay, bx, by, along reach, across reach, az, bz, deck, x0, y0, x1, y1 (reach box)}
+          -- {ax, ay, bx, by, along reach, across reach, az, bz, deck, x0, y0, x1, y1 (reach box), under reach}
           decks[#decks + 1] = {a[1], a[2], b[1], b[2], bridge and strip.hw + od.reach or 0, strip.hw + od.cross,
             a[3] or 0, b[3] or 0, bridge, math.min(a[1], b[1]) - r, math.min(a[2], b[2]) - r,
-            math.max(a[1], b[1]) + r, math.max(a[2], b[2]) + r}
+            math.max(a[1], b[1]) + r, math.max(a[2], b[2]) + r, bridge and strip.hw + od.under or 0}
         end
       end
     end
@@ -1354,6 +1356,7 @@ function ROADS.offDecks(strips, points, ground)
         local d2 = (mx - s[1] - t * sx) ^ 2 + (my - s[2] - t * sy) ^ 2
         if along and d2 < s[5] * s[5] then return true end
         if d2 < s[6] * s[6] and (s[9] or ground and cos <= od.across) then return true end
+        if s[9] and ground and d2 < s[14] * s[14] and s[7] + (s[8] - s[7]) * t - ground(mx, my) >= od.clear then return true end
       end
     end
     return false

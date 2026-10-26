@@ -781,8 +781,9 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(across_the_road(metal), [])
         self.assertEqual(across_the_road(mesh), [])
         # the lower road's rail stops at the deck's edges and goes on past them; the deck's ones go on past its ends
-        self.assertEqual([t for t in metal if all(abs(p[0] - 254.5) < .6 and abs(p[1] - 250) < 3.5 for p in t)], [])
-        self.assertTrue([t for t in metal if all(abs(p[0] - 254.5) < .6 and 7 < abs(p[1] - 250) < 60 for p in t)])
+        # and keeps ROADS.onDeck.under m (8) off its edges (the deck is 4 m half width): no rail end in front of the pier
+        self.assertEqual([t for t in metal if all(abs(p[0] - 254.5) < .6 and abs(p[1] - 250) < 11 for p in t)], [])
+        self.assertTrue([t for t in metal if all(abs(p[0] - 254.5) < .6 and 13 < abs(p[1] - 250) < 60 for p in t)])
         self.assertTrue([t for t in metal if all(p[0] < 195 and abs(p[1] - 254.5) < .6 for p in t)])
         self.assertTrue([t for t in mesh if all(p[0] > 300 for p in t)])
 

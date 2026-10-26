@@ -107,5 +107,27 @@ class SpikeTests(unittest.TestCase):
         self.assertEqual(audit.spikes('0 5 40  19 5 40  19 5 76'), [])         # a warehouse's clad_metal
 
 
+class UnderDeckTests(unittest.TestCase):
+    RECT = [0., 0., 40., 40.]
+
+    def deck(self):
+        a = np.full((40, 40), np.nan)
+        a[10:30, 10:30] = 20.
+        return a
+
+    def rail(self, x, z):
+        return f'{x} 20 {z}  {x + 2} 20 {z}  {x + 2} 20 {z + .75}'
+
+    def test_a_rail_with_a_deck_over_it_is_found(self):
+        self.assertEqual(audit.rails_under([self.rail(14, 10.)], self.deck(), self.RECT), [(15., 25., 1)])
+
+    def test_a_rail_on_the_deck_or_off_it_is_not(self):
+        self.assertEqual(audit.rails_under([self.rail(14, 20.)], self.deck(), self.RECT), [])
+        self.assertEqual(audit.rails_under([self.rail(33, 10.)], self.deck(), self.RECT), [])
+
+    def test_a_wall_wider_than_a_rail_is_not(self):
+        self.assertEqual(audit.rails_under(['12 20 10  22 20 10  22 20 20'], self.deck(), self.RECT), [])
+
+
 if __name__ == '__main__':
     unittest.main()
