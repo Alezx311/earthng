@@ -28,6 +28,7 @@ import osmium
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import osm_tiles  # noqa: E402
+from sysmem import replace_dir  # noqa: E402
 from osm_tiles import BUFFER, CELL, SELECT  # noqa: E402
 
 FANOUT = 16
@@ -107,7 +108,7 @@ def run_cut(src, block_dir, box):
     if tmp.exists():
         shutil.rmtree(tmp)
     osm_tiles.cut(src, tmp, box)
-    tmp.replace(block_dir)
+    replace_dir(tmp, block_dir)
     return block_dir
 
 
@@ -267,7 +268,7 @@ def main():
     from build_map import build as build_map
     build_map(a.pbf, tmp / 'map')
     (tmp / 'index.json').write_text(json.dumps(index, indent=1), encoding='utf8')
-    tmp.replace(a.out)
+    replace_dir(tmp, a.out)
     shutil.rmtree(work)
     sizes = [t['bytes'] for t in index['tiles'].values()]
     print(f"written {len(sizes)} tiles to {a.out}, {sum(sizes)/2**30:.2f} GB total, "

@@ -324,7 +324,8 @@ def cut_tiles(pbf, tiles, box=None, jobs=None, emit=print, cancel=None, heavy_jo
         run_step(command, emit, cancel)
     if target != tiles:
         shutil.rmtree(tiles)
-        target.replace(tiles)
+        import sysmem
+        sysmem.replace_dir(target, tiles)
     return tiles
 
 

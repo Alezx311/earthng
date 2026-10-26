@@ -218,6 +218,26 @@ class LockTests(unittest.TestCase):
             self.assertEqual(after.stdout.strip(), 'built')
 
 
+class RenameTests(unittest.TestCase):
+    def test_a_folder_rename_windows_refuses_for_a_moment_is_retried(self):
+        import sysmem
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp) / 'tiles.part', Path(tmp) / 'tiles'
+            source.mkdir()
+            real = Path.replace
+            calls = []
+
+            def busy(self, other):
+                calls.append(other)
+                if len(calls) < 3:
+                    raise PermissionError(5, 'Access is denied')
+                return real(self, other)
+            with patch.object(Path, 'replace', busy), patch.object(sysmem.time, 'sleep'):
+                sysmem.replace_dir(source, target)
+            self.assertEqual(len(calls), 3)
+            self.assertTrue(target.is_dir())
+
+
 class AssemblyTests(unittest.TestCase):
     def test_failed_assembly_preserves_blocks_for_retry(self):
         import osm_tiles_country as cutter
