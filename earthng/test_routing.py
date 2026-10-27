@@ -165,6 +165,91 @@ class RouterTests(unittest.TestCase):
         self.assertIsNone(lua.eval('routing.route(graph, routing.nearest(graph, 0, 0), routing.nearest(graph, 600, 0))'))
 
 
+NAVIGATOR = (ROOT / 'mod/lua/ge/extensions/e2r/navigator.lua').read_text(encoding='utf8')
+
+
+class NavigatorTests(unittest.TestCase):
+    """navigator.lua over the grid: the job, the ground markers, the widget's lines."""
+
+    def make(self):
+        lua = LuaRuntime()
+        lua.globals().routingSrc = SRC
+        lua.globals().blob = rf.encode(rf.graph(grid()))
+        lua.execute('''
+          package.preload['ge/extensions/e2r/routing'] = function() return loadstring(routingSrc)() end
+          calls, reads = {}, 0
+          core_groundMarkers = {setPath = function(list) calls[#calls + 1] = list or false end}
+          nodes = {}
+          for j = 0, 5 do for i = 0, 5 do nodes['e2r_n' .. (1000 + i + j * 6)] = {} end end
+          map = {getMap = function() return {nodes = nodes, buildSerial = 1} end}
+          car = {x = 0, y = 0}
+          focus = function() return car end
+          L = function(uk, en) return en end''')
+        nav = lua.execute(NAVIGATOR)
+        lua.globals().nav = nav
+        lua.execute('''
+          nav.source = {routing = function() return '/r.bin', 'demo/r' end,
+                        readBytes = function() reads = reads + 1; return blob end,
+                        toGeo = function(x, y) return y / 1e5, x / 1e5 end}''')
+        return lua, nav
+
+    def state(self, lua):
+        """navigator.lua's private state table (an upvalue of step)."""
+        return lua.eval('''(function()
+          for i = 1, 60 do local n, v = debug.getupvalue(nav.step, i); if n == 'nav' then return v end end
+        end)()''')
+
+    def run_until(self, lua, state, frames=200, now=0.):
+        for k in range(frames):
+            lua.globals().nav.step(lua.globals().focus, now + k * .016, 'en')
+            if lua.eval('nav.lines(L)') and state in (lua.eval('nav.lines(L)[1]') or ''):
+                return now + k * .016
+        self.fail(f'no "{state}" after {frames} frames: {lua.eval("nav.lines(L)[1]")}')
+
+    def test_route_feeds_markers_ahead_and_arrives(self):
+        lua, nav = self.make()
+        lua.execute("nav.setDestination(500, 500, .005, .005, car, 'en')")
+        self.assertIn('Finding', lua.eval('nav.lines(L)[1]'))
+        t = self.run_until(lua, 'to go')
+        self.assertIn('km to go', lua.eval('nav.lines(L)[1]'))
+        self.assertTrue(lua.eval('nav.lines(L)[2]').startswith('In '))
+        first = lua.eval('calls[#calls]')
+        ids = [first[k] for k in range(1, len(first) + 1)]
+        self.assertTrue(all(i.startswith('e2r_n') for i in ids))
+        self.assertLessEqual(len(ids), 700 // 150 + 1)
+        # driving along the line: the markers move on, then the trip ends
+        points = self.state(lua).route.points
+        xs = [points[k] for k in range(1, len(points) + 1)]
+        for k in range(0, len(xs) - 1, 2):
+            lua.globals().car.x, lua.globals().car.y = xs[k], xs[k + 1]
+            t += .5
+            nav.step(lua.globals().focus, t, 'en')
+        self.assertGreater(lua.eval('#calls'), 1)
+        self.assertIn('arrived', lua.eval('nav.lines(L)[1]'))
+        self.assertEqual(lua.eval('reads'), 1)
+
+    def test_leaving_the_route_finds_a_new_one_with_the_same_graph(self):
+        lua, nav = self.make()
+        lua.execute("nav.setDestination(500, 500, .005, .005, car, 'en')")
+        t = self.run_until(lua, 'to go')
+        self.assertEqual(self.state(lua).route.ids[1], '1000')
+        # the car is in a block 50 m from every street; past OFF_S a route from there
+        lua.globals().car.x, lua.globals().car.y = 150, 50
+        for k in range(10):
+            t += .5
+            nav.step(lua.globals().focus, t, 'en')
+        self.run_until(lua, 'to go', now=t)
+        self.assertIn(self.state(lua).route.ids[1], ('1001', '1002', '1007', '1008'))
+        self.assertEqual(lua.eval('reads'), 1)          # the graph was kept
+
+    def test_destination_far_from_roads_is_reported(self):
+        lua, nav = self.make()
+        lua.execute("nav.setDestination(9000, 9000, .09, .09, car, 'en')")
+        self.run_until(lua, 'far from')
+        lua.execute('nav.clear()')
+        self.assertIsNone(lua.eval('nav.lines(L)'))
+
+
 BUILT = sorted((ROOT / 'out/routing').glob('*/earthng/countries/*/routing/*.bin'))
 
 

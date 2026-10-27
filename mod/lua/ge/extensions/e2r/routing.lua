@@ -58,7 +58,7 @@ function M.decode(data, toWorld, pause)
     local wx, wy = qx / SCALE, qy / SCALE
     if toWorld then wx, wy = toWorld(wx, wy) end
     r.x[k], r.y[k] = wx, wy
-    if k % 4096 == 0 then pause() end
+    if k % 1024 == 0 then pause() end
   end
   local e = u()
   r.e = e
@@ -75,7 +75,7 @@ function M.decode(data, toWorld, pause)
     local count = u()
     r.geo[k], r.geoN[k] = pos, count
     for _ = 1, 2 * count do u() end
-    if k % 2048 == 0 then pause() end
+    if k % 512 == 0 then pause() end
   end
   if u() ~= 0 or u() ~= 0 or pos ~= last + 1 then error('unexpected routing tail') end
   return r
@@ -107,7 +107,7 @@ function M.graph(regions, pause)
         if hit then found = canon[rj][hit]; break end
       end
       if found then map[k] = found else map[k] = g.n; g.n = g.n + 1 end
-      if k % 4096 == 0 then pause() end
+      if k % 1024 == 0 then pause() end
     end
     canon[ri] = map
   end
@@ -155,7 +155,7 @@ function M.graph(regions, pause)
       local a, b = map[r.a[k]], map[r.b[k]]
       add(a, b, ri, k, false, r)
       if bit.band(r.flags[k], ONEWAY) == 0 then add(b, a, ri, k, true, r) end
-      if k % 2048 == 0 then pause() end
+      if k % 512 == 0 then pause() end
     end
   end
   g.used, g.arcs = used, arcs
@@ -289,7 +289,8 @@ end
 
 local function heading(ax, ay, bx, by) return atan2(by - ay, bx - ax) end
 
--- {ids = {'<osm id>', ...}, points = {x1, y1, ...}, length = m, time = s, steps = {...}}
+-- {ids = {'<osm id>', ...}, at = {m along the route at each id}, points = {x1, y1, ...},
+-- length = m, time = s, steps = {...}}
 -- A step is a junction where the way turns (> TURN degrees) or the name changes:
 -- {at = m from the start, turn = degrees (+ left), name = .., ref = .., ring = bool}.
 local TURN = 35
@@ -304,7 +305,7 @@ function M.route(g, from, to, lang, pause)
     node = g.from[q]
     if #arcs > g.n then error('routing: broken path') end
   end
-  local out = {ids = {}, points = {}, length = 0, time = time, steps = {}}
+  local out = {ids = {}, at = {0}, points = {}, length = 0, time = time, steps = {}}
   local function point(x, y)
     local p = out.points
     p[#p + 1], p[#p + 2] = x, y
@@ -335,6 +336,7 @@ function M.route(g, from, to, lang, pause)
     point(g.x[toNode], g.y[toNode])
     out.length = out.length + g.len[q]
     out.ids[#out.ids + 1] = string.format('%.0f', g.id[toNode])
+    out.at[#out.at + 1] = out.length
     local lastP = bends[#bends] or {fx, fy}
     lastHeading = heading(lastP[1], lastP[2], g.x[toNode], g.y[toNode])
     lastName = name

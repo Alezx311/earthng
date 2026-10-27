@@ -9,7 +9,12 @@
   `routing.lua` (ffi arrays, regions merged by OSM node id, A* on time with a pause budget,
   steps with street names). Kyiv region: 98,909 nodes, 2.78 MB, decode 158 ms, the whole region's
   diagonal (171 km) 39 ms; Khreshchatyk to Zhytomyr over two regions 140 km in 25 ms (lupa LuaJIT).
-- Not wired into world.lua yet; no turn restrictions (they come with the next pack rebuild).
+- Wired the same evening (navigator.lua, on M.navigator: world.lua is at the 200-local limit): a
+  click on the minimap, or "Navigate here" on the big map, routes from the car in the driven
+  region (2 ms a frame); the next 700 m go to core_groundMarkers as navgraph nodes `e2r_n<id>`
+  that the game has; 45 m off the line for 3 s finds a new route; the line, a flag and
+  "N km to go / In 300 m, left: <street>" show on the map. Not driven in the game yet.
+- No turn restrictions yet (they come with the next pack rebuild).
 - Signs and lights: docs/SIGNS.md (OSM counts for Ukraine, rules that infer signs from data the
   packs already carry, the stock italy_traf_sign_* set, a frame budget via Forest and one text mesh
   per tile). Nothing placed yet.

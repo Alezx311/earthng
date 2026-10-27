@@ -1555,5 +1555,22 @@ M.unload = unload
 M.setTune = setTune
 M.localPoint = function(lat, lon) if active then return localPoint(active.region, lat, lon) end end
 M.nav = function(key) local entry = active and active.tiles[key]; return entry and entry.nav end
+-- The routing graph of the region driven now (routing/<region>.bin beside regions/, from
+-- earthng/build_routing.py; a companion zip may bring it): path, a key that changes with the region.
+-- The world frame is that region's own, so its graph needs no transform.
+M.routing = function()
+  if not active then return nil end
+  local d = active.region.descriptor
+  local root = type(d.manifest) == 'string' and d.manifest:match('^(.*)/regions/')
+  local path = root and (root .. '/routing/' .. tostring(d.id) .. '.bin')
+  if path and exists(path) then return path, active.region.country.id .. '/' .. tostring(d.id) end
+end
+M.readBytes = readBytes
+-- world x, y -> lat, lon by the region's own projection (the stream's geo is an affine at the car)
+M.toGeo = function(x, y)
+  if not active then return nil end
+  local lon, lat = geographic(active.region, x, y)
+  return lat, lon
+end
 M.status = function() ensure(); state.heartbeat = os.time(); return state end
 return M

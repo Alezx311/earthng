@@ -84,6 +84,8 @@ class WidgetTests(unittest.TestCase):
         lua.globals().planet_src = (root / 'mod/lua/ge/extensions/e2r/planetMap.lua').read_text(encoding='utf8')
         lua.globals().catalog_src = (root / 'mod/lua/ge/extensions/e2r/mapCatalog.lua').read_text(encoding='utf8')
         lua.globals().navigation_src = (root / 'mod/lua/ge/extensions/e2r/navigation.lua').read_text(encoding='utf8')
+        lua.globals().navigator_src = (root / 'mod/lua/ge/extensions/e2r/navigator.lua').read_text(encoding='utf8')
+        lua.globals().routing_src = (root / 'mod/lua/ge/extensions/e2r/routing.lua').read_text(encoding='utf8')
         lua.execute('''
           ui_imgui = setmetatable({ArrayChar=function(n) return require('ffi').new('char[?]', n) end,
             Button=function(label) return label == clicked end,
@@ -141,6 +143,9 @@ class WidgetTests(unittest.TestCase):
             if name == 'ge/extensions/e2r/planetMap' then return loadstring(planet_src)() end
             if name == 'ge/extensions/e2r/mapCatalog' then return loadstring(catalog_src)() end
             if name == 'ge/extensions/e2r/navigation' then return loadstring(navigation_src)() end
+            if name == 'ge/extensions/e2r/navigator' then return loadstring(navigator_src)() end
+            if name == 'ge/extensions/e2r/routing' then return loadstring(routing_src)() end
+            if name == 'bit' then return realRequire('bit') end
             if name == 'ui/imguiUtils' then return {texObj=function(path) return {texId=1, path=path} end} end
             if name == 'ffi' then return realRequire('ffi') end
             return {}
@@ -160,6 +165,59 @@ class WidgetTests(unittest.TestCase):
           picker=up(draw,'drawPicker'); side=up(picker,'drawSidebar'); drawMap=up(picker,'drawMap')
           S.status=status; S.coverage=status.coverage; S.state='pick'; S.now=10''')
         return lua
+
+    def test_minimap_click_routes_there_and_draws_the_line(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import routing_format
+        import test_routing
+        lua = self.native_widget(basemap=False)
+        lua.globals().blob = routing_format.encode(routing_format.graph(test_routing.grid()))
+        lua.execute('''
+          -- the grid of test_routing in a frame of 1e-5 degrees a metre
+          fakeNative.localPoint = function(lat, lon) return lon * 1e5, lat * 1e5 end
+          fakeNative.toGeo = function(x, y) return y / 1e5, x / 1e5 end
+          fakeNative.routing = function() return '/r.bin', 'demo' end
+          fakeNative.readBytes = function() return blob end
+          car = {x = 0, y = 0}
+          getPlayerVehicle = function() return nil end
+          vec3 = vec3 or function(x, y, z) return {x = x, y = y, z = z} end
+          local function set(fn, name, value)
+            for i = 1, 200 do
+              local n = debug.getupvalue(fn, i)
+              if not n then break end
+              if n == name then debug.setupvalue(fn, i, value); return end
+            end
+            error('missing upvalue ' .. name)
+          end
+          set(draw, 'focus', function() return car end)
+          -- no base map here: the map's own picture is not what this test reads
+          local planet = up(drawMap, 'planetMap')
+          planet.draw, planet.drawLabels = function() end, function() end
+          texts, lines, frame = {}, 0, 0
+          ui_imgui.TextColored = function(_, t) texts[#texts + 1] = t end
+          ui_imgui.Text = function(t) texts[#texts + 1] = t end
+          ui_imgui.ImDrawList_AddLine = function() lines = lines + 1 end
+          ui_imgui.IsItemHovered = function() return true end
+          ui_imgui.GetMousePos = function() return {x = 180, y = 90} end   -- the minimap's centre
+          ui_imgui.IsMouseClicked = function() return frame == 1 end
+          ui_imgui.GetMouseDragDelta = function() return {x = 0, y = 0} end
+          S.state, S.now, S.stream, S.pickerOpen = 'driving', 10, {tile = 500}, false
+          S.center = {lat = .005, lon = .005}
+          S.mini = nil
+          frame = 1; draw()                  -- the press
+          frame = 2; draw()                  -- the release: a click, not a drag
+          for k = 1, 100 do mod.navigator.step(function() return car end, 10 + k * .016, 'uk') end
+          texts, lines = {}, 0
+          frame = 3; draw()''')
+        texts = [lua.eval('texts')[k] for k in range(1, lua.eval('#texts') + 1)]
+        self.assertTrue(any(t.startswith('До цілі') for t in texts), texts)
+        self.assertTrue(any(t.startswith('Через ') for t in texts), texts)
+        self.assertGreater(lua.eval('lines'), 4)
+        dest = lua.eval('mod.navigator.destination()')
+        self.assertAlmostEqual(dest.x, 500, delta=1)
+        self.assertAlmostEqual(dest.y, 500, delta=1)
+        lua.execute("clicked = 'Скасувати маршрут'; frame = 4; draw()")
+        self.assertFalse(lua.eval('mod.navigator.active()'))
 
     def test_landing_zones_do_not_overlap(self):
         lua = self.native_widget(basemap=False)
