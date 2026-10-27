@@ -1,9 +1,10 @@
 # Estonia
 
-Estonia support is maintained by [Mitz Racing](https://github.com/mitzracing), who added
-the Estonian LiDAR terrain, the road register import and county sections, and keeps
-fixing Estonian roads, bridges and junctions found in game. Bug reports and help from
-other Estonian players are welcome.
+[Mitz Racing](https://github.com/mitzracing) contributes to EarthNG's Estonia support: the
+Estonian LiDAR terrain, the road register import and county sections, and fixes for the
+roads, bridges and junctions found in game. The project is Alex's (Alezx311) and his
+releases carry it; we help develop it, with LiDAR. Bug reports and help from other
+Estonian players are welcome.
 
 ## What the Estonia pack adds over a plain OSM build
 

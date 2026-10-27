@@ -107,5 +107,14 @@ class SpikeTests(unittest.TestCase):
         self.assertEqual(audit.spikes('0 5 40  19 5 40  19 5 76'), [])         # a warehouse's clad_metal
 
 
+class RowLineTests(unittest.TestCase):
+    def test_a_finding_with_a_fractional_length_prints(self):
+        # a lamp 1 m inside a carriageway has a float length: the summary crashed on it with `:5d`
+        row = {'kind': 'prop', 'length_m': 1.0, 'name': '', 'class': 'lamp streetlamp on the carriageway',
+               'bridge': False, 'lat': 59.3, 'lon': 24.8, 'road': 7}
+        self.assertIn('prop', audit.row_line(row))
+        self.assertIn('  12 m ', audit.row_line({**row, 'kind': 'missing', 'length_m': 12}))
+
+
 if __name__ == '__main__':
     unittest.main()

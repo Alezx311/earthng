@@ -117,7 +117,7 @@ Console equivalent (also useful for Linux/macOS with a local Python environment)
 .venv\Scripts\python.exe earthng/country_fetch.py build --place liechtenstein --mods "D:\BeamNG\current" --jobs 2
 ```
 
-Estonia has its own notes and maintainers: [docs/ESTONIA.md](docs/ESTONIA.md).
+Estonia has its own notes and credits: [docs/ESTONIA.md](docs/ESTONIA.md).
 For Estonia, `--local-dem` replaces the SRTM-based heights under the area with the
 Land Board's 10 m LiDAR terrain (bare ground, about 4 m lower under forest and towns,
 feathered into Terrarium over 500 m at the survey's edge). It needs `rasterio`
