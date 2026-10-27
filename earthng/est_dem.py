@@ -12,6 +12,10 @@ pixel X samples the ground at X itself (Terrain's bilinear convention), and wher
 feather fades the LiDAR out, a child is the z12 tile upsampled, as Terrain upsamples
 the tiles no sheet reaches.
 
+Sheets come from the Land Board's coverage service (WCS, teenus.maaamet.ee), the same 10 m
+DTM as the portal's sheet downloads. The portal (geoportaal.maaruum.ee) sits behind a
+Cloudflare rule that refused every scripted request from Ukraine on 2026-10-27.
+
 Map data: Republic of Estonia Land and Spatial Development Board (Maa- ja Ruumiamet),
 https://geoportaal.maaruum.ee/opendata-licence
 """
@@ -34,8 +38,9 @@ SHEET = 10000.0                  # a 1:20000 sheet: 10 x 10 km of L-EST97 (EPSG:
 FEATHER = 500.0
 # L-EST97 metres of the mainland and the islands, with a margin
 ESTONIA = (300000.0, 6300000.0, 800000.0, 6700000.0)
-URL = ('https://geoportaal.maaruum.ee/index.php?lang_id=1&plugin_act=otsing&page_id=614'
-       '&dl=1&kaardiruut={code}&andmetyyp={kind}&f={code}_dtm_10m.tif')
+WCS = ('https://teenus.maaamet.ee/ows/wcs-dtm?service=WCS&version=2.0.1&request=GetCoverage'
+       '&coverageId=dtm-10&format=image/tiff&subset=x({w:.0f},{e:.0f})&subset=y({s:.0f},{n:.0f})')
+WCS_BOX = (365000.0, 6375000.0, 740000.0, 6635000.0)   # the coverage's envelope: 400 outside it
 AGENT = 'EarthNG/0.1 (+https://github.com/Alezx311/earth2road)'
 R = 20037508.342789244           # half the Web-Mercator world, metres
 TILE = 2 * R / 4096              # one z12 tile
@@ -44,6 +49,13 @@ TILE = 2 * R / 4096              # one z12 tile
 def sheet_code(e, n):
     """1:20000 sheet number holding the L-EST97 point (e, n): 6374 covers E540-550k, N6570-6580k."""
     return f'{math.floor((n - 6e6) / 1e5) + 1}{math.floor(e / 1e5) - 2}{math.floor(n / 1e4) % 10}{math.floor(e / 1e4) % 10}'
+
+
+def sheet_box(code):
+    """L-EST97 (w, s, e, n) of a 1:20000 sheet, from its number (sheet_code backwards)."""
+    w = 1e5 * (int(code[1]) + 2) + 1e4 * int(code[3])
+    s = 6e6 + 1e5 * (int(code[0]) - 1) + 1e4 * int(code[2])
+    return (w, s, w + SHEET, s + SHEET)
 
 
 def sheets(box):
@@ -78,28 +90,44 @@ def decode(rgb):
     return rgb[..., 0] * 256 + rgb[..., 1] + rgb[..., 2] / 256 - 32768
 
 
-def fetch_sheet(code, cache, kind=KIND):
+def fetch_sheet(code, cache, kind=KIND, opener=None):
     """The sheet's GeoTIFF in cache/est/<kind>/<code>.tif, or None when the Land Board has no
-    such sheet (sea, abroad); a .none marker remembers that."""
+    data there (sea, abroad); a .none marker remembers that. The service fills sea and the
+    neighbours with exactly 0 and declares no nodata, so 0 becomes the sheet's nodata: a burnt
+    0 m would cut the coast and the border into cliffs. Measured heights are never exactly 0."""
     folder = Path(cache) / 'est' / kind
     path, none = folder / f'{code}.tif', folder / f'{code}.none'
     if path.exists():
         return path
     if none.exists():
         return None
-    request = urllib.request.Request(URL.format(code=code, kind=kind), headers={'User-Agent': AGENT})
-    with urllib.request.urlopen(request, timeout=90, context=tls.context()) as response:
-        data = response.read()
     folder.mkdir(parents=True, exist_ok=True)
-    if data[:4] not in (b'II*\x00', b'MM\x00*'):      # an HTML page: "no sheet with this number"
+    w, s, e, n = sheet_box(code)
+    w, s, e, n = max(w, WCS_BOX[0]), max(s, WCS_BOX[1]), min(e, WCS_BOX[2]), min(n, WCS_BOX[3])
+    if w >= e or s >= n:
         none.write_bytes(b'')
         return None
+    request = urllib.request.Request(WCS.format(w=w, s=s, e=e, n=n), headers={'User-Agent': AGENT})
+    if opener is None:
+        response = urllib.request.urlopen(request, timeout=90, context=tls.context())
+    else:
+        response = opener(request, timeout=90)
+    with response:
+        data = response.read()
+    if data[:4] not in (b'II*\x00', b'MM\x00*'):
+        raise ValueError(f'sheet {code}: the coverage service answered {data[:200]!r}')
     part = path.with_suffix(f'.{os.getpid()}.tif.part')   # builds running side by side
     part.write_bytes(data)
     import rasterio
-    with rasterio.open(part) as source:
+    with rasterio.open(part, 'r+') as source:
         if source.crs is None or source.crs.to_epsg() != 3301:
             raise ValueError(f'sheet {code}: not EPSG:3301')
+        source.nodata = 0
+        empty = not source.read(1).any()
+    if empty:
+        os.remove(part)
+        none.write_bytes(b'')
+        return None
     for attempt in range(10):   # an antivirus may hold the fresh .part for a moment (WinError 32)
         try:
             os.replace(part, path)

@@ -46,6 +46,44 @@ class EstDemTests(unittest.TestCase):
         box = est_dem.sheets((545100, 6570960, 557950, 6582290))
         self.assertEqual(sorted(box), ['6374', '6375', '6384', '6385'])
         self.assertEqual(box['6374'], (540000, 6570000, 550000, 6580000))
+        for code, bounds in est_dem.sheets((365000, 6375000, 740000, 6635000)).items():
+            self.assertEqual(est_dem.sheet_box(code), bounds)
+
+    @staticmethod
+    def wcs_sheet(heights, w, n):
+        """The GeoTIFF bytes the coverage service sends: float32, 10 m, no nodata declared."""
+        from rasterio.io import MemoryFile
+        with MemoryFile() as memory:
+            with memory.open(driver='GTiff', width=heights.shape[1], height=heights.shape[0], count=1,
+                             dtype='float32', crs='EPSG:3301', transform=from_origin(w, n, 10, 10)) as out:
+                out.write(heights.astype('float32'), 1)
+            return memory.read()
+
+    def test_coverage_service_zeros_are_nodata_and_an_all_zero_sheet_is_none(self):
+        asked = []
+
+        def opener(answers):
+            def open_(request, timeout):
+                asked.append(request.full_url)
+                import io
+                return io.BytesIO(answers.pop(0))
+            return open_
+        coast = np.zeros((1000, 1000))
+        coast[:, 500:] = 12.5                        # land in the east half, sea filled with 0
+        with tempfile.TemporaryDirectory() as cache:
+            path = est_dem.fetch_sheet('6374', cache, opener=opener([self.wcs_sheet(coast, 540000, 6580000)]))
+            self.assertIn('subset=x(540000,550000)&subset=y(6570000,6580000)', asked[-1])
+            with rasterio.open(path) as sheet:
+                self.assertEqual(sheet.nodata, 0)
+                self.assertEqual(int(sheet.read(1, masked=True).mask.sum()), 500 * 1000)
+            sea = est_dem.fetch_sheet('7374', cache, opener=opener([self.wcs_sheet(np.zeros((1000, 1000)), 540000, 6680000)]))
+            self.assertIsNone(sea)
+            self.assertTrue((Path(cache) / 'est' / est_dem.KIND / '7374.none').exists())
+            self.assertFalse(list((Path(cache) / 'est' / est_dem.KIND).glob('*.part')))
+            # west of the coverage's envelope nothing is asked
+            before = len(asked)
+            self.assertIsNone(est_dem.fetch_sheet(est_dem.sheet_code(350000, 6450000), cache, opener=opener([])))
+            self.assertEqual(len(asked), before)
 
     def test_terrarium_round_trip(self):
         h = np.array([-12.3, 0, 41.7, 318.004])
@@ -75,9 +113,7 @@ class EstDemTests(unittest.TestCase):
             folder.mkdir(parents=True, exist_ok=True)
             path = folder / f'{code}.tif'
             if not path.exists():
-                # the sheet's south-west corner, from its number
-                w = 1e5 * (int(code[1]) + 2) + 1e4 * int(code[3])
-                s = 6e6 + 1e5 * (int(code[0]) - 1) + 1e4 * int(code[2])
+                w, s, _e, _n = est_dem.sheet_box(code)
                 e, n = np.meshgrid(w + 10 + 20 * np.arange(500), s + est_dem.SHEET - 10 - 20 * np.arange(500))
                 with rasterio.open(path, 'w', driver='GTiff', width=500, height=500, count=1, dtype='float32',
                                    crs='EPSG:3301', transform=from_origin(w, s + est_dem.SHEET, 20, 20),
