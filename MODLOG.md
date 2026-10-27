@@ -1,5 +1,21 @@
 # EarthNG native mod migration
 
+## 2026-10-26 (evening): no rails in front of a high deck's piers, an audit that reads rails
+
+- The user, in game at the Jüri overpass of Tallinna ringtee (0.6.4): the median rails still ran up to
+  the deck's edge and ended in a cross rail in front of the pier. ROADS.onDeck.under (8 m) and
+  .clear (3.5 m): where a deck is 3.5 m or more over the ground, OSM barriers stay 8 m off its edges
+  and ends. Confirmed in game after the change.
+- road_audit.py's near-tile barrier and spike checks read no rail mesh at all (the runtime's cover set
+  lacked e2rf_clad_metal and e2rf_fence_mesh): every earlier "0 barrier, 0 spike" was empty. With
+  the rails in: `underdeck` (rail triangles with asphalt more than 4 m over their tops; a road on an
+  embankment is 3 to 4 m over the ground its rails stand on), `barrier` pixels must have asphalt on
+  all four sides (a rail along the edge is not on the road: 109 -> 21 cells in the Jüri-Tallinn
+  box), and a tall narrow triangle at a building's outline is the building's wall (60 -> 0 spike
+  cells: they were warehouse corners, e.g. an 18 m one at 59.36823, 24.87883).
+- Left: 4 near and 7 far cells of rails under a deck in that box, mostly the stacked interchange at
+  Assaku (59.3594, 24.8735), where several decks cross and an abutment wall stands among the rails.
+
 ## 2026-10-26: lamps off the lanes, no walls at bridge joints
 
 - The user, driving: more lamps standing in the middle of the road, and at bridges and flyovers a

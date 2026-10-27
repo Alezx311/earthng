@@ -64,6 +64,12 @@ class BarrierTests(unittest.TestCase):
         cells = audit.barrier_cells(pixels, [0, 0, 100, 100])
         self.assertAlmostEqual(sum(c[2] for c in cells), 240, delta=1)
 
+    def test_a_rail_along_the_edge_is_not_on_the_road(self):
+        top, low = np.full((100, 100), np.nan), np.full((100, 100), np.nan)
+        top[40, 20:80], low[40, 20:80] = 10.75, 9.7                     # posts over the asphalt's first row
+        top[59, 20:80], low[59, 20:80] = 10.75, 9.7                     # and its last
+        self.assertEqual(int(audit.barrier_pixels(self.asphalt, top, low).sum()), 0)
+
     def test_a_barrier_high_over_the_road_or_too_tall_is_not_standing_on_it(self):
         top, low = np.full((100, 100), np.nan), np.full((100, 100), np.nan)
         top[48:52, 20:80], low[48:52, 20:80] = 16., 14.                 # a gantry 4 m over the lane
@@ -114,6 +120,37 @@ class RowLineTests(unittest.TestCase):
                'bridge': False, 'lat': 59.3, 'lon': 24.8, 'road': 7}
         self.assertIn('prop', audit.row_line(row))
         self.assertIn('  12 m ', audit.row_line({**row, 'kind': 'missing', 'length_m': 12}))
+
+
+class SpikeBuildingTests(unittest.TestCase):
+    def test_a_narrow_tall_triangle_at_a_buildings_outline_is_its_wall(self):
+        ring = [[0, 0, 0], [30, 0, 0], [30, 20, 0], [0, 20, 0], [0, 0, 0]]
+        wall = '30 5 0  30.7 5.3 0  30.7 5.3 18'          # a corner sliver of a warehouse's cladding
+        self.assertEqual(audit.spikes(wall), [(35., 5., 18.)])
+        self.assertEqual(audit.spikes(wall, rings=[ring]), [])
+        self.assertEqual(len(audit.spikes('60 5 0  60.7 5.3 0  60.7 5.3 18', rings=[ring])), 1)       # far from it: a rail
+
+
+class UnderDeckTests(unittest.TestCase):
+    RECT = [0., 0., 40., 40.]
+
+    def deck(self):
+        a = np.full((40, 40), np.nan)
+        a[10:30, 10:30] = 20.
+        return a
+
+    def rail(self, x, z):
+        return f'{x} 20 {z}  {x + 2} 20 {z}  {x + 2} 20 {z + .75}'
+
+    def test_a_rail_with_a_deck_over_it_is_found(self):
+        self.assertEqual(audit.rails_under([self.rail(14, 10.)], self.deck(), self.RECT), [(15., 25., 1)])
+
+    def test_a_rail_on_the_deck_or_off_it_is_not(self):
+        self.assertEqual(audit.rails_under([self.rail(14, 20.)], self.deck(), self.RECT), [])
+        self.assertEqual(audit.rails_under([self.rail(33, 10.)], self.deck(), self.RECT), [])
+
+    def test_a_wall_wider_than_a_rail_is_not(self):
+        self.assertEqual(audit.rails_under(['12 20 10  22 20 10  22 20 20'], self.deck(), self.RECT), [])
 
 
 if __name__ == '__main__':
