@@ -242,6 +242,24 @@ class NavigatorTests(unittest.TestCase):
         self.assertIn(self.state(lua).route.ids[1], ('1001', '1002', '1007', '1008'))
         self.assertEqual(lua.eval('reads'), 1)          # the graph was kept
 
+    def test_long_straight_hands_over_its_far_junction(self):
+        lua, nav = self.make()
+        straight = [road(1, 1, 2, [(x, 0) for x in range(0, 901, 100)], name='Highway'),
+                    road(2, 2, 3, [(900, 0), (1000, 0)], name='Exit')]
+        lua.globals().blob = rf.encode(rf.graph(straight))
+        lua.execute("nodes['e2r_n2'], nodes['e2r_n3'] = {}, {}")
+        lua.execute("nav.setDestination(1000, 0, 0, .01, car, 'en')")
+        t = self.run_until(lua, 'to go')
+        lua.globals().car.x = 100
+        nav.step(lua.globals().focus, t + 1, 'en')
+        last = lua.eval('calls[#calls]')
+        self.assertEqual([last[k] for k in range(1, len(last) + 1)], ['e2r_n2'])   # 800 m on, past AHEAD
+        # near that node the list is handed over again, before SPACING m have passed
+        calls = lua.eval('#calls')
+        lua.globals().car.x = 860
+        nav.step(lua.globals().focus, t + 2, 'en')
+        self.assertGreater(lua.eval('#calls'), calls)
+
     def test_destination_far_from_roads_is_reported(self):
         lua, nav = self.make()
         lua.execute("nav.setDestination(9000, 9000, .09, .09, car, 'en')")

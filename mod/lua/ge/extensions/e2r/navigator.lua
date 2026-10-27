@@ -8,6 +8,7 @@ local routing = require('ge/extensions/e2r/routing')
 
 local BUDGET_MS = 2
 local AHEAD, SPACING = 700, 150      -- m of route handed to core_groundMarkers, m between its waypoints
+local REACH = 950                    -- m: the farthest node handed over (world.lua NAV_R is 1000)
 local OFF_M, OFF_S = 45, 3           -- this far off the line for this long: a new route from the car
 local ARRIVE_M = 30
 local FAR_M = 2000                   -- a destination this far from every road of the graph
@@ -47,6 +48,23 @@ function M.clear()
 end
 
 -- --- the search job -----------------------------------------------------------------------------
+-- The file in CHUNK reads with a pause between them: the Kyiv graph (2.8 MB) in one read was an
+-- 18 ms stretch in the game, and the zip entry inflates as it is read.
+local CHUNK = 262144
+local function readFile(source, path, pause)
+  local f = io.open(path, 'rb')
+  if not f then return source.readBytes(path) end
+  local parts = {}
+  while true do
+    local s = f:read(CHUNK)
+    if not s then break end
+    parts[#parts + 1] = s
+    pause()
+  end
+  f:close()
+  return table.concat(parts)
+end
+
 local function startJob(fromX, fromY)
   local dest, lang, source = nav.dest, nav.lang, M.source
   nav.job = coroutine.create(function(pause)
@@ -54,7 +72,7 @@ local function startJob(fromX, fromY)
     if not path then return 'nograph' end
     if cache.key ~= key then
       cache.graph, cache.key = nil, nil
-      local region = routing.decode(source.readBytes(path), nil, pause)
+      local region = routing.decode(readFile(source, path, pause), nil, pause)
       cache.graph, cache.key = routing.graph({region}, pause), key
     end
     local g = cache.graph
@@ -141,7 +159,10 @@ local function feedMarkers()
   local serial = m.buildSerial
   local scale = route.length / math.max(1, route.cum[#route.cum])   -- line metres -> edge metres
   local a = nav.along * scale
-  if nav.markersSig and serial == nav.markersSerial and nav.markersAlong and a - nav.markersAlong < SPACING then return end
+  -- again after SPACING m, a new navgraph, or nearing the last node handed over (on a long
+  -- straight it can be the only one, 58 m ahead in the Kyiv drive: the arrows ended there)
+  if nav.markersSig and serial == nav.markersSerial and nav.markersAlong and a - nav.markersAlong < SPACING
+    and a < (nav.markersEnd or math.huge) - 60 then return end
   local list, last = {}, -math.huge
   local ids, at = route.ids, route.at
   for k = 1, #ids do
@@ -149,11 +170,16 @@ local function feedMarkers()
       local id = 'e2r_n' .. ids[k]
       if nodes[id] and (at[k] - last >= SPACING or k == #ids) then list[#list + 1] = id; last = at[k] end
     elseif at[k] > a + AHEAD then
+      -- a long stretch to the next junction: its far end too, if the navgraph (NAV_R round
+      -- the car) has it already
+      if last < a + AHEAD - SPACING and at[k] <= a + REACH and nodes['e2r_n' .. ids[k]] then
+        list[#list + 1] = 'e2r_n' .. ids[k]; last = at[k]
+      end
       break
     end
   end
   local sig = table.concat(list, ',')
-  nav.markersSerial, nav.markersAlong = serial, a
+  nav.markersSerial, nav.markersAlong, nav.markersEnd = serial, a, last
   if sig == nav.markersSig then return end
   nav.markersSig = sig
   setMarkers(#list > 0 and list or nil)

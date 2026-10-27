@@ -41,14 +41,18 @@ function M.decode(data, toWorld, pause)
     return -(v + 1) / 2
   end
   if u() ~= VERSION then error('unsupported routing version') end
-  local strings = {}
-  for k = 1, u() do
+  -- the names stay in the file's bytes until a route step needs one: 10 k Lua strings made at
+  -- once took 101 ms in the game (its 380 MB heap), all of it in one stretch without a pause
+  local count = u()
+  local strPos, strLen = ffi.new('int32_t[?]', count + 1), ffi.new('int32_t[?]', count + 1)
+  for k = 1, count do
     local n = u()
-    strings[k] = sub(data, pos, pos + n - 1)
+    strPos[k], strLen[k] = pos, n
     pos = pos + n
+    if k % 2048 == 0 then pause() end
   end
   local n = u()
-  local r = {data = data, strings = strings, n = n, toWorld = toWorld,
+  local r = {data = data, strPos = strPos, strLen = strLen, n = n, toWorld = toWorld,
     id = ffi.new('double[?]', n), x = ffi.new('double[?]', n), y = ffi.new('double[?]', n),
     lx = ffi.new('int32_t[?]', n), ly = ffi.new('int32_t[?]', n)}
   local id, qx, qy = 0, 0, 0
@@ -253,12 +257,16 @@ function M.search(g, from, to, pause)
 end
 
 -- --- the found route ----------------------------------------------------------------------------
+local function text(r, k)
+  if k <= 0 then return nil end
+  local at = r.strPos[k]
+  return sub(r.data, at, at + r.strLen[k] - 1)
+end
+
 local function nameOf(r, k, lang)
   local base = 4 * k
   local local_ = lang == 'uk' and r.names[base + 1] or lang == 'en' and r.names[base + 2] or 0
-  local ref = local_ > 0 and local_ or r.names[base]
-  local refNo = r.names[base + 3]
-  return ref > 0 and r.strings[ref] or nil, refNo > 0 and r.strings[refNo] or nil
+  return text(r, local_ > 0 and local_ or r.names[base]), text(r, r.names[base + 3])
 end
 
 -- the inner points of an edge in the world, in the direction it is driven

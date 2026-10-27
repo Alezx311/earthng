@@ -15,6 +15,14 @@
   that the game has; 45 m off the line for 3 s finds a new route; the line, a flag and
   "N km to go / In 300 m, left: <street>" show on the map. Not driven in the game yet.
 - No turn restrictions yet (they come with the next pack rebuild).
+- Driven in the game the same night (out/nav-kyiv-01, Khreshchatyk to Boryspil, 36.8 km): the graph
+  came from the mounted companion zip, ground markers lie on the ProceduralMesh roads and the
+  stock minimap draws the line; 7 km by the test autopilot, 0-12 m off the line, 47 marker
+  updates. navigator.step 0.008 ms median. The first load had a 101 ms stretch (10 k name
+  strings at once on the game's 384 MB heap) and an 18 ms read: names now stay in the file's
+  bytes and the file is read in 256 KB pieces, 102 frames for load and search. A long straight
+  handed over one node 58 m ahead: now also the first node past 700 m (to 950 m), and again near
+  the last one (unit test; not driven again).
 - Signs and lights: docs/SIGNS.md (OSM counts for Ukraine, rules that infer signs from data the
   packs already carry, the stock italy_traf_sign_* set, a frame budget via Forest and one text mesh
   per tile). Nothing placed yet.
