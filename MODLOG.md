@@ -1,5 +1,19 @@
 # EarthNG native mod migration
 
+## 2026-10-27 (evening, branch feature/navigation): routing graph R4, not yet in the widget
+
+- Issue #24 (a street line like BeamNG.Earth's) and markers the navigation leads to. The game's
+  navgraph covers 1 km round the car, so long routes come from a routing graph per pack region
+  (docs/NAVIGATION.md): `routing_format.py` (EGR1, navSegment's classes and one-way rules),
+  `build_routing.py` (from a built pack's cells, no rebuild; a companion `<pack>_routing.zip`),
+  `routing.lua` (ffi arrays, regions merged by OSM node id, A* on time with a pause budget,
+  steps with street names). Kyiv region: 98,909 nodes, 2.78 MB, decode 158 ms, the whole region's
+  diagonal (171 km) 39 ms; Khreshchatyk to Zhytomyr over two regions 140 km in 25 ms (lupa LuaJIT).
+- Not wired into world.lua yet; no turn restrictions (they come with the next pack rebuild).
+- Signs and lights: docs/SIGNS.md (OSM counts for Ukraine, rules that infer signs from data the
+  packs already carry, the stock italy_traf_sign_* set, a frame budget via Forest and one text mesh
+  per tile). Nothing placed yet.
+
 ## 2026-10-26 (evening): no rails in front of a high deck's piers, an audit that reads rails
 
 - The user, in game at the Jüri overpass of Tallinna ringtee (0.6.4): the median rails still ran up to
