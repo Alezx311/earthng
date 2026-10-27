@@ -25,6 +25,8 @@ from pathlib import Path
 import shutil
 import urllib.request
 
+import tls
+
 WFS = ('https://teeregister.mnt.ee/290424/wfs?service=WFS&version=1.1.0&request=GetFeature'
        '&typeName=ms:{layer}&bbox={bbox}&outputFormat=application/json;%20subtype=geojson')
 AGENT = 'EarthNG/0.1 (+https://github.com/Alezx311/earthng)'
@@ -71,7 +73,11 @@ def fetch(box, cache, emit=print, opener=None):
         if not path.exists():
             emit(f'road register: downloading {layer}')
             request = urllib.request.Request(WFS.format(layer=layer, bbox=key), headers={'User-Agent': AGENT})
-            with (opener or urllib.request.urlopen)(request, timeout=120) as response:
+            if opener is None:      # the register's Sectigo R46 root is bundled in tls
+                response = urllib.request.urlopen(request, timeout=120, context=tls.context())
+            else:
+                response = opener(request, timeout=120)
+            with response:
                 data = json.loads(response.read().decode('utf-8'))
             if not isinstance(data.get('features'), list):
                 raise ValueError(f'road register {layer}: no features in the answer')
