@@ -6,7 +6,7 @@
 local M = {}
 local routing = require('ge/extensions/e2r/routing')
 
-local BUDGET_MS = 2
+local BUDGET_MS, BUDGET_STILL_MS = 2, 6
 local AHEAD, SPACING = 700, 150      -- m of route handed to core_groundMarkers, m between its waypoints
 local REACH = 950                    -- m: the farthest node handed over (world.lua NAV_R is 1000)
 local OFF_M, OFF_S = 45, 3           -- this far off the line for this long: a new route from the car
@@ -27,9 +27,9 @@ end
 
 -- the job's pause point: the timer is the current frame's (a closure made at the first resume
 -- would keep the first frame's timer and yield at every point after it)
-local frameTimer
+local frameTimer, budget
 local function pauseJob()
-  if frameTimer:stop() >= BUDGET_MS then coroutine.yield() end
+  if frameTimer:stop() >= budget then coroutine.yield() end
 end
 
 local function setMarkers(list)
@@ -59,21 +59,43 @@ local function readFile(source, path, pause)
     local s = f:read(CHUNK)
     if not s then break end
     parts[#parts + 1] = s
+    if #s < CHUNK then break end
     pause()
   end
   f:close()
   return table.concat(parts)
 end
 
+-- The regions whose graphs the route needs: those round the car and the destination, MARGIN
+-- degrees out (a detour leaves the straight line), the driven one alone without lat/lon.
+local MARGIN = .15
+local function graphsFor(source, fromX, fromY, dest)
+  local lat0, lon0
+  if source.toGeo then lat0, lon0 = source.toGeo(fromX, fromY) end
+  if source.routingRegions and lat0 and dest.lat then
+    local list = source.routingRegions(math.min(lat0, dest.lat) - MARGIN, math.min(lon0, dest.lon) - MARGIN,
+      math.max(lat0, dest.lat) + MARGIN, math.max(lon0, dest.lon) + MARGIN)
+    if #list > 0 then return list end
+  end
+  local path, key = source.routing()
+  return path and {{path = path, key = key}} or {}
+end
+
 local function startJob(fromX, fromY)
   local dest, lang, source = nav.dest, nav.lang, M.source
   nav.job = coroutine.create(function(pause)
-    local path, key = source.routing()
-    if not path then return 'nograph' end
+    local list = graphsFor(source, fromX, fromY, dest)
+    if #list == 0 then return 'nograph' end
+    local keys = {}
+    for k, item in ipairs(list) do keys[k] = item.key end
+    local key = table.concat(keys, ',')
     if cache.key ~= key then
       cache.graph, cache.key = nil, nil
-      local region = routing.decode(readFile(source, path, pause), nil, pause)
-      cache.graph, cache.key = routing.graph({region}, pause), key
+      local regions = {}
+      for k, item in ipairs(list) do
+        regions[k] = routing.decode(readFile(source, item.path, pause), item.toWorld, pause)
+      end
+      cache.graph, cache.key = routing.graph(regions, pause), key
     end
     local g = cache.graph
     local from = routing.nearest(g, fromX, fromY)
@@ -200,6 +222,9 @@ function M.step(focus, now, lang)
   if nav.state == 'arrived' and now - (nav.arrivedAt or now) > 6 then nav = {state = 'none'}; return end
   nav.now, nav.lang = now, lang or nav.lang
   if nav.job then
+    -- standing still the search may take more of the frame (several regions' graphs load first)
+    local _, v = focus()
+    budget = (v and v.length and v:length() < 1) and BUDGET_STILL_MS or BUDGET_MS
     frameTimer = timer()
     local ok, result, route = coroutine.resume(nav.job, pauseJob)
     if not ok then
@@ -246,7 +271,7 @@ function M.lines(L)
   elseif nav.state == 'nograph' then
     main = L('Для цього регіону немає графа маршрутів (routing/*.bin).', 'This region has no routing graph (routing/*.bin).')
   elseif nav.state == 'far' then
-    main = L('Ціль далеко від доріг цього регіону.', 'The destination is far from this region\'s roads.')
+    main = L('Ціль далеко від доріг встановлених паків.', 'The destination is far from the roads of the installed packs.')
   elseif nav.state == 'noroad' or nav.state == 'noroute' then
     main = L('Маршруту туди немає.', 'No route there.')
   elseif nav.state == 'error' then

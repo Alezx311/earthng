@@ -1,5 +1,25 @@
 # EarthNG native mod migration
 
+## 2026-10-28 (branch feature/navigation): drive and route past the landing region
+
+- The user: a marker cannot be set far away; 100 km at least, where the packs have the roads.
+  The world came from the landing region's cells alone (Khreshchatyk is 37 km from the Kyiv
+  region's west edge) and the route from its graph alone.
+- native.lua: a cell the landing region lacks comes from a mounted neighbour region that has all
+  of it (foreignOf), moved into this frame by an affine on the cell's corners (a translation in
+  one UTM zone, ~2 degrees of turn across a zone border), its elevation resampled onto this
+  cell's grid; neighbour roads get the region id as a prefix and their copies of this region's
+  roads (same OSM end nodes) are dropped at a seam (75 ids collided at the Kyiv/Zhytomyr seam,
+  none the same road; 4,985 roads shared by node pair). edgeKm counts every mounted region.
+  Blocks are read in 256 KB pieces with pauses (own region too); features are decoded only
+  from the neighbour cells meeting the tile.
+- navigator.lua: the graphs of the regions round car and destination (native.routingRegions),
+  6 ms a frame while standing.
+- In game (out/nav-seam-01..03, nav-control-01): M06 at 50.433, 29.99 to Pereiaslav, 124.8 km over
+  6 regions found in ~5 s; 15 km driven over the Zhytomyr/Kyiv seam (UTM 35/36), 2 frames
+  waiting for tiles, 0 m off the line, roads, lamps, trees and ground markers past it. The p99
+  rise past the seam (83-90 ms) is the place: the same stretch landed in the Kyiv region gives 93.
+
 ## 2026-10-27 (evening, branch feature/navigation): routing graph R4, not yet in the widget
 
 - Issue #24 (a street line like BeamNG.Earth's) and markers the navigation leads to. The game's

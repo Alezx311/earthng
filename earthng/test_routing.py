@@ -260,6 +260,28 @@ class NavigatorTests(unittest.TestCase):
         nav.step(lua.globals().focus, t + 2, 'en')
         self.assertGreater(lua.eval('#calls'), calls)
 
+    def test_route_runs_into_a_neighbour_regions_graph(self):
+        lua, nav = self.make()
+        west = [r for r in grid() if all((int(n) - 1000) % 6 <= 3 for n in r['nodes'])]
+        # the east half in its own frame, 300 m west of this one
+        east = [dict(r, points=[[p[0] - 300, p[1], 0] for p in r['points']])
+                for r in grid() if all((int(n) - 1000) % 6 >= 3 for n in r['nodes'])]
+        lua.globals().westBlob = rf.encode(rf.graph(west))
+        lua.globals().eastBlob = rf.encode(rf.graph(east))
+        lua.execute('''
+          nav.source.readBytes = function(path) reads = reads + 1; return path == '/w.bin' and westBlob or eastBlob end
+          nav.source.routingRegions = function(s, w, n, e)
+            asked = {s, w, n, e}
+            return {{path = '/e.bin', key = 'demo/e', toWorld = function(x, y) return x + 300, y end},
+                    {path = '/w.bin', key = 'demo/w'}}
+          end
+          nav.setDestination(500, 500, .005, .005, car, 'en')''')
+        self.run_until(lua, 'to go')
+        route = self.state(lua).route
+        self.assertEqual((route.ids[1], route.ids[len(route.ids)]), ('1000', '1035'))
+        self.assertEqual(lua.eval('reads'), 2)
+        self.assertLess(lua.eval('asked[1]'), -.1)                  # a margin round car and destination
+
     def test_destination_far_from_roads_is_reported(self):
         lua, nav = self.make()
         lua.execute("nav.setDestination(9000, 9000, .09, .09, car, 'en')")

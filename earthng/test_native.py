@@ -539,6 +539,60 @@ class NativeV2Tests(NativeTests.__base__):
         terrain = lua.globals().lastCells[1].terrain
         self.assertEqual((terrain.nx, terrain.ny, terrain.heights[3]), (2, 2, -2.2))  # decimetres
 
+    def test_drive_goes_on_into_a_neighbour_region(self):
+        """Past the landing region's east edge the cells come from the region beside it, whose
+        grid is 3700 x 250 m off: moved into this frame, the copy of a road this region has dropped."""
+        files = fixture_v2(roads=True)
+        base = '/earthng/countries/demo/'
+        country = files[base + 'manifest.json']
+        lon0, lat0 = 20 + 3700e-5 + 250 * 4e-6, 40 - 3700 * 3e-6 + 250e-5     # geographic(3700, 250)
+        payloads = {}
+        for i in range(4):
+            for j in range(4):
+                bounds = [i * 1000, j * 1000, (i + 1) * 1000, (j + 1) * 1000]
+                cell = dict(roads=[dict(id='b1', nodes=['1', '2'], width=8, points=[[-3700, 1500, 0], [300, 1500, 20]],
+                                        tags={'highway': 'residential'}),
+                                   dict(id='b2', nodes=['2', '3'], width=8, points=[[300, 1500, 20], [4000, 1500, 20]],
+                                        tags={'highway': 'residential'})],
+                            junctions=[], buildings=[], areas=[], lines=[], points=[],
+                            terrain=dict(rect=bounds, nx=2, ny=2, heights=[7, 7, 7, 7]))
+                payloads[binary.slot(i, j)] = binary.encode_cell(cell, bounds[:2])
+        data, mask = binary.encode_block(payloads)
+        files[base + 'regions/east/blocks/0_0.bin'] = data
+        files[base + 'regions/east.json'] = dict(
+            schemaVersion=2, id='east', runtime='lua', sourceFormat='earthng-features-v2', tileSize=500, cellSize=1000,
+            blockCells=8, geo=[0, 0, lon0, lat0, .00001, .000004, -.000003, .00001], bounds=[20.03, 39.95, 20.09, 40.05],
+            coverage=[[20.03, 39.95, 20.09, 40.05]], landing=[1750, 1750],
+            blocks={'0_0': dict(path=base + 'regions/east/blocks/0_0.bin', mask=mask)})
+        country['regions'].append(dict(id='east', manifest=base + 'regions/east.json', coverage=[[20.03, 39.95, 20.09, 40.05]]))
+        lua, mod, cv = self.make(files)
+        lua.execute('''local build = stubGenerator.build
+          tileCells = {}
+          stubGenerator.build = function(cells, i, j, ...) tileCells[i .. '_' .. j] = cells; return build(cells, i, j, ...) end''')
+        lat, lon = geographic(1750, 1750)
+        mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        mod.pose(cv(dict(x=3800, y=1750, vx=0, vy=0, state='driving')))
+        for _ in range(600):
+            mod.update(.016, 2)
+        stream = mod.status().stream
+        self.assertIn('8_3', dict(stream.ready.items()))         # 4000-4500 m: the neighbour's land
+        self.assertNotIn('8_1', dict(stream.wanted.items()))     # the neighbour lacks a cell under it
+        cells = lua.globals().tileCells['8_3']
+        cells = [cells[k] for k in range(1, len(cells) + 1)]
+        foreign = [c for c in cells if c.foreign == 'east']
+        own = [c for c in cells if not c.foreign]
+        self.assertTrue(foreign and own)                         # the seam: x 3960 is this region's
+        cell = foreign[0]
+        self.assertEqual([cell.terrain.rect[k] for k in range(1, 5)], [4000, 1000, 5000, 2000])
+        self.assertTrue(all(cell.terrain.heights[k] == 7 for k in range(1, 5)))
+        roads = {cell.roads[k].id: cell.roads[k] for k in range(1, len(cell.roads) + 1)}
+        self.assertEqual(set(roads), {'feast:b2'})                # b1 is this region's 'main' again
+        start = roads['feast:b2'].points[1]
+        self.assertAlmostEqual(start[1], 4000, places=3)
+        self.assertAlmostEqual(start[2], 1750, places=3)
+        self.assertEqual(stream.edgeKm, 99)        # the fixture's own bounds (19..21 E) reach far round it
+
     def test_v2_cells_generate_meshes_with_the_real_generator(self):
         _, mod, cv = self.make(fixture_v2(roads=True), real_generator=True)
         lat, lon = geographic(1750, 1750)

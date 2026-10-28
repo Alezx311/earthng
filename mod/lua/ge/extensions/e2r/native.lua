@@ -13,7 +13,8 @@ local live = liveOk and type(liveMod) == 'table' and type(liveMod.sync) == 'func
 -- delivered tile keeps only flags, while undelivered geometry is bounded by triangles/vertices.
 -- At 32 the far ring evicted itself and was rebuilt after every 250 m.
 local CELL_LIMIT, TILE_LIMIT, TRIANGLE_LIMIT, VERTEX_LIMIT, LAND_RADIUS = 32, 160, 80000, 240000, 500
-local BLOCK_LIMIT = 6
+-- 8: at a seam a tile reads its own region's blocks and a neighbour's (foreignCell)
+local BLOCK_LIMIT = 8
 -- Prepared horizon meshes, separate from the near/far triangle budget above. The 5 km ring
 -- is the one that is scheduled; 15 km and 30 km stay off until an in-game check.
 local HORIZON_RADIUS, HORIZON_TILE_LIMIT, HORIZON_TRIANGLE_LIMIT = 5000, 96, 250000
@@ -123,12 +124,20 @@ end
 
 -- v1 lists every cell in its manifest; v2 keeps a 64-bit presence mask per block,
 -- so a whole country's manifest stays small and nothing is enumerated at startup.
-local function hasCell(r, i, j)
+local function ownCell(r, i, j)
   local d = r.data
   if d.schemaVersion ~= 2 then return d.cells[keyOf(i, j)] ~= nil end
   local b = blocksOf(d)
   local block = d.blocks[keyOf(math.floor(i / b), math.floor(j / b))]
   return block ~= nil and cellformat.present(block.mask, i % b + (j % b) * b)
+end
+
+-- The landing region also has the cells a neighbour region can give it (foreignOf, below):
+-- the drive goes on past its edge.
+local foreignOf
+local function hasCell(r, i, j)
+  if ownCell(r, i, j) then return true end
+  return active ~= nil and r == active.region and foreignOf(i, j) ~= nil
 end
 
 local function geographic(r, x, y)
@@ -149,6 +158,131 @@ end
 
 local function affineAt(r, x, y)
   return r.projection and r.projection.affineAt(x, y) or r.data.geo
+end
+
+-- --- neighbour regions ----------------------------------------------------------------------------
+-- The world is the landing region's frame, and the drive may leave the region (a route of 100 km
+-- crosses two or three of them). A cell the landing region lacks comes from a neighbour region
+-- that has all of the cell (docs/NAVIGATION.md «Сусідні регіони»): its features move into this
+-- frame by an affine fitted on the cell's corners (a translation within one UTM zone, a turn of
+-- ~2 degrees across a zone border), its elevation is resampled onto this cell's own grid (one grid
+-- a cell, so the tiles at a seam agree), and its roads, numbered per region, get the region's id
+-- as a prefix. New lookups are capped a frame: each projects a few points.
+local FOREIGN_NEW = 48
+
+foreignOf = function(i, j)
+  local a = active
+  if not a or not a.foreign then return nil end
+  local k = (i + 1048576) * 2097152 + (j + 1048576)
+  local hit = a.foreign[k]
+  if hit ~= nil then return hit or nil end
+  if a.foreignNew >= FOREIGN_NEW then a.foreignShort = true; return nil end
+  a.foreignNew = a.foreignNew + 1
+  local r0 = a.region
+  local s = r0.data.cellSize
+  local x0, y0, x1, y1 = i * s, j * s, (i + 1) * s, (j + 1) * s
+  local lon, lat = geographic(r0, (x0 + x1) / 2, (y0 + y1) / 2)
+  local found = false
+  for _, r in ipairs(regions) do
+    if r ~= r0 and r.data.schemaVersion == 2 and r.country.id ~= 'live' and insideAny(r.descriptor.coverage, lon, lat) then
+      local fx0, fy0, fx1, fy1 = math.huge, math.huge, -math.huge, -math.huge
+      for _, c in ipairs({{x0, y0}, {x1, y0}, {x0, y1}, {x1, y1}}) do
+        local clon, clat = geographic(r0, c[1], c[2])
+        local fx, fy = localPoint(r, clat, clon)
+        fx0, fy0, fx1, fy1 = math.min(fx0, fx), math.min(fy0, fy), math.max(fx1, fx), math.max(fy1, fy)
+      end
+      local fs, cells, whole = r.data.cellSize, {}, true
+      for fi = math.floor(fx0 / fs), math.ceil(fx1 / fs) - 1 do
+        for fj = math.floor(fy0 / fs), math.ceil(fy1 / fs) - 1 do
+          if not ownCell(r, fi, fj) then whole = false end
+          cells[#cells + 1] = {fi, fj}
+        end
+      end
+      if whole then
+        -- r's frame -> this one on three corners of the box: X = m1 + m3 dx + m5 dy, Y = m2 + m4 dx + m6 dy
+        local function here(x, y) local lo, la = geographic(r, x, y); return localPoint(r0, la, lo) end
+        local ax, ay = here(fx0, fy0)
+        local bx, by = here(fx1, fy0)
+        local cx, cy = here(fx0, fy1)
+        local w, h = fx1 - fx0, fy1 - fy0
+        local m = {ax, ay, (bx - ax) / w, (by - ay) / w, (cx - ax) / h, (cy - ay) / h, fx0, fy0}
+        local det = m[3] * m[6] - m[5] * m[4]
+        found = {region = r, cells = cells, m = m, inv = {m[6] / det, -m[4] / det, -m[5] / det, m[3] / det},
+          prefix = 'f' .. tostring(r.descriptor.id) .. ':'}
+        break
+      end
+    end
+  end
+  a.foreign[k] = found
+  return found or nil
+end
+
+-- this frame -> the neighbour's (the inverse of foreignOf's affine)
+local function toForeign(f, x, y)
+  local m, inv = f.m, f.inv
+  local dx, dy = x - m[1], y - m[2]
+  return m[7] + inv[1] * dx + inv[3] * dy, m[8] + inv[2] * dx + inv[4] * dy
+end
+
+local function moveFeatures(cell, f, pause)
+  local m, moved = f.m, 0
+  local function move(p)
+    local dx, dy = p[1] - m[7], p[2] - m[8]
+    p[1], p[2] = m[1] + m[3] * dx + m[5] * dy, m[2] + m[4] * dx + m[6] * dy
+    moved = moved + 1
+    if moved % 512 == 0 then pause() end
+  end
+  for _, road in ipairs(cell.roads or NONE_LIST) do
+    road.id = f.prefix .. tostring(road.id)
+    for _, p in ipairs(road.points or NONE_LIST) do move(p) end
+  end
+  for _, kind in ipairs({'junctions', 'buildings', 'areas'}) do
+    for _, feature in ipairs(cell[kind] or NONE_LIST) do
+      for _, ring in ipairs(feature.rings or NONE_LIST) do
+        for _, p in ipairs(ring) do move(p) end
+      end
+    end
+  end
+  for _, line in ipairs(cell.lines or NONE_LIST) do
+    for _, p in ipairs(line.points or NONE_LIST) do move(p) end
+  end
+  for _, point in ipairs(cell.points or NONE_LIST) do
+    if point.pos then move(point.pos) end
+  end
+end
+
+local function gridHeight(grid, x, y)
+  local box = grid.rect
+  local gx = math.max(0, math.min(grid.nx - 1, (x - box[1]) / (box[3] - box[1]) * (grid.nx - 1)))
+  local gy = math.max(0, math.min(grid.ny - 1, (y - box[2]) / (box[4] - box[2]) * (grid.ny - 1)))
+  local ix, iy = math.min(grid.nx - 2, math.floor(gx)), math.min(grid.ny - 2, math.floor(gy))
+  local tx, ty = gx - ix, gy - iy
+  local h, row = grid.heights, iy * grid.nx + ix + 1
+  return (h[row] * (1 - tx) + h[row + 1] * tx) * (1 - ty) + (h[row + grid.nx] * (1 - tx) + h[row + grid.nx + 1] * tx) * ty
+end
+
+-- The neighbour's elevation on this cell's grid (as fine as the neighbour's own)
+local function resampled(f, parts, i, j)
+  local s = active.region.data.cellSize
+  local nx, ny = parts[1].terrain.nx, parts[1].terrain.ny
+  local x0, y0 = i * s, j * s
+  local heights, low = {}, math.huge
+  for gj = 0, ny - 1 do
+    for gi = 0, nx - 1 do
+      local fx, fy = toForeign(f, x0 + gi * s / (nx - 1), y0 + gj * s / (ny - 1))
+      local best, bestD
+      for _, part in ipairs(parts) do
+        local b = part.terrain.rect
+        local d = math.max(b[1] - fx, fx - b[3], 0) + math.max(b[2] - fy, fy - b[4], 0)
+        if not bestD or d < bestD then best, bestD = part.terrain, d end
+      end
+      local z = gridHeight(best, fx, fy)
+      heights[#heights + 1] = z
+      if z < low then low = z end
+    end
+    if gj % 16 == 15 then active.pause() end
+  end
+  return {rect = {x0, y0, x0 + s, y0 + s}, nx = nx, ny = ny, heights = heights}, low
 end
 
 -- Source metadata is an exact metric grid. Geographic bounding boxes alone are
@@ -357,10 +491,29 @@ local function evict(cache, limit, protected, onRemove)
   end
 end
 
+-- A block file (2-3 MB in central Kyiv) in 256 KB reads with a pause between them: one read
+-- was a 44 ms stretch of the generator (a zip entry inflates as it is read). Only in the
+-- generation coroutine.
+local function readPaused(path)
+  if not exists(path) then error('missing mounted source: ' .. path) end
+  local f = io.open(path, 'rb')
+  if not f then error('cannot open mounted source: ' .. path) end
+  local parts = {}
+  while true do
+    local s = f:read(262144)
+    if not s then break end
+    parts[#parts + 1] = s
+    if #s < 262144 then break end
+    active.pause()
+  end
+  f:close()
+  return table.concat(parts)
+end
+
 local function loadBlock(key, block)
   local hit = active.blocks[key]
   if hit then hit.used = touch(); return hit end
-  local data = readBytes(block.path)
+  local data = readPaused(block.path)
   active.pause()
   hit = {data = data, slots = cellformat.block(data), used = touch()}
   active.blocks[key] = hit
@@ -369,11 +522,69 @@ local function loadBlock(key, block)
   return hit
 end
 
+-- A cell of the landing region's grid made of a neighbour's (foreignOf). memo holds the
+-- neighbour's cells decoded for this tile, moved already: the 2-4 of them under a cell are
+-- shared by the tile's cells, and the generator drops the copies by id.
+local function foreignCell(f, key, i, j, keep, memo, terrainOnly)
+  local r = f.region
+  local fs, fb = r.data.cellSize, blocksOf(r.data)
+  local keepF
+  if keep then
+    local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+    for _, c in ipairs({{keep[1], keep[2]}, {keep[3], keep[2]}, {keep[1], keep[4]}, {keep[3], keep[4]}}) do
+      local fx, fy = toForeign(f, c[1], c[2])
+      x0, y0, x1, y1 = math.min(x0, fx), math.min(y0, fy), math.max(x1, fx), math.max(y1, fy)
+    end
+    keepF = {x0, y0, x1, y1}
+  end
+  memo = memo or {}
+  local parts = {}
+  local margin = cellformat.ROAD_MARGIN
+  for _, c in ipairs(f.cells) do
+    local rect = {c[1] * fs, c[2] * fs, (c[1] + 1) * fs, (c[2] + 1) * fs}
+    -- A feature is stored in every cell it touches: one reaching the tile is in a cell that
+    -- meets the tile's box, ROAD_MARGIN out. The other parts under this cell give elevation only
+    -- (the grid, not the features: a tile parsed up to nine neighbour cells instead of 1-4).
+    local whole = not terrainOnly and (not keepF or rect[1] <= keepF[3] + margin and rect[3] >= keepF[1] - margin
+      and rect[2] <= keepF[4] + margin and rect[4] >= keepF[2] - margin)
+    local base = f.prefix .. c[1] .. '_' .. c[2]
+    local cell = memo[base] or (not whole and memo[base .. ':t'])
+    if not cell then
+      local blockKey = keyOf(math.floor(c[1] / fb), math.floor(c[2] / fb))
+      local loaded = loadBlock(f.prefix .. blockKey, r.data.blocks[blockKey])
+      local range = loaded.slots[c[1] % fb + (c[2] % fb) * fb]
+      if not range then error('neighbour block lacks cell: ' .. base) end
+      if whole then
+        cell = cellformat.cell(loaded.data, range[1], range[2], rect[1], rect[2], rect, active.pause, keepF)
+        moveFeatures(cell, f, active.pause)
+        memo[base] = cell
+      else
+        cell = cellformat.terrain(loaded.data, range[1], range[2], rect)
+        memo[base .. ':t'] = cell
+      end
+    end
+    parts[#parts + 1] = cell
+  end
+  local terrain, low = resampled(f, parts, i, j)
+  active.lows[key] = active.lows[key] or low
+  local out = {terrain = terrain, low = low, foreign = r.descriptor.id}
+  for _, kind in ipairs({'roads', 'junctions', 'buildings', 'areas', 'lines', 'points'}) do
+    local list = {}
+    if not terrainOnly then
+      for _, part in ipairs(parts) do
+        for _, feature in ipairs(part[kind] or NONE_LIST) do list[#list + 1] = feature end
+      end
+    end
+    out[kind] = list
+  end
+  return out
+end
+
 -- keep: the tile's rectangle. A v2 cell is decoded for one tile and never cached: only the
 -- features reaching the tile become tables, and decoded points are the bulk of the Lua heap the
 -- game's collector walks every cycle (a dense 1 km cell is 6-10 MB of them). The block bytes
 -- stay cached; a string costs the collector nothing.
-local function loadCell(key, i, j, keep)
+local function loadCell(key, i, j, keep, memo)
   local hit = active.cells[key]
   if hit then hit.used = touch(); return hit.data end
   local d = active.region.data
@@ -381,7 +592,11 @@ local function loadCell(key, i, j, keep)
     local b, s = blocksOf(d), d.cellSize
     local blockKey = keyOf(math.floor(i / b), math.floor(j / b))
     local block = d.blocks[blockKey]
-    if not block or not hasCell(active.region, i, j) then error('missing source cell: ' .. key) end
+    if not ownCell(active.region, i, j) then
+      local f = foreignOf(i, j)
+      if not f then error('missing source cell: ' .. key) end
+      return foreignCell(f, key, i, j, keep, memo)
+    end
     if block.memory and live and type(live.cell) == 'function' then
       local cell = live.cell(i, j)
       if type(cell) ~= 'table' or type(cell.terrain) ~= 'table' then error('missing live cell: ' .. key) end
@@ -559,6 +774,7 @@ local function land(req)
   active = {region = r, cells = {}, blocks = {}, tiles = {}, horizon = {}, failed = {}, clock = 0, everBuilt = {}, desired = {}, evicted = {}, epoch = 1,
     parked = {},   -- tile key -> {co}: a near tile whose road is out and whose scene waits (update)
     lows = {},   -- cell key -> its lowest ground (world z), for the vista's relief
+    foreign = {}, foreignNew = 0,   -- cells from neighbour regions (foreignOf)
     epochPoint = {x, y}, prioritiesDirty = true, startupPinned = true,
     manifests = setmetatable({}, {__mode = 'v'}),
     landing = {x = x, y = y, required = needSquare(r, x, y)}, pose = {x = x, y = y, vx = 0, vy = 0}}
@@ -850,9 +1066,14 @@ local function trimHorizon()
 end
 
 -- A cell's elevation grid alone, for a vista block (16 cells of 1 km): nothing else decoded.
-local function loadTerrain(key, i, j)
+local function loadTerrain(key, i, j, memo)
   local d = active.region.data
   if d.schemaVersion ~= 2 then return loadCell(key, i, j) end
+  if not ownCell(active.region, i, j) then
+    local f = foreignOf(i, j)
+    if not f then error('missing source cell: ' .. key) end
+    return foreignCell(f, key, i, j, nil, memo, true)
+  end
   local b, s = blocksOf(d), d.cellSize
   local blockKey = keyOf(math.floor(i / b), math.floor(j / b))
   local block = d.blocks[blockKey]
@@ -881,13 +1102,13 @@ local function buildTile(key, wanted)
   local size = wanted.size or r.data.tileSize
   local x0, y0 = wanted.i * size, wanted.j * size
   local tileRect = {x0, y0, x0 + size, y0 + size}
-  local s, cells, seen = r.data.cellSize, {}, {}
+  local s, cells, seen, memo = r.data.cellSize, {}, {}, {}
   local function addCell(i, j, yield)
     if not hasCell(r, i, j) then return end
     local cellKey = keyOf(i, j)
     if seen[cellKey] then return end
     seen[cellKey] = true
-    cells[#cells + 1] = wanted.vista and loadTerrain(cellKey, i, j) or loadCell(cellKey, i, j, tileRect)
+    cells[#cells + 1] = wanted.vista and loadTerrain(cellKey, i, j, memo) or loadCell(cellKey, i, j, tileRect, memo)
     if yield then active.pause() end
   end
   for i = math.floor(x0 / s), math.ceil((x0 + size) / s) - 1 do
@@ -899,6 +1120,34 @@ local function buildTile(key, wanted)
   local pad = 40
   for i = math.floor((x0 - pad) / s), math.ceil((x0 + size + pad) / s) - 1 do
     for j = math.floor((y0 - pad) / s), math.ceil((y0 + size + pad) / s) - 1 do addCell(i, j, false) end
+  end
+  -- At a seam both regions have the roads crossing it, under different ids: the landing
+  -- region's copy stays, a neighbour's road with the same two OSM end nodes goes.
+  local anyForeign, anyOwn = false, false
+  for _, cell in ipairs(cells) do
+    if cell.foreign then anyForeign = true else anyOwn = true end
+  end
+  if anyForeign and anyOwn then
+    local own = {}
+    for _, cell in ipairs(cells) do
+      if not cell.foreign then
+        for _, road in ipairs(cell.roads or NONE_LIST) do
+          local n = road.nodes
+          if n and n[1] then own[tostring(n[1]) .. '|' .. tostring(n[#n])] = true end
+        end
+      end
+    end
+    for _, cell in ipairs(cells) do
+      if cell.foreign then
+        local kept = {}
+        for _, road in ipairs(cell.roads) do
+          local n = road.nodes
+          local a, b = n and tostring(n[1]), n and tostring(n[#n])
+          if not (a and (own[a .. '|' .. b] or own[b .. '|' .. a])) then kept[#kept + 1] = road end
+        end
+        cell.roads = kept
+      end
+    end
   end
   local center = active.landing and {active.landing.x, active.landing.y} or nil
   local tune = active.tune or {}
@@ -1039,6 +1288,9 @@ local function update(dt, budgetMs, farBudgetMs)
     active.prioritiesDirty = true
   end
   active.parked, active.parkedFar = active.parked or {}, active.parkedFar or {}
+  -- neighbour cells left unlooked-at last frame (FOREIGN_NEW): the wanted set again
+  active.foreignNew = 0
+  if active.foreignShort then active.foreignShort, active.prioritiesDirty = false, true end
   local dirty = active.prioritiesDirty
   local wanted, best, bestKey, bestPriority = dirty and priorities() or active.desired, nil, nil, nil
   local timer = hptimer()
@@ -1227,9 +1479,23 @@ local function pose(p)
   if live and active.region.country.id == 'live' then live.note(lat, lon) end
   state.stream.car = {lon, lat}
   state.stream.geo = affineAt(active.region, p.x, p.y)
-  local b = active.region.data.bounds
-  state.stream.edgeKm = math.max(0, math.min((lon - b[1]) * 111.2 * math.cos(math.rad(lat)),
-    (b[3] - lon) * 111.2 * math.cos(math.rad(lat)), (lat - b[2]) * 111.2, (b[4] - lat) * 111.2))
+  -- the edge of the land the packs have, the neighbours' too: the first point within 3 km in one
+  -- of eight directions that no region of a mounted pack covers
+  local function covers(plon, plat)
+    if inside(active.region.data.bounds, plon, plat) then return true end
+    for _, r in ipairs(regions) do
+      if r.data.schemaVersion == 2 and inside(r.data.bounds, plon, plat) then return true end
+    end
+    return false
+  end
+  local edge, k = 99, math.cos(math.rad(lat)) * 111.2
+  for _, km in ipairs({.5, 1, 2, 3}) do
+    for d = 0, 7 do
+      local angle = d * math.pi / 4
+      if km < edge and not covers(lon + km * math.cos(angle) / k, lat + km * math.sin(angle) / 111.2) then edge = km end
+    end
+  end
+  state.stream.edgeKm = covers(lon, lat) and edge or 0
 end
 
 local function recount(entry)
@@ -1566,6 +1832,39 @@ M.routing = function()
   if path and exists(path) then return path, active.region.country.id .. '/' .. tostring(d.id) end
 end
 M.readBytes = readBytes
+-- The routing graphs of the pack regions round a box (lat/lon), each with the move into the
+-- driven region's frame (nil for that region itself): the route goes as far as the land that
+-- foreignOf streams in.
+M.routingRegions = function(south, west, north, east)
+  if not active then return {} end
+  local out, r0 = {}, active.region
+  for _, r in ipairs(regions) do
+    local b, d = r.data.bounds, r.descriptor
+    if r.data.schemaVersion == 2 and b[1] <= east and b[3] >= west and b[2] <= north and b[4] >= south then
+      local root = type(d.manifest) == 'string' and d.manifest:match('^(.*)/regions/')
+      local path = root and (root .. '/routing/' .. tostring(d.id) .. '.bin')
+      if path and exists(path) then
+        local toWorld
+        local f, f0 = r.data.frame, r0.data.frame
+        if r == r0 then
+          toWorld = nil
+        elseif type(f) == 'table' and type(f0) == 'table' and f.crs == f0.crs and vector(f.origin, 2) and vector(f0.origin, 2) then
+          -- one UTM zone: the frames differ by their origins alone
+          local dx, dy = f.origin[1] - f0.origin[1], f.origin[2] - f0.origin[2]
+          toWorld = function(x, y) return x + dx, y + dy end
+        else
+          toWorld = function(x, y)
+            local lon, lat = geographic(r, x, y)
+            return localPoint(r0, lat, lon)
+          end
+        end
+        out[#out + 1] = {path = path, key = r.country.id .. '/' .. tostring(d.id), toWorld = toWorld}
+      end
+    end
+  end
+  table.sort(out, function(p, q) return p.key < q.key end)
+  return out
+end
 -- world x, y -> lat, lon by the region's own projection (the stream's geo is an affine at the car)
 M.toGeo = function(x, y)
   if not active then return nil end
