@@ -3371,9 +3371,11 @@ function BLD.shopLinks(lists, options, pause)
   for n, b in ipairs(tagged) do
     if not tied[b] then
       local tags = b.tags or NONE
-      local entry = {evidence = 'building_tag', building = tostring(b.id), shop = tags.shop, use = tags.building}
+      local box = boxes[b] or ringBounds(b.rings)
+      local entry = {evidence = 'building_tag', building = tostring(b.id), shop = tags.shop, use = tags.building,
+        x = (box[1] + box[3]) / 2, y = (box[2] + box[4]) / 2}
       if #b.rings ~= 1 then entry.reason = 'courtyard_or_parts'
-      elseif not seamSafe(boxes[b] or ringBounds(b.rings)) then entry.reason = 'cell_seam'
+      elseif not seamSafe(box) then entry.reason = 'cell_seam'
       else
         local list = streetWalls(b)
         if #list == 0 then entry.reason = 'no_street_wall'
@@ -3820,6 +3822,19 @@ function VEG.streetHave(kit)
   return props, sets
 end
 
+-- The storefront spans (BLD.shopLinks) of one building on the wall p -> q, in metres from p,
+-- whichever way the source ring runs; nil when the wall has none.
+function VEG.shopSpans(own, p, q, length)
+  if not own then return nil end
+  local spans = own[BLD.wallKey(p, q)]
+  if spans then return spans end
+  spans = own[BLD.wallKey(q, p)]
+  if not spans then return nil end
+  local out = {}
+  for k = #spans, 1, -1 do out[#out + 1] = {length - spans[k][2], length - spans[k][1]} end
+  return out
+end
+
 function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, lift, walkWidth, ground, put, pause, context)
   context = context or {}
   spacing = math.max(0, tonumber(spacing) or 0)
@@ -4264,7 +4279,21 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
               local nx, ny = -uy * out, ux * out
               local mx, my = (p[1] + q[1]) / 2 + nx * 8, (p[2] + q[2]) / 2 + ny * 8
               local street = roadNear(mx, my, shop and 18 or 6) ~= nil
-              if flats and not street and length >= 12 then
+              -- a block's mapped shop (the storefront experiment): the shop set along its span only
+              local spans = not shop and VEG.shopSpans(context.shopLinks and context.shopLinks[building.id], p, q, length)
+              if spans and roadNear(mx, my, 18) then
+                local step = math.max(8, spacing * 1.25)
+                for n, span in ipairs(spans) do
+                  local count = math.max(1, math.floor((span[2] - span[1]) / step))
+                  for e = 1, count do
+                    if ihash(seed, k, n * 16 + e, 7) % 100 < 60 * dense then
+                      place(seed, k * 100 + 50 + n * 4 + e, p, span[1] + (e - .5) * (span[2] - span[1]) / count, ux, uy, out,
+                        function(c) return .9 + c.near, true end, ground, 'poifront_' .. id .. '_' .. k .. '_' .. n .. '_' .. e,
+                        false, sets.shopFront)
+                    end
+                  end
+                end
+              elseif flats and not street and length >= 12 then
                 yardWalls[#yardWalls + 1] = {k, length}
                 local n = math.max(1, math.floor(length / 25))
                 for e = 1, n do
@@ -7990,7 +8019,8 @@ local function build(cells, i, j, options)
     end
     local _, reserved = VEG.streetProps(strips, lists.lines, lists.buildings, segmentBins, rect,
       options.propSpacing, lift, tune.sidewalk, ground, put, pause,
-      {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points, look = look})
+      {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points, look = look,
+        shopLinks = shopLinks})
     local yardCtx = {rect = rect, scene = scene, decor = sceneDecor, ground = ground, drapeRings = drapeRings,
       put = put, lists = lists, strips = strips, segmentBins = segmentBins, reserved = reserved,
       spacing = options.propSpacing or 0, pause = pause, have = VEG.have, lamp = LAMP, containers = containers}

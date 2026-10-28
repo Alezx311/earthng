@@ -73,7 +73,8 @@ for di = -radius, radius do
     out[#out + 1] = row
   end
 end
-return out
+local proj = active.region.projection
+return out, d.frame, function(x, y) return proj.geographic(x, y) end
 '''
 
 
@@ -102,6 +103,8 @@ def main():
     p.add_argument('--lon', type=float, required=True)
     p.add_argument('--radius', type=int, default=2)
     p.add_argument('--json', type=Path)
+    p.add_argument('--square', type=float, nargs=4, metavar=('X0', 'Y0', 'X1', 'Y1'),
+                   help="the analysis square in the pack frame's CRS (Bilychi: EPSG:32636 metres)")
     a = p.parse_args()
     lua, mods, _ = bench_native.runtime(a.pack)
     native = mods['native']
@@ -112,7 +115,15 @@ def main():
     land = lua.eval('function(native) local n,v; for k=1,200 do n,v=debug.getupvalue(native.update,k); '
                     'if n=="active" then return v.landing.x, v.landing.y end end end')(native)
     i0, j0 = int(land[0] // 500), int(land[1] // 500)
-    rows = plain(lua.execute(TILES, native, mods['generator'], i0, j0, a.radius))
+    rows, frame, geographic = lua.execute(TILES, native, mods['generator'], i0, j0, a.radius)
+    rows, frame = plain(rows), plain(frame)
+    ox, oy = frame['origin'][0], frame['origin'][1]
+
+    def place(entry, x, y):
+        lon, lat = geographic(x, y)
+        entry['lat'], entry['lon'] = round(lat, 7), round(lon, 7)
+        if a.square:
+            entry['inSquare'] = a.square[0] <= x + ox <= a.square[2] and a.square[1] <= y + oy <= a.square[3]
     pois, buildings, draws = {}, {}, collections.defaultdict(dict)
     inconsistent = set()
     for row in rows:
@@ -136,8 +147,28 @@ def main():
                 entry['draw'] = draws[entry['building']]
             if entry['evidence'] == 'poi':
                 entry['osm'] = f"node/{osm_node(entry['poi'])}"
+            place(entry, entry['x'], entry['y'])
+            if entry.get('wall'):
+                x1, y1, x2, y2 = (float(v) for v in entry['wall'].split(','))
+                length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** .5
+                s0, s1 = entry.get('span') or (0, length)
+                mid = (s0 + s1) / 2 / length
+                mx, my = x1 + (x2 - x1) * mid, y1 + (y2 - y1) * mid
+                nx, ny = (y2 - y1) / length, -(x2 - x1) / length
+                # a camera on the street side looking back at the storefront
+                view = {}
+                place(view, mx + nx * 12, my + ny * 12)
+                at = {}
+                place(at, mx, my)
+                entry['view'] = f"{view['lat']},{view['lon']},1.7:{at['lat']},{at['lon']},2:60"
+
+    if a.square:
+        pois = {k: e for k, e in pois.items() if e.get('inSquare')}
+        buildings = {k: e for k, e in buildings.items() if e.get('inSquare')}
     summary = {
-        'pack': str(a.pack), 'lat': a.lat, 'lon': a.lon, 'tiles': len(rows),
+        'pack': str(a.pack), 'lat': a.lat, 'lon': a.lon, 'tiles': len(rows), 'frame': frame, 'square': a.square,
+        'drawnPoi': sum(1 for e in pois.values() if e['decision'] == 'linked' and 'drawn' in (e.get('draw') or {}).values()
+                        or any(v == 'house_walls_replaced' for v in (e.get('draw') or {}).values())),
         'poi': dict(collections.Counter(e.get('reason') or e['decision'] for e in pois.values())),
         'building_tag': dict(collections.Counter(e.get('reason') or e['decision'] for e in buildings.values())),
         'inconsistent': sorted(inconsistent),

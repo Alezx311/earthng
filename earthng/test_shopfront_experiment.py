@@ -198,6 +198,28 @@ class ShopfrontExperimentTests(unittest.TestCase):
                 vs = [mesh.uvs[k].v if hasattr(mesh.uvs[k], 'v') else mesh.uvs[k][2] for k in range(1, len(mesh.uvs) + 1)]
                 self.assertAlmostEqual(max(vs), .7, places=3)
 
+    def test_shop_props_stand_along_the_span_through_the_shared_planner(self):
+        long_block = copy.deepcopy(self.block)
+        long_block['rings'] = [[[100, 100], [220, 100], [220, 112], [100, 112]]]
+        road = {'id': 'street', 'width': 8, 'tags': {'highway': 'residential'}, 'points': [[50, 85, 0], [260, 85, 0]]}
+        poi = copy.deepcopy(self.poi)
+        poi['pos'] = [160, 102, 0]
+
+        def furniture(on):
+            scene = self.build(buildings=[long_block], roads=[road], points=[poi], propSpacing=6,
+                               experimentalShopfront=on)[1]
+            return [(item.pos[1], item.pos[2], item.name) for item in scene['items'].values()
+                    if item.streetKind == 'furniture']
+        off, on = furniture(False), furniture(True)
+        self.assertFalse([f for f in off if 'poifront_' in f[2]])
+        front = [f for f in on if 'poifront_' in f[2]]
+        self.assertTrue(front)
+        for x, y, _ in front:
+            # before the span (156..164 m along the wall), out on the street side
+            self.assertTrue(155 <= x <= 165 and 90 < y < 100, (x, y))
+        # here nothing else moved (in a crowded street the shared planner may drop a lower one)
+        self.assertEqual(sorted(f for f in on if 'poifront_' not in f[2]), sorted(off))
+
     def test_house_lifted_and_low_buildings_keep_their_walls(self):
         lifted = copy.deepcopy(self.block)
         lifted['tags']['min_height'] = '3'
