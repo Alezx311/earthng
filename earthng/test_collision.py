@@ -43,7 +43,9 @@ class CollisionTests(unittest.TestCase):
           assert(not q(mesh('park'), 'road') and not q(mesh('ground'), 'road') and not q(mesh('road'), 'road'))
           assert(q(mesh('park'), 'scene') and q(mesh('footway', 'paved', 'roof'), 'scene'))
           -- one solid material keeps the whole object
-          assert(not q(mesh('roof', 'wall_brk_red'), 'scene') and not q(mesh('car'), 'scene'))
+          assert(not q(mesh('roof', 'wall_brk_red'), 'scene') and not q(mesh('car', 'wall_brk_red'), 'scene'))
+          -- the parking lots' box cars do not collide: a third of a rebuild's triangles in a town
+          assert(q(mesh('car'), 'scene') and not q(mesh('car'), 'road'))
           assert(not q(mesh('fence_mesh'), 'scene') and not q({}, 'scene') and not q(mesh('mark'), nil))
         ''')
 

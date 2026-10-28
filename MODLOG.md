@@ -24,6 +24,10 @@
   decor (60 objects a frame; collision.lua keeps a dropped tile out of every rebuild): the worst tile step of a
   30 s route drive 57.6 -> 16.6 ms, frames over 50 ms after landing 3 -> 1. Left: collision rebuilds (34 ms + the
   physics of the next frame, ~4 in 30 s at 20 m/s) and Lua GC (frames of 25 to 56 ms).
+- With the game's parked cars off, two in three parking bays get a box car, and every box car collided: ~700 round
+  Jüri, 37 % of the solid triangles of 9 near tiles. collision.lua leaves them out (QUIET.scene: e2rf_car): the
+  largest rebuild of a 30 s replay through the Jüri roundabout 457k -> 292k triangles, the mod's rebuild step
+  66 -> 43 ms, the engine's physics reload 65 -> 42 ms. The car drives through a box car now (the user's call).
 - Tried and dropped: setstepmul 100 / 50 (more frames over 100 ms), stopping the GC and stepping it by hand, one new
   mesh a frame (pairsDriving 1: no change).
 
