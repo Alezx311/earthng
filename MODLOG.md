@@ -1,6 +1,6 @@
 # EarthNG native mod migration
 
-## 2026-10-28: no parked cars by default, streaming takes a share of the frame
+## 2026-10-28: no parked cars by default, streaming takes a share of the frame and stops on time
 
 - The user: rubber banding / low FPS on every EarthNG map, never on other custom maps, on a high-end PC
   (GPU 20-70 %, the game's main thread at 86-88 % of a core in a clean test profile too).
@@ -10,12 +10,16 @@
   parked cars (`gameplay_parking.setupVehicles`: 8 vehicles spawned in one 190-220 ms frame, then respawned ahead of the car).
 - `quality.preset` parkedCars 8 -> 0 (the box cars stay; BeamNG has its own traffic; the window's slider still
   turns real parked cars on). 2 or 4 cars were as bad as 8 (frames of 540 to 750 ms).
-- `quality.genBudget`: while driving, streaming gets 15 % of the frame's EMA (floor 0.5 ms, cap BUDGET_MS = 4); landing
+- `quality.genBudget`: while driving, streaming gets 22 % of the frame's EMA (floor 0.5 ms, cap BUDGET_MS = 4); landing
   and warmup keep BUDGET_MS, and native.lua still raises it to 6 ms when the road ahead is missing.
 - Result on the same drive (6 runs each): mean frame 10.1 -> 7.2 ms, p99 28 -> 20 ms, frames over 33 ms 10.7 -> 4.2,
   Lua GC frames over 10 ms 65 -> 17, worst frame after landing under 100 ms (the two frames over 100 ms left in a run
   are the landing itself, the engine's first move of the car). The world fills a little slower: 75 tile layers built
   in the drive instead of 84.
+- native.lua's pause reads the clock at every pause point, not every 8th: a frame ran on for 8 points past its
+  budget (the generator's part 4 to 13 ms against 1 to 2 ms, 206 such frames in a drive). With it (one drive each,
+  every frame recorded): generator frames over 4 ms 206 -> 44, frames over 16.7 ms 101 -> 51, p99 20.6 -> 17.6 ms,
+  as many tiles built (70 -> 77). Lua GC (frames over 3 ms ~ 210) and shadows of new meshes are what is left.
 - Tried and dropped: setstepmul 100 / 50 (more frames over 100 ms), stopping the GC and stepping it by hand, one new
   mesh a frame (pairsDriving 1: no change).
 

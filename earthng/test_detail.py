@@ -180,9 +180,9 @@ class DetailTests(unittest.TestCase):
         lua.execute('''
           assert(quality.preset(50).parkedCars==0 and quality.preset(0).parkedCars==0 and quality.preset(100).parkedCars==0)
           assert(quality.clamp({}).parkedCars==0 and quality.clamp({parkedCars=8}).parkedCars==8)
-          assert(quality.genBudget(4, 10)==1.5)        -- 15 % of a 10 ms frame
-          assert(quality.genBudget(4, 3)==.5)          -- never under the floor
-          assert(quality.genBudget(4, 60)==4)          -- never over what the caller allows (9 ms would be 4 too)
+          assert(math.abs(quality.genBudget(4, 10) - 2.2) < 1e-9)   -- 22 % of a 10 ms frame
+          assert(quality.genBudget(4, 2)==.5)          -- never under the floor
+          assert(quality.genBudget(4, 60)==4)          -- never over what the caller allows
           assert(quality.genBudget(4, nil)==4 and quality.genBudget(4, 0/0)==4 and quality.genBudget(4, 'x')==4)
         ''')
 

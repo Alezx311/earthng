@@ -28,10 +28,10 @@ function M.preset(detail, distance)
   end
   return out
 end
--- What streaming may spend a frame: 15 % of the frame the machine really takes, never under floorMs and never
+-- What streaming may spend a frame: 22 % of the frame the machine really takes, never under floorMs and never
 -- over maxMs. A fixed 4 ms was a third of a 10 ms frame, and the tile that finished in it took the engine another
 -- 20 to 50 ms (Lua GC, shadows of the new meshes): frames of 25 to 70 ms about every second.
-M.BUDGET = {share = .15, floorMs = .5}
+M.BUDGET = {share = .22, floorMs = .5}
 function M.genBudget(maxMs, frameMs)
   frameMs = tonumber(frameMs)
   if not frameMs or frameMs ~= frameMs then return maxMs end
