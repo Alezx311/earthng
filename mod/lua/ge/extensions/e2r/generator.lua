@@ -3121,6 +3121,49 @@ function BLD.street(bins, x, y, r)
   return false
 end
 
+-- Experimental storefront: only an unambiguous exterior wall facing a parallel street.
+-- Require the entire footprint and its 25 m neighbourhood in this tile. This deliberately
+-- skips border buildings rather than making the choice depend on which neighbouring road
+-- segments happened to be loaded for each tile. No object is placed on the ground.
+function BLD.shopFace(bins, rings, rect, pause)
+  if #rings ~= 1 then return nil end
+  local box = ringBounds(rings)
+  if box[1] < rect[1] + 25 or box[2] < rect[2] + 25 or
+     box[3] > rect[3] - 25 or box[4] > rect[4] - 25 then return nil end
+  local ring, signed = cleanRing(rings[1]), 0
+  for k, p in ipairs(ring) do local q = ring[k % #ring + 1]; signed = signed + p[1] * q[2] - q[1] * p[2] end
+  if signed < 0 then local rev = {}; for k = #ring, 1, -1 do rev[#rev + 1] = ring[k] end; ring = rev end
+  local face
+  for k, a in ipairs(ring) do
+    local b = ring[k % #ring + 1]
+    local dx, dy = b[1] - a[1], b[2] - a[2]
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len >= 6 then
+      local x, y = (a[1] + b[1]) / 2, (a[2] + b[2]) / 2
+      local key = (math.floor(x / 50) + 32768) * 65536 + math.floor(y / 50) + 32768
+      local found = false
+      for _, s in ipairs(bins[key] or NONE) do
+        local way = (s.tags or NONE).highway
+        if s.surface and s.len2 > 0 and way ~= 'service' and way ~= 'living_street' and
+           math.abs((dx * s.dx + dy * s.dy) / (len * math.sqrt(s.len2))) >= .85 then
+          local t = math.max(0, math.min(1, ((x - s.a[1]) * s.dx + (y - s.a[2]) * s.dy) / s.len2))
+          local ox, oy = s.a[1] + t * s.dx - x, s.a[2] + t * s.dy - y
+          local distance = math.sqrt(ox * ox + oy * oy)
+          -- CCW exterior: (dy, -dx) points away from the building.
+          if (ox * dy - oy * dx) / len > s.width / 2 + .5 and
+             distance - s.width / 2 <= 18 then found = true; break end
+        end
+      end
+      if found then
+        if face then return nil end -- more than one plausible face: do not guess
+        face = {a[1], a[2], b[1], b[2]}
+      end
+    end
+    if k % 32 == 0 then pause() end
+  end
+  return face
+end
+
 -- Straight facades are often many OSM edges. Chain the ones that meet and point the same
 -- way, then put hoods on each street run and on the longest yard run. One edge at a time
 -- left a long brick slab with a single hood on a short piece, off the camera.
@@ -5305,6 +5348,9 @@ local function build(cells, i, j, options)
   -- step past the tile (its border nodes are lowered for roads in the neighbour's cells too).
   local reach = tune.pullZero + step + 5
   local segments, segmentBins, nav, bestSpawn, bestDistance = {}, {}, {segments = {}}, nil, math.huge
+  -- The shop experiment searches 18 m from road edges even on a fine DEM where
+  -- pullZero is only 15 m. Keep its wider index separate from the normal road bins.
+  local shopBins = options.experimentalShopfront and {} or nil
   for _, road in ipairs(lists.roads) do
     local tags, points, width = road.tags or {}, road.points or {}, math.max(.5, math.min(80, road.width or 7))
     for index = 1, #points - 1 do
@@ -5313,17 +5359,31 @@ local function build(cells, i, j, options)
       local length = math.sqrt(dx * dx + dy * dy)
       if length > EPS then
         local bounds = {math.min(a[1], b[1]), math.min(a[2], b[2]), math.max(a[1], b[1]), math.max(a[2], b[2])}
-        if boundsTouch(rect, bounds, width / 2 + reach) then
+        local roadHit = boundsTouch(rect, bounds, width / 2 + reach)
+        local shopHit = shopBins and boundsTouch(rect, bounds, width / 2 + 18)
+        if roadHit or shopHit then
           -- a track lies on the ground (ROADS.trackRuns): it does not shape it
           local segment = {a = a, b = b, dx = dx, dy = dy, len2 = length * length, width = width, road = road,
             tags = tags, surface = not road.track and not ROADS.bridge(tags) and not ROADS.tunnel(tags)}
-          segments[#segments + 1] = segment
-          local margin = width / 2 + tune.pullZero
-          for by = math.floor((bounds[2] - margin) / 50), math.floor((bounds[4] + margin) / 50) do
-            for bx = math.floor((bounds[1] - margin) / 50), math.floor((bounds[3] + margin) / 50) do
-              local binKey = (bx + 32768) * 65536 + by + 32768
-              local bin = segmentBins[binKey] or {}
-              segmentBins[binKey], bin[#bin + 1] = bin, segment
+          if roadHit then
+            segments[#segments + 1] = segment
+            local margin = width / 2 + tune.pullZero
+            for by = math.floor((bounds[2] - margin) / 50), math.floor((bounds[4] + margin) / 50) do
+              for bx = math.floor((bounds[1] - margin) / 50), math.floor((bounds[3] + margin) / 50) do
+                local binKey = (bx + 32768) * 65536 + by + 32768
+                local bin = segmentBins[binKey] or {}
+                segmentBins[binKey], bin[#bin + 1] = bin, segment
+              end
+            end
+          end
+          if shopHit then
+            local margin = width / 2 + 18
+            for by = math.floor((bounds[2] - margin) / 50), math.floor((bounds[4] + margin) / 50) do
+              for bx = math.floor((bounds[1] - margin) / 50), math.floor((bounds[3] + margin) / 50) do
+                local binKey = (bx + 32768) * 65536 + by + 32768
+                local bin = shopBins[binKey] or {}
+                shopBins[binKey], bin[#bin + 1] = bin, segment
+              end
             end
           end
         end
@@ -7133,6 +7193,12 @@ local function build(cells, i, j, options)
       end
       local plinthKind = type(plinth) == 'string' and plinth or 'plinth'
       local use = tags.building
+      -- Synthetic appearance on a mapped commercial building, never an assertion about an
+      -- actual sign or window. Disabled unless the caller explicitly opts into the experiment.
+      local shopTag = tags.shop and tags.shop ~= 'no' and tags.shop ~= 'vacant' and tags.shop ~= 'closed'
+      local shopFace = options.experimentalShopfront and not options.far and not lifted and not dress and
+        height > 4.5 and (shopTag or use == 'retail' or use == 'commercial') and
+        BLD.shopFace(shopBins, rings, rect, pause) or nil
       -- City grammar, near tiles at Balanced and above. Houses stay on dress.mass.
       -- Flat roofs gain a parapet and a crown; street facades and the long yard side gain canopies.
       BLD.city, BLD.face, BLD.faces = nil, nil, nil
@@ -7168,8 +7234,17 @@ local function build(cells, i, j, options)
               {b[1], b[2], seam, (along + length) / 3, (seam - base) / 3},
               {a[1], a[2], seam, along / 3, (seam - base) / 3}}, false)
           end
-          scene.polygon(wallKind, {{a[1], a[2], seam, along / scale, (seam - base) / scale},
-            {b[1], b[2], seam, (along + length) / scale, (seam - base) / scale},
+          local shop = shopFace and raw == rings[1] and a[1] == shopFace[1] and a[2] == shopFace[2] and
+            b[1] == shopFace[3] and b[2] == shopFace[4] and base + 4.2 > seam
+          local upper = shop and base + 4.2 or seam
+          if shop then
+            scene.polygon('wall_shop_dark', {{a[1], a[2], seam, along / 6, math.max(0, seam - base) / 6},
+              {b[1], b[2], seam, (along + length) / 6, math.max(0, seam - base) / 6},
+              {b[1], b[2], upper, (along + length) / 6, (upper - base) / 6},
+              {a[1], a[2], upper, along / 6, (upper - base) / 6}}, false)
+          end
+          scene.polygon(wallKind, {{a[1], a[2], upper, along / scale, (upper - base) / scale},
+            {b[1], b[2], upper, (along + length) / scale, (upper - base) / scale},
             {b[1], b[2], top, (along + length) / scale, height / scale},
             {a[1], a[2], top, along / scale, height / scale}}, false)
           if door and length > EPS then
