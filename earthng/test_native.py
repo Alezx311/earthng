@@ -88,7 +88,9 @@ class NativeTests(unittest.TestCase):
             return {read=function() return data end, close=function() end}
           end
           jsonWriteFile=function() error('native provider must not write files') end
-          hptimer=function() local elapsed=0; return {stop=function() elapsed=elapsed+0.7; return elapsed end} end
+          -- each read of the clock is 0.0875 ms of work: native.lua reads it at every pause point (it read every
+          -- 8th point at 0.7 ms a read before), so a frame still holds as many points of work
+          hptimer=function() local elapsed=0; return {stop=function() elapsed=elapsed+0.0875; return elapsed end} end
           buildCalls=0; fakeTriangles=0; fakeFarTriangles=0
           stubGenerator={build=function(cells,i,j,options)
             buildCalls=buildCalls+1
@@ -653,11 +655,12 @@ class NativeV2Tests(NativeTests.__base__):
         lat, lon = geographic(1250, 4750)
         mod.land(cv(dict(seq=13, lat=lat, lon=lon)))
         self.assertEqual(self.pump(mod).state, 'ready')
+        # 0.5 ms a frame is ~6 reads of the fake clock, the frame of work this test always had (4 ms at 0.7 a read)
         x, early, parked = 1250.0, set(), 0
         for frame in range(1500):
             x += 60 / 60
             mod.pose(cv(dict(x=x, y=4750, vx=60, vy=0, state='driving')))
-            mod.update(.016, 4)
+            mod.update(.016, .5)
             stream = mod.status().stream
             for key in stream.ready.keys():
                 if stream.scenes[key] is None:
@@ -668,12 +671,12 @@ class NativeV2Tests(NativeTests.__base__):
         self.assertLess(mod.status().stream.budgetMs, 6)
         # the car where no road is built yet: a road due within 6 s raises the budget to 6 ms
         mod.pose(cv(dict(x=7250, y=4750, vx=60, vy=0, state='driving')))
-        mod.update(.016, 4)
+        mod.update(.016, .5)
         self.assertEqual(mod.status().stream.budgetMs, 6)
         # stopped, every near tile gets its scene; none is built twice for it
         built = mod.status().stream.built
         for _ in range(3000):
-            mod.update(.016, 4)
+            mod.update(.016, .5)
         stream = mod.status().stream
         for key in stream.ready.keys():
             self.assertTrue(stream.scenes[key], key)

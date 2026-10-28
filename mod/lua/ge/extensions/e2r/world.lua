@@ -1294,7 +1294,9 @@ local function updateTiles()
     local held = (S.heldCar and (cx - S.heldCar[1]) ^ 2 + (cy - S.heldCar[2]) ^ 2 <= 600 * 600) or dueNear(key)
     if not held and (d > unloadR or behind(cx, cy, d)) then
       retireForest(tile)
-      dropGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
+      -- the road group goes a few dozen objects a frame too: deleting it at once took 58 ms of a frame at
+      -- 20 m/s (collision.lua keeps a dropped tile's objects out of every rebuild until they are gone)
+      buryGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
       S.tiles[key] = nil
       S.navDirty = true
       if NATIVE then native.unload(key) end
@@ -4190,6 +4192,7 @@ function M.onUpdate(dtReal)
   forestCommit()
   local frameMs = frameTimer:stopAndReset()
   table.insert(S.frames, frameMs)
+  S.frameEma = (S.frameEma or 10) * .95 + math.min(frameMs, 50) * .05     -- a hitch must not starve streaming
   S.recentAt = (S.recentAt or 0) % 240 + 1        -- the widget's FPS: the last 240 frames
   S.recent = S.recent or {}
   S.recent[S.recentAt] = frameMs
@@ -4268,7 +4271,9 @@ function M.tick(dt)
         if kb >= S.profKb then P.kbUp = P.kbUp + kb - S.profKb else P.collections = P.collections + 1 end
       end
     end
-    native.update(dt, test and test.genBudget or BUDGET_MS, test and test.genBudget)
+    -- driving: a share of the frame; landing and warmup load as fast as BUDGET_MS lets them
+    native.update(dt, test and test.genBudget or (S.state == 'driving' and quality.genBudget(BUDGET_MS, S.frameEma) or BUDGET_MS),
+      test and test.genBudget)
     S.nativeMs = t:stop()
     profAdd('native', S.nativeMs, collectgarbage('count') - kb)
     S.profKb = collectgarbage('count')

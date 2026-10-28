@@ -6,6 +6,11 @@ M.CELL = 32
 M.GRASS_CELL = 8
 local function cellSize(kind) return kind == 'grass' and M.GRASS_CELL or M.CELL end
 M.KINDS = {'grass', 'rock'}
+-- A kept grass patch holds its samples as one float array (FFI): as a Lua array they were ~2 million numbers round
+-- a town that every full collection of the game's Lua scanned (most of a 250 ms freeze). Without FFI: Lua arrays.
+local okFfi, ffi = pcall(require, 'ffi')
+if not okFfi then ffi = nil end
+local NONE = {}
 
 function M.kind(it)
   local s = it and it.shape
@@ -23,18 +28,24 @@ end
 -- fill each square on a 2/3 m grid, so neighbouring squares meet. The descriptor's n already
 -- counts those nine, so selection enforces the actual TSStatic budget.
 function M.expand(part, pause)
-  if not part.patches or #part.patches == 0 then return part end
+  if not part.psamples and not (part.patches and #part.patches > 0) then
+    if not part.x then part.x, part.y, part.z, part.yaw, part.scale, part.shape = {}, {}, {}, {}, {}, {} end
+    return part
+  end
   local out = {tile = part.tile, n = 0, x = {}, y = {}, z = {}, yaw = {}, scale = {}, shape = {}}
   local function put(x,y,z,yaw,scale,shape)
     local n = out.n + 1; out.n = n
     out.x[n],out.y[n],out.z[n],out.yaw[n],out.scale[n],out.shape[n] = x,y,z,yaw,scale,shape
   end
   for k = 1, part.staticN do put(part.x[k],part.y[k],part.z[k],part.yaw[k],part.scale[k],part.shape[k]) end
-  for _, patch in ipairs(part.patches) do
-    for k = 1, #patch.samples, 4 do
-      local slot, z, gx, gy = patch.samples[k], patch.samples[k+1], patch.samples[k+2], patch.samples[k+3]
-      local x = patch.x + (slot % 4) * 2 + 1
-      local y = patch.y + math.floor(slot / 4) * 2 + 1
+  -- a part keeps its one patch in p* fields, more in part.patches
+  local function expandPatch(px, py, shapes, spans, bottoms, samples, count)
+    -- samples: slot, z, gx, gy per accepted square (a float array from 0 with its count, or a Lua array from 1)
+    local base = count and 0 or 1
+    for k = base, (count or #samples) - 1 + base, 4 do
+      local slot, z, gx, gy = samples[k], samples[k+1], samples[k+2], samples[k+3]
+      local x = px + (slot % 4) * 2 + 1
+      local y = py + math.floor(slot / 4) * 2 + 1
       for iy = -1, 1 do for ix = -1, 1 do
         -- Lua 5.1 leaves a negative remainder; a cell west or south of the origin is negative.
         local h = math.floor(x) * 73856093 + math.floor(y) * 19349663 + (ix + 2) * 83492791 + (iy + 2) * 2654435761
@@ -44,11 +55,18 @@ function M.expand(part, pause)
         local dy = iy * (2 / 3) + ((math.floor(h / 101) % 101) / 100 - .5) * .12
         local model = h % 3 + 1
         local height = .32 + (math.floor(h / 10201) % 101) / 100 * .18
-        local scale = height / patch.spans[model]
-        put(x + dx, y + dy, z + gx * dx + gy * dy - patch.bottoms[model] * scale,
-          h % 6283 / 1000, scale, patch.shapes[model])
+        local scale = height / spans[model]
+        put(x + dx, y + dy, z + gx * dx + gy * dy - bottoms[model] * scale,
+          h % 6283 / 1000, scale, shapes[model])
       end end
     end
+  end
+  if part.psamples then
+    expandPatch(part.px, part.py, part.pshapes, part.pspans, part.pbottoms, part.psamples, part.pcount)
+    if pause then pause() end
+  end
+  for _, p in ipairs(part.patches or NONE) do
+    expandPatch(p.x, p.y, p.shapes, p.spans, p.bottoms, p.samples, p.count)
     if pause then pause() end
   end
   return out
@@ -67,10 +85,16 @@ function M.new(create, destroy)
     local cell = self.cells[key]
     local CELL = cellSize(kind)
     if not cell then
-      cell = {key = key, kind = kind, parts = {}, n = 0, rev = 0, x = (x + .5) * CELL, y = (y + .5) * CELL, zSum = 0}
+      -- a cell keeps its first tile's part inline (tile1, part1): a map of one tile per 8 m cell was a table each
+      cell = {key = key, kind = kind, n = 0, rev = 0, x = (x + .5) * CELL, y = (y + .5) * CELL, zSum = 0}
       self.cells[key] = cell
     end
     return cell
+  end
+
+  local function partOf(cell, tile)
+    if cell.tile1 == tile then return cell.part1 end
+    return cell.parts and cell.parts[tile]
   end
 
   function self:add(tile, it)
@@ -78,24 +102,50 @@ function M.new(create, destroy)
     if not kind then return false end
     local width = cellSize(kind)
     local cell = cellOf(kind, math.floor(it.pos[1] / width), math.floor(it.pos[2] / width))
-    local part = cell.parts[tile]
+    local part = partOf(cell, tile)
     if not part then
       self.serial = self.serial + 1
-      part = {tile = tile, serial = self.serial, n = 0, staticN = 0, zSum = 0, patches = {}, x = {}, y = {}, z = {}, yaw = {}, scale = {}, shape = {}}
-      cell.parts[tile] = part
+      -- the arrays come with the part's first item of their sort: an 8 m grass cell is patches only, and seven empty
+      -- tables for each of the ~30k cells round a town were most of what the game's full collections walked
+      part = {tile = tile, serial = self.serial, n = 0, staticN = 0, zSum = 0}
+      if cell.part1 == nil then cell.tile1, cell.part1 = tile, part
+      else cell.parts = cell.parts or {}; cell.parts[tile] = part end
       tile.detailCells = tile.detailCells or {}
       tile.detailCells[#tile.detailCells + 1] = cell.key
     end
     if it.grassPatch then
       local patch = it.grassPatch
-      part.patches[#part.patches + 1] = patch
-      local n, zs = #patch.samples / 4 * 9, 0
-      for k = 1, #patch.samples, 4 do zs = zs + patch.samples[k + 1] * 9 end
+      local samples = patch.samples
+      local count = patch.count or #samples
+      local n, zs = count / 4 * 9, 0
+      local base = patch.count and 0 or 1
+      for k = 0, count - 1, 4 do zs = zs + samples[k + base + 1] * 9 end
+      if ffi and not patch.count and count > 0 then
+        local packed = ffi.new('float[?]', count)
+        for k = 1, count do packed[k - 1] = samples[k] end
+        samples = packed
+      else
+        count = patch.count
+      end
+      -- a part's one patch lives in the part (p* fields), more go to part.patches: a patch table per 8 m cell
+      if not part.psamples and not part.patches then
+        part.px, part.py, part.pshapes, part.pspans, part.pbottoms = patch.x, patch.y, patch.shapes, patch.spans, patch.bottoms
+        part.psamples, part.pcount = samples, count
+      else
+        if part.psamples then
+          part.patches = {{x = part.px, y = part.py, shapes = part.pshapes, spans = part.pspans, bottoms = part.pbottoms,
+            samples = part.psamples, count = part.pcount}}
+          part.px, part.py, part.pshapes, part.pspans, part.pbottoms, part.psamples, part.pcount = nil, nil, nil, nil, nil, nil, nil
+        end
+        patch.samples, patch.count = samples, count
+        part.patches[#part.patches + 1] = patch
+      end
       part.n, part.zSum = part.n + n, part.zSum + zs
       cell.n, cell.rev, cell.zSum = cell.n + n, cell.rev + 1, cell.zSum + zs
       self.revision = self.revision + 1
       return true
     end
+    if not part.x then part.x, part.y, part.z, part.yaw, part.scale, part.shape = {}, {}, {}, {}, {}, {} end
     local n, rot, z = part.staticN + 1, it.rot, it.pos[3] or 0
     part.staticN, part.n, part.zSum = n, part.n + 1, part.zSum + z
     part.x[n], part.y[n], part.z[n] = it.pos[1], it.pos[2], z
@@ -109,9 +159,9 @@ function M.new(create, destroy)
   function self:remove(tile)
     for _, key in ipairs(tile.detailCells or {}) do
       local cell = self.cells[key]
-      local part = cell and cell.parts[tile]
+      local part = cell and partOf(cell, tile)
       if part then
-        cell.parts[tile] = nil
+        if cell.tile1 == tile then cell.tile1, cell.part1 = nil, nil else cell.parts[tile] = nil end
         local zs = part.zSum
         cell.n, cell.rev, cell.zSum = cell.n - part.n, cell.rev + 1, cell.zSum - zs
         if cell.n <= 0 and not self.live[cell.key] then self.cells[cell.key] = nil end
@@ -209,9 +259,11 @@ function M.new(create, destroy)
           if not self.live[cell.key] and self.cells[cell.key] == cell and cell.n > 0
               and self.count[kind] + cell.n <= (self.tune[kind .. 'Budget'] or 0) and distance(cell, self.focus) <= limit * limit then
             local parts, n = {}, 0
-            for _, part in pairs(cell.parts) do
+            local function take(part)
               if not part.tile.dropped then parts[#parts + 1] = part; n = n + part.n end
             end
+            if cell.part1 then take(cell.part1) end
+            for _, part in pairs(cell.parts or NONE) do take(part) end
             table.sort(parts, function(a, b) return a.serial < b.serial end)
             local rev = cell.rev
             local handle = create(parts, function() pause(true) end)

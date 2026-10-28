@@ -564,11 +564,12 @@ local function land(req)
     landing = {x = x, y = y, required = needSquare(r, x, y)}, pose = {x = x, y = y, vx = 0, vy = 0}}
   -- Generation hands the frame back only when update()'s budget is spent. A yield at every
   -- pause point (thousands per tile) capped the work per frame by the number of resumes and
-  -- broke LuaJIT's traces in every hot loop; the clock is read at every 8th point.
-  local a, calls = active, 0
+  -- broke LuaJIT's traces in every hot loop. The clock is read at every point: read at every 8th,
+  -- a frame ran on for 8 points past its budget (4 to 13 ms against 1 to 2 ms, one frame in 20
+  -- while driving), and reading it at every point built as many tiles a drive.
+  local a = active
   active.pause = function()
-    calls = calls + 1
-    if calls % 8 == 0 and a.timer and a.timer:stop() >= a.budget then coroutine.yield() end
+    if a.timer and a.timer:stop() >= a.budget then coroutine.yield() end
   end
   state.stream = {region = descriptor.id, country = country.id, live = country.id == 'live' or nil,
     tile = r.data.tileSize, generator = 'earthng-lua-v1',

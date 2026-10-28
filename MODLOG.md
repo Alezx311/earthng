@@ -1,5 +1,42 @@
 # EarthNG native mod migration
 
+## 2026-10-28: no parked cars by default, streaming takes a share of the frame and stops on time
+
+- The user: rubber banding / low FPS on every EarthNG map, never on other custom maps, on a high-end PC
+  (GPU 20-70 %, the game's main thread at 86-88 % of a core in a clean test profile too).
+- Measured with `earthng/test_world.py` (22 s autopilot drive, 1920x1080, Normal, Balanced, 3 to 6 runs each),
+  frames over 33 ms ~ 10 per drive, one every 2 s: the generator's fixed 4 ms a frame (a third of a 10 ms frame),
+  Lua GC steps of 10 to 50 ms (the Lua heap is 340 MB; the generator made ~500 KB of garbage a frame), and the game's
+  parked cars (`gameplay_parking.setupVehicles`: 8 vehicles spawned in one 190-220 ms frame, then respawned ahead of the car).
+- `quality.preset` parkedCars 8 -> 0 (the box cars stay; BeamNG has its own traffic; the window's slider still
+  turns real parked cars on). 2 or 4 cars were as bad as 8 (frames of 540 to 750 ms).
+- `quality.genBudget`: while driving, streaming gets 22 % of the frame's EMA (floor 0.5 ms, cap BUDGET_MS = 4); landing
+  and warmup keep BUDGET_MS, and native.lua still raises it to 6 ms when the road ahead is missing.
+- Result on the same drive (6 runs each): mean frame 10.1 -> 7.2 ms, p99 28 -> 20 ms, frames over 33 ms 10.7 -> 4.2,
+  Lua GC frames over 10 ms 65 -> 17, worst frame after landing under 100 ms (the two frames over 100 ms left in a run
+  are the landing itself, the engine's first move of the car). The world fills a little slower: 75 tile layers built
+  in the drive instead of 84.
+- native.lua's pause reads the clock at every pause point, not every 8th: a frame ran on for 8 points past its
+  budget (the generator's part 4 to 13 ms against 1 to 2 ms, 206 such frames in a drive). With it (one drive each,
+  every frame recorded): generator frames over 4 ms 206 -> 44, frames over 16.7 ms 101 -> 51, p99 20.6 -> 17.6 ms,
+  as many tiles built (70 -> 77). Lua GC (frames over 3 ms ~ 210) and shadows of new meshes are what is left.
+- A tile left behind deleted its road group at once (`dropGroup`): 58 ms of a frame at 20 m/s. It is buried like the
+  decor (60 objects a frame; collision.lua keeps a dropped tile out of every rebuild): the worst tile step of a
+  30 s route drive 57.6 -> 16.6 ms, frames over 50 ms after landing 3 -> 1. Left: collision rebuilds (34 ms + the
+  physics of the next frame, ~4 in 30 s at 20 m/s) and Lua GC (frames of 25 to 56 ms).
+- With the game's parked cars off, two in three parking bays get a box car, and every box car collided: ~700 round
+  Jüri, 37 % of the solid triangles of 9 near tiles. collision.lua leaves them out (QUIET.scene: e2rf_car): the
+  largest rebuild of a 30 s replay through the Jüri roundabout 457k -> 292k triangles, the mod's rebuild step
+  66 -> 43 ms, the engine's physics reload 65 -> 42 ms. The car drives through a box car now (the user's call).
+- The grass and rock stream (detail.lua) was most of what a full collection of the game's Lua walks: round the Jüri
+  roundabout ~30k 8 m grass cells held 365k tables and 2.3 million entries (dropping them in a probe: a full collect
+  278 -> 101 ms). A part's arrays now come with its first item of their sort, a cell keeps its first tile's part
+  and a part its one patch inline, and a kept patch's samples are one FFI float array: 98k tables, 0.74 million
+  entries; a full collect at the same ~260 MB live 222 -> 153 ms (median of 5, earthng/probe.py in a held test game);
+  a 30 s replay through the roundabout p99 21.5 -> 18.0 ms, frames over 33 ms 9 -> 3.
+- Tried and dropped: setstepmul 100 / 50 (more frames over 100 ms), stopping the GC and stepping it by hand, one new
+  mesh a frame (pairsDriving 1: no change).
+
 ## 2026-10-26 (evening): no rails in front of a high deck's piers, an audit that reads rails
 
 - The user, in game at the Jüri overpass of Tallinna ringtee (0.6.4): the median rails still ran up to
