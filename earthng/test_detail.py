@@ -175,6 +175,17 @@ class DetailTests(unittest.TestCase):
           assert(a.maxTrees==b.maxTrees and a.grassM<b.grassM)
         ''')
 
+    def test_parked_cars_are_off_by_default_and_streaming_gets_a_share_of_the_frame(self):
+        lua = self.make()
+        lua.execute('''
+          assert(quality.preset(50).parkedCars==0 and quality.preset(0).parkedCars==0 and quality.preset(100).parkedCars==0)
+          assert(quality.clamp({}).parkedCars==0 and quality.clamp({parkedCars=8}).parkedCars==8)
+          assert(quality.genBudget(4, 10)==1.5)        -- 15 % of a 10 ms frame
+          assert(quality.genBudget(4, 3)==.5)          -- never under the floor
+          assert(quality.genBudget(4, 60)==4)          -- never over what the caller allows (9 ms would be 4 too)
+          assert(quality.genBudget(4, nil)==4 and quality.genBudget(4, 0/0)==4 and quality.genBudget(4, 'x')==4)
+        ''')
+
     def world(self):
         lua = self.make()
         lua.globals().collision = lua.execute((ROOT / 'collision.lua').read_text())

@@ -16,8 +16,10 @@ end
 M.number = number
 function M.preset(detail, distance)
   detail, distance = number(detail, 50, 0, 100), number(distance, detail, 0, 100)
-  -- parkedCars: the game's parked cars kept round the player (parking.lua); 0 draws the box cars
-  local out = {quality=detail, detail=detail, distance=distance, groundTrees=true, parkedCars=8}
+  -- parkedCars: the game's parked cars kept round the player (parking.lua); 0 (the default) draws the box cars.
+  -- BeamNG has its own traffic; each car EarthNG parked cost a vehicle spawn of ~200 ms and then kept being
+  -- respawned ahead of the car (frames of 100 to 700 ms, 3 to 4 times as many over 33 ms)
+  local out = {quality=detail, detail=detail, distance=distance, groundTrees=true, parkedCars=0}
   for key in pairs(anchors[1]) do
     local q = (key == 'nearM' or key == 'farM' or key == 'grassM' or key == 'rockM') and distance or detail
     local a = q < 50 and 1 or 2
@@ -26,6 +28,16 @@ function M.preset(detail, distance)
   end
   return out
 end
+-- What streaming may spend a frame: 15 % of the frame the machine really takes, never under floorMs and never
+-- over maxMs. A fixed 4 ms was a third of a 10 ms frame, and the tile that finished in it took the engine another
+-- 20 to 50 ms (Lua GC, shadows of the new meshes): frames of 25 to 70 ms about every second.
+M.BUDGET = {share = .15, floorMs = .5}
+function M.genBudget(maxMs, frameMs)
+  frameMs = tonumber(frameMs)
+  if not frameMs or frameMs ~= frameMs then return maxMs end
+  return math.max(M.BUDGET.floorMs, math.min(maxMs, frameMs * M.BUDGET.share))
+end
+
 function M.clamp(tune)
   local t, out = type(tune) == 'table' and tune or {}, M.preset(50)
   local limits = {nearM={400,4000}, farM={800,8000}, maxTrees={0,2400}, maxFarTrees={0,1200},

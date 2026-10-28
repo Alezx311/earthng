@@ -1,5 +1,24 @@
 # EarthNG native mod migration
 
+## 2026-10-28: no parked cars by default, streaming takes a share of the frame
+
+- The user: rubber banding / low FPS on every EarthNG map, never on other custom maps, on a high-end PC
+  (GPU 20-70 %, the game's main thread at 86-88 % of a core in a clean test profile too).
+- Measured with `earthng/test_world.py` (22 s autopilot drive, 1920x1080, Normal, Balanced, 3 to 6 runs each),
+  frames over 33 ms ~ 10 per drive, one every 2 s: the generator's fixed 4 ms a frame (a third of a 10 ms frame),
+  Lua GC steps of 10 to 50 ms (the Lua heap is 340 MB; the generator made ~500 KB of garbage a frame), and the game's
+  parked cars (`gameplay_parking.setupVehicles`: 8 vehicles spawned in one 190-220 ms frame, then respawned ahead of the car).
+- `quality.preset` parkedCars 8 -> 0 (the box cars stay; BeamNG has its own traffic; the window's slider still
+  turns real parked cars on). 2 or 4 cars were as bad as 8 (frames of 540 to 750 ms).
+- `quality.genBudget`: while driving, streaming gets 15 % of the frame's EMA (floor 0.5 ms, cap BUDGET_MS = 4); landing
+  and warmup keep BUDGET_MS, and native.lua still raises it to 6 ms when the road ahead is missing.
+- Result on the same drive (6 runs each): mean frame 10.1 -> 7.2 ms, p99 28 -> 20 ms, frames over 33 ms 10.7 -> 4.2,
+  Lua GC frames over 10 ms 65 -> 17, worst frame after landing under 100 ms (the two frames over 100 ms left in a run
+  are the landing itself, the engine's first move of the car). The world fills a little slower: 75 tile layers built
+  in the drive instead of 84.
+- Tried and dropped: setstepmul 100 / 50 (more frames over 100 ms), stopping the GC and stepping it by hand, one new
+  mesh a frame (pairsDriving 1: no change).
+
 ## 2026-10-26 (evening): no rails in front of a high deck's piers, an audit that reads rails
 
 - The user, in game at the Jüri overpass of Tallinna ringtee (0.6.4): the median rails still ran up to
