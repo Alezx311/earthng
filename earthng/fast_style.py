@@ -2,6 +2,7 @@
 surface kind, and a facade per building. No textures are shipped; all paths are BeamNG's
 /assets (resolved to their .dds). Kinds are the Mesh face groups; material = 'e2rf_' + kind."""
 import math
+import os
 import zlib
 import nature
 
@@ -503,10 +504,37 @@ def point_kind(tags):
         return 'entrance'
     if tags.get('leisure') == 'playground':
         return 'playground'
+    if POIS and poi(tags):
+        return 'poi'
     return None
 
 
 ENTRANCES = ('staircase', 'main', 'home')
+
+# Commercial OSM nodes kept as facts (kind 'poi') for the storefront experiment: a shop, office
+# or craft, or an amenity from this list (amenity alone is a bench or a school as often as a
+# shop). Off unless EARTHNG_POIS=1 at build time: packs built without it are unchanged, and a
+# runtime that does not know the kind skips it. All the node's tags travel with it.
+POIS = os.environ.get('EARTHNG_POIS') == '1'
+POI_KEYS = ('shop', 'office', 'craft', 'amenity')
+POI_AMENITY = frozenset(('cafe', 'restaurant', 'fast_food', 'bar', 'pub', 'ice_cream', 'bank',
+                         'bureau_de_change', 'money_transfer', 'payment_centre', 'pharmacy',
+                         'post_office', 'dentist', 'doctors', 'clinic', 'veterinary', 'internet_cafe'))
+POI_NOT = ('no', 'vacant', 'closed', 'disused', 'abandoned')
+
+
+def poi(tags):
+    """True for a commercial node as defined above."""
+    for key in ('shop', 'office', 'craft'):
+        value = tags.get(key)
+        if value and value not in POI_NOT:
+            return True
+    return tags.get('amenity') in POI_AMENITY
+
+
+def point_keys():
+    """Keys whose nodes the exporter hands to point_kind."""
+    return POINT_KEYS + (POI_KEYS if POIS else ())
 
 
 SIGNALS = False

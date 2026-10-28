@@ -55,9 +55,16 @@ def check_extent(pbf, box, emit=print):
         emit(f'warning: the extract covers {w:.3f},{s:.3f},{e:.3f},{n:.3f}, the spot {box}; edge cells may be empty')
 
 
-def build_spot(spot_id, title, lat, lon, km, source, look, out, jobs=2, landing=None, emit=print):
+def build_spot(spot_id, title, lat, lon, km, source, look, out, jobs=2, landing=None, emit=print, pois=False):
     import json
+    import os
     import build_country
+    import fast_style
+
+    if pois:
+        # export workers read the switch at import (fast_style.POIS)
+        os.environ['EARTHNG_POIS'] = '1'
+        fast_style.POIS = True
 
     country_id = places.slug(f'spot-{spot_id}')
     box = spot_box(lat, lon, km)
@@ -93,6 +100,7 @@ def main():
     p.add_argument('--landing', type=float, nargs=2, metavar=('LAT', 'LON'))
     p.add_argument('--jobs', type=int, default=2)
     p.add_argument('--out', type=Path, default=ROOT / 'out' / 'spots')
+    p.add_argument('--pois', action='store_true', help="keep shops, offices and the like as 'poi' points (experiment)")
     a = p.parse_args()
     if a.block:
         block = looks.BLOCK_BY_ID.get(a.block)
@@ -107,7 +115,7 @@ def main():
     else:
         p.error('give --look-of or --block')
     print(build_spot(a.id, a.title, a.lat, a.lon, a.km, a.source, look, a.out, a.jobs,
-                     tuple(a.landing) if a.landing else None))
+                     tuple(a.landing) if a.landing else None, pois=a.pois))
 
 
 if __name__ == '__main__':
