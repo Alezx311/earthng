@@ -506,6 +506,8 @@ def point_kind(tags):
         return 'playground'
     if POIS and poi(tags):
         return 'poi'
+    if POIS and tags.get('entrance') in DOORS:
+        return 'door'
     return None
 
 
@@ -516,11 +518,14 @@ ENTRANCES = ('staircase', 'main', 'home')
 # shop). Off unless EARTHNG_POIS=1 at build time: packs built without it are unchanged, and a
 # runtime that does not know the kind skips it. All the node's tags travel with it.
 POIS = os.environ.get('EARTHNG_POIS') == '1'
-POI_KEYS = ('shop', 'office', 'craft', 'amenity')
+POI_KEYS = ('shop', 'office', 'craft', 'amenity', 'entrance')
 POI_AMENITY = frozenset(('cafe', 'restaurant', 'fast_food', 'bar', 'pub', 'ice_cream', 'bank',
                          'bureau_de_change', 'money_transfer', 'payment_centre', 'pharmacy',
                          'post_office', 'dentist', 'doctors', 'clinic', 'veterinary', 'internet_cafe'))
 POI_NOT = ('no', 'vacant', 'closed', 'disused', 'abandoned')
+# Other mapped doors on a building's outline, with POIS: the evidence of which wall a shop opens
+# on (a staircase, main or home door is an 'entrance' already)
+DOORS = ('yes', 'shop', 'service', 'secondary')
 
 
 def poi(tags):

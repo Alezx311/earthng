@@ -20,7 +20,7 @@ sys.path.insert(0, str(HERE))
 import bench_native  # noqa: E402
 
 TILES = '''
-local native, generator, i0, j0, radius = ...
+local native, generator, i0, j0, radius, tune = ...
 local function upvalue(f, name)
   for k = 1, 200 do local n, v = debug.getupvalue(f, k); if not n then return end; if n == name then return v end end
 end
@@ -55,7 +55,7 @@ for di = -radius, radius do
       local t = clock()
       local road, scene = generator.build(cells, i, j, {tileSize = 500, pause = function() end,
         seaLevel = d.seaLevel, experimentalShopfront = on or nil, cellSize = on and d.cellSize or nil,
-        poiReport = on and report or nil})
+        poiReport = on and report or nil, shopTune = on and tune or nil})
       local ms = (clock() - t) * 1000
       local tris, shop = 0, 0
       for _, m in ipairs({road, scene}) do
@@ -103,6 +103,8 @@ def main():
     p.add_argument('--lon', type=float, required=True)
     p.add_argument('--radius', type=int, default=2)
     p.add_argument('--json', type=Path)
+    p.add_argument('--tune', action='append', default=[], metavar='KEY=VALUE',
+                   help='override a BLD.SHOP setting (numbers, true/false), a sensitivity run')
     p.add_argument('--square', type=float, nargs=4, metavar=('X0', 'Y0', 'X1', 'Y1'),
                    help="the analysis square in the pack frame's CRS (Bilychi: EPSG:32636 metres)")
     a = p.parse_args()
@@ -115,7 +117,14 @@ def main():
     land = lua.eval('function(native) local n,v; for k=1,200 do n,v=debug.getupvalue(native.update,k); '
                     'if n=="active" then return v.landing.x, v.landing.y end end end')(native)
     i0, j0 = int(land[0] // 500), int(land[1] // 500)
-    rows, frame, geographic = lua.execute(TILES, native, mods['generator'], i0, j0, a.radius)
+    tune = {}
+    for item in a.tune:
+        key, value = item.split('=', 1)
+        tune[key] = {'true': True, 'false': False}.get(value, None)
+        if tune[key] is None:
+            tune[key] = float(value)
+    rows, frame, geographic = lua.execute(TILES, native, mods['generator'], i0, j0, a.radius,
+                                          lua.table_from(tune) if tune else None)
     rows, frame = plain(rows), plain(frame)
     ox, oy = frame['origin'][0], frame['origin'][1]
 
@@ -167,8 +176,9 @@ def main():
         buildings = {k: e for k, e in buildings.items() if e.get('inSquare')}
     summary = {
         'pack': str(a.pack), 'lat': a.lat, 'lon': a.lon, 'tiles': len(rows), 'frame': frame, 'square': a.square,
-        'drawnPoi': sum(1 for e in pois.values() if e['decision'] == 'linked' and 'drawn' in (e.get('draw') or {}).values()
-                        or any(v == 'house_walls_replaced' for v in (e.get('draw') or {}).values())),
+        'tune': tune,
+        'drawnPoi': sum(1 for e in pois.values() if e['decision'] == 'linked' and
+                        any(v in ('drawn', 'house_walls_replaced') for v in (e.get('draw') or {}).values())),
         'poi': dict(collections.Counter(e.get('reason') or e['decision'] for e in pois.values())),
         'building_tag': dict(collections.Counter(e.get('reason') or e['decision'] for e in buildings.values())),
         'inconsistent': sorted(inconsistent),

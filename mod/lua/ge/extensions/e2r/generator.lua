@@ -3124,8 +3124,9 @@ end
 -- Storefront experiment (options.experimentalShopfront, off by default). Evidence is a mapped
 -- commercial node (a 'poi' point, packs built with EARTHNG_POIS=1) or the building's own shop,
 -- retail or commercial tag. A node is tied to the one building it stands in (or within `edge`
--- of, with no other within `near`) and to the street wall nearest it; a tagged building without
--- a node gets its only street wall. Anything unclear is skipped, with its reason in
+-- of, with no other within `near`) and to the wall of the mapped door ('door' point, or a main
+-- entrance) on that building nearest it, within doorReach; a tagged building without a node
+-- gets its only street wall. Anything unclear is skipped, with its reason in
 -- options.poiReport when the caller passes a table. The wall's lower band then takes a neutral
 -- shop material: a synthetic look of the use, not the real sign, windows or door. Nothing is
 -- placed on the ground.
@@ -3136,7 +3137,11 @@ end
 --   halo round a cell (build_country.HALO); margin:
 --   the building's neighbourhood that must lie in every cell a drawing tile may load.
 BLD.SHOP = {reach = 18, depth = 12, span = 8, tie = 1.5, edge = 3, near = 10, band = 4.2, minBand = 2.6, entrance = 1.2,
-  halo = 100, margin = 60, minWall = 4,
+  halo = 100, margin = 60, minWall = 4, doorReach = 20, inferWall = false,
+  -- a yard's service way is not a shop street, unless `service` is set (a sensitivity run of
+  -- shop_audit.py --tune): then one without a service=* subtype counts too, never a parking
+  -- aisle, a driveway or a drive-through
+  service = false, serviceNot = {parking_aisle = true, driveway = true, ['drive-through'] = true, emergency_access = true},
   materials = {'wall_shop_dark', 'wall_shop_red', 'wall_shop_green', 'wall_shop_blue'},
   -- a shop the generator would dress as a house (its windows and door) gets plain walls instead
   hosts = {'wall_pls_cream', 'wall_pls_grey', 'wall_pls_peach', 'wall_brk_white'},
@@ -3184,6 +3189,26 @@ local function segDistance(x, y, a, b)
   return math.sqrt((a[1] + t * dx - x) ^ 2 + (a[2] + t * dy - y) ^ 2), t * math.sqrt(len2)
 end
 
+-- Report only (poiReport): the class of the road whose edge comes nearest a building's walls,
+-- and that gap, with no class, side or parallel test. Explains a 'no_street_wall'.
+function BLD.nearestRoad(roads, building)
+  local ring, best, class = cleanRing(building.rings[1]), math.huge, nil
+  local box = ringBounds(building.rings)
+  for _, road in ipairs(roads) do
+    local points = road.points or NONE
+    for k = 1, #points - 1 do
+      local a, b = points[k], points[k + 1]
+      if boundsTouch(box, {math.min(a[1], b[1]), math.min(a[2], b[2]), math.max(a[1], b[1]), math.max(a[2], b[2])}, 80) then
+        for _, p in ipairs(ring) do
+          local d = segDistance(p[1], p[2], a, b) - (road.width or 7) / 2
+          if d < best then best, class = d, (road.tags or NONE).highway or 'track' end
+        end
+      end
+    end
+  end
+  return class, best < math.huge and best or nil
+end
+
 -- Storefronts of one tile: building id -> {[wallKey] = {{s0, s1, material, evidence id}, ...}}
 -- (metres along the wall from its first corner), or nil. Built from the whole source data
 -- (lists), never from the tile's own road bins, so every tile that draws a building takes the
@@ -3191,6 +3216,11 @@ end
 -- neighbourhood a tile in the next cell may not have loaded.
 function BLD.shopLinks(lists, options, pause)
   local S, report = BLD.SHOP, options.poiReport
+  if type(options.shopTune) == 'table' then
+    S = {}
+    for k, v in pairs(BLD.SHOP) do S[k] = v end
+    for k, v in pairs(options.shopTune) do S[k] = v end
+  end
   local function note(entry) if type(report) == 'table' then report[#report + 1] = entry end end
   local pois, tagged = {}, {}
   for _, p in ipairs(lists.points) do
@@ -3224,7 +3254,8 @@ function BLD.shopLinks(lists, options, pause)
   for n, road in ipairs(lists.roads) do
     local tags, points = road.tags or NONE, road.points or NONE
     local way = tags.highway
-    if not road.track and not ROADS.bridge(tags) and not ROADS.tunnel(tags) and way ~= 'service' and way ~= 'living_street' then
+    local yard = way == 'service' and not (S.service and not S.serviceNot[tags.service or ''])
+    if not road.track and not ROADS.bridge(tags) and not ROADS.tunnel(tags) and not yard and way ~= 'living_street' then
       local width = math.max(.5, math.min(80, road.width or 7))
       for k = 1, #points - 1 do
         local a, b = points[k], points[k + 1]
@@ -3238,9 +3269,13 @@ function BLD.shopLinks(lists, options, pause)
     end
     if n % 64 == 0 then pause() end
   end
-  local entrances = {}
+  local entrances, doors = {}, {}
   for _, p in ipairs(lists.points) do
-    if p.kind == 'entrance' and p.pos then binAdd(entrances, {p.pos[1], p.pos[2], p.pos[1], p.pos[2]}, 2, p) end
+    local tag = (p.tags or NONE).entrance
+    if p.pos and p.kind == 'entrance' and tag ~= 'main' then binAdd(entrances, {p.pos[1], p.pos[2], p.pos[1], p.pos[2]}, 2, p) end
+    if p.pos and (p.kind == 'door' or (p.kind == 'entrance' and tag == 'main')) then
+      binAdd(doors, {p.pos[1], p.pos[2], p.pos[1], p.pos[2]}, S.doorReach, p)
+    end
   end
   -- The gap to the edge of the street a wall faces: parallel, outside the wall, within reach,
   -- with no other building between them. nil when there is none.
@@ -3269,12 +3304,14 @@ function BLD.shopLinks(lists, options, pause)
     end
     return best
   end
+  -- A tile that draws the building lies in a cell the footprint touches; each such cell (with
+  -- its halo) must hold the whole neighbourhood. Other cells a tile loads only add to it.
   local function seamSafe(box)
     local s = options.cellSize
     if not s then return true end
     local r = {box[1] - S.margin, box[2] - S.margin, box[3] + S.margin, box[4] + S.margin}
-    return r[1] >= math.floor(r[3] / s) * s - S.halo and r[3] <= (math.floor(r[1] / s) + 1) * s + S.halo and
-      r[2] >= math.floor(r[4] / s) * s - S.halo and r[4] <= (math.floor(r[2] / s) + 1) * s + S.halo
+    return r[1] >= math.floor(box[3] / s) * s - S.halo and r[3] <= (math.floor(box[1] / s) + 1) * s + S.halo and
+      r[2] >= math.floor(box[4] / s) * s - S.halo and r[4] <= (math.floor(box[2] / s) + 1) * s + S.halo
   end
   local walls = {}
   local function streetWalls(b)
@@ -3331,34 +3368,65 @@ function BLD.shopLinks(lists, options, pause)
     elseif level == 'upper' then reason = 'level_upper_floor'
     elseif level == 'unclear' then reason = 'level_unclear'
     elseif #within > 1 then reason = 'inside_several_buildings'
-    elseif #within == 1 then building = within[1]; entry.how = 'inside'
+    elseif #within == 1 then building = within[1]; entry.match = 'inside'
     elseif #close == 0 then reason = 'no_building_near'
     elseif close[1][2] > S.edge then reason = 'nearest_building_too_far'; entry.edge = close[1][2]
     elseif close[2] then reason = 'several_buildings_near'
-    else building = close[1][1]; entry.how = 'edge'; entry.edge = close[1][2] end
+    else building = close[1][1]; entry.match = 'edge'; entry.edge = close[1][2] end
     if building then
       entry.building = tostring(building.id)
       if not seamSafe(boxes[building]) then reason, building = 'cell_seam', nil end
     end
     if building then
-      local best, second
-      for _, wall in ipairs(streetWalls(building)) do
-        local d, t = segDistance(x, y, wall.a, wall.b)
-        if not best or d < best.d then best, second = {wall = wall, d = d, t = t}, best
-        elseif not second or d < second.d then second = {wall = wall, d = d, t = t} end
+      -- The wall: the one a mapped door of this building stands on, the door nearest the
+      -- node (a mapped shop door is the evidence; Bilychi 29.10: the nearest street wall
+      -- missed the mapped door in 10 of 15 checkable links). With S.inferWall (a
+      -- sensitivity run) a building without doors falls back to its nearest street wall.
+      local ring, door = outerRing(building.rings), nil
+      for _, d in ipairs(doors[binKey(x, y)] or NONE) do
+        local dd = math.sqrt((d.pos[1] - x) ^ 2 + (d.pos[2] - y) ^ 2)
+        if dd <= S.doorReach then
+          for k, a in ipairs(ring) do
+            local q = ring[k % #ring + 1]
+            local off, t = segDistance(d.pos[1], d.pos[2], a, q)
+            if off <= 1 and (not door or dd < door.dd or (dd == door.dd and tostring(d.id) < tostring(door.point.id))) then
+              door = {point = d, dd = dd, a = a, b = q, t = t}
+            end
+          end
+        end
       end
-      if not best then reason = 'no_street_wall'
-      elseif best.d > S.depth then reason = 'street_wall_too_far'; entry.wallDistance = best.d
-      elseif second and second.d - best.d < S.tie then reason = 'two_street_walls_tie'; entry.wallDistance = best.d
+      local wall, at
+      if door then
+        local len = math.sqrt((door.b[1] - door.a[1]) ^ 2 + (door.b[2] - door.a[2]) ^ 2)
+        wall, at = {a = door.a, b = door.b, len = len, key = BLD.wallKey(door.a, door.b)}, door.t
+        wall.gap = len >= S.minWall and street(building, door.a, door.b, len) or nil
+        entry.how, entry.door, entry.doorTag, entry.doorDistance = 'mapped_door', tostring(door.point.id),
+          (door.point.tags or NONE).entrance, door.dd
+        entry.wallDistance = segDistance(x, y, door.a, door.b)
+      elseif not S.inferWall then
+        reason = 'no_mapped_door'
       else
-        local wall = best.wall
-        local s0, s1 = math.max(.5, best.t - S.span / 2), math.min(wall.len - .5, best.t + S.span / 2)
+        local best, second
+        for _, w in ipairs(streetWalls(building)) do
+          local d, t = segDistance(x, y, w.a, w.b)
+          if not best or d < best.d then best, second = {wall = w, d = d, t = t}, best
+          elseif not second or d < second.d then second = {wall = w, d = d, t = t} end
+        end
+        if not best then
+          reason = 'no_street_wall'
+          if type(report) == 'table' then entry.nearestRoad, entry.nearestGap = BLD.nearestRoad(lists.roads, building) end
+        elseif best.d > S.depth then reason = 'street_wall_too_far'; entry.wallDistance = best.d
+        elseif second and second.d - best.d < S.tie then reason = 'two_street_walls_tie'; entry.wallDistance = best.d
+        else wall, at = best.wall, best.t; entry.how, entry.wallDistance = 'nearest_street_wall', best.d end
+      end
+      if wall then
+        local s0, s1 = math.max(.5, at - S.span / 2), math.min(wall.len - .5, at + S.span / 2)
         if s1 - s0 < S.span and wall.len - 1 >= S.span then
           if s0 <= .5 then s1 = .5 + S.span else s0 = wall.len - .5 - S.span end
         end
         if s1 - s0 < 2 then reason = 'wall_too_short'
         else
-          entry.decision, entry.wall, entry.wallDistance, entry.street, entry.span = 'linked', wall.key, best.d, wall.gap, {s0, s1}
+          entry.decision, entry.wall, entry.street, entry.span = 'linked', wall.key, wall.gap, {s0, s1}
           tied[building] = true
           add(building, wall, s0, s1, S.materials[hash(tostring(p.id)) % #S.materials + 1], tostring(p.id))
         end

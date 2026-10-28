@@ -19,9 +19,13 @@ class ShopfrontExperimentTests(unittest.TestCase):
         self.poi = {'id': '-1000000000042:0', 'kind': 'poi', 'pos': [130, 102, 0],
                     'tags': {'shop': 'bakery', 'name': 'x'}}
 
-    def build(self, building=None, roads=None, i=0, points=None, buildings=None, report=None, **opts):
+    def build(self, building=None, roads=None, i=0, points=None, buildings=None, report=None, infer=True, **opts):
+        """infer: the nearest street wall stands in for a mapped door (shopTune inferWall), so the
+        street-wall rules are testable; the door tests pass infer=False, the game's default."""
         cell = {'buildings': buildings if buildings is not None else [self.house if building is None else building],
                 'roads': [self.road] if roads is None else roads, 'points': points or []}
+        if infer and opts.get('experimentalShopfront'):
+            opts.setdefault('shopTune', {'inferWall': True})
         options = self.h.table(dict(maxTrees=0, maxGrass=0, **opts))
         if report is not None:
             options.poiReport = report
@@ -79,9 +83,52 @@ class ShopfrontExperimentTests(unittest.TestCase):
     def test_poi_points_alone_change_nothing_without_the_switch(self):
         # Data-rich pack, experiment off: the new point kind is carried, not drawn
         plain = self.build(buildings=[self.block])
-        rich = self.build(buildings=[self.block], points=[self.poi])
+        door = {'id': '-1000000000090:0', 'kind': 'door', 'pos': [128, 100, 0], 'tags': {'entrance': 'yes'}}
+        rich = self.build(buildings=[self.block], points=[self.poi, door])
         self.assertEqual(self.h.plain(plain[0]), self.h.plain(rich[0]))
         self.assertEqual(self.h.plain(plain[1]), self.h.plain(rich[1]))
+
+    def test_by_default_a_node_needs_a_mapped_door(self):
+        report = self.h.lua.table()
+        scene = self.build(buildings=[self.block], points=[self.poi], experimentalShopfront=True, report=report,
+                           infer=False)[1]
+        self.assertFalse(self.shop_tris(scene))
+        self.assertEqual([e['reason'] for e in self.entries(report)], ['no_mapped_door'])
+
+    def test_the_wall_of_the_mapped_door_nearest_the_node(self):
+        # doors on the back (y = 112, the yard) and on an end wall; the back door is nearest
+        back = {'id': '-1000000000090:0', 'kind': 'door', 'pos': [128, 112, 0], 'tags': {'entrance': 'yes'}}
+        end = {'id': '-1000000000091:0', 'kind': 'door', 'pos': [160, 106, 0], 'tags': {'entrance': 'shop'}}
+        far = {'id': '-1000000000092:0', 'kind': 'door', 'pos': [100, 104, 0], 'tags': {'entrance': 'yes'}}
+        stairs = {'id': '-1000000000093:0', 'kind': 'entrance', 'pos': [131, 100, 0], 'tags': {'entrance': 'staircase'}}
+        poi = copy.deepcopy(self.poi)
+        poi['pos'] = [130, 108, 0]
+        report = self.h.lua.table()
+        scene = self.build(buildings=[self.block], points=[poi, back, end, far, stairs], experimentalShopfront=True,
+                           report=report, infer=False)[1]
+        [entry] = self.entries(report)
+        self.assertEqual((entry['decision'], entry['how'], entry['door'], entry['doorTag']),
+                         ('linked', 'mapped_door', back['id'], 'yes'))
+        # the anticlockwise ring runs the back wall from x = 160 to 100: the span is 4 m either
+        # side of the door, on the wall the yard sees (no street needed)
+        self.assertEqual(entry['wall'], '160.000,112.000,100.000,112.000')
+        self.assertEqual(entry['span'], [28, 36])
+        self.assertNotIn('street', entry)
+        vertices = [p for t in self.shop_tris(scene) for p in t]
+        self.assertTrue(vertices and all(abs(p[1] - 112) < 1e-6 for p in vertices))
+        self.assertEqual({round(p[0], 6) for p in vertices}, {124, 132})
+        # a door off the outline (a gate in the yard) or beyond doorReach is no evidence
+        gate = copy.deepcopy(back)
+        gate['pos'] = [128, 118, 0]
+        lone = copy.deepcopy(end)
+        lone['pos'] = [160, 106, 0]
+        poi['pos'] = [102, 102, 0]
+        report = self.h.lua.table()
+        self.build(buildings=[self.block], points=[poi, gate], experimentalShopfront=True, report=report, infer=False)
+        self.assertEqual([e['reason'] for e in self.entries(report)], ['no_mapped_door'])
+        report = self.h.lua.table()
+        self.build(buildings=[self.block], points=[poi, lone], experimentalShopfront=True, report=report, infer=False)
+        self.assertEqual([e['reason'] for e in self.entries(report)], ['no_mapped_door'])
 
     def test_poi_ties_a_span_of_the_nearest_street_wall(self):
         report = self.h.lua.table()
@@ -95,7 +142,8 @@ class ShopfrontExperimentTests(unittest.TestCase):
         [entry] = self.entries(report)
         self.assertEqual(entry['decision'], 'linked')
         self.assertEqual(entry['poi'], self.poi['id'])
-        self.assertEqual(entry['how'], 'inside')
+        self.assertEqual(entry['how'], 'nearest_street_wall')
+        self.assertEqual(entry['match'], 'inside')
         self.assertEqual(entry['levelRule'], 'unknown')
         self.assertEqual(entry['wall'], '100.000,100.000,160.000,100.000')
 
@@ -255,7 +303,8 @@ class ShopfrontExperimentTests(unittest.TestCase):
         cells = [{'buildings': [self.block], 'roads': [self.road], 'points': [self.poi]},
                  {'buildings': [self.block], 'roads': [self.road], 'points': [self.poi]}]
         twice = self.h.generator.build(self.h.table(cells), 0, 0,
-                                       self.h.table(dict(maxTrees=0, maxGrass=0, experimentalShopfront=True)))[1]
+                                       self.h.table(dict(maxTrees=0, maxGrass=0, experimentalShopfront=True,
+                                                       shopTune={'inferWall': True})))[1]
         once = self.build(buildings=[self.block], points=[self.poi], experimentalShopfront=True)[1]
         self.assertEqual(self.shop_tris(twice), self.shop_tris(once))
 
@@ -283,6 +332,12 @@ class ShopfrontExperimentTests(unittest.TestCase):
         self.assertEqual(reason, 'cell_seam')
         self.assertFalse(tris)
         reason, tris = self.reason(poi=poi, buildings=[block], roads=[road])
+        self.assertIsNone(reason)
+        self.assertTrue(tris)
+        # near the seam but wholly in one cell: only tiles of that cell draw it
+        near = copy.deepcopy(self.block)
+        near['rings'] = [[[420, 100], [480, 100], [480, 112], [420, 112]]]
+        reason, tris = self.reason(poi=poi, buildings=[near], roads=[road], cellSize=500)
         self.assertIsNone(reason)
         self.assertTrue(tris)
 

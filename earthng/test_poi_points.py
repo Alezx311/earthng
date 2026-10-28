@@ -21,9 +21,13 @@ class PoiPointTests(unittest.TestCase):
     def test_off_by_default_and_only_commercial_nodes_when_on(self):
         style.POIS = False
         self.assertIsNone(style.point_kind({'shop': 'bakery'}))
+        self.assertIsNone(style.point_kind({'entrance': 'yes'}))
         self.assertNotIn('shop', style.point_keys())
         style.POIS = True
         self.assertEqual(set(style.point_keys()) - set(style.POINT_KEYS), {'shop', 'office', 'craft', 'amenity'})
+        self.assertEqual(style.point_kind({'entrance': 'yes'}), 'door')
+        self.assertEqual(style.point_kind({'entrance': 'shop'}), 'door')
+        self.assertEqual(style.point_kind({'entrance': 'emergency'}), None)
         for tags in ({'shop': 'bakery'}, {'office': 'insurance'}, {'craft': 'shoemaker'},
                      {'amenity': 'pharmacy'}, {'amenity': 'cafe', 'name': 'Кава'}):
             with self.subTest(tags=tags):
