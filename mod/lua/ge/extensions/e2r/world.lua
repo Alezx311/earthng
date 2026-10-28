@@ -25,6 +25,7 @@ M.fifo = require('ge/extensions/e2r/fifo') -- keep below LuaJIT's 200 chunk loca
 -- the route to a point picked on the map (docs/NAVIGATION.md); on M for the same reason
 M.navigator = NATIVE and require('ge/extensions/e2r/navigator') or nil
 if M.navigator then M.navigator.source = native end
+M.gc = require('ge/extensions/e2r/gc')   -- the collector's step while in the level (gc.lua)
 local detailStream
 -- the UI language: the package's LANG until the player switches it (settings/earthng.json)
 local LANG_FILE = 'settings/earthng.json'
@@ -3613,6 +3614,7 @@ local function restorePackState()
 end
 
 function M.onExtensionUnloaded()
+  M.gc.step(false)
   restorePackState()
   if S.park then pcall(parking.clear, S.park) end
   if S.navSerial and map.getMap().buildSerial == S.navSerial then
@@ -4216,7 +4218,9 @@ local function profAdd(part, ms, kb)
 end
 
 function M.onUpdate(dtReal)
-  if not inOurLevel() then
+  local ours = inOurLevel()
+  M.gc.step(ours, dtReal)
+  if not ours then
     S.state = 'off'
     return
   end

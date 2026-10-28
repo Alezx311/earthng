@@ -945,17 +945,28 @@ local function collector(rect, key, layer, pause, mixed)
       verts[#verts + 1] = {x = x, y = y, z = z}
       return #verts - 1
     end
+    -- vmap[key]: the index of the one vertex at this x, y, or {[zq] = index} once a wall puts a
+    -- second height there (a table for every ground node was ~2 % of a city tile's garbage)
     local key = (xq + WELD) * WELD2 + yq + WELD
-    local zs = mesh.vmap[key]
-    if not zs then zs = {}; mesh.vmap[key] = zs end
+    local vmap, verts = mesh.vmap, mesh.verts
+    local hit = vmap[key]
     local zq = floor(z * 1000 + .5)
-    local index = zs[zq]
-    if not index then
-      local verts = mesh.verts
-      index = #verts
-      verts[index + 1] = {x = x, y = y, z = z}
-      zs[zq] = index
+    local zs
+    if hit then
+      if type(hit) == 'table' then
+        zs = hit
+        local index = zs[zq]
+        if index then return index end
+      else
+        local zqHit = floor(verts[hit + 1].z * 1000 + .5)
+        if zqHit == zq then return hit end
+        zs = {[zqHit] = hit}
+        vmap[key] = zs
+      end
     end
+    local index = #verts
+    verts[index + 1] = {x = x, y = y, z = z}
+    if zs then zs[zq] = index else vmap[key] = index end
     return index
   end
   local function normalIndex(mesh, nx, ny, nz)
@@ -999,6 +1010,15 @@ local function collector(rect, key, layer, pause, mixed)
     local faces = mesh.faces
     faces[#faces + 1] = face
   end
+  -- Ground passes a per-corner normal in p[6..8] (nx can be 0, so the type is the test).
+  -- Walls, curbs and roads leave it unset and keep the face normal n. Not a closure inside
+  -- triangle(): one per triangle was ~5 % of a city tile's garbage.
+  local function cornerNormal(mesh, p, plain, n)
+    if not plain and type(p[6]) == 'number' and type(p[7]) == 'number' and type(p[8]) == 'number' then
+      return normalIndex(mesh, p[6], p[7], p[8])
+    end
+    return n
+  end
   local scales = {}
   -- hooks.steep(kind, a, b, c): another material for a piece steeper than acos(hooks.nz), drawn
   -- flat shaded and box-mapped hooks.scale m a repeat, or false to leave it out (ROADS.wing)
@@ -1035,23 +1055,15 @@ local function collector(rect, key, layer, pause, mixed)
       scales[kind] = scale
     end
     local n = normalIndex(mesh, nx, ny, nz)
-    -- Ground passes a per-corner normal in p[6..8] (nx can be 0, so the type is the test).
-    -- Walls, curbs and roads leave it unset and keep this face normal.
-    local function cornerNormal(p)
-      if not plain and type(p[6]) == 'number' and type(p[7]) == 'number' and type(p[8]) == 'number' then
-        return normalIndex(mesh, p[6], p[7], p[8])
-      end
-      return n
-    end
     -- BeamNG ProceduralMesh expects clockwise face indices and zero-based indices.
     local axis
     if plain or kind == 'bare_rock' or kind == 'scree' then
       local ax, ay, az = math.abs(nx), math.abs(ny), math.abs(nz)
       if ax > az and ax >= ay then axis = 'x' elseif ay > az then axis = 'y' end
     end
-    corner(mesh, a, cornerNormal(a), scale, axis)
-    corner(mesh, c, cornerNormal(c), scale, axis)
-    corner(mesh, b, cornerNormal(b), scale, axis)
+    corner(mesh, a, cornerNormal(mesh, a, plain, n), scale, axis)
+    corner(mesh, c, cornerNormal(mesh, c, plain, n), scale, axis)
+    corner(mesh, b, cornerNormal(mesh, b, plain, n), scale, axis)
     mesh.tris, total, operations = mesh.tris + 1, total + 1, operations + 1
     if operations % 64 == 0 then pause() end
   end
@@ -3517,9 +3529,12 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   local count = 0
   -- More furniture in yards and squares as the street step shortens (Balanced 12 m: 1)
   local dense = spacing > 0 and math.min(1.5, 12 / spacing) or 0
-  -- the tile's buildings in 50 m bins, 0.6 m out from the walls (a footway along a wall)
+  -- the tile's buildings in 50 m bins, 0.6 m out from the walls (a footway along a wall).
+  -- These set-up loops pause too: over a city tile's buildings, lines and strips they ran
+  -- 13-22 ms without one (Kyiv stream bench).
   local walls = {}
   for _, building in ipairs(buildings) do
+    pause()
     if ringsTouch(building.rings, rect) then
       local b = ringBounds(building.rings)
       local entry = {rings = building.rings, bounds = b}
@@ -3532,6 +3547,7 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
     end
   end
   for _, area in ipairs(context.areas or NONE) do
+    pause()
     if area.kind == 'water' or area.kind == 'parking' or (area.tags or NONE).amenity == 'parking' then
       local b = ringBounds(area.rings)
       if boundsTouch(b, rect, 1) then
@@ -3550,6 +3566,7 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   -- and the 50 m bins with a building in them (a town, not a field or a forest)
   local grounds, built, squares = {}, {}, {}
   for _, area in ipairs(context.areas or NONE) do
+    pause()
     local tags = area.tags or NONE
     local kind = area.kind
     if kind == 'paved' and (tags.place == 'square' or tags.highway == 'pedestrian') then kind = 'square' end
@@ -3573,6 +3590,7 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   -- of flats or taller than 3 floors (a town's, not a village's)
   local footprint = {}
   for _, building in ipairs(buildings) do
+    pause()
     local b = ringBounds(building.rings)
     if boundsTouch(b, rect, 100) then
       local ring, a2 = building.rings[1] or NONE, 0
@@ -3681,6 +3699,7 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   -- whose lamps are mapped gets no inferred lamp within 12 m of one (the row is every 30 m).
   local surveyedLamps = {}
   for _, p in ipairs(context.points or NONE) do
+    pause()
     if p.pos and (p.kind == 'tree' or p.kind == 'lamp' or p.kind == 'stop') then
       local x, y = p.pos[1], p.pos[2]
       local r = p.kind == 'tree' and 3 or p.kind == 'stop' and 5 or 2
@@ -3692,6 +3711,7 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   -- streets' sidewalks (a footway's prop does not stand on them)
   local paths, walks = {}, {}
   for _, line in ipairs(lines) do
+    pause()
     local tags, points = line.tags or NONE, line.points or NONE
     if line.kind == 'path' and tags.area ~= 'yes' and pathOnGround(tags) then
       local r = pathCrossing(tags) and 2 or (tonumber(tags.width) or 2) / 2 + .3
@@ -3699,6 +3719,7 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
     end
   end
   for _, strip in ipairs(strips) do
+    pause()
     if strip.surface then
       for k = 1, #strip.points - 1 do
         local w = strip.walk[k] or NONE
@@ -6415,7 +6436,7 @@ local function build(cells, i, j, options)
                 end
               end
               cutOps = cutOps + 1
-              if cutOps % 256 == 0 then pause() end
+              if cutOps % 32 == 0 then pause() end
             end
             if cut then pieces = out end
             if #pieces == 0 then return pieces end
@@ -6529,14 +6550,14 @@ local function build(cells, i, j, options)
               press(x + nx * offset, y + ny * offset, z)
             end
             pressed = pressed + 1
-            if pressed % 128 == 0 then pause() end
+            if pressed % 16 == 0 then pause() end
           end
         end
       end
     end
   end
   for index, plate in ipairs(plates) do
-    if index % 32 == 0 then pause() end
+    if index % 8 == 0 then pause() end
     local c = plate.centre
     press(c[1], c[2], c[3] - tune.margin)
     for k, m in ipairs(plate.mids or NONE) do

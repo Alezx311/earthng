@@ -88,7 +88,8 @@ class NativeTests(unittest.TestCase):
             return {read=function() return data end, close=function() end}
           end
           jsonWriteFile=function() error('native provider must not write files') end
-          hptimer=function() local elapsed=0; return {stop=function() elapsed=elapsed+0.7; return elapsed end} end
+          -- every read moves the clock: the generator's pause reads it at every pause point
+          hptimer=function() local elapsed=0; return {stop=function() elapsed=elapsed+0.2; return elapsed end} end
           buildCalls=0; fakeTriangles=0; fakeFarTriangles=0
           stubGenerator={build=function(cells,i,j,options)
             buildCalls=buildCalls+1
@@ -263,7 +264,7 @@ class NativeTests(unittest.TestCase):
         _, mod, cv = self.make(files, real_generator=True)
         lat, lon = geographic(1750, 1750)
         mod.land(cv(dict(seq=3, lat=lat, lon=lon)))
-        job = self.pump(mod, count=4000)
+        job = self.pump(mod, count=8000)
         self.assertEqual(job.state, 'ready')
         self.assertGreater(job.manifest.triangles, 0)
         self.assertIsNotNone(job.manifest['items'][1].meshes)
@@ -275,7 +276,7 @@ class NativeTests(unittest.TestCase):
         _, mod, cv = self.make(real_generator=True)
         lat, lon = geographic(1750, 1750)
         mod.land(cv(dict(seq=4, lat=lat, lon=lon)))
-        job = self.pump(mod, count=4000)
+        job = self.pump(mod, count=8000)
         self.assertEqual(job.state, 'ready')
         self.assertTrue(job.manifest.offRoad)
         self.assertFalse(job.manifest.drivable)
@@ -597,7 +598,7 @@ class NativeV2Tests(NativeTests.__base__):
         _, mod, cv = self.make(fixture_v2(roads=True), real_generator=True)
         lat, lon = geographic(1750, 1750)
         mod.land(cv(dict(seq=3, lat=lat, lon=lon)))
-        job = self.pump(mod, count=4000)
+        job = self.pump(mod, count=8000)
         self.assertEqual(job.state, 'ready')
         self.assertGreater(job.manifest.triangles, 0)
         self.assertGreater(len(job.manifest.navSegments), 0)

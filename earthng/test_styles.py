@@ -270,7 +270,7 @@ class TransitionTests(unittest.TestCase):
         self.lua = lua = LuaRuntime()
         lua.execute('''
           ui_imgui = setmetatable({ArrayChar=function() return {} end}, {__index=function() return function() end end})
-          require=function() return {} end
+          require=function(n) if n=='ge/extensions/e2r/gc' then return {step=function() end} end return {} end
           hptimer=function() return {stop=function() return 1 end, stopAndReset=function() return 1 end} end
           function up(fn, name)
             for i=1,200 do
