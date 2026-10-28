@@ -28,6 +28,12 @@
   Jüri, 37 % of the solid triangles of 9 near tiles. collision.lua leaves them out (QUIET.scene: e2rf_car): the
   largest rebuild of a 30 s replay through the Jüri roundabout 457k -> 292k triangles, the mod's rebuild step
   66 -> 43 ms, the engine's physics reload 65 -> 42 ms. The car drives through a box car now (the user's call).
+- The grass and rock stream (detail.lua) was most of what a full collection of the game's Lua walks: round the Jüri
+  roundabout ~30k 8 m grass cells held 365k tables and 2.3 million entries (dropping them in a probe: a full collect
+  278 -> 101 ms). A part's arrays now come with its first item of their sort, a cell keeps its first tile's part
+  and a part its one patch inline, and a kept patch's samples are one FFI float array: 98k tables, 0.74 million
+  entries; a full collect at the same ~260 MB live 222 -> 153 ms (median of 5, earthng/probe.py in a held test game);
+  a 30 s replay through the roundabout p99 21.5 -> 18.0 ms, frames over 33 ms 9 -> 3.
 - Tried and dropped: setstepmul 100 / 50 (more frames over 100 ms), stopping the GC and stepping it by hand, one new
   mesh a frame (pairsDriving 1: no change).
 
