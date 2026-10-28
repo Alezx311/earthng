@@ -20,6 +20,10 @@
   budget (the generator's part 4 to 13 ms against 1 to 2 ms, 206 such frames in a drive). With it (one drive each,
   every frame recorded): generator frames over 4 ms 206 -> 44, frames over 16.7 ms 101 -> 51, p99 20.6 -> 17.6 ms,
   as many tiles built (70 -> 77). Lua GC (frames over 3 ms ~ 210) and shadows of new meshes are what is left.
+- A tile left behind deleted its road group at once (`dropGroup`): 58 ms of a frame at 20 m/s. It is buried like the
+  decor (60 objects a frame; collision.lua keeps a dropped tile out of every rebuild): the worst tile step of a
+  30 s route drive 57.6 -> 16.6 ms, frames over 50 ms after landing 3 -> 1. Left: collision rebuilds (34 ms + the
+  physics of the next frame, ~4 in 30 s at 20 m/s) and Lua GC (frames of 25 to 56 ms).
 - Tried and dropped: setstepmul 100 / 50 (more frames over 100 ms), stopping the GC and stepping it by hand, one new
   mesh a frame (pairsDriving 1: no change).
 

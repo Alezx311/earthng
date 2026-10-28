@@ -1294,7 +1294,9 @@ local function updateTiles()
     local held = (S.heldCar and (cx - S.heldCar[1]) ^ 2 + (cy - S.heldCar[2]) ^ 2 <= 600 * 600) or dueNear(key)
     if not held and (d > unloadR or behind(cx, cy, d)) then
       retireForest(tile)
-      dropGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
+      -- the road group goes a few dozen objects a frame too: deleting it at once took 58 ms of a frame at
+      -- 20 m/s (collision.lua keeps a dropped tile's objects out of every rebuild until they are gone)
+      buryGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
       S.tiles[key] = nil
       S.navDirty = true
       if NATIVE then native.unload(key) end
