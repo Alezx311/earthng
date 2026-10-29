@@ -3966,6 +3966,11 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
       BLD.shopFront(scene, a, b, length, s - span / 2, s + span / 2, bottom, under, base)
       local m = (z0 + z1) / 2
       BLD.shopSign(scene, a, b, length, s, h * aspect, m - h / 2, m + h / 2, uv)
+      -- McDonald's in a mall keeps its pole sign: beyond the ends of its stretch of the wall
+      if style.pylon == 'arches' then
+        BLD.shopPoleSign(scene, wallPoint(a, b, length, s - span / 2, 0, 0), wallPoint(a, b, length, s + span / 2, 0, 0),
+          span, rings, ground, segmentBins)
+      end
     end
   end
 end

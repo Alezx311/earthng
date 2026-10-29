@@ -256,6 +256,15 @@ class BrandGeneratorTests(unittest.TestCase):
         self.assertFalse(100 <= min(p[0] for p in pole) and max(p[0] for p in pole) <= 130 and
                          60 <= min(p[1] for p in pole) <= 80)                         # not on the building
 
+    def test_mcdonalds_in_a_mall_keeps_its_pole_sign(self):
+        building = {'id': 'b', 'height': 12, 'tags': {'building': 'retail', 'building:levels': '3'},
+                    'rings': [[[100, 20], [180, 20], [180, 80], [100, 80]]]}
+        poi = {'id': 'p', 'kind': 'fast_food', 'pos': [140, 75, 0], 'tags': {'e2r_brand': 'mcdonalds'}}
+        scene = self.build([{'buildings': [building], 'points': [poi], 'roads': [STREET]}])
+        self.assertEqual(len(self.faces_of(scene, 30)), 2)                       # the square M over its stretch
+        pole = [p for t in self.faces_of(scene, 62) for p in t]
+        self.assertTrue(pole and all(80 < p[1] < 86 for p in pole))              # by the street wall, off the road
+
     def test_shop_storeys_are_taller_than_a_flats(self):
         height = self.g.shopHeight
         self.assertEqual(height(self.table({'height': 6}), self.table({'building': 'retail', 'building:levels': '2'}), 2000, 0), 9)
