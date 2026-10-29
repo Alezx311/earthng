@@ -2613,7 +2613,7 @@ end
 ROADS.PARK = {parks = {lane = 'lane', street_side = 'side', shoulder = 'side', on_kerb = 'kerb', half_on_kerb = 'half',
     yes = 'lane', parallel = 'lane', diagonal = 'lane', perpendicular = 'lane', marked = 'lane', inline = 'lane'},
   orient = {parallel = {1.9, 6}, diagonal = {4.4, 3.2}, perpendicular = {5.0, 2.7}},
-  mouth = 6, crossing = 6, stop = 15, lane = 3, ends = 3}
+  mouth = 6, crossing = 6, stop = 15, lane = 3, ends = 3, turns = 40}
 
 -- the parking on one side (1 left, -1 right of the point order): placement and orientation, or nil
 function ROADS.parkingSide(tags, side)
@@ -2688,6 +2688,11 @@ function ROADS.streetParking(roads, env)
         -- the left of a two-way street
         local along = (oneway and flip) and -1 or (not oneway and s.side == 1) and -1 or 1
         local lo, hi = (cuts[1] or 0) + P.mouth, length - (cuts[2] or 0) - P.mouth
+        -- the turn lanes before a junction (DETAIL.arrows) are not parked in: the side's traffic
+        -- runs towards the way's end, or its start against the point order
+        local turns = tags['turn:lanes'] and oneway or (along == 1 and tags['turn:lanes:forward'])
+          or (along == -1 and tags['turn:lanes:backward'])
+        if turns and along == 1 then hi = hi - P.turns elseif turns then lo = lo + P.turns end
         if off then
           for at = lo + step / 2, hi - step / 2, step do
             local c, tx, ty = alongLine(points, dist, at)

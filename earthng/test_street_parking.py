@@ -54,6 +54,13 @@ class StreetParkingTests(unittest.TestCase):
         left = [b for b in old if b[1] > 250]
         self.assertAlmostEqual(math.cos(left[0][3]), -1, places=6)
 
+    def test_no_bays_along_the_turn_lanes_before_the_end(self):
+        bays = self.bays({'parking:right': 'lane', 'turn:lanes:forward': 'left|right', 'lanes': '3'})
+        self.assertTrue(bays)
+        self.assertLess(max(b[0] for b in bays), 500 - 40 - 6 + 1e-6)
+        left = self.bays({'parking:left': 'lane', 'turn:lanes:forward': 'left|right', 'lanes': '3'})
+        self.assertGreater(max(b[0] for b in left), 480)       # the other side is not a turn lane
+
     def test_bays_keep_off_crossings_and_stops(self):
         points = [{'id': 'c', 'kind': 'crossing', 'tags': {'highway': 'crossing'}, 'pos': [200, 250, 10]},
                   {'id': 's', 'kind': 'stop', 'tags': {'highway': 'bus_stop'}, 'pos': [350, 244, 10]}]
