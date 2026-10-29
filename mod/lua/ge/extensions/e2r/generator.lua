@@ -3192,6 +3192,58 @@ function BLD.acUnits(scene, a, b, length, along, base, height, kind, h, spans, r
   return n
 end
 
+-- Window extras on one outer wall of a panel, brick or plaster block, on the same 3 m grid:
+-- bars over a share of the ground floor's windows (the railing's bars, 6 cm out), and a
+-- satellite dish on the pier beside a window above it (a disc tilted to the sky on an arm).
+-- Not in a storefront's span. Returns how many dishes and grilles it put.
+BLD.EXTRAS = {grille = .35, dish = .03, window = {.23, .77, .9, 2.45}, dishR = .3}
+function BLD.windowExtras(scene, a, b, length, along, base, height, kind, h, spans)
+  local D, X = BLD.DETAIL, BLD.EXTRAS
+  if not BLD.acRate(kind) or length < 6 then return 0 end
+  local floors = math.floor((height - .3) / D.cell)
+  local n = 0
+  local function free(s0, s1, z)
+    for _, span in ipairs(spans or NONE) do
+      if s1 > span[1] and s0 < span[2] and z < BLD.SHOP.band + .1 then return false end
+    end
+    return true
+  end
+  for k = math.ceil((along + .3) / D.cell), math.floor((along + length - .3) / D.cell) - 1 do
+    local c0 = k * D.cell - along
+    local s0, s1 = c0 + X.window[1] * D.cell, c0 + X.window[2] * D.cell
+    if ihash(h, k, 0, 47) % 1000 < X.grille * 1000 and free(s0, s1, 0) then
+      local z0, z1 = base + X.window[3], base + X.window[4]
+      scene.polygon('railing_dark', {wallPoint(a, b, length, s0, .06, z0, 0, 0),
+        wallPoint(a, b, length, s1, .06, z0, s1 - s0, 0),
+        wallPoint(a, b, length, s1, .06, z1, s1 - s0, 1),
+        wallPoint(a, b, length, s0, .06, z1, 0, 1)}, false)
+      n = n + 1
+    end
+    for f = 1, floors - 1 do
+      if ihash(h, k, f, 53) % 1000 < X.dish * 1000 then
+        -- on the pier right of the window, a little over its middle
+        local s, z, r = c0 + .89 * D.cell, base + f * D.cell + 1.75, X.dishR
+        if s + r < length - .2 then
+          BLD.box(scene, 'dish', a, b, length, s - .03, s + .03, .02, .32, z - .03, z + .03, false, true, true)
+          local ring = {}
+          for q = 0, 7 do
+            local t = q * math.pi / 4
+            -- a disc in the plane facing out and 25 degrees up, centred .4 m out
+            local du, dv = math.cos(t) * r, math.sin(t) * r
+            ring[#ring + 1] = wallPoint(a, b, length, s + du, .4 - dv * .42, z + dv * .9, .5 + du, .5 + dv)
+          end
+          scene.polygon('dish', ring, false)
+          local back = {}
+          for q = #ring, 1, -1 do back[#back + 1] = ring[q] end
+          scene.polygon('dish', back, false)
+          n = n + 1
+        end
+      end
+    end
+  end
+  return n
+end
+
 -- Downpipes at the outer corners of a low brick or plaster block: a pipe 0.3 m round the
 -- corner on the incoming wall, a hopper under the eaves, a kick-out at the foot. At most
 -- pipeMax, the corners between the longest walls first.
@@ -7825,6 +7877,7 @@ local function build(cells, i, j, options)
           end
           if detailed and raw == rings[1] then
             acRoom = acRoom - BLD.acUnits(scene, a, b, length, along, base, height, wallKind, h, spans, acRoom)
+            BLD.windowExtras(scene, a, b, length, along, base, height, wallKind, h, spans)
           end
           if dress and dress.mass and length > .4 then BLD.cornice(scene, a, b, length, top) end
           if BLD.city and raw == rings[1] and length > 6 and not plinth then BLD.socle(scene, a, b, length, bottom, base) end

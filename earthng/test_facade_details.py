@@ -93,6 +93,36 @@ class FacadeDetailTests(unittest.TestCase):
         if any(k.startswith('e2rf_wall_lgg_') for k in kinds):
             self.assertFalse([t for t in self.tris(loggia, 'ac_unit')])
 
+    def test_ground_floor_grilles_and_dishes(self):
+        ring = [[100, 100], [220, 100], [220, 112], [100, 112]]
+        off = self.build([self.block('panel', 21, ring=ring)])[1]
+        self.assertFalse(self.tris(off, 'railing_dark'))
+        scene = self.build([self.block('panel', 21, ring=ring)], experimentalDetail=True)[1]
+        walls = [p[2] for _, m in self.h.meshes(scene) if m.material.startswith('e2rf_wall_')
+                 for t in self.h.triangles(scene, m.material) for p in t]
+        base = min(walls) + .3
+        grilles = self.tris(scene, 'railing_dark')
+        self.assertTrue(grilles)
+        # over ground floor windows only (0.9 .. 2.45 m), 6 cm off the wall, outside the block
+        self.assertEqual({round(p[2] - base, 2) for t in grilles for p in t}, {.9, 2.45})
+        for t in grilles:
+            for x, y, _ in t:
+                self.assertFalse(100 < x < 220 and 100 < y < 112)
+        # dishes: an octagon both sides (12 triangles) on an arm (10), above the ground floor
+        dishes = self.tris(scene, 'dish')
+        self.assertTrue(dishes)
+        self.assertEqual(len(dishes) % 22, 0)
+        self.assertGreater(min(p[2] for t in dishes for p in t) - base, 3)
+        # not over a storefront's span: a shop node with a door in the middle of the street wall
+        door = {'id': '-1000000000090:0', 'kind': 'door', 'pos': [160, 100, 0], 'tags': {'entrance': 'yes'}}
+        poi = {'id': '-1000000000042:0', 'kind': 'poi', 'pos': [160, 102, 0], 'tags': {'shop': 'bakery'}}
+        cells = [{'buildings': [self.block('panel', 21, ring=ring)], 'roads': [self.road], 'points': [poi, door]}]
+        shop = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0, experimentalDetail=True, experimentalShopfront=True)[1]
+        for t in self.tris(shop, 'railing_dark'):
+            for x, y, _ in t:
+                if abs(y - 100) < .2:
+                    self.assertFalse(156 < x < 164, (x, y))
+
 
 class RoadCoverTests(unittest.TestCase):
     def setUp(self):
