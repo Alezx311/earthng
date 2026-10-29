@@ -226,6 +226,24 @@ class FacadeDetailTests(unittest.TestCase):
             self.assertEqual((it.pos[1], it.pos[2]), (130, 150))
             self.assertAlmostEqual(abs(2 * math.atan2(it.rot[3], it.rot[4])), want, places=4)
 
+    def test_stop_name_sign_faces_the_road(self):
+        road = {'id': 'w1', 'width': 8, 'tags': {'highway': 'residential', 'sidewalk': 'both'},
+                'points': [[50, 250, 0], [450, 250, 0]]}
+        for py in (256, 244):
+            stop = {'id': '-1000000000777:0', 'kind': 'stop', 'pos': [200, py, 0],
+                    'tags': {'highway': 'bus_stop', 'name': 'Вулиця Прилужна'}}
+            cells = [{'roads': [road], 'points': [stop]}]
+            off = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0)[1]
+            self.assertFalse(self.tris(off, 'glyphs'))
+            on = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0, experimentalDetail=True)[1]
+            glyphs, plates = self.tris(on, 'glyphs'), self.tris(on, 'plate')
+            # "Вулиця Прилужна": 14 letters and an undrawn space; the plate both sides
+            self.assertEqual((len(glyphs), len(plates)), (28, 4))
+            gy = {p[1] for t in glyphs for p in t}
+            py_ = {p[1] for t in plates for p in t}
+            # the letters are on the plate's face toward the road (y = 250)
+            self.assertLess(max(abs(y - 250) for y in gy), min(abs(y - 250) for y in py_))
+
 
 class RoadCoverTests(unittest.TestCase):
     def setUp(self):

@@ -3295,6 +3295,42 @@ function BLD.addressPlate(scene, rings, tags, base, height, roads)
   return true
 end
 
+-- A stop's name on its own pole beside the shelter (options.experimentalDetail): the real
+-- `name` of the stop node, white on the plate's blue, over the line a -> b (the plate faces
+-- the right of it); letters shrink to keep the plate within `maxWidth`. Returns true when drawn.
+BLD.STOPSIGN = {size = .13, minSize = .07, maxWidth = 2.2, z = 2.1, pole = 2.75}
+function BLD.stopSign(scene, x, y, z, ux, uy, name)
+  local S, P = BLD.STOPSIGN, BLD.PLATE
+  if not name or name == '' then return false end
+  local chars = BLD.glyphs(name)
+  local size = math.max(S.minSize, math.min(S.size, (S.maxWidth - 2 * P.pad) / math.max(1, #chars) / P.aspect))
+  local width = #chars * size * P.aspect + 2 * P.pad
+  if width > S.maxWidth + .01 then return false end
+  local a, b = {x - ux * width / 2, y - uy * width / 2}, {x + ux * width / 2, y + uy * width / 2}
+  local hgt = size + 2 * P.pad
+  local z0 = z + S.z
+  BLD.box(scene, 'pipe', a, b, width, width / 2 - .03, width / 2 + .03, -.09, -.03, z, z + S.pole, true, true, false)
+  scene.polygon('plate', {wallPoint(a, b, width, 0, 0, z0, 0, 0), wallPoint(a, b, width, width, 0, z0, 1, 0),
+    wallPoint(a, b, width, width, 0, z0 + hgt, 1, 1), wallPoint(a, b, width, 0, 0, z0 + hgt, 0, 1)}, false)
+  scene.polygon('plate', {wallPoint(a, b, width, width, -.02, z0, 0, 0), wallPoint(a, b, width, 0, -.02, z0, 1, 0),
+    wallPoint(a, b, width, 0, -.02, z0 + hgt, 1, 1), wallPoint(a, b, width, width, -.02, z0 + hgt, 0, 1)}, false)
+  local cw = size * P.aspect
+  local pad = (size - cw) / 2
+  for i, g in ipairs(chars) do
+    if g >= 0 then
+      local col, row = g % P.perRow, math.floor(g / P.perRow)
+      local u0, u1 = col / P.perRow, (col + 1) / P.perRow
+      local v0, v1 = 1 - (row + 1) / P.perRow, 1 - row / P.perRow
+      local c0 = P.pad + (i - 1) * cw
+      scene.polygon('glyphs', {wallPoint(a, b, width, c0 - pad, .01, z0 + P.pad, u0, v0),
+        wallPoint(a, b, width, c0 + cw + pad, .01, z0 + P.pad, u1, v0),
+        wallPoint(a, b, width, c0 + cw + pad, .01, z0 + P.pad + size, u1, v1),
+        wallPoint(a, b, width, c0 - pad, .01, z0 + P.pad + size, u0, v1)}, false)
+    end
+  end
+  return true
+end
+
 -- One concrete visor along a whole facade. The top faces the sky: the orbit camera sits
 -- above a car, and a downward sheet (the house porch) was invisible there. The outer
 -- edge is a short vertical fascia so the ledge reads from the side. h is unused.
@@ -8484,6 +8520,14 @@ local function build(cells, i, j, options)
     local fx, fy = -nx * side, -ny * side
     static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), BUS_STOP, x, y, ground(x, y) + .25,
       math.atan2(fx, fy) + math.pi)
+    if options.experimentalDetail then
+      -- 3.6 m along the road from the shelter, on its curb side, the plate facing the road
+      local ux, uy = hit.dx / hit.len, hit.dy / hit.len
+      local sx, sy = x + ux * 3.6 - nx * side * .6, y + uy * 3.6 - ny * side * .6
+      -- the plate's front is the right of its line: for side 1 the road is to the right of +u
+      local lx, ly = side == 1 and ux or -ux, side == 1 and uy or -uy
+      BLD.stopSign(scene, sx, sy, ground(sx, sy), lx, ly, (point.tags or NONE).name)
+    end
   end
   -- OSM maps many lamps (and some trees) as nodes of the street itself or on its carriageway: from
   -- 26.10 the packs carry them, and central Kyiv had ~3,700 lamps standing in the lanes. A lamp
