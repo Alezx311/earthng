@@ -302,6 +302,8 @@ GLYPHS_PER_ROW = 16
 TEXTURES['glyphs'] = {'baseColorMap': f'{ART}/real/glyphs.color.png', 'opacityMap': f'{ART}/real/glyphs_o.data.png'}
 KINDS['glyphs'] = ('glyphs', [.96, .96, .94, 1], 'METAL', 1.0, 'wall')
 KINDS['plate'] = (None, [.08, .18, .40, 1], 'METAL', 1.0, 'wall')
+# a lift gate's red stripes (generator.lua BLD.liftGate); the white ones are the dish metal
+KINDS['paint_red'] = (None, [.72, .10, .08, 1], 'METAL', 1.0, 'wall')
 EXTRA['glyphs'] = {'alphaTest': True, 'alphaRef': 110, 'castShadows': False}
 # covers in the asphalt (generator.lua ROADS.covers): the Italy manhole sheet and the grid
 # drain, cut by their opacity like the lines; drawn only where the game has these maps
@@ -538,6 +540,8 @@ def point_kind(tags):
         return 'door'
     if POIS and tags.get('amenity') == 'bench':
         return 'bench'
+    if POIS and tags.get('barrier') == 'lift_gate':
+        return 'lift_gate'
     return None
 
 
@@ -548,7 +552,7 @@ ENTRANCES = ('staircase', 'main', 'home')
 # shop). Off unless EARTHNG_POIS=1 at build time: packs built without it are unchanged, and a
 # runtime that does not know the kind skips it. All the node's tags travel with it.
 POIS = os.environ.get('EARTHNG_POIS') == '1'
-POI_KEYS = ('shop', 'office', 'craft', 'amenity', 'entrance')
+POI_KEYS = ('shop', 'office', 'craft', 'amenity', 'entrance', 'barrier')
 POI_AMENITY = frozenset(('cafe', 'restaurant', 'fast_food', 'bar', 'pub', 'ice_cream', 'bank',
                          'bureau_de_change', 'money_transfer', 'payment_centre', 'pharmacy',
                          'post_office', 'dentist', 'doctors', 'clinic', 'veterinary', 'internet_cafe'))

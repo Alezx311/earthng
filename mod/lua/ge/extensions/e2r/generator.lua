@@ -3295,6 +3295,40 @@ function BLD.addressPlate(scene, rings, tags, base, height, roads)
   return true
 end
 
+-- A mapped lift gate (barrier=lift_gate, options.experimentalDetail): a post at the right edge
+-- of the way it stands on and its boom raised upright, striped red and white. Raised: a boom
+-- across the way without collision would let a car through it. Returns true when drawn.
+BLD.LIFTGATE = {post = {.3, .3, 1.05}, boom = 3.6, stripe = .6, reach = 3}
+function BLD.liftGate(scene, p, roads, ground)
+  local G = BLD.LIFTGATE
+  local best, hit = G.reach
+  for _, road in ipairs(roads) do
+    local pts = road.points or NONE
+    for k = 1, #pts - 1 do
+      local d, t = segDistance(p[1], p[2], pts[k], pts[k + 1])
+      if d < best then best, hit = d, {a = pts[k], b = pts[k + 1], width = road.width or 4} end
+    end
+  end
+  if not hit then return false end
+  local dx, dy = hit.b[1] - hit.a[1], hit.b[2] - hit.a[2]
+  local len = math.sqrt(dx * dx + dy * dy)
+  if len < EPS then return false end
+  local ux, uy = dx / len, dy / len
+  -- a little frame on the gate's line across the way: s along the road, o to its right
+  local half = math.max(1.5, math.min(4, hit.width / 2)) + .45
+  local cx, cy = p[1] + uy * half, p[2] - ux * half
+  local a, b = {cx - ux, cy - uy}, {cx + ux, cy + uy}
+  local z = ground(cx, cy)
+  local w, d, h = G.post[1], G.post[2], G.post[3]
+  BLD.box(scene, 'dish', a, b, 2, 1 - w / 2, 1 + w / 2, -d / 2, d / 2, z, z + h, true, true, false)
+  local n = math.floor(G.boom / G.stripe)
+  for k = 0, n - 1 do
+    BLD.box(scene, k % 2 == 0 and 'paint_red' or 'dish', a, b, 2, .96, 1.04, -.04, .04,
+      z + h + k * G.stripe, z + h + (k + 1) * G.stripe, true, k == n - 1, false)
+  end
+  return true
+end
+
 -- A stop's name on its own pole beside the shelter (options.experimentalDetail): the real
 -- `name` of the stop node, white on the plate's blue, over the line a -> b (the plate faces
 -- the right of it); letters shrink to keep the plate within `maxWidth`. Returns true when drawn.
@@ -8630,6 +8664,9 @@ local function build(cells, i, j, options)
     local p = point.pos
     if p and point.kind == 'stop' and wantStops then
       shelter(point, p)
+    elseif p and point.kind == 'lift_gate' and options.experimentalDetail and
+        p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
+      BLD.liftGate(scene, p, lists.roads, ground)
     elseif p and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
       local shape = point.kind == 'tree' and VEG.tree or (point.kind == 'lamp' and wantLamps) and LAMP or
         (point.kind == 'bench' and options.experimentalDetail) and BENCH[1]

@@ -244,6 +244,21 @@ class FacadeDetailTests(unittest.TestCase):
             # the letters are on the plate's face toward the road (y = 250)
             self.assertLess(max(abs(y - 250) for y in gy), min(abs(y - 250) for y in py_))
 
+    def test_mapped_lift_gate_post_by_the_way_and_boom_raised(self):
+        way = {'id': 'yard', 'width': 4, 'tags': {'highway': 'service'}, 'points': [[100, 300, 0], [200, 300, 0]]}
+        gate = {'id': '-1000000000888:0', 'kind': 'lift_gate', 'pos': [150, 300, 0], 'tags': {'barrier': 'lift_gate'}}
+        cells = [{'roads': [way], 'points': [gate]}]
+        off = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0)[1]
+        self.assertFalse(self.tris(off, 'paint_red'))
+        on = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0, experimentalDetail=True)[1]
+        red = self.tris(on, 'paint_red')
+        self.assertTrue(red)
+        pts = [p for t in red for p in t]
+        # beside the way (its right edge: y below 300 - 2), the boom upright
+        self.assertTrue(all(297 < p[1] < 298.2 for p in pts), sorted({round(p[1], 2) for p in pts}))
+        self.assertLess(max(p[0] for p in pts) - min(p[0] for p in pts), .1)
+        self.assertGreater(max(p[2] for p in pts) - min(p[2] for p in pts), 2.5)
+
 
 class RoadCoverTests(unittest.TestCase):
     def setUp(self):
