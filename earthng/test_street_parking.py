@@ -35,9 +35,12 @@ class StreetParkingTests(unittest.TestCase):
         xs = sorted(b[0] for b in bays)
         self.assertAlmostEqual(xs[1] - xs[0], 6, places=3)
 
-    def test_no_lane_bays_where_the_moving_lanes_need_the_width(self):
-        self.assertEqual(self.bays({'parking:both': 'lane'}, width=7), [])
-        self.assertTrue(self.bays({'parking:both': 'lane'}, width=10))
+    def test_astride_the_curb_where_the_moving_lanes_need_the_width(self):
+        narrow = self.bays({'parking:both': 'lane'}, width=7)
+        self.assertEqual(sorted({round(b[1], 2) for b in narrow}), [246.45, 253.55])
+        self.assertEqual(self.bays({'parking:both': 'lane', 'parking:both:orientation': 'diagonal'}, width=7), [])
+        wide = self.bays({'parking:both': 'lane'}, width=10)
+        self.assertEqual(sorted({round(b[1], 2) for b in wide}), [246.05, 253.95])
 
     def test_beside_the_road_on_the_left_and_the_older_scheme(self):
         side = self.bays({'parking:left': 'street_side', 'parking:left:orientation': 'perpendicular'})

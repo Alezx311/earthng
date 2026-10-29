@@ -2606,8 +2606,9 @@ end
 -- bays along that side (OSM's parking:left/right/both and the older parking:lane:*). A fact
 -- that a side is for parking, not an inventory of cars: the bays are spots for the game's
 -- parked cars (parking.lua), or box cars with those off. Placement: 'lane' on the carriageway
--- at its edge, only where the width leaves the moving lanes their 3 m each; 'street_side' and
--- 'shoulder' beside it; 'on_kerb' on the sidewalk; 'half_on_kerb' astride the curb. Bays keep
+-- at its edge where the width leaves the moving lanes their 3 m each (else astride the curb);
+-- 'street_side' and 'shoulder' beside it; 'on_kerb' on the sidewalk; 'half_on_kerb' astride
+-- the curb. Bays keep
 -- off junction mouths, crossings and stops; one every 6 m parallel, 3.2 diagonal, 2.7 across.
 ROADS.PARK = {parks = {lane = 'lane', street_side = 'side', shoulder = 'side', on_kerb = 'kerb', half_on_kerb = 'half',
     yes = 'lane', parallel = 'lane', diagonal = 'lane', perpendicular = 'lane', marked = 'lane', inline = 'lane'},
@@ -2676,8 +2677,12 @@ function ROADS.streetParking(roads, env)
       for _, s in ipairs(sides) do
         local depth, step = P.orient[s.orient][1], P.orient[s.orient][2]
         local off
-        if s.where == 'lane' then off = roomy and hw - depth / 2 - .1 or nil
+        -- a 'lane' the drawn width cannot spare (a width guessed from the class, mostly): the
+        -- cars astride the curb, as Kyiv's side streets park, or none when they stand across
+        if s.where == 'lane' and not roomy then s.where = s.orient == 'parallel' and 'half' or 'none' end
+        if s.where == 'lane' then off = hw - depth / 2 - .1
         elseif s.where == 'half' then off = hw + .05
+        elseif s.where == 'none' then off = nil
         else off = hw + .25 + depth / 2 end
         -- the direction cars face: with the traffic on their side, against the point order on
         -- the left of a two-way street
