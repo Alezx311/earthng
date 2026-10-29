@@ -3170,6 +3170,16 @@ function BLD.box(scene, kind, a, b, length, s0, s1, o0, o1, z0, z1, back, top, b
   end
 end
 
+-- Tools only (options.detailReport, e.g. a camera list): where a facade detail stands, the
+-- wall point under it and the wall's outward normal. BLD.report is set per build.
+function BLD.note(kind, a, b, length, s, z)
+  local report = BLD.report
+  if report then
+    local dx, dy = (b[1] - a[1]) / length, (b[2] - a[2]) / length
+    report[#report + 1] = {kind = kind, x = a[1] + dx * s, y = a[2] + dy * s, z = z, nx = dy, ny = -dx}
+  end
+end
+
 -- The air-conditioner rate of a wall kind (BLD.DETAIL.ac), nil for walls without the grid.
 function BLD.acRate(kind)
   if kind:find('_end$') then return nil end
@@ -3199,6 +3209,7 @@ function BLD.acUnits(scene, a, b, length, along, base, height, kind, h, spans, r
         if clear then
           BLD.box(scene, 'ac_unit', a, b, length, s - D.acWidth / 2, s + D.acWidth / 2, .02, .02 + D.acDepth,
             z0, z0 + .52, false, true, true)
+          BLD.note('ac_unit', a, b, length, s, z0 - base)
           n = n + 1
           if n >= room then return n end
         end
@@ -3264,6 +3275,7 @@ function BLD.balconies(scene, a, b, length, along, base, height, kind, h, spans)
           if f == floors - 1 then
             BLD.box(scene, 'plinth', a, b, length, s0, s1, .02, o + .05, z + D.cell - .02, z + D.cell + .1, false, true, true)
           end
+          BLD.note('balcony', a, b, length, (s0 + s1) / 2, z - base)
           n = n + 1
         end
       end
@@ -3316,6 +3328,7 @@ function BLD.windowExtras(scene, a, b, length, along, base, height, kind, h, spa
           local back = {}
           for q = #ring, 1, -1 do back[#back + 1] = ring[q] end
           scene.polygon('dish', back, false)
+          BLD.note('dish', a, b, length, s, z - base)
           n = n + 1
         end
       end
@@ -3351,6 +3364,7 @@ function BLD.downpipes(scene, rings, base, top, height, kind)
     BLD.box(scene, 'pipe', c.a, c.p, c.len, s0, s1, o0, o0 + w, base + .32, top - .42, true, false, false)
     BLD.box(scene, 'pipe', c.a, c.p, c.len, s0 - .07, s1 + .07, o0 - .03, o0 + w + .07, top - .42, top - .14, true, false, true)
     BLD.box(scene, 'pipe', c.a, c.p, c.len, s0, s1, o0, o0 + .38, base + .1, base + .32, true, true, false)
+    BLD.note('pipe', c.a, c.p, c.len, s0, 0)
   end
   return math.min(D.pipeMax, #corners)
 end
@@ -7895,6 +7909,7 @@ local function build(cells, i, j, options)
       if BLD.city then BLD.faces = {} end
       local doors = (use == 'garage' or use == 'garages') and (h % 3 == 0 and 'door_rust' or 'door_garage')
       local detailed = options.experimentalDetail and BLD.city and not options.far
+      BLD.report = type(options.detailReport) == 'table' and options.detailReport or nil
       local acRoom = BLD.DETAIL.acMax
       for _, raw in ipairs(rings) do
         local ring, along = cleanRing(raw), 0
