@@ -3189,6 +3189,108 @@ function BLD.roofClutter(scene, rings, top, height, h)
   return n
 end
 
+local function segDistance(x, y, a, b)
+  local dx, dy = b[1] - a[1], b[2] - a[2]
+  local len2 = dx * dx + dy * dy
+  local t = len2 > EPS and math.max(0, math.min(1, ((x - a[1]) * dx + (y - a[2]) * dy) / len2)) or 0
+  return math.sqrt((a[1] + t * dx - x) ^ 2 + (a[2] + t * dy - y) ^ 2), t * math.sqrt(len2)
+end
+
+-- Address plates (options.experimentalDetail): a building's real addr:housenumber, and its
+-- addr:street shortened, white on a dark blue plate by the left corner of the wall that faces
+-- that street (the nearest segment of a road of that name within `reach` m). Without a road
+-- of that name near, no plate: a guess of the wall would put the number on the yard.
+-- Letters are cells of the glyph atlas (fast_style.GLYPHS, the same string), a monospace font.
+BLD.GLYPHS = '0123456789/-.,\'’№ ()АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгґдеєжзиіїйклмнопрстуфхцчшщьюяЁЭЪЫёэъыABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+BLD.PLATE = {reach = 45, number = .26, street = .11, aspect = .6, pad = .07, z = 2.7, perRow = 16,
+  short = {{'вулиця ', 'вул. '}, {'проспект ', 'просп. '}, {'провулок ', 'пров. '}, {'бульвар ', 'бульв. '},
+    {'площа ', 'пл. '}, {'узвіз ', 'узв. '}, {'набережна ', 'наб. '}, {' вулиця', ''}, {' провулок', ' пров.'}}}
+local glyphIndex
+function BLD.glyphs(text)
+  if not glyphIndex then
+    glyphIndex = {}
+    local k = 0
+    for ch in BLD.GLYPHS:gmatch('[%z\1-\127\194-\244][\128-\191]*') do glyphIndex[ch], k = k, k + 1 end
+  end
+  local out = {}
+  for ch in tostring(text):gmatch('[%z\1-\127\194-\244][\128-\191]*') do out[#out + 1] = glyphIndex[ch] or -1 end
+  return out
+end
+
+function BLD.streetLabel(name)
+  local s = ' ' .. tostring(name) .. ' '
+  for _, pair in ipairs(BLD.PLATE.short) do
+    local a, b = pair[1], pair[2]
+    local i = s:lower():find(a, 1, true)
+    if i then s = s:sub(1, i - 1) .. b .. s:sub(i + #a) end
+  end
+  return (s:gsub('^%s+', ''):gsub('%s+$', ''))
+end
+
+function BLD.addressPlate(scene, rings, tags, base, height, roads)
+  local P = BLD.PLATE
+  local number, street = tags['addr:housenumber'], tags['addr:street']
+  if not number or not street or not roads then return false end
+  local ring = BLD.orient(rings[1], rings)
+  local best
+  for k, a in ipairs(ring) do
+    local b = ring[k % #ring + 1]
+    local dx, dy = b[1] - a[1], b[2] - a[2]
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len >= 3 then
+      local mx, my, nx, ny = (a[1] + b[1]) / 2, (a[2] + b[2]) / 2, dy / len, -dx / len
+      for _, road in ipairs(roads) do
+        if (road.tags or NONE).name == street then
+          local pts = road.points or NONE
+          for q = 1, #pts - 1 do
+            local d, t = segDistance(mx, my, pts[q], pts[q + 1])
+            if d <= P.reach then
+              local f = t / math.max(EPS, math.sqrt((pts[q + 1][1] - pts[q][1]) ^ 2 + (pts[q + 1][2] - pts[q][2]) ^ 2))
+              local px, py = pts[q][1] + (pts[q + 1][1] - pts[q][1]) * f, pts[q][2] + (pts[q + 1][2] - pts[q][2]) * f
+              if (px - mx) * nx + (py - my) * ny > 0 and (not best or d < best.d) then
+                best = {a = a, b = b, len = len, d = d}
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  if not best then return false end
+  local label = BLD.glyphs(BLD.streetLabel(street))
+  local digits = BLD.glyphs(number)
+  local w1, w2 = #digits * P.number * P.aspect, #label * P.street * P.aspect
+  local width = math.max(w1, w2) + 2 * P.pad
+  if width > best.len - .6 then return false end
+  local z0 = base + math.min(P.z, math.max(1.6, height - 1.2))
+  local hgt = P.number + P.street + 3 * P.pad
+  local a, b, len = best.a, best.b, best.len
+  local s0 = .4
+  scene.polygon('plate', {wallPoint(a, b, len, s0, .025, z0, 0, 0), wallPoint(a, b, len, s0 + width, .025, z0, 1, 0),
+    wallPoint(a, b, len, s0 + width, .025, z0 + hgt, 1, 1), wallPoint(a, b, len, s0, .025, z0 + hgt, 0, 1)}, false)
+  local function line(chars, size, zb, total)
+    local cw = size * P.aspect
+    local start = s0 + (width - total) / 2
+    for i, g in ipairs(chars) do
+      if g >= 0 then
+        local col, row = g % P.perRow, math.floor(g / P.perRow)
+        local u0, u1 = col / P.perRow, (col + 1) / P.perRow
+        local v0, v1 = 1 - (row + 1) / P.perRow, 1 - row / P.perRow
+        local c0 = start + (i - 1) * cw
+        -- a cell is square: the letter's height is the cell's, its advance `aspect` of it
+        local pad = (size - cw) / 2
+        scene.polygon('glyphs', {wallPoint(a, b, len, c0 - pad, .035, zb, u0, v0),
+          wallPoint(a, b, len, c0 + cw + pad, .035, zb, u1, v0),
+          wallPoint(a, b, len, c0 + cw + pad, .035, zb + size, u1, v1),
+          wallPoint(a, b, len, c0 - pad, .035, zb + size, u0, v1)}, false)
+      end
+    end
+  end
+  line(digits, P.number, z0 + P.pad, w1)
+  line(label, P.street, z0 + 2 * P.pad + P.number, w2)
+  return true
+end
+
 -- One concrete visor along a whole facade. The top faces the sky: the orbit camera sits
 -- above a car, and a downward sheet (the house porch) was invisible there. The outer
 -- edge is a short vertical fascia so the ledge reads from the side. h is unused.
@@ -3597,12 +3699,6 @@ function BLD.wallKey(a, b)
   return string.format('%.3f,%.3f,%.3f,%.3f', a[1], a[2], b[1], b[2])
 end
 
-local function segDistance(x, y, a, b)
-  local dx, dy = b[1] - a[1], b[2] - a[2]
-  local len2 = dx * dx + dy * dy
-  local t = len2 > EPS and math.max(0, math.min(1, ((x - a[1]) * dx + (y - a[2]) * dy) / len2)) or 0
-  return math.sqrt((a[1] + t * dx - x) ^ 2 + (a[2] + t * dy - y) ^ 2), t * math.sqrt(len2)
-end
 
 -- Report only (poiReport): the class of the road whose edge comes nearest a building's walls,
 -- and that gap, with no class, side or parallel test. Explains a 'no_street_wall'.
@@ -8081,6 +8177,9 @@ local function build(cells, i, j, options)
         end
       end
       if detailed then BLD.downpipes(scene, rings, base, top, height, kind) end
+      if options.experimentalDetail and not options.far and not lifted then
+        BLD.addressPlate(scene, rings, tags, base, height, lists.roads)
+      end
       if options.far or not pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet), dress) then
         for _, tri in ipairs(triangulate(rings, pause, rect)) do
           for _, p in ipairs(tri) do p[3] = top end

@@ -89,6 +89,7 @@ FLAT = {   # kind: (toon colour, model colour)
     'pipe': ((150, 152, 156), (220, 220, 220)), 'ac_unit': ((222, 222, 216), (236, 236, 236)),
     'dish': ((228, 228, 224), (238, 238, 238)),
     'manhole': ((110, 108, 104), (200, 200, 200)), 'drain': ((80, 78, 74), (190, 190, 190)),
+    'plate': ((28, 54, 120), (200, 200, 200)), 'glyphs': ((240, 240, 236), (240, 240, 236)),
     'patch': ((52, 52, 54), (180, 180, 180)),
     'plinth': ((132, 126, 118), (214, 214, 214)),
     'gable': ((150, 128, 104), (216, 216, 216)),
@@ -516,6 +517,9 @@ def prebuild(distributable=False):
         if not (shared / 'real' / 'railing_o.data.dds').exists():
             yard_art(shared / 'real')
             to_dds(shared / 'real')
+        # and the address plates' letters
+        if not (shared / 'real' / 'glyphs_o.data.dds').exists() and glyph_art(shared / 'real'):
+            to_dds(shared / 'real')
         write_manifest(shared)  # environment/fields are code, not a texture cache
     return shared
 
@@ -559,6 +563,7 @@ def build(r, game_assets=True):
         d.rectangle([32 * k, 0, 32 * k + 31, 31], fill=rgb)
     cars.save(r / 'real' / 'cars.color.png')
     yard_art(r / 'real')
+    glyph_art(r / 'real')
     # the PO-2 concrete fence: one 2.5 m x 2 m slab... laid over a 2.5 m repeat, the slab in the
     # lower 0.8 of it (fences are 2 m tall), upside down like the facades
     slab = Image.open(photo.TEXTURES / 'panelka_fence/albedo.jpg').convert('RGB')
@@ -597,6 +602,32 @@ MIP_REFS = {'chainlink_o.data.png': style.CHAINLINK_MIP_REF, 'line_o.data.png': 
 YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (228, 118, 40), (146, 104, 62),
                 (126, 128, 130), (44, 44, 46), (204, 180, 132), (52, 98, 150), (226, 226, 220), (128, 62, 50),
                 (162, 160, 152), (214, 184, 58), (122, 178, 92), (92, 62, 40)]
+
+
+GLYPH_FONT = 'ui/common/Noto_Sans_Mono/static/NotoSansMono-Bold.ttf'   # in the game: OFL
+GLYPH_CELL = 64
+
+
+def glyph_art(r):
+    """The address plates' letters (fast_style.GLYPHS): white over a 1024 px atlas, their shapes
+    as opacity; flipped like the facades so v grows upward. A missing font leaves no file."""
+    from PIL import ImageFont
+    path = Path(game_dir()) / GLYPH_FONT if game_dir() else None
+    if not path or not path.exists():
+        return False
+    n = style.GLYPHS_PER_ROW
+    size = n * GLYPH_CELL
+    font = ImageFont.truetype(str(path), round(GLYPH_CELL * .78))
+    alpha = Image.new('L', (size, size), 0)
+    d = ImageDraw.Draw(alpha)
+    top = font.getbbox('Hg')[1]
+    for k, ch in enumerate(style.GLYPHS):
+        x, y = (k % n) * GLYPH_CELL, (k // n) * GLYPH_CELL
+        width = font.getlength(ch)
+        d.text((x + (GLYPH_CELL - width) / 2, y + GLYPH_CELL * .06 - top), ch, fill=255, font=font)
+    Image.new('RGB', (size, size), (255, 255, 255)).save(r / 'glyphs.color.png')
+    alpha.convert('RGB').transpose(Image.FLIP_TOP_BOTTOM).save(r / 'glyphs_o.data.png')
+    return True
 
 
 def yard_art(r):

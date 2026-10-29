@@ -1,4 +1,5 @@
 """Facade details (BLD.downpipes, BLD.acUnits): opt-in, on the texture's window grid, deterministic."""
+from pathlib import Path
 import unittest
 
 import test_generator
@@ -177,6 +178,39 @@ class FacadeDetailTests(unittest.TestCase):
             for x, y, z in t:
                 self.assertTrue(99 < x < 161 and 99 < y < 113, (x, y))
                 self.assertLessEqual(z, top + 3.2 + 1e-6)
+
+    def test_address_plate_on_the_wall_facing_its_street(self):
+        import fast_style
+        named = {'id': 'street', 'width': 8, 'tags': {'highway': 'residential', 'name': 'вулиця Прилужна'},
+                 'points': [[50, 85, 0], [250, 85, 0]]}
+        other = {'id': 'back', 'width': 8, 'tags': {'highway': 'residential', 'name': 'вулиця Інша'},
+                 'points': [[50, 127, 0], [250, 127, 0]]}
+        block = self.block('panel', 15)
+        block['tags'].update({'addr:housenumber': '4/15', 'addr:street': 'вулиця Прилужна'})
+
+        def plate(roads, **opts):
+            out = self.h.build([{'buildings': [block], 'roads': roads}], 0, 0, maxTrees=0, maxGrass=0, **opts)[1]
+            return self.tris(out, 'glyphs'), self.tris(out, 'plate')
+        self.assertEqual(plate([named, other]), ([], []))
+        glyphs, back = plate([named, other], experimentalDetail=True)
+        # "4/15" and "вул. Прилужна": 17 letters, two triangles each, on the street wall (y = 100)
+        self.assertEqual(len(glyphs), 34)
+        self.assertEqual(len(back), 2)
+        self.assertEqual({round(p[1], 3) for t in glyphs for p in t}, {99.965})
+        # the street it names is behind the block: the plate goes on that side
+        moved = dict(named, points=[[50, 127, 0], [250, 127, 0]])
+        glyphs, _ = plate([moved], experimentalDetail=True)
+        self.assertEqual({round(p[1], 3) for t in glyphs for p in t}, {112.035})
+        # no road of that name near: no plate
+        self.assertEqual(plate([other], experimentalDetail=True), ([], []))
+
+    def test_glyph_string_is_the_same_in_python_and_lua(self):
+        import fast_style
+        source = (Path(__file__).resolve().parents[1] / 'mod/lua/ge/extensions/e2r/generator.lua').read_text(encoding='utf8')
+        line = next(l for l in source.splitlines() if l.startswith('BLD.GLYPHS = '))
+        lua = self.h.lua.execute('return ' + line[len('BLD.GLYPHS = '):])
+        self.assertEqual(lua.decode('utf8') if isinstance(lua, bytes) else lua, fast_style.GLYPHS)
+        self.assertLessEqual(len(fast_style.GLYPHS), fast_style.GLYPHS_PER_ROW ** 2)
 
 
 class RoadCoverTests(unittest.TestCase):

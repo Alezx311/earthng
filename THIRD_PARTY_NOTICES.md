@@ -21,6 +21,10 @@ of the following data and assets:
   (https://teeregister.mnt.ee/), open data listed as CC BY 4.0 on
   https://andmed.eesti.ee/ . Packs built with it may be redistributed with this credit.
 - Natural Earth: public-domain map data. https://www.naturalearthdata.com/about/terms-of-use/
+- The address plates' letters (`real/glyphs` in the planet's art) are rendered from Noto
+  Sans Mono Bold, which BeamNG.drive ships in `ui/common/Noto_Sans_Mono`; the font itself
+  is not copied. Copyright 2022 The Noto Project Authors, SIL Open Font License 1.1:
+  https://openfontlicense.org/
 - Panelka pack by kureca, ambientCG and Poly Haven textures: CC0, as recorded in
   the texture source manifest distributed with the developer assets. Road surfaces
   and line paint: Poly Haven asphalt_01 and aerial_asphalt_01, ambientCG Asphalt025C,

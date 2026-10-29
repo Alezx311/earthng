@@ -293,6 +293,16 @@ BUILDING_FALLBACK['plinth_brown'] = 'concrete'
 # Facade details (generator.lua BLD.details, options.experimentalDetail): galvanised downpipes
 # as a flat grey, air-conditioner boxes on the game's metal cladding
 KINDS['pipe'] = (None, [.50, .51, .52, 1], 'METAL', 1.0, 'wall')
+# Address plates (generator.lua BLD.addressPlate, options.experimentalDetail): a dark blue plate
+# and white letters cut from a glyph atlas (fast_art.glyph_art: Noto Sans Mono Bold, OFL, from the
+# game's own UI fonts), GLYPHS_PER_ROW to a row, row 0 at the top before the flip. The generator
+# keeps the same string (BLD.GLYPHS).
+GLYPHS = "0123456789/-.,'’№ ()АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгґдеєжзиіїйклмнопрстуфхцчшщьюяЁЭЪЫёэъыABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+GLYPHS_PER_ROW = 16
+TEXTURES['glyphs'] = {'baseColorMap': f'{ART}/real/glyphs.color.png', 'opacityMap': f'{ART}/real/glyphs_o.data.png'}
+KINDS['glyphs'] = ('glyphs', [.96, .96, .94, 1], 'METAL', 1.0, 'wall')
+KINDS['plate'] = (None, [.08, .18, .40, 1], 'METAL', 1.0, 'wall')
+EXTRA['glyphs'] = {'alphaTest': True, 'alphaRef': 110, 'castShadows': False}
 # covers in the asphalt (generator.lua ROADS.covers): the Italy manhole sheet and the grid
 # drain, cut by their opacity like the lines; drawn only where the game has these maps
 TEXTURES['manhole'] = _maps('/assets/materials/baked_props/italy_ground_parts', 't_manhole_01_decal', 'b', 'nm', 'r', 'ao', 'o')
