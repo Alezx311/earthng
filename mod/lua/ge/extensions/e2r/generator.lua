@@ -2719,6 +2719,114 @@ function ROADS.streetParking(roads, env)
   return bays
 end
 
+-- Lane arrows (options.experimentalDetail): a way's turn:lanes (one-way), turn:lanes:forward
+-- and :backward, painted in each lane before the way's end in that direction, and again 25 m
+-- before when the way is long enough. A bare turn:lanes on a two-way street says nothing of
+-- the direction and is left. Lane k of n (left to right of travel) is a 1/n share of that
+-- direction's half of the carriageway. The arrow: a 0.15 m stem, a 1.2 m head straight on, an
+-- arm and a head to each side it turns. ctx as DETAIL.paint's (roads, cutsOf, z, emit, pause).
+DETAIL.ARROW = {stem = 3.2, width = .15, head = 1.2, base = .6, arm = .7, before = 6, again = 25, short = 15}
+DETAIL.TURNS = {through = 'through', left = 'left', slight_left = 'left', sharp_left = 'left',
+  right = 'right', slight_right = 'right', sharp_right = 'right'}
+
+function DETAIL.arrow(emit, c, sx, sy, turns, z)
+  local A = DETAIL.ARROW
+  local lx, ly = -sy, sx                                   -- left of travel
+  local function head(bx, by, ux, uy)
+    local px, py = -uy, ux
+    emit({{bx + px * A.base / 2, by + py * A.base / 2, z, 0, 0},
+      {bx + ux * A.head, by + uy * A.head, z, .5, A.head / DECAL.markRepeat},
+      {bx - px * A.base / 2, by - py * A.base / 2, z, 1, 0}})
+  end
+  local through = turns.through
+  local top = through and A.stem or A.stem - A.head / 2
+  paintQuad(emit, {c[1] + sx * top / 2, c[2] + sy * top / 2}, sx, sy, top, A.width, z)
+  if through then head(c[1] + sx * top, c[2] + sy * top, sx, sy) end
+  for _, side in ipairs({'left', 'right'}) do
+    if turns[side] then
+      local k = side == 'left' and 1 or -1
+      local at = through and top * .55 or top - A.width / 2
+      local ax, ay = c[1] + sx * at, c[2] + sy * at
+      paintQuad(emit, {ax + lx * k * A.arm / 2, ay + ly * k * A.arm / 2}, lx * k, ly * k, A.arm, A.width, z)
+      head(ax + lx * k * A.arm, ay + ly * k * A.arm, lx * k, ly * k)
+    end
+  end
+end
+
+function DETAIL.arrows(ctx)
+  local A, painted = DETAIL.ARROW, 0
+  for index, road in ipairs(ctx.roads) do
+    if index % 128 == 0 then ctx.pause() end
+    local tags, points = road.tags or NONE, road.points or NONE
+    local oneway, flip = ROADS.oneway(tags)
+    local forward, backward = tags['turn:lanes:forward'], tags['turn:lanes:backward']
+    if oneway and tags['turn:lanes'] then
+      if flip then backward, forward = tags['turn:lanes'], nil else forward, backward = tags['turn:lanes'], nil end
+    end
+    if (forward or backward) and #points >= 2 and not ROADS.tunnel(tags)
+        and boundsTouch(ctx.rect, ringBounds({points}), 10) then
+      local dist = {0}
+      for k = 2, #points do
+        dist[k] = dist[k - 1] + math.sqrt((points[k][1] - points[k - 1][1]) ^ 2 + (points[k][2] - points[k - 1][2]) ^ 2)
+      end
+      local length = dist[#points]
+      local width = math.max(.5, math.min(80, road.width or 7))
+      local left, right = ROADS.shoulder(tags)
+      if width - left - right < 3 then left, right = 0, 0 end
+      local lo, hi = -width / 2 + right, width / 2 - left
+      local cuts = ctx.cutsOf[road] or NONE
+      local function lanesOf(text)
+        local list = {}
+        for part in (tostring(text) .. '|'):gmatch('([^|]*)|') do list[#list + 1] = part end
+        return list
+      end
+      local nf = forward and #lanesOf(forward) or 0
+      local nb = backward and #lanesOf(backward) or 0
+      if not oneway then
+        nf = forward and nf or math.max(1, number(tags['lanes:forward'], 1))
+        nb = backward and nb or math.max(1, number(tags['lanes:backward'], 1))
+      end
+      local lw = (hi - lo) / math.max(1, nf + nb)
+      if lw >= 2.4 and length >= A.short then
+        for _, dir in ipairs({1, -1}) do
+          local text = backward
+          if dir == 1 then text = forward end
+          if text then
+            local lanes = lanesOf(text)
+            local n = #lanes
+            local stop = dir == 1 and length - (cuts[2] or 0) - A.before or (cuts[1] or 0) + A.before
+            for _, back in ipairs({0, A.again}) do
+              local tip = stop - dir * back
+              local base = tip - dir * (A.stem + A.head)
+              local first = dir == 1 and (cuts[1] or 0) or length - (cuts[2] or 0)
+              local within = dir == 1 and base > first + 2 or dir == -1 and base < first - 2
+              if within then
+                local c, tx, ty = alongLine(points, dist, base)
+                local sx, sy = tx * dir, ty * dir
+                for k, value in ipairs(lanes) do
+                  local turns, any = {}, false
+                  for word in value:gmatch('[^;]+') do
+                    local t = DETAIL.TURNS[word]
+                    if t then turns[t], any = true, true end
+                  end
+                  if any then
+                    -- the lane's middle, as an offset left of the point order
+                    local o
+                    if dir == 1 then o = lo + (n - k + .5) * lw else o = hi - (n - k + .5) * lw end
+                    DETAIL.arrow(ctx.emit, {c[1] - ty * o, c[2] + tx * o}, sx, sy, turns, (c[3] or 0) + ctx.z)
+                    painted = painted + 1
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return painted
+end
+
 -- Raised traffic islands (OSM area:highway=traffic_island, traffic_calming=island areas): a
 -- `height` m slab over the road beside it, its rim a curb face down to `sink` under the road.
 -- Grass on top when tagged so or bigger than `paved` m2, else sett paving. ctx: roads (the
@@ -8246,6 +8354,10 @@ local function build(cells, i, j, options)
     DETAIL.paint({roads = lists.roads, points = lists.points, stars = stars, cutsOf = cutsOf, rect = rect,
       kinds = DETAIL.kinds, z = lift + DECAL.markLift,
       emit = function(poly) roadDecor.polygon(markKind, poly, 'flat') end, pause = pause})
+    if options.experimentalDetail then
+      DETAIL.arrows({roads = lists.roads, cutsOf = cutsOf, rect = rect, z = lift + DECAL.markLift,
+        emit = function(poly) roadDecor.polygon(markKind, poly, 'flat') end, pause = pause})
+    end
   end
   mark('marks')
   -- OSM has no sea polygons (only coastlines); the DEM's sea is flat at the region's seaLevel
