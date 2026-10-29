@@ -55,7 +55,10 @@ for di = -radius, radius do
       local t = clock()
       local road, scene = generator.build(cells, i, j, {tileSize = 500, pause = function() end,
         seaLevel = d.seaLevel, experimentalShopfront = on or nil, cellSize = on and d.cellSize or nil,
-        poiReport = on and report or nil, shopTune = on and tune or nil})
+        poiReport = on and report or nil, shopTune = on and tune or nil,
+        -- what native.lua passes too: the look picks the walls (a house dress, a panel)
+        look = d.look, geo = d.geo, nature = d.nature, latitude = d.geo and d.geo[4],
+        country = active.region.country and active.region.country.id})
       local ms = (clock() - t) * 1000
       local tris, shop = 0, 0
       for _, m in ipairs({road, scene}) do
