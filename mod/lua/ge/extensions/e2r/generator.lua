@@ -3212,8 +3212,11 @@ function BLD.glyphs(text)
     local k = 0
     for ch in BLD.GLYPHS:gmatch('[%z\1-\127\194-\244][\128-\191]*') do glyphIndex[ch], k = k, k + 1 end
   end
+  -- a space keeps its place but draws nothing (its cell would show its neighbours' mips)
   local out = {}
-  for ch in tostring(text):gmatch('[%z\1-\127\194-\244][\128-\191]*') do out[#out + 1] = glyphIndex[ch] or -1 end
+  for ch in tostring(text):gmatch('[%z\1-\127\194-\244][\128-\191]*') do
+    out[#out + 1] = ch ~= ' ' and glyphIndex[ch] or -1
+  end
   return out
 end
 

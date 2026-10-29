@@ -193,8 +193,8 @@ class FacadeDetailTests(unittest.TestCase):
             return self.tris(out, 'glyphs'), self.tris(out, 'plate')
         self.assertEqual(plate([named, other]), ([], []))
         glyphs, back = plate([named, other], experimentalDetail=True)
-        # "4/15" and "вул. Прилужна": 17 letters, two triangles each, on the street wall (y = 100)
-        self.assertEqual(len(glyphs), 34)
+        # "4/15" and "вул. Прилужна": 16 letters and an undrawn space, two triangles each, on the street wall
+        self.assertEqual(len(glyphs), 32)
         self.assertEqual(len(back), 2)
         self.assertEqual({round(p[1], 3) for t in glyphs for p in t}, {99.965})
         # the street it names is behind the block: the plate goes on that side
