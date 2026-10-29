@@ -3288,6 +3288,7 @@ function BLD.addressPlate(scene, rings, tags, base, height, roads)
   end
   line(digits, P.number, z0 + P.pad, w1)
   line(label, P.street, z0 + 2 * P.pad + P.number, w2)
+  BLD.note('plate', a, b, len, s0 + width / 2, z0 - base)
   return true
 end
 
