@@ -152,7 +152,8 @@ class BrandGeneratorTests(unittest.TestCase):
                 tags['e2r_post_type'] = subtype
             poi = {'id': 'p', 'kind': kind, 'pos': [120, 120, 0], 'tags': tags}
             scene = self.build([{'buildings': [building], 'points': [poi]}])
-            self.assertEqual(len(self.faces_of(scene, self.g.BRANDS[brand][1])) > 0, has_sign, subtype)
+            sign = 61 if brand == 'mcdonalds' else self.g.BRANDS[brand][1]        # McDonald's word mark
+            self.assertEqual(len(self.faces_of(scene, sign)) > 0, has_sign, subtype)
             self.assertEqual(scene.brandPOIs[1].brand, brand)
             self.assertEqual(scene.brandPOIs[1].postType, subtype)
 
@@ -225,6 +226,35 @@ class BrandGeneratorTests(unittest.TestCase):
         self.assertEqual(len(scene.brandPOIs), 1)
         self.assertEqual(len(self.build([cell], i=1).brandPOIs), 0)
         self.assertIsNone(self.build([cell], far=True).brandPOIs)
+
+    def test_mcdonalds_restaurant_has_its_photographed_tower_glazing_and_pole_sign(self):
+        # a 30 x 20 m restaurant south of the street at y = 90
+        building = {'id': 'b', 'height': 6, 'tags': {'building': 'retail', 'amenity': 'fast_food', 'e2r_brand': 'mcdonalds'},
+                    'rings': [[[100, 60], [130, 60], [130, 80], [100, 80]]]}
+        scene = self.build([{'buildings': [building], 'roads': [STREET]}])
+        top = max(p[2] for t in self.corners(scene, 'e2rf_roof') for p in t)
+        base = top - 6
+        photo = self.corners(scene, 'e2rf_brand_photo')
+        tower = [t for t in photo if max(p[3] for p in t) < .25]
+        glass = [t for t in photo if min(p[3] for p in t) > .25]
+        # the tower on the street wall's middle: 9 m tall (a storey over the roof), half as wide
+        self.assertEqual(len(tower), 2)
+        xs, zs = [p[0] for t in tower for p in t], [p[2] - base for t in tower for p in t]
+        self.assertAlmostEqual(max(xs) - min(xs), 4.5, places=3)
+        self.assertAlmostEqual((max(xs) + min(xs)) / 2, 115, places=3)
+        self.assertAlmostEqual(max(zs), 9, places=3)
+        self.assertTrue(all(p[1] > 80.6 for t in tower for p in t))
+        # whole panes of glazing on the street wall, clear of the tower
+        self.assertTrue(glass and all(p[1] > 80 and not 112.4 < p[0] < 117.6 for t in glass for p in t))
+        # the word mark on the three other sides, the arches and the red panel on the pole sign
+        self.assertEqual(len(self.faces_of(scene, 61)), 3 * 2)
+        self.assertEqual(len(self.faces_of(scene, 62)), 2 * 2)
+        gold = self.flat(scene, 56 + 7, 1)
+        self.assertGreater(len(gold), 100)
+        self.assertGreater(min(p[2] for t in gold for p in t) - base, 11.5)
+        pole = [p for t in self.faces_of(scene, 62) for p in t]
+        self.assertFalse(100 <= min(p[0] for p in pole) and max(p[0] for p in pole) <= 130 and
+                         60 <= min(p[1] for p in pole) <= 80)                         # not on the building
 
     def test_shop_storeys_are_taller_than_a_flats(self):
         height = self.g.shopHeight

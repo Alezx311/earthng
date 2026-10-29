@@ -3370,7 +3370,7 @@ end
 -- fuel site gets a price pylon (grades, no prices) by its street.
 BLD.SHOP = {cols = 4, rows = 16, fuel = 32, grocery = 33, swatch = {34, 36, 38}, price = {0, 10, 1, 4},
   square = {x = 512, y = 1280, side = 256, per = 6, atlas = 2048},
-  white = 56, lit = 57, dark = 58, metal = 59, concrete = 60,
+  white = 56, lit = 57, dark = 58, metal = 59, concrete = 60, gold = 63,
   kinds = {fuel = true, grocery = true, fast_food = true, post = true},
   sites = {fuel_site = 'fuel', grocery_site = 'grocery', fast_food_site = 'fast_food', post_site = 'post'},
   -- a whole shop: up to that many m of footprint and of height; its fascia (least and most m, and
@@ -3393,7 +3393,16 @@ BLD.SHOP = {cols = 4, rows = 16, fuel = 32, grocery = 33, swatch = {34, 36, 38},
     kolo = {}, rukavychka = {}, sim23 = {square = 5}, simi = {}, faino = {square = 6},
     thrash = {accent = true}, varus = {}, fozzy = {}, eco = {square = 7, accent = true}, blyzenko = {},
     amic = {accent = true}, parallel = {accent = true}, vst = {}, bvs = {},
-    mcdonalds = {square = 8, accent = true}, nova_poshta = {}}}
+    mcdonalds = {square = 8, accent = true, clad = true, wordmark = 61, photo = 'mcdonalds', pylon = 'arches'},
+    nova_poshta = {}},
+  -- photographs of real stores in brand_photo (fast_art.SHOP_PHOTOS, 2048 x 1024): the entrance
+  -- tower (half as wide as tall) and the dining room's glazing, `glass` m wide by tall a repeat
+  photo = {mcdonalds = {bay = {.0005, .001, .2495, .999}, glass = {.2505, .001, .4995, .321}, wide = {5, 3.2}}},
+  -- the photographed tower: as tall as the building and a storey more, within these
+  bay = {least = 8, most = 13, out = .6},
+  -- McDonald's pole sign (as by its restaurants across Ukraine): a grey pole, the red panel with
+  -- its name (cell 62) and the golden arches over it: total width, height, stroke, depth
+  arches = {pole = .5, panel = {4.8, 1.2}, top = 12, width = 4.6, height = 4.2, stroke = .5, depth = .32, red = 62}}
 BLD.SHOP.keys = {}
 for key, brand in pairs(SOLID.BRANDS) do BLD.SHOP.keys[brand[1]] = key end
 
@@ -3499,6 +3508,83 @@ function BLD.shopFront(scene, a, b, length, s0, s1, z0, z1, base)
     wallPoint(a, b, length, s1, .06, z0, s1 / 6, (z0 - base) / 6),
     wallPoint(a, b, length, s1, .06, z1, s1 / 6, (z1 - base) / 6),
     wallPoint(a, b, length, s0, .06, z1, s0 / 6, (z1 - base) / 6)}, false)
+end
+
+-- A quad of brand_photo over s0..s1 and z0..z1 of a wall, `out` m in front of it, over a uv box
+function BLD.shopPhoto(scene, a, b, length, s0, s1, z0, z1, out, uv)
+  scene.polygon('brand_photo', {wallPoint(a, b, length, s0, out, z0, uv[1], uv[4]),
+    wallPoint(a, b, length, s1, out, z0, uv[3], uv[4]), wallPoint(a, b, length, s1, out, z1, uv[3], uv[2]),
+    wallPoint(a, b, length, s0, out, z1, uv[1], uv[2])}, false)
+end
+
+-- A quad of frame T's points (x, y, z) facing `want` (a direction in the frame), in a flat colour
+function BLD.shopFace(scene, T, pts, flat, want)
+  local p, q, r = pts[1], pts[2], pts[3]
+  local ux, uy, uz = q[1] - p[1], q[2] - p[2], q[3] - p[3]
+  local vx, vy, vz = r[1] - p[1], r[2] - p[2], r[3] - p[3]
+  local nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+  if nx * want[1] + ny * want[2] + nz * want[3] < 0 then pts = {pts[4], pts[3], pts[2], pts[1]} end
+  local world = {}
+  for k = 1, 4 do world[k] = T(pts[k][1], pts[k][2], pts[k][3]) end
+  BLD.shopQuad(scene, world, flat)
+end
+
+-- The golden arches in frame T: two parabolas from the feet (z0) to where they meet at 0.45 of
+-- their height, a ribbon `stroke` wide and `depth` deep, gold
+function BLD.shopArches(scene, T, z0)
+  local A = BLD.SHOP.arches
+  local gold, half, d = BLD.shopFlat(BLD.SHOP.gold), A.stroke / 2, A.depth / 2
+  local a = (A.width / 2 - half) / 1.742
+  local c = -.742 * a
+  for _, mirror in ipairs({1, -1}) do
+    local line = {}
+    for k = 0, 16 do
+      local u = -1 + 1.742 * k / 16
+      line[#line + 1] = {mirror * (c + a * u), z0 + A.height * (1 - u * u)}
+    end
+    -- each point's offset along the mean of its two segments' normals: the ribbon has no gaps
+    local outer, inner = {}, {}
+    for k = 1, #line do
+      local p, q = line[math.max(1, k - 1)], line[math.min(#line, k + 1)]
+      local tx, tz = q[1] - p[1], q[2] - p[2]
+      local l = math.sqrt(tx * tx + tz * tz)
+      local nx, nz = -tz / l * half, tx / l * half
+      outer[k], inner[k] = {line[k][1] + nx, line[k][2] + nz}, {line[k][1] - nx, line[k][2] - nz}
+    end
+    for k = 1, #line - 1 do
+      local p, q = line[k], line[k + 1]
+      local tx, tz = q[1] - p[1], q[2] - p[2]
+      local nx, nz = -tz, tx
+      local po, pi, qo, qi = outer[k], inner[k], outer[k + 1], inner[k + 1]
+      for _, y in ipairs({-d, d}) do
+        BLD.shopFace(scene, T, {{pi[1], y, pi[2]}, {qi[1], y, qi[2]}, {qo[1], y, qo[2]}, {po[1], y, po[2]}}, gold, {0, y, 0})
+      end
+      BLD.shopFace(scene, T, {{po[1], -d, po[2]}, {qo[1], -d, qo[2]}, {qo[1], d, qo[2]}, {po[1], d, po[2]}}, gold, {nx, 0, nz})
+      BLD.shopFace(scene, T, {{pi[1], -d, pi[2]}, {qi[1], -d, qi[2]}, {qi[1], d, qi[2]}, {pi[1], d, pi[2]}}, gold, {-nx, 0, -nz})
+    end
+  end
+end
+
+-- McDonald's pole sign by wall a -> b of its restaurant, facing out: the first of a few spots
+-- beyond the wall's ends, nearest the street first, that is off any carriageway and clear of
+-- the building
+function BLD.shopPoleSign(scene, a, b, length, rings, ground, segmentBins)
+  local S, A = BLD.SHOP, BLD.SHOP.arches
+  for _, spot in ipairs({{-4, 7}, {length + 4, 7}, {-4, 4}, {length + 4, 4}, {-6, 1}, {length + 6, 1},
+      {-4, 12}, {length + 4, 12}}) do
+    local p = wallPoint(a, b, length, spot[1], spot[2], 0)
+    if not BLD.street(segmentBins, p[1], p[2], 1.5) and not inside(rings, p[1], p[2]) and not nearEdge(rings, p[1], p[2], 2) then
+      local T = SOLID.frame(p[1], p[2], ground(p[1], p[2]), math.atan2(b[2] - a[2], b[1] - a[1]))
+      local w, h, r = A.panel[1] / 2, A.panel[2], A.pole / 2
+      BLD.shopBox(scene, T, -r, -r, -.3, r, r, A.top - h, BLD.shopFlat(S.metal))
+      BLD.shopBox(scene, T, -w, -.2, A.top - h, w, .2, A.top, BLD.shopFlat(30), {front = BLD.shopUV(A.red), under = true})
+      local uv = BLD.shopUV(A.red)
+      BLD.shopQuad(scene, {T(w, .21, A.top - h), T(-w, .21, A.top - h), T(-w, .21, A.top), T(w, .21, A.top)}, uv)
+      BLD.shopArches(scene, T, A.top)
+      return true
+    end
+  end
+  return false
 end
 
 -- The mapped points by 100 m bin, the buildings their sites hold (shops.own: building -> cell),
@@ -3742,7 +3828,7 @@ end
 -- (and cladding) round every wall, a sign on the longest wall of each side, glazing on the street
 -- walls (or the longest). Any other point dresses the street wall nearest it: its fascia over the
 -- ground floor, the sign on it, glazing under it.
-function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins)
+function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins, ground)
   local S = BLD.SHOP
   local W, P = S.whole, S.part
   local tags = building.tags or NONE
@@ -3777,8 +3863,22 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
     local low = top - fh
     local face, accent = BLD.shopFlat(own, 2), style.accent and BLD.shopFlat(own, 3)
     local glass = math.min(base + W.glass, low - (accent and W.accent or 0) - .1)
-    local anyStreet, sides = false, {}
-    for _, wall in ipairs(walls) do anyStreet = anyStreet or wall.street end
+    local anyStreet, sides, front = false, {}, nil
+    for _, wall in ipairs(walls) do
+      anyStreet = anyStreet or wall.street
+      if wall.street and (not front or wall.length > front.length) then front = wall end
+    end
+    front = front or longest
+    -- a network with photographs (McDonald's) wears them: its entrance tower in the middle of the
+    -- front wall, its dining room's glazing along the street walls
+    local photo = S.photo[style.photo or '']
+    local tower
+    if photo and front.length >= 6 then
+      local B = S.bay
+      local h = math.max(B.least, math.min(B.most, height + 3))
+      local w = math.min(h / 2, front.length * .6)
+      tower = {w = w, h = 2 * w}
+    end
     for _, wall in ipairs(walls) do
       local a, b, length = wall.a, wall.b, wall.length
       if branded then
@@ -3787,7 +3887,21 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
         if accent then BLD.shopBand(scene, a, b, length, -.07, length + .07, low - W.accent, low, .07, accent) end
       end
       if length >= 4 and glass > base + 2 and (wall.street or (not anyStreet and wall == longest)) then
-        BLD.shopFront(scene, a, b, length, length * (1 - W.front) / 2, length * (1 + W.front) / 2, bottom, glass, base)
+        if photo then
+          -- whole panes of the photograph, as tall as fits under the fascia
+          local gh = math.min(photo.wide[2], glass - (base + .4))
+          local gw = gh * photo.wide[1] / photo.wide[2]
+          local skip0, skip1 = math.huge, -math.huge
+          if wall == front and tower then skip0, skip1 = (length - tower.w) / 2 - .3, (length + tower.w) / 2 + .3 end
+          for n = 0, math.floor((length - 1) / gw) - 1 do
+            local s0 = (length - math.floor((length - 1) / gw) * gw) / 2 + n * gw
+            if gh >= 1.5 and (s0 + gw <= skip0 or s0 >= skip1) then
+              BLD.shopPhoto(scene, a, b, length, s0, s0 + gw, base + .4, base + .4 + gh, .06, photo.glass)
+            end
+          end
+        else
+          BLD.shopFront(scene, a, b, length, length * (1 - W.front) / 2, length * (1 + W.front) / 2, bottom, glass, base)
+        end
       end
       -- the longest wall of each of four sides carries the sign, sized by the whole side (OSM
       -- draws a long facade as several walls)
@@ -3796,9 +3910,20 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
       sides[side + 4] = (sides[side + 4] or 0) + length
     end
     local uv, aspect = BLD.shopMark(own)
+    if style.wordmark then uv, aspect = BLD.shopUV(style.wordmark), 4 end
+    if tower then
+      -- the tower: a charcoal box `out` m before the wall with the photograph on its face
+      local a, b, length = front.a, front.b, front.length
+      local p = wallPoint(a, b, length, length / 2, 0, 0)
+      local T = SOLID.frame(p[1], p[2], 0, math.atan2(b[2] - a[2], b[1] - a[1]))
+      local w, out = tower.w / 2, S.bay.out
+      BLD.shopBox(scene, T, -w, -out, bottom, w, .05, base + tower.h, face)
+      BLD.shopPhoto(scene, a, b, length, length / 2 - w, length / 2 + w, base, base + tower.h, out + .01, photo.bay)
+    end
+    if style.pylon == 'arches' then BLD.shopPoleSign(scene, front.a, front.b, front.length, rings, ground, segmentBins) end
     for side = 1, 4 do
       local wall = sides[side]
-      if wall and wall.length >= 4 then
+      if wall and wall.length >= 4 and not (tower and wall == front) then
         -- as tall as the fascia, more on a long wall (a 100 m hypermarket's name is read from the
         -- far side of its car park), at most half the building and clear of the glazing
         local h = math.min(math.max(fh * (aspect == 1 and 1.15 or .8), sides[side + 4] * W.long[aspect == 1 and 2 or 1]),
@@ -7648,7 +7773,7 @@ local function build(cells, i, j, options)
             end
           end
         end
-        if own or #points > 0 then BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins) end
+        if own or #points > 0 then BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins, ground) end
       end
       -- A plinth under low brick and plaster walls (the photo panels have their own); garage
       -- doors along a row's long walls, or a single garage's short ones.

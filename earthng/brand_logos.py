@@ -7,6 +7,10 @@ each file's page, licence and author; fast_art.brand_art fits them into the ligh
 a trademark whatever its copyright licence: these files stay in local builds unless the packs'
 owner decides otherwise. A network without a file here keeps its typographic sign.
 
+PHOTOS are parts of photographs of real stores, squared up by four corners into facade textures
+(data/brands/<key>.png, generator.lua BLD.SHOP.photo): McDonald's entrance tower and the glazing
+of its dining room, from a CC BY-SA photograph of its restaurant on the left bank of Kyiv.
+
     python earthng/brand_logos.py            # fetch the missing ones
     python earthng/brand_logos.py --force    # fetch them all again
 """
@@ -107,6 +111,47 @@ def fetch(key, force=False):
     return meta
 
 
+# key: (Commons file, corners top left, top right, bottom right, bottom left in pixels of its
+# PHOTO_FRAME rendering, size in px)
+PHOTOS = {
+    'mcdonalds_bay': ('Левый берег Киева, осень 2021 год, 15.jpg',
+                      ((1050, 298), (1385, 270), (1357, 868), (1068, 872)), (512, 1024)),
+    'mcdonalds_glass': ('Левый берег Киева, осень 2021 год, 15.jpg',
+                        ((1507, 428), (1755, 447), (1753, 626), (1508, 618)), (512, 330)),
+}
+PHOTO_FRAME = (1920, 1440)      # the corners above are pixels of this rendering of the photograph
+
+
+def _perspective(corners, size):
+    """PIL's PERSPECTIVE coefficients taking an output of `size` from the quad `corners`."""
+    import numpy as np
+    w, h = size
+    rows, rhs = [], []
+    for (x, y), (X, Y) in zip(((0, 0), (w, 0), (w, h), (0, h)), corners):
+        rows += [[x, y, 1, 0, 0, 0, -X * x, -X * y], [0, 0, 0, x, y, 1, -Y * x, -Y * y]]
+        rhs += [X, Y]
+    return np.linalg.solve(np.array(rows, float), np.array(rhs, float)).tolist()
+
+
+def fetch_photo(key, force=False):
+    name, corners, size = PHOTOS[key]
+    target = OUT / f'{key}.png'
+    if target.exists() and not force:
+        return None
+    global WIDTH
+    width, WIDTH = WIDTH, PHOTO_FRAME[0]
+    try:
+        meta = info(name)
+    finally:
+        WIDTH = width
+    with urllib.request.urlopen(urllib.request.Request(meta['url'], headers=UA), timeout=60) as r:
+        image = Image.open(io.BytesIO(r.read())).convert('RGB')
+    kx, ky = image.width / PHOTO_FRAME[0], image.height / PHOTO_FRAME[1]
+    quad = [(x * kx, y * ky) for x, y in corners]
+    image.transform(size, Image.PERSPECTIVE, _perspective(quad, size), Image.BICUBIC).save(target)
+    return meta
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('--force', action='store_true', help='fetch every logo again')
@@ -129,6 +174,16 @@ def main():
             time.sleep(.5)              # Wikimedia's API etiquette: one request at a time, unhurried
         else:
             print(f'{key:12} kept')
+    for key in PHOTOS:
+        try:
+            meta = fetch_photo(key, args.force)
+        except (LookupError, OSError) as error:
+            print(f'{key:12} FAILED {error}')
+            continue
+        if meta:
+            sources[key] = meta
+            print(f"{key:12} {meta['file']} ({meta['licence']})")
+            time.sleep(.5)
     sources_path.write_text(json.dumps(sources, ensure_ascii=False, indent=1), encoding='utf8')
 
 

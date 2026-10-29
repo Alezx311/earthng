@@ -306,6 +306,9 @@ TEXTURES['yard'] = {'baseColorMap': f'{ART}/real/yard.color.png'}
 KINDS['yard'] = ('yard', [.6, .6, .6, 1], 'METAL', 1.0, 'wall')
 TEXTURES['brand_sign'] = {'baseColorMap': f'{ART}/real/brand_sign.color.png'}
 KINDS['brand_sign'] = ('brand_sign', [1, 1, 1, 1], 'METAL', 1.0, 'wall')
+# photographs of real stores squared up into facades (fast_art.SHOP_PHOTOS)
+TEXTURES['brand_photo'] = {'baseColorMap': f'{ART}/real/brand_photo.color.png'}
+KINDS['brand_photo'] = ('brand_photo', [1, 1, 1, 1], 'ROCK', 1.0, 'wall')
 TEXTURES['railing'] = {'baseColorMap': f'{ART}/real/railing.color.png', 'opacityMap': f'{ART}/real/railing_o.data.png'}
 RAILINGS = {'railing_blue': (52, 98, 150), 'railing_green': (46, 104, 70), 'railing_dark': (52, 54, 56)}
 for _k, _rgb in RAILINGS.items():

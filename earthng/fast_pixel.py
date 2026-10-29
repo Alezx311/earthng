@@ -188,8 +188,8 @@ def fields(base):
                    'railing_green': 'fence_mesh', 'railing_dark': 'fence_mesh'}.get(kind, kind)
         f.update(baseColorMap=f'{base}/pixel/{texture}.color.png', baseColorFactor='1 1 1 1',
                  emissiveFactor='0 0 0', roughnessFactor=.9, metallicFactor=0)
-        if kind == 'brand_sign':
-            f['baseColorMap'] = f'{base}/real/brand_sign.color.png'
+        if kind in ('brand_sign', 'brand_photo'):
+            f['baseColorMap'] = f'{base}/real/{kind}.color.png'
         if kind == 'mark_yellow':
             f['baseColorFactor'] = '0.95 0.75 0.12 1'
         fast_art.stylised_decal(kind, f)

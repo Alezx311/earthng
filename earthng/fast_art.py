@@ -405,8 +405,8 @@ def pack_fields(pack, base):
                 f['baseColorFactor'] = colour(SYNTH.get(kind, (30, 20, 50)))
         else:
             f['baseColorFactor'] = colour(FLAT.get(kind, ((200, 200, 200), (230, 230, 230)))[0 if pack == 'toon' else 1])
-        if kind == 'brand_sign':
-            f['baseColorMap'] = f'{base}/real/brand_sign.color.png'
+        if kind in ('brand_sign', 'brand_photo'):
+            f['baseColorMap'] = f'{base}/real/{kind}.color.png'
             f['baseColorFactor'] = '1 1 1 1'
         if pack != 'real':
             stylised_decal(kind, f)
@@ -516,7 +516,7 @@ def prebuild(distributable=False):
             yard_art(shared / 'real')
             to_dds(shared / 'real')
         stamp = shared / 'real' / 'brand_sign.version'
-        if not (shared / 'real' / 'brand_sign.glow.dds').exists() or not stamp.exists() or stamp.read_text() != BRAND_ART_VERSION:
+        if not (shared / 'real' / 'brand_photo.glow.dds').exists() or not stamp.exists() or stamp.read_text() != BRAND_ART_VERSION:
             brand_art(shared / 'real')
             to_dds(shared / 'real')
         write_manifest(shared)  # environment/fields are code, not a texture cache
@@ -609,10 +609,12 @@ YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (2
 # Cells 34-35, 36-37 and 38-39 hold each network's sign, facade and accent colours as stripes of
 # 32 px (16 a cell): the cladding, fascia and stripes of its shops, canopies and pumps. The price
 # board is a block of one column by four rows; beside it 12 square signs of 256 px (SHOP_SQUARE);
-# the last two rows are flat colours. A lightbox is the network's real logo where
+# the last two rows are flat colours and McDonald's word mark (SHOP_WORDMARKS). Photographs of
+# real stores (brand_logos.PHOTOS) go into brand_photo.color.png (SHOP_PHOTOS). A lightbox is the
+# network's real logo where
 # earthng/brand_logos.py fetched one into data/brands/<key>.png (Wikimedia Commons): on a white
 # panel when the logo is see-through, else on its own background; otherwise its name in type.
-BRAND_ART_VERSION = '6'  # change whenever an existing atlas cell changes
+BRAND_ART_VERSION = '7'  # change whenever an existing atlas cell changes
 # (label, sign colour, key in generator.lua SOLID.BRANDS[, letters when not white])
 BRAND_SIGNS = [
     ('OKKO', (0,90,50), 'okko', (255,205,0)), ('WOG', (0,150,60), 'wog'), ('УКРНАФТА', (0,72,150), 'ukrnafta'),
@@ -663,7 +665,9 @@ BRAND_STYLE = {
     'parallel': {'facade': (0, 140, 70), 'accent': (240, 120, 30)},
     'vst': {'facade': (230, 75, 32)},
     'bvs': {'facade': (16, 106, 164)},
-    'mcdonalds': {'facade': (200, 16, 46), 'accent': (255, 199, 44), 'square': 8},
+    # as its new restaurants (a photograph from Kyiv's left bank): charcoal, a wooden band, the
+    # entrance tower and dining room glazing from that photograph, its word mark on every side
+    'mcdonalds': {'facade': (38, 38, 40), 'accent': (150, 100, 60), 'clad': True, 'square': 8},
     'nova_poshta': {'facade': (218, 41, 28)},
 }
 SHOP_COLS, SHOP_ROWS, SHOP_CELL = 4, 16, (512, 128)
@@ -673,10 +677,14 @@ SHOP_SWATCH = (34, 36, 38)                                                # sign
 SHOP_SQUARE = (512, 1280, 256, 6)                                         # x, y, size, per row: 12 slots
 # logos drawn on the network's colour rather than a white panel
 LOGO_ON_COLOUR = {'mcdonalds'}
+# cell: (word, panel, letters): McDonald's name on its fascias and under its pylon's arches
+SHOP_WORDMARKS = {61: ("McDonald's", (30, 30, 32), (255, 255, 255)), 62: ("McDonald's", (200, 16, 46), (255, 255, 255))}
+# brand_photo.color.png (2048 x 1024): key -> (x, y) of its rectified photograph
+SHOP_PHOTOS = {'mcdonalds_bay': (0, 0), 'mcdonalds_glass': (512, 0)}
 # cell: (colour, lit at night): a white panel, the lit underside of a canopy, a dark body,
-# brushed metal, the concrete of a pump island
+# brushed metal, the concrete of a pump island, McDonald's gold (its pole sign's arches)
 SHOP_FLATS = {56: ((232, 233, 230), False), 57: ((238, 238, 232), True), 58: ((44, 46, 50), False),
-              59: ((168, 172, 176), False), 60: ((150, 148, 142), False)}
+              59: ((168, 172, 176), False), 60: ((150, 148, 142), False), 63: ((255, 199, 44), True)}
 
 
 def _shop_font(size):
@@ -826,8 +834,18 @@ def brand_art(r, logos=None):
     glow.paste(_price_board(True), at)
     for index, (colour, lit) in SHOP_FLATS.items():
         put(index, Image.new('RGB', SHOP_CELL, colour), lit)
+    for index, (word, panel, letters) in SHOP_WORDMARKS.items():
+        put(index, _lightbox(panel, word, letters), True)
     atlas.save(r / 'brand_sign.color.png')
     glow.save(r / 'brand_sign.glow.png')
+    # the photographs, charcoal where one is missing; by night a little of their own light
+    photo = Image.new('RGB', (2048, 1024), (38, 38, 40))
+    for key, at in SHOP_PHOTOS.items():
+        path = own / f'{key}.png'
+        if path.is_file():
+            photo.paste(Image.open(path).convert('RGB'), at)
+    photo.save(r / 'brand_photo.color.png')
+    photo.point(lambda v: round(v * .7)).save(r / 'brand_photo.glow.png')
     (r / 'brand_sign.version').write_text(BRAND_ART_VERSION)
 
 
@@ -842,10 +860,11 @@ def logo_credits(logos=None):
             for key, s in sorted(json.loads(sources.read_text(encoding='utf8')).items()) if (own / f'{key}.png').is_file()]
     if not rows:
         return ''
-    return ('# Network logos on shop and fuel station signs\n\n'
-            'From Wikimedia Commons (earthng/brand_logos.py), fitted into e2r_stream/fast-art/*/real/brand_sign.*: '
-            'that atlas is shared under CC BY-SA 4.0 where it holds a CC BY-SA logo. The logos are trademarks of '
-            'their owners; their use here endorses nothing.\n\n' + '\n'.join(rows) + '\n')
+    return ('# Network logos and store photographs on shop and fuel station signs\n\n'
+            'From Wikimedia Commons (earthng/brand_logos.py), fitted into e2r_stream/fast-art/*/real/brand_sign.* '
+            '(logos) and brand_photo.* (photographs squared up into facades): each is shared under CC BY-SA 4.0 '
+            'where it holds a CC BY-SA file. The logos are trademarks of their owners; their use here endorses '
+            'nothing.\n\n' + '\n'.join(rows) + '\n')
 
 
 def yard_art(r):
