@@ -212,6 +212,20 @@ class FacadeDetailTests(unittest.TestCase):
         self.assertEqual(lua.decode('utf8') if isinstance(lua, bytes) else lua, fast_style.GLYPHS)
         self.assertLessEqual(len(fast_style.GLYPHS), fast_style.GLYPHS_PER_ROW ** 2)
 
+    def test_mapped_benches_face_the_nearest_path(self):
+        import math
+        bench = {'id': '-1000000000555:0', 'kind': 'bench', 'pos': [130, 150, 0], 'tags': {'amenity': 'bench'}}
+        for py, want in ((154, 0.0), (146, math.pi)):
+            path = {'id': 'p1', 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[100, py, 0], [200, py, 0]]}
+            cells = [{'roads': [self.road], 'points': [bench], 'lines': [path]}]
+            off = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0)[1]
+            self.assertFalse([it for it in off['items'].values() if 'point_' in str(it.name)])
+            on = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0, experimentalDetail=True)[1]
+            [it] = [it for it in on['items'].values() if 'point_' in str(it.name)]
+            self.assertTrue(it.shape.endswith('bench_wood.dae'))
+            self.assertEqual((it.pos[1], it.pos[2]), (130, 150))
+            self.assertAlmostEqual(abs(2 * math.atan2(it.rot[3], it.rot[4])), want, places=4)
+
 
 class RoadCoverTests(unittest.TestCase):
     def setUp(self):

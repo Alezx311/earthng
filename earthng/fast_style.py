@@ -536,6 +536,8 @@ def point_kind(tags):
         return 'poi'
     if POIS and tags.get('entrance') in DOORS:
         return 'door'
+    if POIS and tags.get('amenity') == 'bench':
+        return 'bench'
     return None
 
 

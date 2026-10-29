@@ -8586,11 +8586,30 @@ local function build(cells, i, j, options)
     if p and point.kind == 'stop' and wantStops then
       shelter(point, p)
     elseif p and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
-      local shape = point.kind == 'tree' and VEG.tree or (point.kind == 'lamp' and wantLamps) and LAMP
+      local shape = point.kind == 'tree' and VEG.tree or (point.kind == 'lamp' and wantLamps) and LAMP or
+        (point.kind == 'bench' and options.experimentalDetail) and BENCH[1]
       local x, y, z
       if shape then x, y, z = OFFROAD.offCarriageway(point, p) end
       if x then
-        static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), shape, x, y, z, 0)
+        -- a mapped bench faces the nearest path or road within 8 m (its front is local +y)
+        local yaw = 0
+        if point.kind == 'bench' then
+          local best, fx, fy = 8
+          for _, line in ipairs(lists.lines) do
+            if line.kind == 'path' then
+              local pts = line.points or NONE
+              for q = 1, #pts - 1 do
+                local d, t = segDistance(x, y, pts[q], pts[q + 1])
+                if d < best and d > .3 then
+                  local l = math.max(EPS, math.sqrt((pts[q + 1][1] - pts[q][1]) ^ 2 + (pts[q + 1][2] - pts[q][2]) ^ 2))
+                  best, fx, fy = d, pts[q][1] + (pts[q + 1][1] - pts[q][1]) * t / l, pts[q][2] + (pts[q + 1][2] - pts[q][2]) * t / l
+                end
+              end
+            end
+          end
+          if fx then yaw = math.atan2(fx - x, fy - y) end
+        end
+        static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), shape, x, y, z, yaw)
         local it = scene.items[#scene.items]
         it.prop, it.streetKind, it.collision = true, point.kind, 'Collision Mesh'
       end
