@@ -94,5 +94,58 @@ class FacadeDetailTests(unittest.TestCase):
             self.assertFalse([t for t in self.tris(loggia, 'ac_unit')])
 
 
+class RoadCoverTests(unittest.TestCase):
+    def setUp(self):
+        self.h = test_generator.GeneratorTests()
+        self.h.setUp()
+
+    def covers(self, tags, i=0, points=None, **opts):
+        road = {'id': 'w1', 'width': 8, 'tags': tags, 'points': points or [[-200, 250, 0], [1200, 250, 0]]}
+        out = self.h.build([{'roads': [road]}], i, 0, maxTrees=0, maxGrass=0, **opts)
+        result = {}
+        for kind in ('manhole', 'drain'):
+            result[kind] = [t for m in out[:2] for t in self.h.triangles(m, 'e2rf_' + kind)]
+        return result
+
+    def centres(self, triangles):
+        # two triangles a quad: the centre of each quad's four corners
+        pts = sorted({(round(p[0], 3), round(p[1], 3)) for t in triangles for p in t})
+        return pts
+
+    def test_off_by_default_and_only_on_town_streets(self):
+        town = {'highway': 'residential', 'sidewalk': 'both'}
+        self.assertEqual(self.covers(town), {'manhole': [], 'drain': []})
+        on = self.covers(town, experimentalDetail=True)
+        self.assertTrue(on['manhole'] and on['drain'])
+        self.assertEqual(self.covers({'highway': 'service', 'sidewalk': 'both'}, experimentalDetail=True),
+                         {'manhole': [], 'drain': []})
+        self.assertEqual(self.covers({'highway': 'residential', 'sidewalk': 'no'}, experimentalDetail=True),
+                         {'manhole': [], 'drain': []})
+        self.assertEqual(self.covers({'highway': 'residential', 'sidewalk': 'both', 'bridge': 'yes', 'layer': '1'},
+                                     experimentalDetail=True), {'manhole': [], 'drain': []})
+
+    def test_lattice_spacing_sides_and_tile_seams(self):
+        town = {'highway': 'residential', 'sidewalk': 'both'}
+        tiles = {i: self.covers(town, i=i, experimentalDetail=True) for i in (-1, 0, 1)}
+
+        def area(tris):
+            return sum(abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) / 2 for a, b, c in tris)
+        holes = [t for i in (-1, 0, 1) for t in tiles[i]['manhole']]
+        # each tile draws its part: whole covers add up to whole areas (0.82 m squares)
+        self.assertAlmostEqual(area(holes) / (.82 * .82), round(area(holes) / (.82 * .82)), places=3)
+        # the one on the seam at x = 0 is split between tiles -1 and 0
+        seam = [t for i in (-1, 0) for t in tiles[i]['manhole'] if min(p[0] for p in t) > -1 and max(p[0] for p in t) < 1]
+        self.assertAlmostEqual(area(seam), .82 * .82, places=4)
+        whole = [t for t in tiles[0]['manhole'] + tiles[1]['manhole'] if max(p[0] for p in t) - min(p[0] for p in t) > .8]
+        cx = sorted({round((min(p[0] for p in t) + max(p[0] for p in t)) / 2, 2) for t in whole})
+        self.assertEqual({round(b - a, 2) for a, b in zip(cx, cx[1:])}, {55.0})
+        # alternating lanes: 0.45 of the half width off the centre line (y = 250)
+        ys = {round((min(p[1] for p in t) + max(p[1] for p in t)) / 2, 2) for t in whole}
+        self.assertEqual(ys, {round(250 + 1.8, 2), round(250 - 1.8, 2)})
+        # drains at both curbs, inside the carriageway
+        drains = [t for i in (0, 1) for t in tiles[i]['drain']]
+        dy = {round((min(p[1] for p in t) + max(p[1] for p in t)) / 2, 2) for t in drains}
+        self.assertEqual(dy, {round(250 + 4 - .24 - .12, 2), round(250 - 4 + .24 + .12, 2)})
+
 if __name__ == '__main__':
     unittest.main()

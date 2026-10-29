@@ -293,6 +293,15 @@ BUILDING_FALLBACK['plinth_brown'] = 'concrete'
 # Facade details (generator.lua BLD.details, options.experimentalDetail): galvanised downpipes
 # as a flat grey, air-conditioner boxes on the game's metal cladding
 KINDS['pipe'] = (None, [.50, .51, .52, 1], 'METAL', 1.0, 'wall')
+# covers in the asphalt (generator.lua ROADS.covers): the Italy manhole sheet and the grid
+# drain, cut by their opacity like the lines; drawn only where the game has these maps
+TEXTURES['manhole'] = _maps('/assets/materials/baked_props/italy_ground_parts', 't_manhole_01_decal', 'b', 'nm', 'r', 'ao', 'o')
+TEXTURES['drain'] = _maps(f'{_DR}/detail/m_metal_grid_drain', 't_metal_grid_drain', 'b', 'nm', 'r', 'ao', 'o')
+KINDS['manhole'] = ('manhole', [.42, .41, .40, 1], 'METAL', 1.0, 'strip')
+KINDS['drain'] = ('drain', [.30, .29, .28, 1], 'METAL', 1.0, 'strip')
+for _k in ('manhole', 'drain'):
+    EXTRA[_k] = {'alphaTest': True, 'alphaRef': 77, 'castShadows': False}
+    BUILDING_FALLBACK[_k] = None
 KINDS['ac_unit'] = ('cladding', [.84, .84, .82, 1], 'METAL', 1.0, 'wall')
 BUILDING_FALLBACK['ac_unit'] = None
 FALLBACK.update(BUILDING_FALLBACK)

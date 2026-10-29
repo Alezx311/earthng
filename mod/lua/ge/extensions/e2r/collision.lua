@@ -12,7 +12,7 @@
 local M = {}
 
 local QUIET = {road = {}, scene = {}}
-for _, kind in ipairs({'mark', 'mark_yellow', 'edge_grass', 'edge_dirt'}) do
+for _, kind in ipairs({'mark', 'mark_yellow', 'edge_grass', 'edge_dirt', 'manhole', 'drain'}) do
   QUIET.road['e2rf_' .. kind], QUIET.scene['e2rf_' .. kind] = true, true
 end
 for _, kind in ipairs({'roof', 'roof_tile', 'roof_metal', 'roof_sheet', 'roof_mtile_red', 'roof_mtile_brown',

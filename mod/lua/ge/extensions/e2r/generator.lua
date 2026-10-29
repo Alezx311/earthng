@@ -468,6 +468,27 @@ for _, stem in ipairs({'vegetation/dirt_road_edge_grassy_d/t_road_edge_grass_02'
     EDGE_MAPS[#EDGE_MAPS + 1] = '/assets/materials/decalroad/' .. stem .. suffix .. '.dds'
   end
 end
+-- The maps of the road covers (ROADS.covers): the Italy manhole sheet and the grid drain.
+local COVER_MAPS = {}
+for _, stem in ipairs({'baked_props/italy_ground_parts/t_manhole_01_decal', 'decalroad/detail/m_metal_grid_drain/t_metal_grid_drain'}) do
+  for _, suffix in ipairs({'_b.color', '_nm.normal', '_o.data'}) do
+    COVER_MAPS[#COVER_MAPS + 1] = '/assets/materials/' .. stem .. suffix .. '.dds'
+  end
+end
+local coversFound
+local function coversPresent()
+  if coversFound == nil then
+    coversFound = true
+    if FS then
+      for _, path in ipairs(COVER_MAPS) do
+        local ok, found = pcall(function() return FS:fileExists(path) end)
+        if not (ok and found) then coversFound = false; break end
+      end
+    end
+  end
+  return coversFound
+end
+
 local decalsFound
 local function decalsPresent()
   if decalsFound == nil then
@@ -3200,6 +3221,71 @@ function BLD.downpipes(scene, rings, base, top, height, kind)
     BLD.box(scene, 'pipe', c.a, c.p, c.len, s0, s1, o0, o0 + .38, base + .1, base + .32, true, true, false)
   end
   return math.min(D.pipeMax, #corners)
+end
+
+-- Covers in a town street's asphalt (options.experimentalDetail; synthetic, not mapped): a
+-- round manhole every manholeStep m, in the gap between the wheel paths of one lane and then
+-- the other, and a grid drain every drainStep m at each curb that has a sidewalk. Lattices run
+-- from the road's source start (strip.start + dist), phased by its id, so tiles and junction
+-- cuts agree; every tile a cover touches draws it (the collector clips it to the tile), and
+-- none lies within `clear` m of a cut end (a junction's fan).
+ROADS.COVERS = {manholeStep = 55, drainStep = 38, clear = 7, manhole = .82, drain = {.48, .95},
+  classes = {residential = true, tertiary = true, secondary = true, primary = true, unclassified = true,
+    living_street = true}}
+function ROADS.covers(strips, rect, lift, decor, pause)
+  local C = ROADS.COVERS
+  for n, strip in ipairs(strips) do
+    local tags, points, dist = strip.tags, strip.points, strip.dist
+    local class = (tags.highway or ''):gsub('_link$', '')
+    if strip.surface and strip.grade <= 1 and C.classes[class] and strip.hw >= 2.5 and #points >= 2 then
+      local total, start, seed = dist[#dist], strip.start or 0, hash(tostring(strip.road.id or n))
+      local function place(step, phase, put)
+        for m = math.ceil((start + C.clear - phase) / step), math.floor((start + total - C.clear - phase) / step) do
+          local at = m * step + phase - start
+          local k = 1
+          while k < #points - 1 and dist[k + 1] < at do k = k + 1 end
+          local a, b = points[k], points[k + 1]
+          local len = dist[k + 1] - dist[k]
+          if len > EPS then
+            local f = (at - dist[k]) / len
+            local ux, uy = (b[1] - a[1]) / len, (b[2] - a[2]) / len
+            put(m, k, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, (a[3] or 0) + ((b[3] or 0) - (a[3] or 0)) * f, ux, uy)
+          end
+        end
+      end
+      local function quad(kind, x, y, z, ux, uy, along, across, u0, v0, u1, v1)
+        if not boundsTouch(rect, {x - 1, y - 1, x + 1, y + 1}) then return end
+        local nx, ny, ha, hc = -uy, ux, along / 2, across / 2
+        local zz = z + lift + DECAL.markLift * 1.5
+        decor.polygon(kind, {{x - ux * ha - nx * hc, y - uy * ha - ny * hc, zz, u0, v0},
+          {x - ux * ha + nx * hc, y - uy * ha + ny * hc, zz, u1, v0},
+          {x + ux * ha + nx * hc, y + uy * ha + ny * hc, zz, u1, v1},
+          {x + ux * ha - nx * hc, y + uy * ha - ny * hc, zz, u0, v1}}, 'flat')
+      end
+      local town = false
+      for k = 1, #points - 1 do
+        local w = strip.walk[k] or NONE
+        if w[1] or w[-1] then town = true; break end
+      end
+      if town then
+        place(C.manholeStep, seed % C.manholeStep, function(m, k, x, y, z, ux, uy)
+          local side = m % 2 == 0 and 1 or -1
+          local off = strip.hw * .45 * side
+          -- the round cover: the upper right quarter of the sheet
+          quad('manhole', x - uy * off, y + ux * off, z, ux, uy, C.manhole, C.manhole, .5, 0, 1, .5)
+        end)
+        place(C.drainStep, (seed * 7 + 11) % C.drainStep, function(m, k, x, y, z, ux, uy)
+          for _, side in ipairs({1, -1}) do
+            if (strip.walk[k] or NONE)[side] then
+              local off = (strip.hw - C.drain[1] / 2 - .12) * side
+              quad('drain', x - uy * off, y + ux * off, z, ux, uy, C.drain[2], C.drain[1], 0, 0, 1, .5)
+            end
+          end
+        end)
+      end
+    end
+    if n % 16 == 0 then pause() end
+  end
 end
 
 -- True when a carriageway (not a yard driveway) passes within r metres of (x, y).
@@ -7287,6 +7373,9 @@ local function build(cells, i, j, options)
     end
   end
 
+  if visualRoads and not distant and options.experimentalDetail and coversPresent() then
+    ROADS.covers(strips, rect, lift, roadDecor, pause)
+  end
   if visualRoads and not distant then
     ROADS.aprons({roads = lists.roads, rect = rect, lift = lift, pause = pause,
       polygon = function(material, poly, up) roads.polygon(material, poly, up) end})
