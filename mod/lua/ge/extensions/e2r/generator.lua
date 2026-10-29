@@ -3173,7 +3173,7 @@ function BLD.acUnits(scene, a, b, length, along, base, height, kind, h, spans, r
   local n = 0
   for k = math.ceil((along + .3) / D.cell), math.floor((along + length - .3) / D.cell) - 1 do
     local s = k * D.cell - along + D.cell / 2
-    for f = 1, floors - 1 do
+    for f = 1, BLD.balconyColumn(kind, height, h, k) and 0 or floors - 1 do
       if ihash(h, k, f, 31) % 1000 < rate * 1000 then
         local z0 = base + f * D.cell + .22
         local clear = true
@@ -3185,6 +3185,70 @@ function BLD.acUnits(scene, a, b, length, along, base, height, kind, h, spans, r
             z0, z0 + .52, false, true, true)
           n = n + 1
           if n >= room then return n end
+        end
+      end
+    end
+  end
+  return n
+end
+
+-- Balconies of a brick or plaster block of three to six floors (the khrushchovka): stacks on
+-- some 3 m window columns of a wall, never two side by side, from the first floor up. A
+-- concrete slab, a parapet of profiled sheet (pale or brown by building), and on about half
+-- of them glazing (the office glass) up to the slab above, a roof slab over the top one.
+BLD.BALCONY = {column = .3, glazed = .55, width = {.12, .82}, depth = .95, minFloors = 3, maxFloors = 6}
+
+-- Whether the 3 m column k of a building (hash h) carries a balcony stack, for a wall kind.
+function BLD.balconyColumn(kind, height, h, k)
+  local B = BLD.BALCONY
+  if not (kind:find('wall_brk_', 1, true) == 1 or kind:find('wall_pls_', 1, true) == 1) or kind:find('_end$') then
+    return false
+  end
+  local floors = math.floor((height - .3) / BLD.DETAIL.cell)
+  if floors < B.minFloors or floors > B.maxFloors then return false end
+  local function chosen(c) return ihash(h, c, 0, 61) % 1000 < B.column * 1000 end
+  return chosen(k) and not chosen(k - 1)
+end
+
+function BLD.balconies(scene, a, b, length, along, base, height, kind, h, spans)
+  local B, D = BLD.BALCONY, BLD.DETAIL
+  if length < 6 then return 0 end
+  local floors = math.floor((height - .3) / D.cell)
+  local sheet = h % 3 == 0 and 'clad_tin' or 'clad_metal'
+  local n = 0
+  for k = math.ceil((along + .3) / D.cell), math.floor((along + length - .3) / D.cell) - 1 do
+    if BLD.balconyColumn(kind, height, h, k) then
+      local c0 = k * D.cell - along
+      local s0, s1 = c0 + B.width[1] * D.cell, c0 + B.width[2] * D.cell
+      local clear = true
+      for _, span in ipairs(spans or NONE) do
+        if s1 > span[1] and s0 < span[2] then clear = false end
+      end
+      for f = 1, floors - 1 do
+        local z = base + f * D.cell
+        if clear or z > base + BLD.SHOP.band + .1 then
+          local o = B.depth
+          BLD.box(scene, 'plinth', a, b, length, s0, s1, .02, o, z - .02, z + .12, false, true, true)
+          BLD.box(scene, sheet, a, b, length, s0, s1, o - .05, o, z + .12, z + 1.05, true, true, false)
+          BLD.box(scene, sheet, a, b, length, s0, s0 + .05, .02, o - .05, z + .12, z + 1.05, true, true, false)
+          BLD.box(scene, sheet, a, b, length, s1 - .05, s1, .02, o - .05, z + 1.05 - .93, z + 1.05, true, true, false)
+          if ihash(h, k, f, 67) % 1000 < B.glazed * 1000 then
+            local g0, g1 = z + 1.05, z + D.cell - .02
+            local function pane(p, q, r, t)
+              scene.polygon('wall_off_grey', {p, q, r, t}, false)
+            end
+            local u0, u1 = (along + s0) / 6, (along + s1) / 6
+            pane(wallPoint(a, b, length, s0, o - .03, g0, u0, .02), wallPoint(a, b, length, s1, o - .03, g0, u1, .02),
+              wallPoint(a, b, length, s1, o - .03, g1, u1, .02 + (g1 - g0) / 6), wallPoint(a, b, length, s0, o - .03, g1, u0, .02 + (g1 - g0) / 6))
+            pane(wallPoint(a, b, length, s1, o - .03, g0, 0, .02), wallPoint(a, b, length, s1, .02, g0, (o - .05) / 6, .02),
+              wallPoint(a, b, length, s1, .02, g1, (o - .05) / 6, .02 + (g1 - g0) / 6), wallPoint(a, b, length, s1, o - .03, g1, 0, .02 + (g1 - g0) / 6))
+            pane(wallPoint(a, b, length, s0, .02, g0, 0, .02), wallPoint(a, b, length, s0, o - .03, g0, (o - .05) / 6, .02),
+              wallPoint(a, b, length, s0, o - .03, g1, (o - .05) / 6, .02 + (g1 - g0) / 6), wallPoint(a, b, length, s0, .02, g1, 0, .02 + (g1 - g0) / 6))
+          end
+          if f == floors - 1 then
+            BLD.box(scene, 'plinth', a, b, length, s0, s1, .02, o + .05, z + D.cell - .02, z + D.cell + .1, false, true, true)
+          end
+          n = n + 1
         end
       end
     end
@@ -3219,7 +3283,7 @@ function BLD.windowExtras(scene, a, b, length, along, base, height, kind, h, spa
         wallPoint(a, b, length, s0, .06, z1, 0, 1)}, false)
       n = n + 1
     end
-    for f = 1, floors - 1 do
+    for f = 1, BLD.balconyColumn(kind, height, h, k) and 0 or floors - 1 do
       if ihash(h, k, f, 53) % 1000 < X.dish * 1000 then
         -- on the pier right of the window, a little over its middle
         local s, z, r = c0 + .89 * D.cell, base + f * D.cell + 1.75, X.dishR
@@ -7878,6 +7942,7 @@ local function build(cells, i, j, options)
           if detailed and raw == rings[1] then
             acRoom = acRoom - BLD.acUnits(scene, a, b, length, along, base, height, wallKind, h, spans, acRoom)
             BLD.windowExtras(scene, a, b, length, along, base, height, wallKind, h, spans)
+            BLD.balconies(scene, a, b, length, along, base, height, wallKind, h, spans)
           end
           if dress and dress.mass and length > .4 then BLD.cornice(scene, a, b, length, top) end
           if BLD.city and raw == rings[1] and length > 6 and not plinth then BLD.socle(scene, a, b, length, bottom, base) end

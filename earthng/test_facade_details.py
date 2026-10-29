@@ -123,6 +123,30 @@ class FacadeDetailTests(unittest.TestCase):
                 if abs(y - 100) < .2:
                     self.assertFalse(156 < x < 164, (x, y))
 
+    def test_balcony_stacks_on_khrushchovkas(self):
+        ring = [[100, 100], [220, 100], [220, 112], [100, 112]]
+        off = self.build([self.block('brick', 15, ring=ring)])[1]
+        self.assertFalse(self.tris(off, 'clad_metal') + self.tris(off, 'clad_tin'))
+        scene = self.build([self.block('brick', 15, ring=ring)], experimentalDetail=True)[1]
+        sheets = self.tris(scene, 'clad_metal') + self.tris(scene, 'clad_tin')
+        self.assertTrue(sheets)
+        walls = [p[2] for _, m in self.h.meshes(scene) if m.material.startswith('e2rf_wall_brk')
+                 for t in self.h.triangles(scene, m.material) for p in t]
+        base = min(walls) + .3
+        self.assertGreaterEqual(min(p[2] for t in sheets for p in t) - base, 3)
+        # no more than a metre out from the walls
+        for t in sheets:
+            for x, y, _ in t:
+                self.assertTrue(99 - 1e-6 <= x <= 221 + 1e-6 and 99 - 1e-6 <= y <= 113 + 1e-6, (x, y))
+        # columns on the street wall (y = 100): 3 m cells, no two side by side
+        cols = sorted({int((sum(p[0] for p in t) / 3 - 100) // 3) for t in sheets if max(p[1] for p in t) < 100})
+        self.assertTrue(cols)
+        self.assertFalse([a for a, b in zip(cols, cols[1:]) if b - a == 1])
+        # not on a panel block, nor on a nine-storey brick one
+        for material, height in (('panel', 15), ('brick', 27)):
+            other = self.build([self.block(material, height, ring=ring)], experimentalDetail=True)[1]
+            self.assertFalse(self.tris(other, 'wall_off_grey'), (material, height))
+
 
 class RoadCoverTests(unittest.TestCase):
     def setUp(self):
