@@ -542,6 +542,8 @@ def point_kind(tags):
         return 'bench'
     if POIS and tags.get('barrier') == 'lift_gate':
         return 'lift_gate'
+    if POIS and tags.get('barrier') in ('gate', 'swing_gate', 'sliding_gate', 'wicket_gate'):
+        return 'gate'
     return None
 
 

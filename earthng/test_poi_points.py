@@ -30,7 +30,8 @@ class PoiPointTests(unittest.TestCase):
         self.assertEqual(style.point_kind({'entrance': 'emergency'}), None)
         self.assertEqual(style.point_kind({'amenity': 'bench', 'backrest': 'yes'}), 'bench')
         self.assertEqual(style.point_kind({'barrier': 'lift_gate'}), 'lift_gate')
-        self.assertIsNone(style.point_kind({'barrier': 'gate'}))
+        self.assertEqual(style.point_kind({'barrier': 'gate'}), 'gate')
+        self.assertIsNone(style.point_kind({'barrier': 'bollard'}))
         for tags in ({'shop': 'bakery'}, {'office': 'insurance'}, {'craft': 'shoemaker'},
                      {'amenity': 'pharmacy'}, {'amenity': 'cafe', 'name': 'Кава'}):
             with self.subTest(tags=tags):

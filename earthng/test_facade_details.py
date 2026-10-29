@@ -259,6 +259,26 @@ class FacadeDetailTests(unittest.TestCase):
         self.assertLess(max(p[0] for p in pts) - min(p[0] for p in pts), .1)
         self.assertGreater(max(p[2] for p in pts) - min(p[2] for p in pts), 2.5)
 
+    def test_mapped_gates_open_their_fences(self):
+        fence = {'id': 'f1', 'kind': 'fence', 'tags': {'barrier': 'fence'}, 'points': [[100, 300, 0], [140, 300, 0]]}
+        drive = {'id': '-1000000000901:0', 'kind': 'gate', 'pos': [110, 300, 0], 'tags': {'barrier': 'gate'}}
+        walk = {'id': '-1000000000902:0', 'kind': 'gate', 'pos': [130, 300.3, 0], 'tags': {'barrier': 'gate'}}
+        way = {'id': 'yard', 'width': 4, 'tags': {'highway': 'service'}, 'points': [[110, 280, 0], [110, 320, 0]]}
+        cells = [{'roads': [way], 'lines': [fence], 'points': [drive, walk]}]
+
+        def xs(on):
+            out = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0, experimentalDetail=on)[1]
+            return sorted({round(p[0], 2) for t in self.tris(out, 'fence_mesh') for p in t
+                           if abs(p[1] - 300) < .2})
+        off, on = xs(False), xs(True)
+        self.assertEqual((min(off), max(off)), (100, 140))
+        # gaps: 3.5 m round the gate on the yard way, 1.2 m round the wicket
+        self.assertFalse([x for x in on if 108.26 < x < 111.74])
+        self.assertFalse([x for x in on if 129.41 < x < 130.59])
+        for edge in (129.4, 130.6):           # by the way the fence already stops at its edge
+            self.assertIn(edge, on)
+        self.assertEqual((min(on), max(on)), (100, 140))
+
 
 class RoadCoverTests(unittest.TestCase):
     def setUp(self):

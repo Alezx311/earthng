@@ -3295,6 +3295,70 @@ function BLD.addressPlate(scene, rings, tags, base, height, roads)
   return true
 end
 
+-- A fence run without the stretches at its mapped gates (options.experimentalDetail): a gate
+-- point within `on` m of the run opens `width` (its tag), `drive` m where a road passes within
+-- `road` m of it, else `walk` m. Returns the pieces left, each two points or more.
+BLD.GATE = {on = .6, drive = 3.5, walk = 1.2, road = 4, min = .3}
+function BLD.openGates(run, gates, roads)
+  local G = BLD.GATE
+  if #gates == 0 or #run < 2 then return {run} end
+  local dist = {0}
+  for k = 2, #run do
+    dist[k] = dist[k - 1] + math.sqrt((run[k][1] - run[k - 1][1]) ^ 2 + (run[k][2] - run[k - 1][2]) ^ 2)
+  end
+  local cuts = {}
+  for _, g in ipairs(gates) do
+    local p = g.pos
+    local best, at = G.on
+    for k = 1, #run - 1 do
+      local d, t = segDistance(p[1], p[2], run[k], run[k + 1])
+      if d <= best then best, at = d, dist[k] + t end
+    end
+    if at then
+      local width = number((g.tags or NONE).width, nil)
+      if not width then
+        width = G.walk
+        for _, road in ipairs(roads or NONE) do
+          local pts = road.points or NONE
+          for k = 1, #pts - 1 do
+            if segDistance(p[1], p[2], pts[k], pts[k + 1]) <= G.road then width = G.drive; break end
+          end
+          if width == G.drive then break end
+        end
+      end
+      cuts[#cuts + 1] = {at - width / 2, at + width / 2}
+    end
+  end
+  if #cuts == 0 then return {run} end
+  table.sort(cuts, function(u, v) return u[1] < v[1] end)
+  local function point(s)
+    for k = 1, #run - 1 do
+      if s <= dist[k + 1] or k == #run - 1 then
+        local f = (dist[k + 1] - dist[k]) > EPS and (s - dist[k]) / (dist[k + 1] - dist[k]) or 0
+        f = math.max(0, math.min(1, f))
+        local a, b = run[k], run[k + 1]
+        return {a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] and b[3] and a[3] + (b[3] - a[3]) * f or nil}
+      end
+    end
+  end
+  local pieces, from = {}, 0
+  local function piece(s0, s1)
+    if s1 - s0 < G.min then return end
+    local out = {point(s0)}
+    for k = 1, #run do
+      if dist[k] > s0 and dist[k] < s1 then out[#out + 1] = run[k] end
+    end
+    out[#out + 1] = point(s1)
+    pieces[#pieces + 1] = out
+  end
+  for _, c in ipairs(cuts) do
+    if c[1] > from then piece(from, c[1]) end
+    from = math.max(from, c[2])
+  end
+  if from < dist[#dist] then piece(from, dist[#dist]) end
+  return pieces
+end
+
 -- A mapped lift gate (barrier=lift_gate, options.experimentalDetail): a post at the right edge
 -- of the way it stands on and its boom raised upright, striped red and white. Raised: a boom
 -- across the way without collision would let a car through it. Returns true when drawn.
@@ -8352,7 +8416,14 @@ local function build(cells, i, j, options)
   end
   -- Far tiles keep fences: the near scene used to be the only copy, so a wall
   -- on a far tile vanished as the camera reached it. Paths stay near-only.
-  -- Horizon draws neither.
+  -- Horizon draws neither. Mapped gates open their fences (BLD.openGates).
+  local gatePoints
+  if options.experimentalDetail then
+    gatePoints = {}
+    for _, p in ipairs(lists.points) do
+      if p.kind == 'gate' and p.pos then gatePoints[#gatePoints + 1] = p end
+    end
+  end
   for _, line in ipairs(options.horizon and NONE or lists.lines) do
     local points, tags = line.points or {}, line.tags or {}
     if line.kind == 'gantry' then
@@ -8362,7 +8433,11 @@ local function build(cells, i, j, options)
     end
     local barrier = (line.kind == 'fence' or line.kind == 'guard_rail') and #points >= 2
     for _, run in ipairs(barrier and (ROADS.offDecks(strips, points, ground) or {points}) or NONE) do
-      if #run >= 2 and line.kind == 'fence' then
+      if #run >= 2 and line.kind == 'fence' and gatePoints then
+        for _, piece in ipairs(BLD.openGates(run, gatePoints, lists.roads)) do
+          fence({tags = line.tags, points = piece})
+        end
+      elseif #run >= 2 and line.kind == 'fence' then
         fence(run == points and line or {tags = line.tags, points = run})
       elseif #run >= 2 then
         for _, piece in ipairs(ROADS.besideRoads(strips, run, tune.sidewalk)) do
