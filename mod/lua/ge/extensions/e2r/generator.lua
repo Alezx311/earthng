@@ -3123,6 +3123,72 @@ function BLD.crown(scene, rings, top, height, h, area)
   end
 end
 
+-- Roof clutter of a flat-roofed block (options.experimentalDetail): two rows of ventilation
+-- shafts along the roof's long axis, a shaft every `step` m at `chance`, and a few television
+-- antennas (a mast with two cross bars) on blocks of five floors and more. Every box must lie
+-- on the roof (the crown's test); the bulkheads of BLD.crown are kept clear.
+BLD.ROOF = {step = 6, chance = .7, shaft = {.7, .7, .9}, rows = 2.2, antennas = 3, mast = 3.2}
+function BLD.roofClutter(scene, rings, top, height, h)
+  local R = BLD.ROOF
+  local ring = cleanRing(rings[1])
+  if #ring < 3 or height < 8 then return 0 end
+  local frame = footprintFrame(ring)
+  local length, width = frame.u1 - frame.u0, frame.v1 - frame.v0
+  if width < 7 or length < 9 then return 0 end
+  local function world(u, v) return u * frame.ax + v * frame.bx, u * frame.ay + v * frame.by end
+  local function fits(u, v, du, dv)
+    for _, c in ipairs({{-1, -1}, {1, -1}, {1, 1}, {-1, 1}}) do
+      local x, y = world(u + c[1] * (du / 2 + .4), v + c[2] * (dv / 2 + .4))
+      if not inside(rings, x, y) then return false end
+    end
+    return true
+  end
+  local function box(kind, cu, cv, du, dv, z0, z1)
+    local u0, u1, v0, v1 = cu - du / 2, cu + du / 2, cv - dv / 2, cv + dv / 2
+    local function p(u, v, z, uu, vv)
+      local x, y = world(u, v)
+      return {x, y, z, uu, vv}
+    end
+    local rise = z1 - z0
+    scene.polygon(kind, {p(u0, v0, z0, 0, 0), p(u1, v0, z0, du, 0), p(u1, v0, z1, du, rise), p(u0, v0, z1, 0, rise)}, false)
+    scene.polygon(kind, {p(u1, v1, z0, 0, 0), p(u0, v1, z0, du, 0), p(u0, v1, z1, du, rise), p(u1, v1, z1, 0, rise)}, false)
+    scene.polygon(kind, {p(u1, v0, z0, 0, 0), p(u1, v1, z0, dv, 0), p(u1, v1, z1, dv, rise), p(u1, v0, z1, 0, rise)}, false)
+    scene.polygon(kind, {p(u0, v1, z0, 0, 0), p(u0, v0, z0, dv, 0), p(u0, v0, z1, dv, rise), p(u0, v1, z1, 0, rise)}, false)
+    scene.polygon(kind, {p(u0, v0, z1, 0, 0), p(u1, v0, z1, du, 0), p(u1, v1, z1, du, dv), p(u0, v1, z1, 0, dv)}, true)
+  end
+  -- the crown's bulkheads sit near the middle of the long axis: leave the middle 8 m
+  local mid, n = (frame.u0 + frame.u1) / 2, 0
+  local cv = (frame.v0 + frame.v1) / 2
+  local du, dv, rise = R.shaft[1], R.shaft[2], R.shaft[3]
+  for k = 0, math.floor((length - 2) / R.step) do
+    local u = frame.u0 + 1 + k * R.step + R.step / 2
+    if math.abs(u - mid) > 4 and u < frame.u1 - 1 then
+      for side = -1, 1, 2 do
+        local v = cv + side * R.rows
+        if ihash(h, k, side + 2, 83) % 1000 < R.chance * 1000 and fits(u, v, du, dv) then
+          box('parapet', u, v, du, dv, top, top + rise)
+          n = n + 1
+        end
+      end
+    end
+  end
+  if height >= 14 then
+    for a = 1, R.antennas do
+      if ihash(h, a, 0, 89) % 3 ~= 0 then
+        local u = frame.u0 + 2 + (ihash(h, a, 1, 89) % 1000) / 1000 * math.max(0, length - 4)
+        local v = cv + ((ihash(h, a, 2, 89) % 1000) / 1000 - .5) * math.max(0, width - 4)
+        if math.abs(u - mid) > 4.5 and fits(u, v, .3, .3) then
+          box('pipe', u, v, .05, .05, top, top + R.mast)
+          box('pipe', u, v, 1.6, .03, top + R.mast - .5, top + R.mast - .46)
+          box('pipe', u, v, 1.1, .03, top + R.mast - .15, top + R.mast - .11)
+          n = n + 1
+        end
+      end
+    end
+  end
+  return n
+end
+
 -- One concrete visor along a whole facade. The top faces the sky: the orbit camera sits
 -- above a car, and a downward sheet (the house porch) was invisible there. The outer
 -- edge is a short vertical fascia so the ledge reads from the side. h is unused.
@@ -8023,6 +8089,7 @@ local function build(cells, i, j, options)
         if BLD.city then
           BLD.parapets(scene, rings, top, height, h)
           BLD.crown(scene, rings, top, height, h, footprint)
+          if detailed then BLD.roofClutter(scene, rings, top, height, h) end
         end
       elseif dress and dress.mass then
         BLD.chimney(scene, rings[1], top, dress, h, tags)

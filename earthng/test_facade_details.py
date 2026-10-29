@@ -23,6 +23,13 @@ class FacadeDetailTests(unittest.TestCase):
     def tris(self, manifest, material):
         return list(self.h.triangles(manifest, 'e2rf_' + material))
 
+    def wall_pipes(self, manifest):
+        """Downpipe triangles: the pipe material under the roof (antennas stand on it)."""
+        walls = [p[2] for _, m in self.h.meshes(manifest) if m.material.startswith('e2rf_wall_')
+                 for t in self.h.triangles(manifest, m.material) for p in t]
+        top = max(walls) if walls else 0
+        return [t for t in self.tris(manifest, 'pipe') if min(p[2] for p in t) < top - 1e-6]
+
     def test_off_by_default_and_roads_unchanged(self):
         off = self.build([self.block()])
         on = self.build([self.block()], experimentalDetail=True)
@@ -36,7 +43,7 @@ class FacadeDetailTests(unittest.TestCase):
 
     def test_downpipes_on_the_outer_corners_of_a_low_brick_block(self):
         scene = self.build([self.block()], experimentalDetail=True)[1]
-        pipes = self.tris(scene, 'pipe')
+        pipes = self.wall_pipes(scene)
         # four corners, three boxes each: shaft (4 sides), hopper (4 + bottom), kick-out (4 + top)
         self.assertEqual(len(pipes), 4 * (8 + 10 + 10))
         corners = [(100, 100), (160, 100), (160, 112), (100, 112)]
@@ -47,10 +54,10 @@ class FacadeDetailTests(unittest.TestCase):
                 self.assertFalse(100 < x < 160 and 100 < y < 112, (x, y))
 
     def test_no_pipes_on_panel_or_tall_blocks_and_none_in_a_reentrant_corner(self):
-        self.assertFalse(self.tris(self.build([self.block('panel', 27)], experimentalDetail=True)[1], 'pipe'))
-        self.assertFalse(self.tris(self.build([self.block('brick', 24)], experimentalDetail=True)[1], 'pipe'))
+        self.assertFalse(self.wall_pipes(self.build([self.block('panel', 27)], experimentalDetail=True)[1]))
+        self.assertFalse(self.wall_pipes(self.build([self.block('brick', 24)], experimentalDetail=True)[1]))
         ell = [[100, 100], [160, 100], [160, 112], [130, 112], [130, 140], [100, 140]]
-        pipes = self.tris(self.build([self.block(ring=ell)], experimentalDetail=True)[1], 'pipe')
+        pipes = self.wall_pipes(self.build([self.block(ring=ell)], experimentalDetail=True)[1])
         self.assertEqual(len(pipes), 5 * 28)
         for t in pipes:
             for x, y, _ in t:
@@ -149,6 +156,27 @@ class FacadeDetailTests(unittest.TestCase):
         for material, height in (('brick', 27), ('panel', 36)):
             other = self.build([self.block(material, height, ring=ring)], experimentalDetail=True)[1]
             self.assertFalse(self.tris(other, 'wall_off_grey'), (material, height))
+
+    def test_roof_shafts_and_antennas_stay_on_the_roof(self):
+        ring = [[100, 100], [160, 100], [160, 112], [100, 112]]
+        off = self.build([self.block('panel', 21, ring=ring)])[1]
+        on = self.build([self.block('panel', 21, ring=ring)], experimentalDetail=True)[1]
+        walls = [p[2] for _, m in self.h.meshes(on) if m.material.startswith('e2rf_wall_')
+                 for t in self.h.triangles(on, m.material) for p in t]
+        top = max(walls)
+        extra = len(self.tris(on, 'parapet')) - len(self.tris(off, 'parapet'))
+        self.assertGreater(extra, 0)
+        self.assertEqual(extra % 10, 0)            # whole shafts, five faces each
+        shafts = [t for t in self.tris(on, 'parapet') if t not in self.tris(off, 'parapet')]
+        for t in shafts:
+            for x, y, z in t:
+                self.assertTrue(100 < x < 160 and 100 < y < 112, (x, y))
+                self.assertGreaterEqual(z, top - 1e-6)
+        masts = [t for t in self.tris(on, 'pipe') if min(p[2] for p in t) >= top - 1e-6]
+        for t in masts:
+            for x, y, z in t:
+                self.assertTrue(99 < x < 161 and 99 < y < 113, (x, y))
+                self.assertLessEqual(z, top + 3.2 + 1e-6)
 
 
 class RoadCoverTests(unittest.TestCase):
