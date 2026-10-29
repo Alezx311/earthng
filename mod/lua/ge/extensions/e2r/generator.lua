@@ -3967,12 +3967,13 @@ function BLD.box(scene, kind, a, b, length, s0, s1, o0, o1, z0, z1, back, top, b
 end
 
 -- Over a linked storefront (options.experimentalDetail): its sign and an awning. The sign is a
--- dark fascia board above the shop band with the POI's real `name` in the planet's glyph atlas,
--- centred on the span, letters shrinking to fit; no name, or one mostly of letters the atlas
+-- dark fascia board on the shop texture's own sign strip (the top `strip` m of its band) with the
+-- POI's real `name` in the planet's glyph atlas, at least `wide` of the span, letters shrinking
+-- to fit; no name, or one mostly of letters the atlas
 -- lacks, and there is no board (never a made-up name or a logo). The awning is synthetic: a
 -- sloped sheet over the span, only where the street's carriageway is at least `clear` m from
 -- the wall and its valance stays at least 2.4 m over the pavement. Colours by the POI's id.
-BLD.SHOPSIGN = {letter = .34, minLetter = .16, pad = .08, out0 = .03, out1 = .10, gap = .12, longest = 30,
+BLD.SHOPSIGN = {letter = .34, minLetter = .16, pad = .08, out0 = .03, out1 = .10, strip = .05, wide = .6, longest = 30,
   awning = {reach = 1.1, drop = .45, valance = .22, height = 3.2, least = 2.4, clear = 2.0, inset = .2},
   colours = {'paint_red', 'plate', 'pipe'}}
 function BLD.shopFront(scene, a, b, length, span, upper, top, base, bins)
@@ -3987,9 +3988,9 @@ function BLD.shopFront(scene, a, b, length, span, upper, top, base, bins)
     if #chars <= S.longest and unknown - spaces <= #chars / 4 then
       local size = math.min(S.letter, (s1 - s0 - .4 - 2 * S.pad) / (#chars * P.aspect))
       if size >= S.minLetter then
-        local w, h = #chars * size * P.aspect + 2 * S.pad, size + 2 * S.pad
-        local z0 = upper + S.gap
-        if z0 + h > top - .1 then z0 = upper - h - .1 end
+        local text, h = #chars * size * P.aspect, size + 2 * S.pad
+        local w = math.min(s1 - s0 - .4, math.max(text + 2 * S.pad, (s1 - s0) * S.wide))
+        local z0 = upper - h - S.strip
         local c = (s0 + s1) / 2
         BLD.box(scene, 'fascia', a, b, length, c - w / 2, c + w / 2, S.out0, S.out1, z0, z0 + h, false, true, true)
         local cw = size * P.aspect
@@ -3999,7 +4000,7 @@ function BLD.shopFront(scene, a, b, length, span, upper, top, base, bins)
             local col, row = g % P.perRow, math.floor(g / P.perRow)
             local u0, u1 = col / P.perRow, (col + 1) / P.perRow
             local v0, v1 = 1 - (row + 1) / P.perRow, 1 - row / P.perRow
-            local l = c - w / 2 + S.pad + (i - 1) * cw
+            local l = c - text / 2 + (i - 1) * cw
             scene.polygon('glyphs', {wallPoint(a, b, length, l - pad, S.out1 + .01, z0 + S.pad, u0, v0),
               wallPoint(a, b, length, l + cw + pad, S.out1 + .01, z0 + S.pad, u1, v0),
               wallPoint(a, b, length, l + cw + pad, S.out1 + .01, z0 + S.pad + size, u1, v1),

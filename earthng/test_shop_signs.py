@@ -29,7 +29,9 @@ class ShopSignTests(unittest.TestCase):
         self.assertEqual(len(letters), 4 * 2)                  # four letters, a quad each
         zs = [p[2] for t in board for p in t]
         band = max(p[2] for t in self.t.shop_tris(scene) for p in t)
-        self.assertGreaterEqual(min(zs), band)                 # above the shop band
+        # on the texture's sign strip at the band's top, under the band's top edge
+        self.assertTrue(band - .7 < min(zs) and max(zs) < band, (min(zs), max(zs), band))
+        self.assertGreaterEqual(max(xs := [p[0] for t in board for p in t]) - min(xs), .6 * 8 - 1e-6)
         xs = [p[0] for t in board + letters for p in t]
         self.assertTrue(126 <= min(xs) and max(xs) <= 134)     # within the shop's span
         # in front of the wall (y = 100, the street side is -y), letters before the board
