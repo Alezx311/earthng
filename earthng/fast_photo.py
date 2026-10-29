@@ -23,6 +23,7 @@ SHEET_PX = 2048         # the whole II-68 loggia photo, 33 m
 LOGGIA_M = 33.0
 PANEL_LAYERS = 6        # atlas: five windowed panels, then a blank one
 WINDOW_LAYERS = (0, 1, 3, 4)   # layer 2 has a window grille: not in a repeat
+PHOTO_WINDOWS = True           # brick and plaster: photo windows (photo_windows), not drawn ones
 PANEL_GAIN = 1.32
 PANEL_N = 4              # a panel repeat is 4 x 4 cells (12 m): lit windows at night do not form a checker
 
@@ -109,6 +110,56 @@ def windows(image, glass=(52, 62, 70)):
     return image
 
 
+# Photo windows for brick and plaster walls: the frame box of fast_packs.LAYER_GLASS cut from
+# a Panelka panel (wooden, painted and PVC frames, curtains, flowers), laid into the drawn
+# window's box, which the night glow (fast_packs.windows_of) lights. A reveal shadows its top
+# and left; a rain stain runs down from the sill.
+PHOTO_GLASS = {0: (.245, .165, .75, .69), 1: (.225, .17, .76, .71), 3: (.245, .13, .76, .665), 4: (.245, .145, .76, .695)}
+WINDOW_BOX = (.24, .20, .76, .68)       # of a 3 m cell, row 0 at its top (the drawn frame)
+
+
+def photo_windows(image, key, layers, normal=None):
+    """Photo windows over a plain wall on the 3 m grid (image and its normal map in place)."""
+    a = np.asarray(image, dtype=np.float32).copy()
+    own = (1, 3, 4)[int(unit('wown', key) * 3)]          # the grey frame (0) only as an odd one
+    nrm = None if normal is None else np.asarray(normal, dtype=np.uint8).copy()
+    for bx in range(2):
+        for sy in range(2):
+            swap = WINDOW_LAYERS[int(unit('wflat', key, bx, sy) * len(WINDOW_LAYERS))]
+            layer = swap if unit('wswap', key, bx, sy) < .25 else own
+            g = PHOTO_GLASS[layer]
+            crop = layers[layer].crop(tuple(round(v * CELL) for v in g))
+            x0, y0 = bx * CELL + round(WINDOW_BOX[0] * CELL), sy * CELL + round(WINDOW_BOX[1] * CELL)
+            x1, y1 = bx * CELL + round(WINDOW_BOX[2] * CELL), sy * CELL + round(WINDOW_BOX[3] * CELL)
+            w = np.asarray(crop.resize((x1 - x0, y1 - y0), Image.LANCZOS), dtype=np.float32)
+            a[y0:y1, x0:x1] = w
+            # the reveal: the wall's thickness shades the top and the left of the opening
+            r = max(2, round(.03 * CELL))
+            for k in range(r):
+                shade = .55 + .45 * k / r
+                a[y0 + k, x0:x1] *= shade
+                a[y0:y1, x0 + k] *= shade
+            # a concrete sill, then a rain stain under it fading down the wall
+            sill = (176, 176, 170)
+            sx0, sx1 = x0 - round(.03 * CELL), x1 + round(.03 * CELL)
+            sh = max(2, round(.035 * CELL))
+            a[y1:y1 + sh, sx0:sx1] = sill
+            a[y1 + sh:y1 + sh + max(1, sh // 2), sx0:sx1] *= .7
+            run = round(unit('stain', key, bx, sy) * .22 * CELL + .08 * CELL)
+            for k in range(run):
+                yy = y1 + sh + k
+                if yy >= a.shape[0]:
+                    break
+                fade = 1 - .16 * (1 - k / run)
+                a[yy, x0 + r:x1 - r] *= fade
+            if nrm is not None:
+                nrm[y0:y1 + sh, sx0:sx1] = (128, 128, 255)
+    image.paste(Image.fromarray(np.clip(a, 0, 255).astype('uint8')))
+    if normal is not None:
+        normal.paste(Image.fromarray(nrm))
+    return image
+
+
 def panel_atlas():
     a = Image.open(TEXTURES / 'panelka_panels/albedo.jpg').convert('RGB')
     s = a.height
@@ -150,12 +201,15 @@ def wall_image(name, layers=None):
         if not white:      # the pack's red brick photographs pink: toward fired clay
             im = tint(im, (.60, .38, .31), .6, .8)
         nm = tiled(src / 'normal.jpg', (2.0, 1.8)) if (src / 'normal.jpg').exists() else None
-        return (windows(im) if family == 'brick' else im), nm
+        if family == 'brick':
+            im = photo_windows(im, name, layers, nm) if PHOTO_WINDOWS else windows(im)
+        return im, nm
     # plaster: the photo tinted strongly toward the paint colour
     im = tint(tiled(TEXTURES / 'panelka_plaster/albedo.jpg', (4.0, 4.0)), colour, .8)
     # the photo's cracks repeat every 4 m: mostly the paint, a little of the photo
     flat = Image.new('RGB', im.size, tuple(round(c * 238) for c in colour))
-    return windows(Image.blend(flat, im, .4)), None
+    im = Image.blend(flat, im, .4)
+    return (photo_windows(im, name, layers) if PHOTO_WINDOWS else windows(im)), None
 
 
 def drawn(family, colour, key):

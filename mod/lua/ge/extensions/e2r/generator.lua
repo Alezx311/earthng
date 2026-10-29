@@ -3106,6 +3106,102 @@ function BLD.canopy(scene, a, b, length, base, h, height)
     wallPoint(a, b, length, s0, reach, zOut, 0, .16)}, false)
 end
 
+-- Facade details (options.experimentalDetail, city blocks on near tiles): what a photo wall
+-- cannot carry. Downpipes on the outer corners of low brick and plaster blocks (panel and
+-- taller blocks drain inside); air-conditioner boxes under windows of panel, brick and plaster
+-- walls, on the 3 m window grid of their textures (fast_photo: a window at .24-.76 of a cell,
+-- its sill .96 m over the floor). Small, without collision (collision.lua QUIET).
+BLD.DETAIL = {pipe = .11, pipeOff = .06, pipeMax = 6, pipeHeight = 18, cell = 3,
+  ac = {wall_pnl_ = .05, wall_brk_ = .07, wall_pls_ = .07}, acMax = 40, acWidth = .8, acDepth = .28}
+
+-- A box against the wall a -> b: s0..s1 along it, o0..o1 out from it, z0..z1. back: also the
+-- face toward the wall (a pipe stands off it); top, bottom: the horizontal faces.
+function BLD.box(scene, kind, a, b, length, s0, s1, o0, o1, z0, z1, back, top, bottom)
+  local du, dz, dd = s1 - s0, z1 - z0, o1 - o0
+  local function w(s, o, z, u, v) return wallPoint(a, b, length, s, o, z, u, v) end
+  scene.polygon(kind, {w(s0, o1, z0, 0, 0), w(s1, o1, z0, du, 0), w(s1, o1, z1, du, dz), w(s0, o1, z1, 0, dz)}, false)
+  scene.polygon(kind, {w(s1, o1, z0, 0, 0), w(s1, o0, z0, dd, 0), w(s1, o0, z1, dd, dz), w(s1, o1, z1, 0, dz)}, false)
+  scene.polygon(kind, {w(s0, o0, z0, 0, 0), w(s0, o1, z0, dd, 0), w(s0, o1, z1, dd, dz), w(s0, o0, z1, 0, dz)}, false)
+  if back then
+    scene.polygon(kind, {w(s1, o0, z0, 0, 0), w(s0, o0, z0, du, 0), w(s0, o0, z1, du, dz), w(s1, o0, z1, 0, dz)}, false)
+  end
+  if top then
+    scene.polygon(kind, {w(s0, o0, z1, 0, 0), w(s0, o1, z1, 0, dd), w(s1, o1, z1, du, dd), w(s1, o0, z1, du, 0)}, true)
+  end
+  if bottom then
+    scene.polygon(kind, {w(s0, o0, z0, 0, 0), w(s1, o0, z0, du, 0), w(s1, o1, z0, du, dd), w(s0, o1, z0, 0, dd)}, true)
+  end
+end
+
+-- The air-conditioner rate of a wall kind (BLD.DETAIL.ac), nil for walls without the grid.
+function BLD.acRate(kind)
+  if kind:find('_end$') then return nil end
+  for prefix, rate in pairs(BLD.DETAIL.ac) do
+    if kind:find(prefix, 1, true) == 1 then return rate end
+  end
+end
+
+-- Air conditioners on one outer wall: a box under the window of a 3 m cell (the cells run from
+-- the ring's first corner, as the texture's u does), floors above the ground one; not in a
+-- storefront's band. Returns how many it put.
+function BLD.acUnits(scene, a, b, length, along, base, height, kind, h, spans, room)
+  local D = BLD.DETAIL
+  local rate = BLD.acRate(kind)
+  if not rate or length < 6 or room <= 0 then return 0 end
+  local floors = math.floor((height - .3) / D.cell)
+  local n = 0
+  for k = math.ceil((along + .3) / D.cell), math.floor((along + length - .3) / D.cell) - 1 do
+    local s = k * D.cell - along + D.cell / 2
+    for f = 1, floors - 1 do
+      if ihash(h, k, f, 31) % 1000 < rate * 1000 then
+        local z0 = base + f * D.cell + .22
+        local clear = true
+        for _, span in ipairs(spans or NONE) do
+          if s + D.acWidth / 2 > span[1] and s - D.acWidth / 2 < span[2] and z0 < base + BLD.SHOP.band + .1 then clear = false end
+        end
+        if clear then
+          BLD.box(scene, 'ac_unit', a, b, length, s - D.acWidth / 2, s + D.acWidth / 2, .02, .02 + D.acDepth,
+            z0, z0 + .52, false, true, true)
+          n = n + 1
+          if n >= room then return n end
+        end
+      end
+    end
+  end
+  return n
+end
+
+-- Downpipes at the outer corners of a low brick or plaster block: a pipe 0.3 m round the
+-- corner on the incoming wall, a hopper under the eaves, a kick-out at the foot. At most
+-- pipeMax, the corners between the longest walls first.
+function BLD.downpipes(scene, rings, base, top, height, kind)
+  local D = BLD.DETAIL
+  if height > D.pipeHeight or not (kind:find('wall_brk_', 1, true) == 1 or kind:find('wall_pls_', 1, true) == 1) then return 0 end
+  local ring = BLD.orient(rings[1], rings)
+  local n = #ring
+  if n < 3 then return 0 end
+  local corners = {}
+  for k = 1, n do
+    local a, p, b = ring[(k - 2) % n + 1], ring[k], ring[k % n + 1]
+    local ux, uy, vx, vy = p[1] - a[1], p[2] - a[2], b[1] - p[1], b[2] - p[2]
+    local lu, lv = math.sqrt(ux * ux + uy * uy), math.sqrt(vx * vx + vy * vy)
+    if lu >= 3 and lv >= 3 and (ux * vy - uy * vx) / (lu * lv) > .5 then
+      corners[#corners + 1] = {a = a, p = p, len = lu, weight = lu + lv, k = k}
+    end
+  end
+  table.sort(corners, function(u, v) return u.weight > v.weight or (u.weight == v.weight and u.k < v.k) end)
+  local w, o0 = D.pipe, D.pipeOff
+  for i = 1, math.min(D.pipeMax, #corners) do
+    local c = corners[i]
+    local s1 = c.len - .3
+    local s0 = s1 - w
+    BLD.box(scene, 'pipe', c.a, c.p, c.len, s0, s1, o0, o0 + w, base + .32, top - .42, true, false, false)
+    BLD.box(scene, 'pipe', c.a, c.p, c.len, s0 - .07, s1 + .07, o0 - .03, o0 + w + .07, top - .42, top - .14, true, false, true)
+    BLD.box(scene, 'pipe', c.a, c.p, c.len, s0, s1, o0, o0 + .38, base + .1, base + .32, true, true, false)
+  end
+  return math.min(D.pipeMax, #corners)
+end
+
 -- True when a carriageway (not a yard driveway) passes within r metres of (x, y).
 -- segmentBins is the tile's road index from build(); service ways are a yard, not a street.
 function BLD.street(bins, x, y, r)
@@ -7559,6 +7655,8 @@ local function build(cells, i, j, options)
       BLD.city = (not dress and not options.far and not lifted and BLD.mass(options.detail) and BLD.block(use, height)) or nil
       if BLD.city then BLD.faces = {} end
       local doors = (use == 'garage' or use == 'garages') and (h % 3 == 0 and 'door_rust' or 'door_garage')
+      local detailed = options.experimentalDetail and BLD.city and not options.far
+      local acRoom = BLD.DETAIL.acMax
       for _, raw in ipairs(rings) do
         local ring, along = cleanRing(raw), 0
         local signed = 0
@@ -7636,6 +7734,9 @@ local function build(cells, i, j, options)
                 {a[1] + dx * s0 + ox, a[2] + dy * s0 + oy, z1, 0, 1}}, false)
             end
           end
+          if detailed and raw == rings[1] then
+            acRoom = acRoom - BLD.acUnits(scene, a, b, length, along, base, height, wallKind, h, spans, acRoom)
+          end
           if dress and dress.mass and length > .4 then BLD.cornice(scene, a, b, length, top) end
           if BLD.city and raw == rings[1] and length > 6 and not plinth then BLD.socle(scene, a, b, length, bottom, base) end
           if BLD.city and raw == rings[1] and length >= 6 then
@@ -7654,6 +7755,7 @@ local function build(cells, i, j, options)
           if k % 32 == 0 then pause() end
         end
       end
+      if detailed then BLD.downpipes(scene, rings, base, top, height, kind) end
       if options.far or not pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet), dress) then
         for _, tri in ipairs(triangulate(rings, pause, rect)) do
           for _, p in ipairs(tri) do p[3] = top end

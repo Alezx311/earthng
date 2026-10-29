@@ -290,6 +290,11 @@ KINDS['chimney'] = ('hw_brick', [.42, .24, .20, 1], 'ROCK', 1.6, 'wall')
 # flat colours in a game without the maps: every house kind keeps its look's colour
 BUILDING_FALLBACK.update({k: None for k in (*HOUSE_WALLS, 'win_pvc', 'win_wood', 'door_house', 'chimney')})
 BUILDING_FALLBACK['plinth_brown'] = 'concrete'
+# Facade details (generator.lua BLD.details, options.experimentalDetail): galvanised downpipes
+# as a flat grey, air-conditioner boxes on the game's metal cladding
+KINDS['pipe'] = (None, [.50, .51, .52, 1], 'METAL', 1.0, 'wall')
+KINDS['ac_unit'] = ('cladding', [.84, .84, .82, 1], 'METAL', 1.0, 'wall')
+BUILDING_FALLBACK['ac_unit'] = None
 FALLBACK.update(BUILDING_FALLBACK)
 # footpaths and fences (decoration, no collision)
 KINDS['footway'] = ('paving', [.50, .48, .46, 1], 'ASPHALT', 2.0, 'plan')
@@ -347,6 +352,7 @@ def _factor(srgb, mean):
 TINT.update({'roof_sheet': _factor((158, 158, 150), .677), 'roof_mtile_red': _factor((112, 38, 32), .355),
              'roof_mtile_brown': _factor((74, 52, 46), .355), 'roof_mtile_green': _factor((32, 72, 54), .355),
              'clad_metal': _factor((176, 182, 188), .677), 'plinth': _factor((130, 127, 120), .862),
+             'ac_unit': _factor((214, 214, 208), .677),
              'gable': _factor((150, 140, 125), .641)})
 # House walls: lime-washed white, ochre, the blue and green of village houses, a pink; aged
 # plaster as it is; red brick as it is; silicate brick off-white; beige siding; old dark wood as
