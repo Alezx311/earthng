@@ -199,7 +199,7 @@ class RoadCoverTests(unittest.TestCase):
         # drains at both curbs, inside the carriageway
         drains = [t for i in (0, 1) for t in tiles[i]['drain']]
         dy = {round((min(p[1] for p in t) + max(p[1] for p in t)) / 2, 2) for t in drains}
-        self.assertEqual(dy, {round(250 + 4 - .24 - .12, 2), round(250 - 4 + .24 + .12, 2)})
+        self.assertEqual(dy, {round(250 + 4 - .21 - .03, 2), round(250 - 4 + .21 + .03, 2)})
 
 if __name__ == '__main__':
     unittest.main()

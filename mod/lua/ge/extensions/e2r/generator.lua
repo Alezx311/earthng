@@ -3345,7 +3345,7 @@ end
 -- from the road's source start (strip.start + dist), phased by its id, so tiles and junction
 -- cuts agree; every tile a cover touches draws it (the collector clips it to the tile), and
 -- none lies within `clear` m of a cut end (a junction's fan).
-ROADS.COVERS = {manholeStep = 55, drainStep = 38, clear = 7, manhole = .82, drain = {.48, .95},
+ROADS.COVERS = {manholeStep = 55, drainStep = 38, clear = 7, manhole = .82, drain = {.42, .95},
   classes = {residential = true, tertiary = true, secondary = true, primary = true, unclassified = true,
     living_street = true}}
 function ROADS.covers(strips, rect, lift, decor, pause)
@@ -3393,7 +3393,7 @@ function ROADS.covers(strips, rect, lift, decor, pause)
         place(C.drainStep, (seed * 7 + 11) % C.drainStep, function(m, k, x, y, z, ux, uy)
           for _, side in ipairs({1, -1}) do
             if (strip.walk[k] or NONE)[side] then
-              local off = (strip.hw - C.drain[1] / 2 - .12) * side
+              local off = (strip.hw - C.drain[1] / 2 - .03) * side
               quad('drain', x - uy * off, y + ux * off, z, ux, uy, C.drain[2], C.drain[1], 0, 0, 1, .5)
             end
           end
