@@ -299,7 +299,9 @@ TEXTURES['manhole'] = _maps('/assets/materials/baked_props/italy_ground_parts', 
 TEXTURES['drain'] = _maps(f'{_DR}/detail/m_metal_grid_drain', 't_metal_grid_drain', 'b', 'nm', 'r', 'ao', 'o')
 KINDS['manhole'] = ('manhole', [.42, .41, .40, 1], 'METAL', 1.0, 'strip')
 KINDS['drain'] = ('drain', [.30, .29, .28, 1], 'METAL', 1.0, 'strip')
-for _k in ('manhole', 'drain'):
+TEXTURES['patch'] = _maps(f'{_DR}/asphalt/road_patches1', 't_asphalt_patchstrip', 'b', 'o')
+KINDS['patch'] = ('patch', [.17, .17, .18, 1], 'ASPHALT', 1.0, 'strip')
+for _k in ('manhole', 'drain', 'patch'):
     EXTRA[_k] = {'alphaTest': True, 'alphaRef': 77, 'castShadows': False}
     BUILDING_FALLBACK[_k] = None
 KINDS['ac_unit'] = ('cladding', [.84, .84, .82, 1], 'METAL', 1.0, 'wall')

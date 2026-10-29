@@ -161,6 +161,11 @@ class RoadCoverTests(unittest.TestCase):
             result[kind] = [t for m in out[:2] for t in self.h.triangles(m, 'e2rf_' + kind)]
         return result
 
+    def covers_all(self, tags, i=0):
+        road = {'id': 'w1', 'width': 8, 'tags': tags, 'points': [[-200, 250, 0], [1200, 250, 0]]}
+        out = self.h.build([{'roads': [road]}], i, 0, maxTrees=0, maxGrass=0, experimentalDetail=True)
+        return {k: list(self.h.triangles(out[0], 'e2rf_' + k)) for k in ('manhole', 'drain', 'patch')}
+
     def centres(self, triangles):
         # two triangles a quad: the centre of each quad's four corners
         pts = sorted({(round(p[0], 3), round(p[1], 3)) for t in triangles for p in t})
@@ -196,6 +201,12 @@ class RoadCoverTests(unittest.TestCase):
         # alternating lanes: 0.45 of the half width off the centre line (y = 250)
         ys = {round((min(p[1] for p in t) + max(p[1] for p in t)) / 2, 2) for t in whole}
         self.assertEqual(ys, {round(250 + 1.8, 2), round(250 - 1.8, 2)})
+        # patches lie on the carriageway, under the covers and over the paint
+        patches = [t for i in (0, 1) for t in self.covers_all(town, i)['patch']]
+        self.assertTrue(patches)
+        for t in patches:
+            for _, y, _ in t:
+                self.assertTrue(246 - 1e-6 <= y <= 254 + 1e-6)
         # drains at both curbs, inside the carriageway
         drains = [t for i in (0, 1) for t in tiles[i]['drain']]
         dy = {round((min(p[1] for p in t) + max(p[1] for p in t)) / 2, 2) for t in drains}

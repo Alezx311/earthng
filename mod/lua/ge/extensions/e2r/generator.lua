@@ -475,6 +475,22 @@ for _, stem in ipairs({'baked_props/italy_ground_parts/t_manhole_01_decal', 'dec
     COVER_MAPS[#COVER_MAPS + 1] = '/assets/materials/' .. stem .. suffix .. '.dds'
   end
 end
+-- The asphalt patch strip (ROADS.covers patches): newer than the covers, checked on its own.
+local PATCH_MAPS = {'/assets/materials/decalroad/asphalt/road_patches1/t_asphalt_patchstrip_b.color.dds',
+  '/assets/materials/decalroad/asphalt/road_patches1/t_asphalt_patchstrip_o.data.dds'}
+local patchesFound
+local function patchesPresent()
+  if patchesFound == nil then
+    patchesFound = true
+    if FS then
+      for _, path in ipairs(PATCH_MAPS) do
+        local ok, found = pcall(function() return FS:fileExists(path) end)
+        if not (ok and found) then patchesFound = false; break end
+      end
+    end
+  end
+  return patchesFound
+end
 local coversFound
 local function coversPresent()
   if coversFound == nil then
@@ -3345,10 +3361,13 @@ end
 -- from the road's source start (strip.start + dist), phased by its id, so tiles and junction
 -- cuts agree; every tile a cover touches draws it (the collector clips it to the tile), and
 -- none lies within `clear` m of a cut end (a junction's fan).
+-- With patches: a patch of new asphalt every patchStep m at patchChance, 2.5 to 6 m long,
+-- 0.9 to 1.8 m wide, somewhere across the carriageway (the patch sheet is 1 x 8 of its width).
 ROADS.COVERS = {manholeStep = 55, drainStep = 38, clear = 7, manhole = .82, drain = {.42, .95},
+  patchStep = 23, patchChance = .5,
   classes = {residential = true, tertiary = true, secondary = true, primary = true, unclassified = true,
     living_street = true}}
-function ROADS.covers(strips, rect, lift, decor, pause)
+function ROADS.covers(strips, rect, lift, decor, pause, patches)
   local C = ROADS.COVERS
   for n, strip in ipairs(strips) do
     local tags, points, dist = strip.tags, strip.points, strip.dist
@@ -3369,10 +3388,12 @@ function ROADS.covers(strips, rect, lift, decor, pause)
           end
         end
       end
+      -- a patch lies between the paint and the covers: none of them fights another for depth
       local function quad(kind, x, y, z, ux, uy, along, across, u0, v0, u1, v1)
-        if not boundsTouch(rect, {x - 1, y - 1, x + 1, y + 1}) then return end
+        local reach = math.max(along, across) / 2 + .1
+        if not boundsTouch(rect, {x - reach, y - reach, x + reach, y + reach}) then return end
         local nx, ny, ha, hc = -uy, ux, along / 2, across / 2
-        local zz = z + lift + DECAL.markLift * 1.5
+        local zz = z + lift + DECAL.markLift * (kind == 'patch' and 1.25 or 1.5)
         decor.polygon(kind, {{x - ux * ha - nx * hc, y - uy * ha - ny * hc, zz, u0, v0},
           {x - ux * ha + nx * hc, y - uy * ha + ny * hc, zz, u1, v0},
           {x + ux * ha + nx * hc, y + uy * ha + ny * hc, zz, u1, v1},
@@ -3390,6 +3411,19 @@ function ROADS.covers(strips, rect, lift, decor, pause)
           -- the round cover: the upper right quarter of the sheet
           quad('manhole', x - uy * off, y + ux * off, z, ux, uy, C.manhole, C.manhole, .5, 0, 1, .5)
         end)
+        if patches then
+          place(C.patchStep, (seed * 13 + 5) % C.patchStep, function(m, k, x, y, z, ux, uy)
+            local r = ihash(seed, m, 0, 71)
+            if r % 1000 < C.patchChance * 1000 then
+              local long = 2.5 + (r % 7) * .58
+              local wide = .9 + (math.floor(r / 7) % 5) * .22
+              local room = math.max(0, strip.hw - wide / 2 - .35)
+              local off = ((math.floor(r / 35) % 101) / 50 - 1) * room
+              local v0 = (math.floor(r / 3535) % 100) / 100
+              quad('patch', x - uy * off, y + ux * off, z, ux, uy, long, wide, 0, v0, 1, v0 + long / wide / 8)
+            end
+          end)
+        end
         place(C.drainStep, (seed * 7 + 11) % C.drainStep, function(m, k, x, y, z, ux, uy)
           for _, side in ipairs({1, -1}) do
             if (strip.walk[k] or NONE)[side] then
@@ -7490,7 +7524,7 @@ local function build(cells, i, j, options)
   end
 
   if visualRoads and not distant and options.experimentalDetail and coversPresent() then
-    ROADS.covers(strips, rect, lift, roadDecor, pause)
+    ROADS.covers(strips, rect, lift, roadDecor, pause, patchesPresent())
   end
   if visualRoads and not distant then
     ROADS.aprons({roads = lists.roads, rect = rect, lift = lift, pause = pause,
