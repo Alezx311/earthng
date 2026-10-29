@@ -3219,20 +3219,23 @@ function BLD.acUnits(scene, a, b, length, along, base, height, kind, h, spans, r
   return n
 end
 
--- Balconies of a brick or plaster block of three to six floors (the khrushchovka): stacks on
--- some 3 m window columns of a wall, never two side by side, from the first floor up. A
+-- Balconies of a brick or plaster block of three to six floors (the khrushchovka) and of a
+-- panel block of three to nine (whose photo panels have none): stacks on some 3 m window
+-- columns of a wall, never two side by side, from the first floor up. A
 -- concrete slab, a parapet of profiled sheet (pale or brown by building), and on about half
 -- of them glazing (the office glass) up to the slab above, a roof slab over the top one.
-BLD.BALCONY = {column = .3, glazed = .55, width = {.12, .82}, depth = .95, minFloors = 3, maxFloors = 6}
+BLD.BALCONY = {column = .3, glazed = .55, width = {.12, .82}, depth = .95, minFloors = 3, maxFloors = 6,
+  panelFloors = 9}
 
 -- Whether the 3 m column k of a building (hash h) carries a balcony stack, for a wall kind.
 function BLD.balconyColumn(kind, height, h, k)
   local B = BLD.BALCONY
-  if not (kind:find('wall_brk_', 1, true) == 1 or kind:find('wall_pls_', 1, true) == 1) or kind:find('_end$') then
+  local panel = kind:find('wall_pnl_', 1, true) == 1
+  if not (panel or kind:find('wall_brk_', 1, true) == 1 or kind:find('wall_pls_', 1, true) == 1) or kind:find('_end$') then
     return false
   end
   local floors = math.floor((height - .3) / BLD.DETAIL.cell)
-  if floors < B.minFloors or floors > B.maxFloors then return false end
+  if floors < B.minFloors or floors > (panel and B.panelFloors or B.maxFloors) then return false end
   local function chosen(c) return ihash(h, c, 0, 61) % 1000 < B.column * 1000 end
   return chosen(k) and not chosen(k - 1)
 end

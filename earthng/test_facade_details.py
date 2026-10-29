@@ -142,8 +142,11 @@ class FacadeDetailTests(unittest.TestCase):
         cols = sorted({int((sum(p[0] for p in t) / 3 - 100) // 3) for t in sheets if max(p[1] for p in t) < 100})
         self.assertTrue(cols)
         self.assertFalse([a for a, b in zip(cols, cols[1:]) if b - a == 1])
-        # not on a panel block, nor on a nine-storey brick one
-        for material, height in (('panel', 15), ('brick', 27)):
+        # a five-storey panel block has them too; a nine-storey brick one and a twelve-storey
+        # panel one do not
+        panel = self.build([self.block('panel', 15, ring=ring)], experimentalDetail=True)[1]
+        self.assertTrue(self.tris(panel, 'clad_metal') + self.tris(panel, 'clad_tin'))
+        for material, height in (('brick', 27), ('panel', 36)):
             other = self.build([self.block(material, height, ring=ring)], experimentalDetail=True)[1]
             self.assertFalse(self.tris(other, 'wall_off_grey'), (material, height))
 
