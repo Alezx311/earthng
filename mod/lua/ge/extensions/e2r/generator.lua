@@ -3328,6 +3328,7 @@ function BLD.stopSign(scene, x, y, z, ux, uy, name)
         wallPoint(a, b, width, c0 - pad, .01, z0 + P.pad + size, u0, v1)}, false)
     end
   end
+  BLD.note('stopsign', a, b, width, width / 2, S.z)
   return true
 end
 
