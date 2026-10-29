@@ -2803,6 +2803,18 @@ function DETAIL.arrows(ctx)
               if within then
                 local c, tx, ty = alongLine(points, dist, base)
                 local sx, sy = tx * dir, ty * dir
+                -- the road's own rise along the arrow: one height for 4.4 m sank the head under
+                -- the asphalt of a sloping street (kyiv-arrows5)
+                local reach = A.stem + A.head
+                local z0 = (c[3] or 0) + ctx.z
+                local z1 = (alongLine(points, dist, base + dir * reach)[3] or 0) + ctx.z
+                local function emit(poly)
+                  for _, v in ipairs(poly) do
+                    local t = math.max(0, math.min(1, ((v[1] - c[1]) * sx + (v[2] - c[2]) * sy) / reach))
+                    v[3] = z0 + (z1 - z0) * t
+                  end
+                  ctx.emit(poly)
+                end
                 for k, value in ipairs(lanes) do
                   local turns, any = {}, false
                   for word in value:gmatch('[^;]+') do
@@ -2813,8 +2825,10 @@ function DETAIL.arrows(ctx)
                     -- the lane's middle, as an offset left of the point order
                     local o
                     if dir == 1 then o = lo + (n - k + .5) * lw else o = hi - (n - k + .5) * lw end
-                    DETAIL.arrow(ctx.emit, {c[1] - ty * o, c[2] + tx * o}, sx, sy, turns, (c[3] or 0) + ctx.z)
+                    DETAIL.arrow(emit, {c[1] - ty * o, c[2] + tx * o}, sx, sy, turns, z0)
                     painted = painted + 1
+                    if ctx.report then ctx.report[#ctx.report + 1] = {kind = 'arrow', x = c[1] - ty * o,
+                      y = c[2] + tx * o, z = 0, nx = -sx, ny = -sy} end
                   end
                 end
               end
@@ -8436,6 +8450,7 @@ local function build(cells, i, j, options)
       emit = function(poly) roadDecor.polygon(markKind, poly, 'flat') end, pause = pause})
     if options.experimentalDetail then
       DETAIL.arrows({roads = lists.roads, cutsOf = cutsOf, rect = rect, z = lift + DECAL.markLift,
+        report = type(options.detailReport) == 'table' and options.detailReport or nil,
         emit = function(poly) roadDecor.polygon(markKind, poly, 'flat') end, pause = pause})
     end
   end

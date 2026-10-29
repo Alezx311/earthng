@@ -41,6 +41,16 @@ class LaneArrowTests(unittest.TestCase):
         self.assertGreater(max(p[1] for p in lane(251.75, 255)), 253.5 + .5)   # the left arm
         self.assertLess(min(p[1] for p in lane(245, 248.25)), 246.5 - .5)      # the right arm
 
+    def test_on_a_sloping_street_every_vertex_follows_the_road(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 10.5,
+                'tags': {'highway': 'secondary', 'sidewalk': 'no', 'oneway': 'yes', 'lanes': '3',
+                         'turn:lanes': 'left|through|right'},
+                'points': [[0, 250, 10], [400, 250, 30]]}            # a 5 % climb
+        built = self.h.build([{'roads': [road], 'points': []}], 0, 0, experimentalDetail=True)[0]
+        marks = [p for t in self.h.triangles(built, 'e2rf_mark') for p in t]
+        for x, y, z in marks:
+            self.assertAlmostEqual(z, 10 + x * .05 + .1 + .008, delta=.01)
+
     def test_backward_lanes_on_their_own_half_and_bare_tag_on_two_way_left(self):
         arrows = self.arrows({'lanes': '2', 'turn:lanes:backward': 'left'}, experimentalDetail=True)
         self.assertTrue(arrows)
