@@ -62,17 +62,27 @@ class BrandGeneratorTests(unittest.TestCase):
         return math.sqrt(sum(x * x for x in n)) / 2
 
     def faces_of(self, scene, cell):
-        """Triangles textured over an atlas cell (a lightbox face: its u spans the cell)."""
-        cols, rows = 4, 16
-        c, r = cell % cols, cell // cols
-        return [t for t in self.corners(scene) if max(p[3] for p in t) - min(p[3] for p in t) > .1 / cols
-                and all(c / cols <= p[3] <= (c + 1) / cols and r / rows <= p[4] <= (r + 1) / rows for p in t)]
+        """Triangles of a network's sign face (its square sign where it has one, else its lightbox):
+        their uvs within that box, spanning a good part of it."""
+        box = self.g.shopMark(cell)[0]
+        u0, v0, u1, v1 = box[1], box[2], box[3], box[4]
+        return [t for t in self.corners(scene) if max(p[3] for p in t) - min(p[3] for p in t) > (u1 - u0) / 3
+                and all(u0 - 1e-6 <= p[3] <= u1 + 1e-6 and v0 - 1e-6 <= p[4] <= v1 + 1e-6 for p in t)]
+
+    def flat(self, scene, cell, layer):
+        """Triangles in one of a network's colours (1 sign, 2 facade, 3 accent)."""
+        uv = self.g.shopFlat(cell, layer)
+        return [t for t in self.corners(scene) if all(abs(p[3] - uv[1]) < 1e-3 and abs(p[4] - uv[2]) < 1e-3 for p in t)]
 
     def test_atlas_matches_the_catalogue(self):
         brands = self.g.BRANDS
         self.assertEqual(set(brands.keys()), set(retail.ALIASES))
         for index, (label, colour, key, *_) in enumerate(fast_art.BRAND_SIGNS):
             self.assertEqual(brands[key][1], index, key)
+            # the dress generator.lua knows matches the art's
+            style, lua = fast_art.BRAND_STYLE[key], self.g.shopStyle(index)
+            self.assertEqual((bool(lua['clad']), lua['square'], bool(lua['accent'])),
+                             (style.get('clad', False), style.get('square'), 'accent' in style), key)
             self.assertEqual(tuple(brands[key][3][n] for n in (1, 2, 3)), colour, key)
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as logos:
             Image.new('RGBA', (300, 100), (200, 30, 30, 255)).save(Path(logos) / 'wog.png')
@@ -97,7 +107,7 @@ class BrandGeneratorTests(unittest.TestCase):
             self.assertGreater(sum(glow.getpixel((256, 64))), 60)
             self.assertEqual(glow.getpixel((2 * 512 + 256, 14 * 128 + 64)), (0, 0, 0))
 
-    def test_whole_shop_has_one_sign_and_glazing_on_its_street_wall(self):
+    def test_whole_shop_wears_its_colours_and_a_sign_on_every_side(self):
         # a 60 x 40 m supermarket south of the street at y = 90 (its north wall faces it)
         ring = [[100, 40], [160, 40], [160, 80], [100, 80]]
         poi = {'id': 'p', 'kind': 'grocery', 'pos': [130, 60, 0], 'tags': {'e2r_brand': 'velmart'}}
@@ -105,19 +115,31 @@ class BrandGeneratorTests(unittest.TestCase):
             building = {'id': 'b', 'height': 7, 'tags': {'building': 'retail', 'e2r_brand': 'velmart'}, 'rings': [points]}
             scene = self.build([{'buildings': [building], 'points': [poi], 'roads': [STREET]}])
             fronts = self.faces_of(scene, 15)
-            self.assertEqual(len(fronts), 2)                       # one lightbox face, two triangles
-            self.assertEqual({tuple(round(x) for x in self.normal(t)) for t in fronts}, {(0, 1, 0)})
-            xs = [p[0] for t in fronts for p in t]
-            self.assertAlmostEqual(max(xs) - min(xs), 4 * 1.4, places=3)   # 4:1, 0.2 of 7 m tall
+            self.assertEqual(len(fronts), 4 * 2)                   # a lightbox face on each side
+            self.assertEqual({tuple(round(x) for x in self.normal(t)) for t in fronts},
+                             {(0, 1, 0), (0, -1, 0), (1, 0, 0), (-1, 0, 0)})
+            north = [p for t in fronts if round(self.normal(t)[1]) == 1 for p in t]
+            fascia = 7 * .28
+            self.assertAlmostEqual(max(p[0] for p in north) - min(p[0] for p in north), 4 * 3.5, places=3)   # 7 % of the side, half the building at most
+            # clad in its facade colour all round, the fascia over the accent stripe
+            top = max(p[2] for t in self.corners(scene, 'e2rf_roof') for p in t)
+            facade = self.flat(scene, 15, 2)
+            self.assertAlmostEqual(sum(self.area(t) for t in facade), 200 * (top - (top - 7 - .3) + .15), delta=200 * .5)
+            accent = self.flat(scene, 15, 3)
+            self.assertAlmostEqual(min(p[2] for t in accent for p in t), top - fascia - .3, places=3)
+            # glazing toward the street only
             glass = self.corners(scene, 'e2rf_wall_shop_dark')
             self.assertTrue(glass and all(p[1] > 80 for t in glass for p in t))
 
-    def test_whole_shop_without_a_street_signs_its_longest_wall(self):
+    def test_square_sign_for_a_square_logo(self):
         building = {'id': 'b', 'height': 5, 'tags': {'building': 'retail', 'e2r_brand': 'atb'},
                     'rings': [[[100, 100], [140, 100], [140, 120], [100, 120]]]}
         fronts = self.faces_of(self.build([{'buildings': [building]}]), 10)
-        self.assertEqual(len(fronts), 2)
-        self.assertIn(round(self.normal(fronts[0])[1]), (-1, 1))
+        self.assertEqual(len(fronts), 4 * 2)
+        for t in fronts:
+            n = self.normal(t)
+            along = [p[0] for p in t] if abs(n[1]) > .5 else [p[1] for p in t]
+            self.assertAlmostEqual(max(along) - min(along), max(p[2] for p in t) - min(p[2] for p in t), places=3)
 
     def test_mcdonalds_and_post_office_have_signs_but_locker_is_only_a_marker(self):
         building = {'id': 'b', 'height': 5, 'tags': {'building': 'retail'},
@@ -134,19 +156,25 @@ class BrandGeneratorTests(unittest.TestCase):
             self.assertEqual(scene.brandPOIs[1].brand, brand)
             self.assertEqual(scene.brandPOIs[1].postType, subtype)
 
-    def test_shop_in_an_apartment_block_has_a_small_sign_over_its_glazing(self):
+    def test_shop_in_an_apartment_block_dresses_its_stretch_of_the_street_wall(self):
         building = {'id': 'b', 'height': 27, 'tags': {'building': 'apartments'},
                     'rings': [[[100, 20], [160, 20], [160, 80], [100, 80]]]}
         poi = {'id': 'p', 'kind': 'grocery', 'pos': [110, 75, 0], 'tags': {'e2r_brand': 'fora'}}
         scene = self.build([{'buildings': [building], 'points': [poi], 'roads': [STREET]}])
+        top = max(p[2] for t in self.corners(scene, 'e2rf_roof') for p in t)
+        base = top - 27
         fronts = self.faces_of(scene, 12)
         self.assertEqual(len(fronts), 2)
         self.assertEqual(round(self.normal(fronts[0])[1]), 1)       # the street wall
-        zs = [p[2] for t in fronts for p in t]
-        self.assertLess(max(zs), 3.8)                               # over the ground floor, not the block
+        zs = [p[2] - base for t in fronts for p in t]
+        self.assertTrue(3.1 <= min(zs) and max(zs) <= 4.5)          # on the fascia over the ground floor
+        fascia = self.flat(scene, 12, 2)
+        xs = [p[0] for t in fascia for p in t]
+        self.assertAlmostEqual(max(xs) - min(xs), 10, places=3)
+        self.assertTrue(all(abs(p[1] - 80.07) < 1e-3 for t in fascia for p in t))
         glass = self.corners(scene, 'e2rf_wall_shop_dark')
         self.assertEqual(len(glass), 2)
-        self.assertLessEqual(max(p[0] for t in glass for p in t) - min(p[0] for t in glass for p in t), 6.001)
+        self.assertAlmostEqual(max(p[2] for t in glass for p in t) - base, 3.1 - .25, places=3)   # under the red stripe
 
     def test_unknown_convenience_store_reads_produkty_but_supermarket_nothing(self):
         building = {'id': 'b', 'height': 15, 'tags': {'building': 'apartments'},
@@ -187,14 +215,23 @@ class BrandGeneratorTests(unittest.TestCase):
         pumps = [t for t in tris if all(abs(p[2] - (base + .18 + 1.85)) < .05 for p in t) and self.normal(t)[2] > .99]
         self.assertEqual(len(pumps), 2 * 2 * 3 * 2)
         self.assertTrue(all(110 < p[0] < 140 and 40 < p[1] < 54 for t in pumps for p in t))
-        # the network's sign on the canopy's two long sides, on the shop, on both faces of the pylon
-        self.assertEqual(len(self.faces_of(scene, 0)), 2 * 2 + 2 + 2 * 2)
+        # the network's square sign on the canopy's two long sides, on the shop's four, on both
+        # faces of the pylon; the canopy's fascia in its dark green, the yellow stripe under it
+        self.assertEqual(len(self.faces_of(scene, 0)), 2 * 2 + 4 * 2 + 2 * 2)
+        self.assertTrue(self.flat(scene, 0, 2) and self.flat(scene, 0, 3))
         board = [t for t in tris if all(p[3] < .25 and 10 / 16 < p[4] < 14 / 16 for p in t)]
         self.assertEqual(len(board), 4)
         self.assertTrue(all(p[1] > 80 for t in board for p in t))     # by the street's edge of the site
         self.assertEqual(len(scene.brandPOIs), 1)
         self.assertEqual(len(self.build([cell], i=1).brandPOIs), 0)
         self.assertIsNone(self.build([cell], far=True).brandPOIs)
+
+    def test_shop_storeys_are_taller_than_a_flats(self):
+        height = self.g.shopHeight
+        self.assertEqual(height(self.table({'height': 6}), self.table({'building': 'retail', 'building:levels': '2'}), 2000, 0), 9)
+        self.assertEqual(height(self.table({'height': 6}), self.table({'building': 'apartments', 'building:levels': '2'}), 2000, 0), 6)
+        self.assertEqual(height(self.table({'height': 6}), self.table({'building': 'retail', 'building:levels': '2',
+                                                                       'height': '7'}), 2000, 0), 6)
 
     def test_plain_roof_stands_on_columns(self):
         roof = {'id': 'roof', 'tags': {'building': 'roof'}, 'rings': [[[100, 100], [120, 100], [120, 108], [100, 108]]]}

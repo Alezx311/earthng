@@ -605,32 +605,72 @@ YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (2
 
 # The shop and fuel station atlas (generator.lua BLD.SHOP): 4 x 16 cells of 512 x 128 px, the
 # shape of a lightbox 4 m x 1 m. Cells 0..31 are the networks of retail.ALIASES in the order of
-# generator.lua SOLID.BRANDS, 32 and 33 the plain 'АЗС' and 'ПРОДУКТИ' of an unknown network,
-# the price board a block of one column by four rows, and the last two rows flat colours for
-# canopies, columns and pumps. Cells 34 and 35 hold the 32 networks' colours as stripes of 32 px
-# (a canopy's stripe, a pump's top). A lightbox is the network's real logo where
+# generator.lua SOLID.BRANDS, 32 and 33 the plain 'АЗС' and 'ПРОДУКТИ' of an unknown network.
+# Cells 34-35, 36-37 and 38-39 hold each network's sign, facade and accent colours as stripes of
+# 32 px (16 a cell): the cladding, fascia and stripes of its shops, canopies and pumps. The price
+# board is a block of one column by four rows; beside it 12 square signs of 256 px (SHOP_SQUARE);
+# the last two rows are flat colours. A lightbox is the network's real logo where
 # earthng/brand_logos.py fetched one into data/brands/<key>.png (Wikimedia Commons): on a white
-# panel when the logo is see-through, else on its own background; otherwise the network's colour
-# with its name in type, the left tenth of the cell plain (the plain signs' stripe samples it).
-BRAND_ART_VERSION = '5'  # change whenever an existing atlas cell changes
-# (label, lightbox colour, key in generator.lua SOLID.BRANDS[, letters when not white])
+# panel when the logo is see-through, else on its own background; otherwise its name in type.
+BRAND_ART_VERSION = '6'  # change whenever an existing atlas cell changes
+# (label, sign colour, key in generator.lua SOLID.BRANDS[, letters when not white])
 BRAND_SIGNS = [
-    ('OKKO', (0,115,63), 'okko'), ('WOG', (0,137,67), 'wog'), ('УКРНАФТА', (23,74,147), 'ukrnafta'),
-    ('АВІАС', (0,83,157), 'avias'), ('БРСМ', (213,26,37), 'brsm'), ('SHELL', (235,185,0), 'shell', (221,29,33)),
-    ('SOCAR', (0,100,163), 'socar'), ('UPG', (224,44,31), 'upg'), ('KLO', (217,30,38), 'k_lo'),
-    ('MOTTO', (213,35,39), 'motto'), ('АТБ', (19,69,151), 'atb'), ('СІЛЬПО', (30,124,72), 'silpo'),
-    ('ФОРА', (228,31,41), 'fora'), ('NOVUS', (0,126,77), 'novus'), ('AUCHAN', (220,30,52), 'auchan'),
-    ('ВЕЛМАРТ', (18,86,164), 'velmart'), ('КОЛО', (235,92,37), 'kolo'), ('РУКАВИЧКА', (181,34,39), 'rukavychka'),
-    ('СІМ23', (231,52,54), 'sim23'), ('СІМІ', (233,85,31), 'simi'), ('ФАЙНО', (228,35,39), 'faino'),
-    ('THRASH!', (231,47,36), 'thrash'), ('VARUS', (43,110,183), 'varus'), ('FOZZY', (230,99,29), 'fozzy'),
-    ('ЕКО МАРКЕТ', (54,146,53), 'eco'), ('БЛИЗЕНЬКО', (40,113,171), 'blyzenko'),
-    ('AMIC', (195,31,40), 'amic'), ('PARALLEL', (8,88,152), 'parallel'), ('VST', (230,75,32), 'vst'), ('БВС', (16,106,164), 'bvs'),
-    ("McDonald's", (200,32,34), 'mcdonalds', (255,199,44)), ('НОВА ПОШТА', (221,36,36), 'nova_poshta'),
+    ('OKKO', (0,90,50), 'okko', (255,205,0)), ('WOG', (0,150,60), 'wog'), ('УКРНАФТА', (0,72,150), 'ukrnafta'),
+    ('АВІАС', (0,90,170), 'avias'), ('БРСМ', (213,26,37), 'brsm'), ('SHELL', (251,206,7), 'shell', (221,29,33)),
+    ('SOCAR', (0,100,163), 'socar'), ('UPG', (24,24,26), 'upg', (0,170,80)), ('KLO', (255,205,0), 'k_lo', (30,30,30)),
+    ('MOTTO', (213,35,39), 'motto'), ('АТБ', (19,69,151), 'atb'), ('СІЛЬПО', (240,120,30), 'silpo'),
+    ('ФОРА', (100,190,50), 'fora'), ('NOVUS', (0,160,70), 'novus'), ('AUCHAN', (220,30,52), 'auchan'),
+    ('ВЕЛМАРТ', (240,200,0), 'velmart', (220,30,40)), ('КОЛО', (235,92,37), 'kolo'), ('РУКАВИЧКА', (110,35,60), 'rukavychka'),
+    ('СІМ23', (231,52,54), 'sim23'), ('СІМІ', (233,85,31), 'simi'), ('ФАЙНО', (0,140,70), 'faino'),
+    ('THRASH!', (30,30,30), 'thrash'), ('VARUS', (245,120,30), 'varus'), ('FOZZY', (230,30,40), 'fozzy'),
+    ('ЕКО МАРКЕТ', (200,16,46), 'eco'), ('БЛИЗЕНЬКО', (40,113,171), 'blyzenko'),
+    ('AMIC', (0,150,70), 'amic'), ('PARALLEL', (0,140,70), 'parallel'), ('VST', (230,75,32), 'vst'), ('БВС', (16,106,164), 'bvs'),
+    ("McDonald's", (200,16,46), 'mcdonalds', (255,199,44)), ('НОВА ПОШТА', (218,41,28), 'nova_poshta'),
 ]
+# How a network dresses a building (generator.lua BLD.SHOP.style mirrors clad, square and
+# accent): facade, the colour of its fascia (and of every wall when clad); accent, a stripe under
+# the fascia; square, its slot of SHOP_SQUARE (a square sign: a square logo, or the name stacked).
+# From photographs of the stores on Wikimedia Commons where there are some (ATB, Fora, Velmart,
+# OKKO, WOG, Nova Poshta, EKO, AMIC), the networks' own colours otherwise.
+BRAND_STYLE = {
+    'okko': {'facade': (0, 90, 50), 'accent': (255, 205, 0), 'square': 0},
+    'wog': {'facade': (0, 150, 60)},
+    'ukrnafta': {'facade': (0, 72, 150), 'accent': (255, 210, 0)},
+    'avias': {'facade': (0, 90, 170), 'square': 1},
+    'brsm': {'facade': (213, 26, 37)},
+    'shell': {'facade': (251, 206, 7), 'accent': (221, 29, 33)},
+    'socar': {'facade': (0, 100, 163)},
+    'upg': {'facade': (24, 24, 26), 'accent': (0, 170, 80), 'square': 2},
+    'k_lo': {'facade': (255, 205, 0), 'accent': (30, 30, 30), 'square': 3},
+    'motto': {'facade': (213, 35, 39)},
+    'atb': {'facade': (19, 69, 151), 'clad': True, 'square': 4},
+    'silpo': {'facade': (240, 120, 30)},
+    'fora': {'facade': (100, 190, 50), 'accent': (220, 40, 40), 'clad': True},
+    'novus': {'facade': (0, 160, 70)},
+    'auchan': {'facade': (220, 30, 52)},
+    'velmart': {'facade': (60, 140, 50), 'accent': (240, 200, 0), 'clad': True},
+    'kolo': {'facade': (235, 92, 37)},
+    'rukavychka': {'facade': (110, 35, 60)},
+    'sim23': {'facade': (231, 52, 54), 'square': 5},
+    'simi': {'facade': (233, 85, 31)},
+    'faino': {'facade': (0, 140, 70), 'square': 6},
+    'thrash': {'facade': (30, 30, 30), 'accent': (255, 220, 0)},
+    'varus': {'facade': (245, 120, 30)},
+    'fozzy': {'facade': (230, 30, 40)},
+    'eco': {'facade': (200, 16, 46), 'accent': (0, 50, 140), 'square': 7},
+    'blyzenko': {'facade': (40, 113, 171)},
+    'amic': {'facade': (0, 150, 70), 'accent': (230, 50, 40)},
+    'parallel': {'facade': (0, 140, 70), 'accent': (240, 120, 30)},
+    'vst': {'facade': (230, 75, 32)},
+    'bvs': {'facade': (16, 106, 164)},
+    'mcdonalds': {'facade': (200, 16, 46), 'accent': (255, 199, 44), 'square': 8},
+    'nova_poshta': {'facade': (218, 41, 28)},
+}
 SHOP_COLS, SHOP_ROWS, SHOP_CELL = 4, 16, (512, 128)
 SHOP_GENERIC = [('АЗС', (46,72,104)), ('ПРОДУКТИ', (38,92,62))]          # cells 32, 33
 SHOP_PRICE = (0, 10, 1, 4)                                                # column, row, columns, rows
-SHOP_SWATCH = 34                                                          # cells 34, 35: 16 colours each
+SHOP_SWATCH = (34, 36, 38)                                                # sign, facade, accent: 16 colours a cell
+SHOP_SQUARE = (512, 1280, 256, 6)                                         # x, y, size, per row: 12 slots
 # logos drawn on the network's colour rather than a white panel
 LOGO_ON_COLOUR = {'mcdonalds'}
 # cell: (colour, lit at night): a white panel, the lit underside of a canopy, a dark body,
@@ -672,30 +712,61 @@ def _logo_panel(logo, colour=None):
     return logo, panel
 
 
-def _lightbox(colour, label, letters, logo=None, on_colour=False):
-    """One 512 x 128 lightbox: a darker rim, the face a little lighter at the top, the name
-    fitted into the middle 80 % by 62 % (a logo 88 % by 76 %) with its proportions kept."""
-    w, h = SHOP_CELL
-    if logo is not None:
-        logo, colour = _logo_panel(logo, colour if on_colour else None)
+def _type(label, letters, lines=1):
+    """The name in bold type on a clear layer, one or (stacked by words) more lines."""
+    font = _shop_font(96)
+    words = label.split()
+    rows = [label] if lines == 1 or len(words) == 1 else [' '.join(words[:len(words) // 2]), ' '.join(words[len(words) // 2:])]
+    probe = ImageDraw.Draw(Image.new('RGBA', (1, 1)))
+    boxes = [probe.textbbox((0, 0), r, font=font) for r in rows]
+    w = max(b[2] - b[0] for b in boxes) + 4
+    step = max(b[3] - b[1] for b in boxes) + 16
+    mark = Image.new('RGBA', (w, step * len(rows)))
+    d = ImageDraw.Draw(mark)
+    for n, (r, b) in enumerate(zip(rows, boxes)):
+        d.text(((w - (b[2] - b[0])) // 2 - b[0], n * step + 2 - b[1]), r, font=font, fill=(*letters, 255))
+    return mark
+
+
+def _face(size, colour, mark, fill):
+    """A lightbox face of `size`: a darker rim, a little lighter at the top, `mark` fitted into
+    `fill` of it with its proportions kept."""
+    w, h = size
     top = tuple(min(255, round(c * 1.08 + 6)) for c in colour)
     face = Image.new('RGB', (w, h), colour)
     d = ImageDraw.Draw(face)
     for row in range(h):
         t = row / (h - 1)
         d.line([(0, row), (w, row)], fill=tuple(round(a + (b - a) * t) for a, b in zip(top, colour)))
-    d.rectangle((0, 0, w - 1, h - 1), outline=tuple(round(c * .62) for c in colour), width=5)
-    if logo is not None:
-        mark = logo.convert('RGBA')
-    else:
-        font = _shop_font(96)
-        bbox = d.textbbox((0, 0), label, font=font)
-        mark = Image.new('RGBA', (bbox[2] - bbox[0] + 4, bbox[3] - bbox[1] + 4))
-        ImageDraw.Draw(mark).text((2 - bbox[0], 2 - bbox[1]), label, font=font, fill=(*letters, 255))
-    fill = (.88, .76) if logo is not None else (.8, .62)
+    d.rectangle((0, 0, w - 1, h - 1), outline=tuple(round(c * .62) for c in colour), width=max(3, w // 100))
     k = min(w * fill[0] / mark.width, h * fill[1] / mark.height)
     mark = mark.resize((max(1, round(mark.width * k)), max(1, round(mark.height * k))), Image.Resampling.LANCZOS)
     face.paste(mark, ((w - mark.width) // 2, (h - mark.height) // 2), mark)
+    return face
+
+
+def _lightbox(colour, label, letters, logo=None, on_colour=False, size=SHOP_CELL):
+    """A lightbox (4:1, or a square `size`): a logo fitted into 88 % by 76 % of it, or the name
+    into 80 % by 62 % (stacked by words in a square)."""
+    if logo is not None:
+        logo, colour = _logo_panel(logo, colour if on_colour else None)
+        return _face(size, colour, logo, (.88, .76) if size[0] > size[1] else (.84, .84))
+    square = size[0] == size[1]
+    return _face(size, colour, _type(label, letters, 2 if square else 1), (.82, .7) if square else (.8, .62))
+
+
+def _atb_roundel(size):
+    """ATB's square sign as on its stores: a white panel, a blue ring, 'АТБ' in red."""
+    w = size[0]
+    face = Image.new('RGB', size, (250, 250, 248))
+    d = ImageDraw.Draw(face)
+    d.rectangle((0, 0, w - 1, w - 1), outline=(19, 69, 151), width=w // 32)
+    m = w * .12
+    d.ellipse((m, m, w - m, w - m), outline=(19, 69, 151), width=round(w * .07))
+    mark = _type('АТБ', (220, 30, 40))
+    k = w * .52 / mark.width
+    mark = mark.resize((round(mark.width * k), round(mark.height * k)), Image.Resampling.LANCZOS)
+    face.paste(mark, ((w - mark.width) // 2, (w - mark.height) // 2), mark)
     return face
 
 
@@ -724,19 +795,30 @@ def brand_art(r, logos=None):
     glow = Image.new('RGB', atlas.size, (0, 0, 0))
     own = Path(logos) if logos else paths.PROJECT / 'data' / 'brands'
 
-    def put(index, image, lit):
-        at = (index % SHOP_COLS * w, index // SHOP_COLS * h)
+    def paste(image, at, lit):
         atlas.paste(image, at)
         if lit:
             glow.paste(image.point(lambda v: round(v * .85)), at)
 
+    def put(index, image, lit):
+        paste(image, (index % SHOP_COLS * w, index // SHOP_COLS * h), lit)
+
+    sx, sy, side, per = SHOP_SQUARE
     for index, (label, colour, key, *letters) in enumerate(BRAND_SIGNS):
-        logo = own / f'{key}.png'
-        put(index, _lightbox(colour, label, letters[0] if letters else (255, 255, 255),
-                             Image.open(logo) if logo.is_file() else None, key in LOGO_ON_COLOUR), True)
-        stripe, cell = w // 16, SHOP_SWATCH + index // 16
-        x, y = cell % SHOP_COLS * w + index % 16 * stripe, cell // SHOP_COLS * h
-        atlas.paste(colour, (x, y, x + stripe, y + h))
+        path = own / f'{key}.png'
+        logo = Image.open(path) if path.is_file() else None
+        letters = letters[0] if letters else (255, 255, 255)
+        put(index, _lightbox(colour, label, letters, logo, key in LOGO_ON_COLOUR), True)
+        style = BRAND_STYLE[key]
+        for cell, rgb in zip(SHOP_SWATCH, (colour, style['facade'], style.get('accent', style['facade']))):
+            stripe, cell = w // 16, cell + index // 16
+            x, y = cell % SHOP_COLS * w + index % 16 * stripe, cell // SHOP_COLS * h
+            atlas.paste(rgb, (x, y, x + stripe, y + h))
+        if 'square' in style:
+            slot = style['square']
+            face = _atb_roundel((side, side)) if key == 'atb' else _lightbox(
+                colour, label, letters, logo, key in LOGO_ON_COLOUR, (side, side))
+            paste(face, (sx + slot % per * side, sy + slot // per * side), True)
     for n, (label, colour) in enumerate(SHOP_GENERIC):
         put(32 + n, _lightbox(colour, label, (255, 255, 255)), True)
     at = (SHOP_PRICE[0] * w, SHOP_PRICE[1] * h)

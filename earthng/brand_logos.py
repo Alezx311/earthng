@@ -30,7 +30,7 @@ WIDTH = 1024            # the rendering's width: a 512 px lightbox cell with roo
 
 # key: (Wikidata item, Commons file or None[, crop: the part of the image kept, in fractions])
 LOGOS = {
-    'okko': ('Q2045483', 'Logo OKKO.jpg'),
+    'okko': ('Q2045483', None),      # Commons has the old pill and Galnaftogaz's, not the griffin
     'wog': ('Q12072939', 'WOG-logo-background-RGB.svg'),
     'ukrnafta': ('Q2447961', 'Ukrnafta.png'),
     'avias': ('Q12122687', 'Avias logo.svg'),
@@ -54,7 +54,7 @@ LOGOS = {
     'thrash': (None, 'Thrash wordmark.svg'),
     'varus': ('Q114944216', 'Varus logo 500х100.png'),
     'fozzy': ('Q12063200', 'FOZZY logo.svg'),
-    'eco': ('Q12103350', 'LOGO EKO market.svg'),
+    'eco': ('Q12103350', 'ЕКО МАРКЕТ.svg'),
     'blyzenko': ('Q117670418', None),
     'amic': ('Q96047373', 'Amic Energy logo.svg'),
     'parallel': ('Q4344907', 'Parallel-logo.jpg'),
