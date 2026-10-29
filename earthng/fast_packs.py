@@ -417,6 +417,8 @@ def fields(pack, base, real):
             if w in photo.PHOTO_WALLS and photo.PHOTO_WALLS[w][0].startswith('end_'):
                 continue
             put('wall_' + w, emissiveMap=f'{lit}/{w}.glow.png', emissiveFactor=GLOW[pack])
+        # shop lightboxes, price boards and the underside of fuel canopies (fast_art.brand_art)
+        put('brand_sign', emissiveMap=f'{base}/real/brand_sign.glow.png', emissiveFactor=GLOW[pack])
     if pack == 'cyber':
         for w in walls:
             put('wall_' + w, baseColorFactor='0.45 0.42 0.55 1')

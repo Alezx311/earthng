@@ -3260,6 +3260,21 @@ end
 -- yard: fast_art.YARD_COLOURS). A piece is placed by a frame (x, y, z, yaw counter-clockwise),
 -- its faces wound counter-clockwise from outside, each in the middle of its atlas cell.
 local SOLID = {}
+-- Shared palette/atlas order for POI labels and building signs. RGB values also serve the map.
+SOLID.BRANDS = {
+  okko={0,'OKKO',{0,115,63}}, wog={1,'WOG',{0,137,67}}, ukrnafta={2,'Укрнафта',{23,74,147}},
+  avias={3,'Авіас',{0,83,157}}, brsm={4,'БРСМ',{213,26,37}}, shell={5,'Shell',{235,185,0}},
+  socar={6,'SOCAR',{0,100,163}}, upg={7,'UPG',{224,44,31}}, k_lo={8,'KLO',{217,30,38}},
+  motto={9,'Motto',{213,35,39}}, atb={10,'АТБ',{19,69,151}}, silpo={11,'Сільпо',{30,124,72}},
+  fora={12,'Фора',{228,31,41}}, novus={13,'NOVUS',{0,126,77}}, auchan={14,'Auchan',{220,30,52}},
+  velmart={15,'Велмарт',{18,86,164}}, kolo={16,'Коло',{235,92,37}}, rukavychka={17,'Рукавичка',{181,34,39}},
+  sim23={18,'Сім23',{231,52,54}}, simi={19,'Сімі',{233,85,31}}, faino={20,'Файно',{228,35,39}},
+  thrash={21,'THRASH!',{231,47,36}}, varus={22,'VARUS',{43,110,183}}, fozzy={23,'FOZZY',{230,99,29}},
+  eco={24,'ЕКО маркет',{54,146,53}}, blyzenko={25,'Близенько',{40,113,171}},
+  amic={26,'AMIC',{195,31,40}}, parallel={27,'Parallel',{8,88,152}},
+  vst={28,'VST',{230,75,32}}, bvs={29,'БВС',{16,106,164}},
+  mcdonalds={30,"McDonald's",{200,32,34}}, nova_poshta={31,'Нова пошта',{221,36,36}},
+}
 function SOLID.frame(x, y, z, yaw)
   local c, s = math.cos(yaw), math.sin(yaw)
   return function(px, py, pz) return {x + px * c - py * s, y + px * s + py * c, z + pz} end
@@ -3334,6 +3349,428 @@ function SOLID.prism(mesh, material, cell, T, n, z0, z1, r0, r1, under)
     local floorRing = {}
     for k = n, 1, -1 do floorRing[#floorRing + 1] = bottom[k] end
     SOLID.face(mesh, material, under, T, floorRing)
+  end
+end
+
+-- Shops and fuel stations: the points and sites of retail.py (kinds fuel, grocery, fast_food,
+-- post; the network in tags.e2r_brand) on the buildings OSM maps for them, never a building of
+-- our own. One atlas (fast_art.brand_art): 4 x 16 cells of 512 x 128 px, a 4:1 lightbox each
+-- (SOLID.BRANDS index: the network's logo or name; then the plain fuel and grocery signs), the
+-- networks' colours as stripes, the price board a block of one column by four rows, and flat
+-- colours. A whole shop has its lightbox high on up to two street
+-- walls and a glazed front under the first; a shop inside a bigger building a small one over the
+-- ground floor on the street wall nearest its point. building=roof is open: a slab on columns,
+-- and over a fuel station a canopy with pump islands, the network's stripe and sign on its
+-- fascia. A mapped fuel site gets a price pylon (grades, no prices) by its street.
+BLD.SHOP = {cols = 4, rows = 16, fuel = 32, grocery = 33, swatch = 34, price = {0, 10, 1, 4},
+  white = 56, lit = 57, dark = 58, metal = 59, concrete = 60,
+  kinds = {fuel = true, grocery = true, fast_food = true, post = true},
+  sites = {fuel_site = 'fuel', grocery_site = 'grocery', fast_food_site = 'fast_food', post_site = 'post'},
+  -- a whole shop: up to that many m of footprint and of height, the sign's height range
+  whole = {area = 4000, height = 8, sign = {.9, 1.6}, front = 14, glass = 4.2},
+  -- a shop in a bigger building: its sign over the ground floor and the glazing under it
+  part = {sign = .7, top = 3.75, front = 6},
+  homes = {apartments = true, residential = true, house = true, dormitory = true, hotel = true},
+  depth = .18, out = .03, street = 8,
+  canopy = {height = 5.6, levels = 4.8, deep = .9, plain = .35, band = .32, column = .45, reach = 12,
+    island = {width = 1.3, long = 6, rise = .18}, pump = {long = .9, wide = .5, body = 1.45, top = 1.85}},
+  pylon = {half = 1.0, deep = .22, height = 6.6, setback = 2.5, probe = 10, board = 2.0}}
+
+-- uv box {u0, v0, u1, v1} of a cell (an index) or a block {column, row, columns, rows}, a texel in
+function BLD.shopUV(cell)
+  local S = BLD.SHOP
+  local c, r, w, h
+  if type(cell) == 'table' then c, r, w, h = cell[1], cell[2], cell[3], cell[4]
+  else c, r, w, h = cell % S.cols, math.floor(cell / S.cols), 1, 1 end
+  return {(c + .002) / S.cols, (r + .008) / S.rows, (c + w - .002) / S.cols, (r + h - .008) / S.rows}
+end
+
+-- uv {u, v} of a flat colour: a network's stripe in the swatch cells (16 a cell), a plain
+-- sign's left edge, or a flat cell's middle
+function BLD.shopFlat(cell)
+  local S = BLD.SHOP
+  if cell < S.fuel then
+    local swatch = S.swatch + math.floor(cell / 16)
+    return {(swatch % S.cols + (cell % 16 + .5) / 16) / S.cols, (math.floor(swatch / S.cols) + .5) / S.rows}
+  end
+  local c, r = cell % S.cols, math.floor(cell / S.cols)
+  return {(c + (cell < S.white and .05 or .5)) / S.cols, (r + .5) / S.rows}
+end
+
+-- The sign cell of a point, site or building: its network's lightbox, the plain sign of a fuel
+-- station or a small grocery, or nil (a parcel locker, an unknown supermarket, another shop)
+function BLD.shopCell(kind, tags)
+  tags = tags or NONE
+  if tags.e2r_post_type == 'locker' then return nil end
+  local brand = SOLID.BRANDS[tags.e2r_brand]
+  if brand then return brand[1] end
+  if kind == 'fuel' or tags.amenity == 'fuel' then return BLD.SHOP.fuel end
+  if (kind == 'grocery' or tags.shop) and tags.shop and tags.shop ~= 'supermarket'
+      and (tags.shop == 'convenience' or tags.shop == 'grocery' or tags.shop == 'general' or tags.shop == 'food'
+        or tags.shop == 'greengrocer') then
+    return BLD.SHOP.grocery
+  end
+  return nil
+end
+
+-- A quad from four points (counter-clockwise seen from its front: bottom left first) in the
+-- atlas: over a uv box {u0, v0, u1, v1} or in a flat colour {u, v}
+function BLD.shopQuad(scene, pts, uv)
+  local q = {}
+  for k = 1, 4 do
+    local p, u, v = pts[k], uv[1], uv[2]
+    if #uv == 4 then u, v = (k == 1 or k == 4) and uv[1] or uv[3], k <= 2 and uv[4] or uv[2] end
+    q[k] = {p[1], p[2], p[3], u, v}
+  end
+  scene.polygon('brand_sign', q, false)
+end
+
+-- A box in frame T (SOLID.frame): x0..x1 along, y0..y1 across, z0..z1, in the flat colour
+-- `flat`; o.front / o.back: a uv box on the -y / +y face, o.under: the underside too
+function BLD.shopBox(scene, T, x0, y0, z0, x1, y1, z1, flat, o)
+  o = o or NONE
+  local function q(pts, uv)
+    BLD.shopQuad(scene, {T(pts[1][1], pts[1][2], pts[1][3]), T(pts[2][1], pts[2][2], pts[2][3]),
+      T(pts[3][1], pts[3][2], pts[3][3]), T(pts[4][1], pts[4][2], pts[4][3])}, uv or flat)
+  end
+  q({{x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}})
+  q({{x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}}, o.front)
+  q({{x1, y1, z0}, {x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}}, o.back)
+  q({{x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}, {x1, y0, z1}})
+  q({{x0, y1, z0}, {x0, y0, z0}, {x0, y0, z1}, {x0, y1, z1}})
+  if o.under then q({{x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}, {x1, y0, z0}}) end
+end
+
+-- A lightbox w x (z1 - z0) on wall a -> b (outside on the right), centred s m along it
+function BLD.shopSign(scene, a, b, length, s, w, z0, z1, cell)
+  local S = BLD.SHOP
+  local p = wallPoint(a, b, length, s, 0, 0)
+  local T = SOLID.frame(p[1], p[2], 0, math.atan2(b[2] - a[2], b[1] - a[1]))
+  BLD.shopBox(scene, T, -w / 2, -(S.out + S.depth), z0, w / 2, -S.out, z1, BLD.shopFlat(S.metal),
+    {front = BLD.shopUV(cell), under = true})
+end
+
+-- The shop glazing (wall_shop_dark: windows, a granite plinth, the sign band at 3.3-4.2 m)
+-- over s0..s1 of a wall, as the facade maps it (6 m a repeat from the base)
+function BLD.shopFront(scene, a, b, length, s0, s1, z0, z1, base)
+  scene.polygon('wall_shop_dark', {wallPoint(a, b, length, s0, .04, z0, s0 / 6, (z0 - base) / 6),
+    wallPoint(a, b, length, s1, .04, z0, s1 / 6, (z0 - base) / 6),
+    wallPoint(a, b, length, s1, .04, z1, s1 / 6, (z1 - base) / 6),
+    wallPoint(a, b, length, s0, .04, z1, s0 / 6, (z1 - base) / 6)}, false)
+end
+
+-- The mapped points by 100 m bin, the buildings their sites hold (shops.own: building -> cell),
+-- the roofs over pumps (shops.roofs: building -> {fuel, cell}), and each fuel site's pylon.
+function BLD.shopSites(shops, lists, rect, scene, ground, segmentBins, pause)
+  local S = BLD.SHOP
+  local any = false
+  for _, poi in ipairs(lists.points) do
+    local p = poi.pos
+    local cell = p and S.kinds[poi.kind] and BLD.shopCell(poi.kind, poi.tags)
+    if cell then
+      local key = math.floor(p[1] / 100) * 65536 + math.floor(p[2] / 100)
+      shops.points[key] = shops.points[key] or {}
+      table.insert(shops.points[key], {pos = p, cell = cell, kind = poi.kind})
+      any = true
+    end
+  end
+  local sites = {}
+  for _, site in ipairs(lists.areas) do
+    local kind = S.sites[site.kind]
+    if kind and site.rings and site.rings[1] and boundsTouch(ringBounds(site.rings), rect, S.pylon.probe) then
+      sites[#sites + 1] = {site = site, kind = kind, cell = BLD.shopCell(kind, site.tags)}
+    end
+  end
+  if #sites == 0 and not any then return end
+  local bins = {}
+  for _, b in ipairs(lists.buildings) do
+    if b.rings and b.rings[1] then
+      local box = ringBounds(b.rings)
+      for bx = math.floor(box[1] / 100), math.floor(box[3] / 100) do
+        for by = math.floor(box[2] / 100), math.floor(box[4] / 100) do
+          local key = bx * 65536 + by
+          bins[key] = bins[key] or {}
+          bins[key][#bins[key] + 1] = b
+        end
+      end
+    end
+  end
+  -- buildings within r of a box, each once
+  local function near(box, r)
+    local out, seen = {}, {}
+    for bx = math.floor((box[1] - r) / 100), math.floor((box[3] + r) / 100) do
+      for by = math.floor((box[2] - r) / 100), math.floor((box[4] + r) / 100) do
+        for _, b in ipairs(bins[bx * 65536 + by] or NONE) do
+          if not seen[b] then seen[b], out[#out + 1] = true, b end
+        end
+      end
+    end
+    return out
+  end
+  for _, entry in ipairs(sites) do
+    local site, held, best, bestArea = entry.site, {}, nil, 0
+    for _, b in ipairs(near(ringBounds(site.rings), 0)) do
+      local ring, cx, cy, contained = cleanRing(b.rings[1]), 0, 0, true
+      for _, p in ipairs(ring) do
+        cx, cy = cx + p[1], cy + p[2]
+        if not inside(site.rings, p[1], p[2]) and not nearEdge(site.rings, p[1], p[2], .1) then contained = false end
+      end
+      if #ring >= 3 and contained and inside(b.rings, cx / #ring, cy / #ring) then
+        held[#held + 1] = b
+        local roof = (b.tags or NONE).building == 'roof'
+        local area = footprintFrame(ring).area
+        if roof and entry.kind == 'fuel' then
+          shops.roofs[b] = {fuel = true, cell = entry.cell}
+        elseif not roof and (not best or area > bestArea or area == bestArea and tostring(b.id or '') < tostring(best.id or '')) then
+          best, bestArea = b, area
+        end
+      end
+    end
+    -- one sign per building: the lower cell where two sites hold it
+    if best and entry.cell and (not shops.own[best] or entry.cell < shops.own[best]) then shops.own[best] = entry.cell end
+    if entry.kind == 'fuel' and entry.cell then
+      BLD.shopPylon(scene, site, entry.cell, held, ground, segmentBins)
+    end
+    pause()
+  end
+  -- a fuel point under or beside a mapped roof (no site drawn): that roof is its canopy
+  for _, list in pairs(shops.points) do
+    for _, poi in ipairs(list) do
+      if poi.kind == 'fuel' then
+        local x, y, r = poi.pos[1], poi.pos[2], S.canopy.reach
+        for _, b in ipairs(near({x, y, x, y}, r)) do
+          if (b.tags or NONE).building == 'roof' and not shops.roofs[b]
+              and (inside(b.rings, x, y) or nearEdge(b.rings, x, y, r)) then
+            shops.roofs[b] = {fuel = true, cell = poi.cell}
+          end
+        end
+      end
+    end
+  end
+end
+
+-- A fuel site's price pylon: inside the site, `setback` m in from its longest edge that has a
+-- street outside, clear of its buildings and of any carriageway; facing that street.
+function BLD.shopPylon(scene, site, cell, held, ground, segmentBins)
+  local P, S = BLD.SHOP.pylon, BLD.SHOP
+  local ring, best = BLD.orient(site.rings[1], site.rings), nil
+  for k, a in ipairs(ring) do
+    local b = ring[k % #ring + 1]
+    local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+    if length >= 6 and (not best or length > best[3]) then
+      local probe = wallPoint(a, b, length, length / 2, P.probe, 0)
+      if BLD.street(segmentBins, probe[1], probe[2], 6) then best = {a, b, length} end
+    end
+  end
+  if not best then return false end
+  local a, b, length = best[1], best[2], best[3]
+  for _, t in ipairs({.2, .8, .5, .35, .65}) do
+    local p = wallPoint(a, b, length, length * t, -P.setback, 0)
+    local clear = inside(site.rings, p[1], p[2]) and not BLD.street(segmentBins, p[1], p[2], 1.5)
+    for _, building in ipairs(held) do
+      if clear and (inside(building.rings, p[1], p[2]) or nearEdge(building.rings, p[1], p[2], 2)) then clear = false end
+    end
+    if clear then
+      local z = ground(p[1], p[2])
+      local T = SOLID.frame(p[1], p[2], z, math.atan2(b[2] - a[2], b[1] - a[1]))
+      local h, w = P.height, P.half
+      BLD.shopBox(scene, T, -w, -P.deep, -.3, w, P.deep, h, BLD.shopFlat(S.dark))
+      -- the network's lightbox at the top and the board under it, both faces
+      for _, side in ipairs({-1, 1}) do
+        local y = side * (P.deep + .01)
+        local function face(x0, x1, z0, z1, uv)
+          if side < 0 then
+            BLD.shopQuad(scene, {T(x0, y, z0), T(x1, y, z0), T(x1, y, z1), T(x0, y, z1)}, uv)
+          else
+            BLD.shopQuad(scene, {T(x1, y, z0), T(x0, y, z0), T(x0, y, z1), T(x1, y, z1)}, uv)
+          end
+        end
+        face(-w, w, h - .1 - w / 2, h - .1, BLD.shopUV(cell))
+        face(-w + .05, w - .05, h - .3 - w / 2 - P.board, h - .3 - w / 2, BLD.shopUV(S.price))
+      end
+      return true
+    end
+  end
+  return false
+end
+
+-- building=roof: a slab `deep` m thick under its roof (the caller draws the top) on columns.
+-- Over pumps (info.fuel) a canopy: the lit underside, the stripe and sign of info.cell on the
+-- fascia, pump islands along its long axis with a column in each; elsewhere plain columns.
+function BLD.shopCanopy(scene, rings, base, top, info, ground, pause, rect)
+  local S, C = BLD.SHOP, BLD.SHOP.canopy
+  local fuel = info and info.fuel
+  local deep = fuel and C.deep or math.min(C.plain, (top - base) * .15)
+  local low = top - deep
+  local ring = BLD.orient(rings[1], rings)
+  local white, under = BLD.shopFlat(S.white), BLD.shopFlat(fuel and S.lit or S.white)
+  for _, tri in ipairs(triangulate(rings, pause, rect)) do
+    local p, q, r = tri[1], tri[2], tri[3]
+    -- facing down
+    if (q[1] - p[1]) * (r[2] - p[2]) - (q[2] - p[2]) * (r[1] - p[1]) > 0 then q, r = r, q end
+    scene.polygon('brand_sign', {{p[1], p[2], low, under[1], under[2]}, {q[1], q[2], low, under[1], under[2]},
+      {r[1], r[2], low, under[1], under[2]}}, false)
+  end
+  local signs = {}
+  for k, a in ipairs(ring) do
+    local b = ring[k % #ring + 1]
+    local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+    if length > .05 then
+      BLD.shopQuad(scene, {wallPoint(a, b, length, 0, 0, low), wallPoint(a, b, length, length, 0, low),
+        wallPoint(a, b, length, length, 0, top), wallPoint(a, b, length, 0, 0, top)}, white)
+      if fuel and info.cell then
+        local m = (low + top) / 2
+        BLD.shopQuad(scene, {wallPoint(a, b, length, 0, .01, m - C.band / 2), wallPoint(a, b, length, length, .01, m - C.band / 2),
+          wallPoint(a, b, length, length, .01, m + C.band / 2), wallPoint(a, b, length, 0, .01, m + C.band / 2)},
+          BLD.shopFlat(info.cell))
+        signs[#signs + 1] = {a, b, length}
+      end
+    end
+  end
+  -- the sign on the two longest sides of the fascia
+  table.sort(signs, function(x, y) return x[3] > y[3] end)
+  for n = 1, math.min(2, #signs) do
+    local a, b, length = signs[n][1], signs[n][2], signs[n][3]
+    local h = deep * .85
+    if length >= 4 * h + 1 then
+      local s, m = length / 2, (low + top) / 2
+      BLD.shopQuad(scene, {wallPoint(a, b, length, s - 2 * h, .03, m - h / 2), wallPoint(a, b, length, s + 2 * h, .03, m - h / 2),
+        wallPoint(a, b, length, s + 2 * h, .03, m + h / 2), wallPoint(a, b, length, s - 2 * h, .03, m + h / 2)},
+        BLD.shopUV(info.cell))
+    end
+  end
+  local f = footprintFrame(ring)
+  local L, W = f.u1 - f.u0, f.v1 - f.v0
+  local yaw = math.atan2(f.ay, f.ax)
+  local function at(u, v) return u * f.ax + v * f.bx, u * f.ay + v * f.by end
+  local metal, half = BLD.shopFlat(S.metal), C.column / 2
+  local function column(x, y, z)
+    BLD.shopBox(scene, SOLID.frame(x, y, z, yaw), -half, -half, 0, half, half, low - z, metal)
+  end
+  if fuel and L >= 6 and W >= 4 then
+    local I, P = C.island, C.pump
+    local rows, per = math.max(1, math.floor(W / 7 + .5)), math.max(1, math.floor(L / 9))
+    local long = math.min(I.long, L / per - 2.5)
+    for row = 1, rows do
+      local v = f.v0 + W * (row - .5) / rows
+      for k = 1, long >= 2.5 and per or 0 do
+        local u = f.u0 + L * (k - .5) / per
+        local fits = true
+        for _, c in ipairs({{-1, -1}, {1, -1}, {1, 1}, {-1, 1}}) do
+          local x, y = at(u + c[1] * long / 2, v + c[2] * I.width / 2)
+          if not inside(rings, x, y) then fits = false end
+        end
+        if fits then
+          local x, y = at(u, v)
+          local z = ground(x, y)
+          local T = SOLID.frame(x, y, z, yaw)
+          BLD.shopBox(scene, T, -long / 2, -I.width / 2, -.3, long / 2, I.width / 2, I.rise, BLD.shopFlat(S.concrete))
+          column(x, y, z + I.rise)
+          for _, s in ipairs(long >= 4 and {-1, 1} or {1}) do
+            local c = s * long * .28
+            BLD.shopBox(scene, T, c - P.long / 2, -P.wide / 2, I.rise, c + P.long / 2, P.wide / 2, I.rise + P.body, white)
+            BLD.shopBox(scene, T, c - P.long / 2, -P.wide / 2, I.rise + P.body, c + P.long / 2, P.wide / 2, I.rise + P.top,
+              BLD.shopFlat(info.cell or S.fuel))
+          end
+        end
+      end
+      pause()
+    end
+  else
+    -- columns on a grid at most 8 m apart, half a metre in from the outline, inside it
+    local nu, nv = math.max(1, math.ceil((L - 1) / 8)), W > 5 and 1 or 0
+    for i = 0, nu do
+      for j = 0, nv do
+        local u = nu > 0 and f.u0 + .5 + (L - 1) * i / nu or (f.u0 + f.u1) / 2
+        local v = nv > 0 and f.v0 + .5 + (W - 1) * j or (f.v0 + f.v1) / 2
+        local x, y = at(u, v)
+        if inside(rings, x, y) and not nearEdge(rings, x, y, .3) then column(x, y, ground(x, y) - .2) end
+      end
+    end
+  end
+end
+
+-- The signs of one building: `own` its own cell (its tags or a site's), `points` the shop
+-- points inside it. One network for a small non-residential building is a whole shop; any other
+-- point a small sign and glazing on the street wall nearest it.
+function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins)
+  local S = BLD.SHOP
+  local W, P = S.whole, S.part
+  local tags = building.tags or NONE
+  local ring = BLD.orient(rings[1], rings)
+  local footprint = footprintFrame(ring).area
+  local walls = {}
+  for k, a in ipairs(ring) do
+    local b = ring[k % #ring + 1]
+    local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+    if length >= 3 then
+      local probe = wallPoint(a, b, length, length / 2, S.street, 0)
+      walls[#walls + 1] = {a = a, b = b, length = length,
+        street = BLD.street(segmentBins, probe[1], probe[2], S.street + 4)}
+    end
+  end
+  if #walls == 0 then return end
+  local shown, parts = {}, {}
+  if own then shown[own] = true end
+  for _, poi in ipairs(points) do
+    if not shown[poi.cell] then shown[poi.cell], parts[#parts + 1] = true, poi end
+  end
+  local small = footprint <= W.area and height <= W.height and not S.homes[tags.building or 'yes']
+    and not (tags['building:levels'] and number(tags['building:levels'], 1) > 2)
+  if not own and #parts == 1 and small then own, parts = parts[1].cell, {} end
+  local top = base + height
+  if own then
+    -- the street walls, longest first, one per direction; else the longest wall
+    local picked = {}
+    table.sort(walls, function(x, y)
+      if x.street ~= y.street then return x.street end
+      return x.length > y.length
+    end)
+    for _, wall in ipairs(walls) do
+      local dx, dy = (wall.b[1] - wall.a[1]) / wall.length, (wall.b[2] - wall.a[2]) / wall.length
+      local same = false
+      for _, other in ipairs(picked) do
+        if dx * other.dx + dy * other.dy > .87 then same = true end
+      end
+      if not same and wall.length >= 5 and (wall.street or #picked == 0) and #picked < 2 then
+        wall.dx, wall.dy = dx, dy
+        picked[#picked + 1] = wall
+      end
+    end
+    for n, wall in ipairs(picked) do
+      local h = math.max(W.sign[1], math.min(W.sign[2], height * .2, wall.length * .8 / 4, height - 3.2))
+      local w, s = 4 * h, wall.length / 2
+      local z1 = math.min(top - .25, base + 8)
+      if h >= .5 then
+        BLD.shopSign(scene, wall.a, wall.b, wall.length, s, w, z1 - h, z1, own)
+        if n == 1 then
+          local half = math.min(wall.length * .6, W.front) / 2
+          BLD.shopFront(scene, wall.a, wall.b, wall.length, s - half, s + half, bottom,
+            math.min(z1 - h - .05, base + W.glass), base)
+        end
+      end
+    end
+  end
+  for _, poi in ipairs(parts) do
+    local x, y = poi.pos[1], poi.pos[2]
+    local best, bestScore, bestT
+    for _, wall in ipairs(walls) do
+      local a, dx, dy = wall.a, wall.b[1] - wall.a[1], wall.b[2] - wall.a[2]
+      local t = math.max(0, math.min(1, ((x - a[1]) * dx + (y - a[2]) * dy) / (wall.length ^ 2)))
+      local d = math.sqrt((x - a[1] - t * dx) ^ 2 + (y - a[2] - t * dy) ^ 2) + (wall.street and 0 or S.street)
+      if not bestScore or d < bestScore then best, bestScore, bestT = wall, d, t end
+    end
+    local h = P.sign
+    local w = math.min(4 * h, best.length - .2)
+    if w >= 1.2 then
+      h = w / 4
+      local s = math.max(w / 2 + .1, math.min(best.length - w / 2 - .1, bestT * best.length))
+      local z1 = math.min(base + P.top, top - .1)
+      local half = math.min(math.max(w + 2, P.front), best.length) / 2
+      local c = math.max(half, math.min(best.length - half, s))
+      BLD.shopFront(scene, best.a, best.b, best.length, c - half, c + half, bottom, z1, base)
+      BLD.shopSign(scene, best.a, best.b, best.length, s, w, z1 - h, z1, poi.cell)
+    end
   end
 end
 
@@ -7096,6 +7533,10 @@ local function build(cells, i, j, options)
     end
   end
   mark('areas')
+  -- Shops and fuel stations (BLD.SHOP): the mapped points by bin, the buildings their sites
+  -- hold, the roofs over pumps, the pylons
+  local shops = {points = {}, own = {}, roofs = {}}
+  if decor and not distant then BLD.shopSites(shops, lists, rect, scene, ground, segmentBins, pause) end
   for _, building in ipairs(decor and lists.buildings or NONE) do
     local rings, tags = building.rings or {}, building.tags or {}
     local exterior = cleanRing(rings[1])
@@ -7120,6 +7561,24 @@ local function build(cells, i, j, options)
       local lifted = (building.minHeight or number(tags.min_height, 0)) > 0
       local bottom = lifted and base + (building.minHeight or number(tags.min_height, 0)) or low - .3
       local top, kind = base + height, wallMaterial(building, look, height)
+      -- building=roof stands open on columns (BLD.shopCanopy); a canopy over pumps clears a
+      -- lorry unless OSM gives its height
+      local open = tags.building == 'roof' and not options.far
+      if open and shops.roofs[building] and not tags.height then
+        height = math.max(height, tags['building:levels'] and BLD.SHOP.canopy.levels or BLD.SHOP.canopy.height)
+        top = base + height
+      end
+      if not distant and not open and height >= 2.2 then
+        local own, points, box = shops.own[building] or BLD.shopCell(nil, tags), {}, ringBounds(rings)
+        for bx = math.floor(box[1] / 100), math.floor(box[3] / 100) do
+          for by = math.floor(box[2] / 100), math.floor(box[4] / 100) do
+            for _, poi in ipairs(shops.points[bx * 65536 + by] or NONE) do
+              if inside(rings, poi.pos[1], poi.pos[2]) then points[#points + 1] = poi end
+            end
+          end
+        end
+        if own or #points > 0 then BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins) end
+      end
       -- A plinth under low brick and plaster walls (the photo panels have their own); garage
       -- doors along a row's long walls, or a single garage's short ones.
       local plinth = not lifted and height <= 13 and (kind:find('wall_brk_', 1, true) == 1 or kind:find('wall_pls_', 1, true) == 1)
@@ -7136,10 +7595,10 @@ local function build(cells, i, j, options)
       -- City grammar, near tiles at Balanced and above. Houses stay on dress.mass.
       -- Flat roofs gain a parapet and a crown; street facades and the long yard side gain canopies.
       BLD.city, BLD.face, BLD.faces = nil, nil, nil
-      BLD.city = (not dress and not options.far and not lifted and BLD.mass(options.detail) and BLD.block(use, height)) or nil
+      BLD.city = (not dress and not open and not options.far and not lifted and BLD.mass(options.detail) and BLD.block(use, height)) or nil
       if BLD.city then BLD.faces = {} end
       local doors = (use == 'garage' or use == 'garages') and (h % 3 == 0 and 'door_rust' or 'door_garage')
-      for _, raw in ipairs(rings) do
+      for _, raw in ipairs(open and NONE or rings) do
         local ring, along = cleanRing(raw), 0
         local signed = 0
         for k, p in ipairs(ring) do local q = ring[k % #ring + 1]; signed = signed + p[1] * q[2] - q[1] * p[2] end
@@ -7208,11 +7667,12 @@ local function build(cells, i, j, options)
           if k % 32 == 0 then pause() end
         end
       end
-      if options.far or not pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet), dress) then
+      if options.far or open or not pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet), dress) then
         for _, tri in ipairs(triangulate(rings, pause, rect)) do
           for _, p in ipairs(tri) do p[3] = top end
           scene.polygon('roof', tri, true)
         end
+        if open then BLD.shopCanopy(scene, rings, base, top, shops.roofs[building], ground, pause, rect) end
         if BLD.city then
           BLD.parapets(scene, rings, top, height, h)
           BLD.crown(scene, rings, top, height, h, footprint)
@@ -8450,6 +8910,17 @@ local function build(cells, i, j, options)
   mark('trees')
   local sceneManifest = manifest(scene, 'scene')
   sceneManifest.parking = parking
+  if not distant then
+    sceneManifest.brandPOIs = {}
+    for _, poi in ipairs(lists.points) do
+      local p, tags = poi.pos, poi.tags or NONE
+      if p and (poi.kind == 'fuel' or poi.kind == 'grocery' or poi.kind == 'fast_food' or poi.kind == 'post') and SOLID.BRANDS[tags.e2r_brand]
+          and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
+        sceneManifest.brandPOIs[#sceneManifest.brandPOIs + 1] =
+          {id = poi.id, kind = poi.kind, x = p[1], y = p[2], brand = tags.e2r_brand, postType = tags.e2r_post_type}
+      end
+    end
+  end
   if distant then
     sceneManifest.layer = layerName
     for _, item in ipairs(sceneManifest.items) do
@@ -8462,6 +8933,8 @@ end
 
 M.build = build
 M.YARD = YARD
+M.BRANDS = SOLID.BRANDS
+M.shopFlat = BLD.shopFlat
 M.triangulate = triangulate
 M.clip = clip
 M.EDGE_MAPS = EDGE_MAPS

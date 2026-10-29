@@ -690,26 +690,35 @@ class Store:
             raise ValueError(f'no_osm scenery coverage: {bbox}')
         key,entry=hit
         if key not in self.scenes:
-            found={}; lines={}; factory=osmium.geom.GeoJSONFactory()
+            found={}; lines={}; retail_areas={}; factory=osmium.geom.GeoJSONFactory()
             import fast_style
+            import retail
             class Reader(osmium.SimpleHandler):
                 def area(self,a):
+                    tags = retail.enriched(a.tags)
+                    point_kind = retail.kind(tags)
                     kind='building' if a.tags.get('building') not in (None,'no') else (
                         'water' if a.tags.get('natural')=='water' or a.tags.get('waterway')=='riverbank' else None)
                     if kind is None:
                         kind=fast_style.ground_kind(a.tags)
-                    if kind and a.id not in found:
+                    if (kind and a.id not in found) or point_kind:
                         try:
-                            geometry=factory.create_multipolygon(a)
+                            geometry=shape(json.loads(factory.create_multipolygon(a)))
                         except RuntimeError:
                             return      # broken OSM ring (e.g. area 29961653): skip that area alone
-                        found[a.id]=(kind,dict(a.tags),shape(json.loads(geometry)))
+                        if kind:
+                            found[a.id]=(kind,tags,geometry)
+                        # A mapped site/building is still useful as a point even if it has no
+                        # recognized ground kind. A representative point stays inside the area.
+                        if point_kind and not geometry.is_empty:
+                            retail_areas[-(2*10**12+a.id)]=(point_kind,tags,geometry)
+                            found[-(3*10**12+a.id)]=(point_kind + '_site',tags,geometry)
                 def node(self,n):
                     # bus stops and traffic signals where OSM has them (way nodes keep their tags
                     # in the source tiles); keyed apart from areas and ways
                     kind=fast_style.point_kind(n.tags)
                     if kind and n.location.valid():
-                        lines[-(10**12+n.id)]=(kind,dict(n.tags),Point(n.location.lon,n.location.lat))
+                        lines[-(10**12+n.id)]=(kind,retail.enriched(n.tags),Point(n.location.lon,n.location.lat))
                 def way(self,w):
                     # footpaths, fences, tree rows: lines, not areas (an area id is 2 x way id,
                     # so a line keys as -way id to stay apart)
@@ -725,6 +734,19 @@ class Store:
             # the location index still sees every node, so ways and areas keep their geometry.
             Reader().apply_file(str(Path(self.meta['source'])/entry['file']),locations=True,
                                 filters=[osmium.filter.KeyFilter(*fast_style.POINT_KEYS).enable_for(osmium.osm.NODE)])
+            # OSM often maps a business both as a node and a containing site/building.
+            # Keep the surveyed node when category and known brand match; unknown names
+            # or neighbouring businesses are never guessed to be duplicates.
+            nodes = [(kind, tags.get('e2r_brand'), geom, tags.get('e2r_post_type')) for kind, tags, geom in lines.values()
+                     if kind in ('fuel', 'grocery', 'fast_food', 'post') and tags.get('e2r_brand')]
+            tree = shapely.STRtree([entry[2] for entry in nodes]) if nodes else None
+            for ident, (kind, tags, geometry) in retail_areas.items():
+                brand = tags.get('e2r_brand')
+                duplicate = bool(brand and tree and any(
+                    nodes[int(i)][0] == kind and nodes[int(i)][1] == brand and
+                    nodes[int(i)][3] == tags.get('e2r_post_type') and geometry.covers(nodes[int(i)][2]) for i in tree.query(geometry)))
+                if not duplicate:
+                    lines[ident] = (kind, tags, geometry.representative_point())
             found.update(lines)
             ordered=sorted(found.items())
             geoms=shapely.make_valid(shapely.transform([v[1][2] for v in ordered],self.frame.local,interleaved=False))

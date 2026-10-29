@@ -4,6 +4,7 @@ surface kind, and a facade per building. No textures are shipped; all paths are 
 import math
 import zlib
 import nature
+import retail
 
 TEXTURES = {
     'asphalt': {
@@ -303,6 +304,8 @@ KINDS['car'] = ('car', [.6, .6, .62, 1], 'METAL', 1.0, 'wall')       # parked ca
 # a tint over a white map (an sRGB factor: the colour itself over 255).
 TEXTURES['yard'] = {'baseColorMap': f'{ART}/real/yard.color.png'}
 KINDS['yard'] = ('yard', [.6, .6, .6, 1], 'METAL', 1.0, 'wall')
+TEXTURES['brand_sign'] = {'baseColorMap': f'{ART}/real/brand_sign.color.png'}
+KINDS['brand_sign'] = ('brand_sign', [1, 1, 1, 1], 'METAL', 1.0, 'wall')
 TEXTURES['railing'] = {'baseColorMap': f'{ART}/real/railing.color.png', 'opacityMap': f'{ART}/real/railing_o.data.png'}
 RAILINGS = {'railing_blue': (52, 98, 150), 'railing_green': (46, 104, 70), 'railing_dark': (52, 54, 56)}
 for _k, _rgb in RAILINGS.items():
@@ -469,11 +472,16 @@ UNMARKED = ('no', 'none', 'unmarked')
 
 
 # Every key point_kind reads: the exporter hands Python only nodes with one of them.
-POINT_KEYS = ('highway', 'natural', 'public_transport', 'entrance', 'leisure')
+POINT_KEYS = ('highway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'shop', 'man_made', 'vending', 'brand', 'operator', 'name',
+              'brand:uk', 'brand:en', 'name:uk', 'name:en', 'name:ru', 'operator:uk',
+              'operator:en', 'operator:ru', 'brand:wikidata', 'operator:wikidata')
 
 
 def point_kind(tags):
     """'stop', 'signal' or one of ROAD_DETAILS for an OSM node, else None."""
+    retail_kind = retail.kind(tags)
+    if retail_kind:
+        return retail_kind
     highway = tags.get('highway')
     if tags.get('natural') == 'tree':
         return 'tree'

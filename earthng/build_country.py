@@ -248,7 +248,8 @@ def compile_cell(store, rect, include=None):
         # Detailed mapped footprints win over satellite classes. Raster areas
         # carry no sampled Z: runtime drapes them on the shared final surface.
         overrides = [shapely.Polygon(f['rings'][0], f['rings'][1:])
-                     for f in cell['areas'] + cell['buildings'] if f.get('rings')]
+                     for f in cell['areas'] + cell['buildings']
+                     if f.get('rings') and f.get('kind') not in ('fuel_site', 'grocery_site', 'fast_food_site', 'post_site')]
         for n, (kind, geometry, tags) in enumerate(cover.areas(rect, overrides)):
             if not looks.keep_scenery(kind, include):
                 continue
@@ -732,7 +733,7 @@ def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None,
 
 
 # What a finished region of an export depends on besides its source index: the exporter's own code.
-_PART_CODE = ('build_country', 'country_format', 'fast_sources', 'fast_style', 'nature', 'looks', 'landcover')
+_PART_CODE = ('build_country', 'country_format', 'fast_sources', 'fast_style', 'retail', 'nature', 'looks', 'landcover')
 
 
 def _part_key(region, *settings):
@@ -748,6 +749,11 @@ def _part_key(region, *settings):
     directory, core, region_id = _region_spec(region)
     digest.update(json.dumps([directory.name, core, region_id, FORMAT, nature.VERSION, *settings],
                              sort_keys=True, default=str).encode())
+    outline = region.get('shape') if isinstance(region, dict) else None
+    if outline is not None:
+        if isinstance(outline, dict):
+            outline = shapely.geometry.shape(outline)
+        digest.update(shapely.to_wkb(outline, byte_order=1))
     label = re.sub(r'[^A-Za-z0-9-]+', '-', region_id or directory.name)
     return f'{label}-{digest.hexdigest()[:16]}.part'
 

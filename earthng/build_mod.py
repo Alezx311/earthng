@@ -173,6 +173,9 @@ def build(out, lang='en'):
         for src in sorted(art.rglob('*')):
             if src.is_file() and src.suffix in ('.dds', '.json'):
                 z.write(src, f'e2r_stream/fast-art/{fast_art.VERSION}/' + src.relative_to(art).as_posix())
+        credits = fast_art.logo_credits()
+        if credits:
+            z.writestr('earthng/planet/LOGOS.md', credits)
         # the climate of every place (Köppen-Geiger, Beck et al. 2023, CC BY 4.0): biome.lua
         import build_climate
         climate = build_climate.build()

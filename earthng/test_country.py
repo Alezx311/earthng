@@ -450,6 +450,14 @@ class ResumablePartTests(unittest.TestCase):
         self.assertNotEqual(key, build_country._part_key(region, None, {'block': 'nordic'}, None))
         self.assertNotEqual(key, build_country._part_key(dict(region, dir='C:/x/fast-index/fast-18-def'),
                                                          None, {'block': 'postsoviet'}, None))
+        import shapely
+        first = dict(region, shape=shapely.box(30, 50, 30.5, 50.5))
+        second = dict(region, shape=shapely.box(30, 50, 30.6, 50.5))
+        first_key = build_country._part_key(first, None, {'block': 'postsoviet'}, None)
+        self.assertNotEqual(key, first_key)
+        self.assertNotEqual(first_key, build_country._part_key(second, None, {'block': 'postsoviet'}, None))
+        self.assertEqual(first_key, build_country._part_key(
+            dict(region, shape=shapely.geometry.mapping(first['shape'])), None, {'block': 'postsoviet'}, None))
         self.assertTrue(key.startswith('e0300-n500-'))
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / key
