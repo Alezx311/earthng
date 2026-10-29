@@ -2602,6 +2602,118 @@ function SIGNS.place(requests, env, pause)
   return counts
 end
 
+-- Street parking (options.experimentalDetail): where a road's own parking tags say cars stand,
+-- bays along that side (OSM's parking:left/right/both and the older parking:lane:*). A fact
+-- that a side is for parking, not an inventory of cars: the bays are spots for the game's
+-- parked cars (parking.lua), or box cars with those off. Placement: 'lane' on the carriageway
+-- at its edge, only where the width leaves the moving lanes their 3 m each; 'street_side' and
+-- 'shoulder' beside it; 'on_kerb' on the sidewalk; 'half_on_kerb' astride the curb. Bays keep
+-- off junction mouths, crossings and stops; one every 6 m parallel, 3.2 diagonal, 2.7 across.
+ROADS.PARK = {parks = {lane = 'lane', street_side = 'side', shoulder = 'side', on_kerb = 'kerb', half_on_kerb = 'half',
+    yes = 'lane', parallel = 'lane', diagonal = 'lane', perpendicular = 'lane', marked = 'lane', inline = 'lane'},
+  orient = {parallel = {1.9, 6}, diagonal = {4.4, 3.2}, perpendicular = {5.0, 2.7}},
+  mouth = 6, crossing = 6, stop = 15, lane = 3, ends = 3}
+
+-- the parking on one side (1 left, -1 right of the point order): placement and orientation, or nil
+function ROADS.parkingSide(tags, side)
+  local name = side == 1 and 'left' or 'right'
+  local P = ROADS.PARK
+  local v = tags['parking:' .. name] or tags['parking:both']
+  local orient = tags['parking:' .. name .. ':orientation'] or tags['parking:both:orientation']
+  if v == nil then
+    -- the older scheme: the value is the orientation, the place a separate key
+    local old = tags['parking:lane:' .. name] or tags['parking:lane:both']
+    if old == nil then return nil end
+    v = tags['parking:lane:' .. name .. ':' .. old] or tags['parking:lane:both:' .. old] or 'lane'
+    if v == 'on_street' then v = 'lane' end
+    if P.orient[old] then orient = old elseif not P.parks[old] then return nil end
+  end
+  local where = P.parks[v]
+  if not where then return nil end
+  if P.orient[v] then orient = v end
+  orient = P.orient[orient] and orient or 'parallel'
+  if where == 'half' and orient ~= 'parallel' then where = 'kerb' end
+  return where, orient
+end
+
+-- Bays {x, y, yaw (the car's heading, math angle), key} along the roads that have them.
+-- env: rect, cutsOf, points (crossings, stops), nearestOn(x, y, z, bridges, except), clear(x, y,
+-- yaw, length, width) (no building there), walkAt(road, x, y, side), ground, pause.
+function ROADS.streetParking(roads, env)
+  local P, bays = ROADS.PARK, {}
+  local avoid = {}
+  for _, point in ipairs(env.points) do
+    if point.pos and (point.kind == 'crossing' or point.kind == 'stop') then avoid[#avoid + 1] = point end
+  end
+  local rect = env.rect
+  for index, road in ipairs(roads) do
+    if index % 64 == 0 then env.pause() end
+    local tags, points = road.tags or NONE, road.points or NONE
+    if #points >= 2 and (tags['parking:left'] or tags['parking:right'] or tags['parking:both']
+        or tags['parking:lane:left'] or tags['parking:lane:right'] or tags['parking:lane:both'])
+        and not ROADS.bridge(tags) and not ROADS.tunnel(tags) and boundsTouch(rect, ringBounds({points}), 30) then
+      local dist = {0}
+      for k = 2, #points do
+        dist[k] = dist[k - 1] + math.sqrt((points[k][1] - points[k - 1][1]) ^ 2 + (points[k][2] - points[k - 1][2]) ^ 2)
+      end
+      local length = dist[#points]
+      local width = math.max(.5, math.min(80, road.width or 7))
+      local hw = width / 2
+      local oneway, flip = ROADS.oneway(tags)
+      local cuts = env.cutsOf[road] or NONE
+      local sides = {}
+      for _, side in ipairs({1, -1}) do
+        local where, orient = ROADS.parkingSide(tags, side)
+        if where then sides[#sides + 1] = {side = side, where = where, orient = orient} end
+      end
+      -- the moving lanes keep 3 m each: 'lane' bays only where the rest of the width holds them
+      local depthLane = 0
+      for _, s in ipairs(sides) do
+        if s.where == 'lane' then depthLane = depthLane + P.orient[s.orient][1] end
+      end
+      local lanes = number(tags.lanes, oneway and 1 or 2)
+      local roomy = width - depthLane >= lanes * P.lane
+      for _, s in ipairs(sides) do
+        local depth, step = P.orient[s.orient][1], P.orient[s.orient][2]
+        local off
+        if s.where == 'lane' then off = roomy and hw - depth / 2 - .1 or nil
+        elseif s.where == 'half' then off = hw + .05
+        else off = hw + .25 + depth / 2 end
+        -- the direction cars face: with the traffic on their side, against the point order on
+        -- the left of a two-way street
+        local along = (oneway and flip) and -1 or (not oneway and s.side == 1) and -1 or 1
+        local lo, hi = (cuts[1] or 0) + P.mouth, length - (cuts[2] or 0) - P.mouth
+        if off then
+          for at = lo + step / 2, hi - step / 2, step do
+            local c, tx, ty = alongLine(points, dist, at)
+            local nx, ny = -ty * s.side, tx * s.side          -- towards this side
+            local x, y = c[1] + nx * off, c[2] + ny * off
+            local free = x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4]
+            for _, point in ipairs(avoid) do
+              local q = point.pos
+              local r = point.kind == 'stop' and P.stop or P.crossing
+              if free and (q[1] - x) ^ 2 + (q[2] - y) ^ 2 < r * r then free = false end
+            end
+            local yaw
+            if s.orient == 'parallel' then yaw = math.atan2(ty * along, tx * along)
+            elseif s.orient == 'perpendicular' then yaw = math.atan2(ny, nx)
+            else yaw = math.atan2(ny + ty * along, nx + tx * along) end
+            local z = free and (s.where == 'lane' and (c[3] or 0) + ROAD_LIFT or env.ground(x, y))
+            -- another street there, a house, or a sidewalk for a car on the kerb with none
+            if free and (env.nearestOn(x, y, z, false, road) or env.nearestOn(x, y, z, true, road)) then free = false end
+            if free and s.where == 'kerb' and env.walkAt(road, c[1], c[2], s.side) <= 0 then free = false end
+            if free and not env.clear(x, y, yaw) then free = false end
+            if free then
+              bays[#bays + 1] = {x, y, yaw, tostring(road.id) .. ':' .. s.side .. ':' .. math.floor(at * 10), z = z, where = s.where}
+            end
+          end
+        end
+      end
+    end
+  end
+  return bays
+end
+
 -- Raised traffic islands (OSM area:highway=traffic_island, traffic_calming=island areas): a
 -- `height` m slab over the road beside it, its rim a curb face down to `sink` under the road.
 -- Grass on top when tagged so or bigger than `paved` m2, else sett paving. ctx: roads (the
@@ -8999,6 +9111,38 @@ local function build(cells, i, j, options)
     z = bridge and hit.z + ROADS.deck.parapet or ground(x, y)
     if OFFROAD.nearestOn(x, y, z, false, hit.road) or OFFROAD.nearestOn(x, y, z, true, hit.road) then return nil end
     return x, y, z
+  end
+  if options.experimentalDetail and not distant then
+    local maxCars = math.max(0, math.min(300, options.maxCars or 300))
+    local realCars = (options.parkedCars or 0) > 0
+    local homes = {}
+    for _, building in ipairs(lists.buildings) do
+      if ringsTouch(building.rings, {rect[1] - 10, rect[2] - 10, rect[3] + 10, rect[4] + 10}) then
+        homes[#homes + 1] = {bounds = ringBounds(building.rings), rings = building.rings}
+      end
+    end
+    local bays = ROADS.streetParking(lists.roads, {rect = rect, cutsOf = cutsOf, points = lists.points,
+      nearestOn = OFFROAD.nearestOn, walkAt = OFFROAD.walkAt, ground = ground, pause = pause,
+      clear = function(x, y, yaw)
+        for _, corner in ipairs({{-2.2, -.9}, {2.2, -.9}, {2.2, .9}, {-2.2, .9}}) do
+          local cx = x + corner[1] * math.cos(yaw) - corner[2] * math.sin(yaw)
+          local cy = y + corner[1] * math.sin(yaw) + corner[2] * math.cos(yaw)
+          for _, home in ipairs(homes) do
+            local b = home.bounds
+            if cx >= b[1] and cx <= b[3] and cy >= b[2] and cy <= b[4] and inside(home.rings, cx, cy) then return false end
+          end
+        end
+        return true
+      end})
+    local report = type(options.detailReport) == 'table' and options.detailReport or nil
+    for _, b in ipairs(bays) do
+      if #parking >= maxCars then break end
+      parking[#parking + 1] = {b[1], b[2], b.z, b[3]}
+      local h = hash(b[4])
+      if not realCars and h % 100 < 66 then parkedCar(sceneDecor, b[1], b[2], b.z + .02, b[3], math.floor(h / 100) % 8) end
+      if report then report[#report + 1] = {kind = 'bay_' .. b.where, x = b[1], y = b[2], z = 0,
+        nx = math.cos(b[3]), ny = math.sin(b[3])} end
+    end
   end
   for _, point in ipairs(distant and NONE or lists.points) do
     local p = point.pos
