@@ -3966,6 +3966,79 @@ function BLD.box(scene, kind, a, b, length, s0, s1, o0, o1, z0, z1, back, top, b
   end
 end
 
+-- Over a linked storefront (options.experimentalDetail): its sign and an awning. The sign is a
+-- dark fascia board above the shop band with the POI's real `name` in the planet's glyph atlas,
+-- centred on the span, letters shrinking to fit; no name, or one mostly of letters the atlas
+-- lacks, and there is no board (never a made-up name or a logo). The awning is synthetic: a
+-- sloped sheet over the span, only where the street's carriageway is at least `clear` m from
+-- the wall and its valance stays at least 2.4 m over the pavement. Colours by the POI's id.
+BLD.SHOPSIGN = {letter = .34, minLetter = .16, pad = .08, out0 = .03, out1 = .10, gap = .12, longest = 30,
+  awning = {reach = 1.1, drop = .45, valance = .22, height = 3.2, least = 2.4, clear = 2.0, inset = .2},
+  colours = {'paint_red', 'plate', 'pipe'}}
+function BLD.shopFront(scene, a, b, length, span, upper, top, base, bins)
+  local S, P = BLD.SHOPSIGN, BLD.PLATE
+  local s0, s1 = span[1], span[2]
+  local name = span.name
+  if name and name ~= '' then
+    local chars = BLD.glyphs(name)
+    local unknown = 0
+    for _, g in ipairs(chars) do if g < 0 then unknown = unknown + 1 end end
+    local spaces = select(2, tostring(name):gsub(' ', ''))
+    if #chars <= S.longest and unknown - spaces <= #chars / 4 then
+      local size = math.min(S.letter, (s1 - s0 - .4 - 2 * S.pad) / (#chars * P.aspect))
+      if size >= S.minLetter then
+        local w, h = #chars * size * P.aspect + 2 * S.pad, size + 2 * S.pad
+        local z0 = upper + S.gap
+        if z0 + h > top - .1 then z0 = upper - h - .1 end
+        local c = (s0 + s1) / 2
+        BLD.box(scene, 'fascia', a, b, length, c - w / 2, c + w / 2, S.out0, S.out1, z0, z0 + h, false, true, true)
+        local cw = size * P.aspect
+        local pad = (size - cw) / 2
+        for i, g in ipairs(chars) do
+          if g >= 0 then
+            local col, row = g % P.perRow, math.floor(g / P.perRow)
+            local u0, u1 = col / P.perRow, (col + 1) / P.perRow
+            local v0, v1 = 1 - (row + 1) / P.perRow, 1 - row / P.perRow
+            local l = c - w / 2 + S.pad + (i - 1) * cw
+            scene.polygon('glyphs', {wallPoint(a, b, length, l - pad, S.out1 + .01, z0 + S.pad, u0, v0),
+              wallPoint(a, b, length, l + cw + pad, S.out1 + .01, z0 + S.pad, u1, v0),
+              wallPoint(a, b, length, l + cw + pad, S.out1 + .01, z0 + S.pad + size, u1, v1),
+              wallPoint(a, b, length, l - pad, S.out1 + .01, z0 + S.pad + size, u0, v1)}, false)
+          end
+        end
+        BLD.note('shopsign', a, b, length, c, z0 - base)
+      end
+    end
+  end
+  local A = S.awning
+  local z = base + math.min(A.height, upper - base - .3)
+  if z - A.drop - A.valance - base < A.least or s1 - s0 < 2 * A.inset + 1 then return end
+  -- the carriageways at grade in front of the wall
+  for _, f in ipairs({.25, .5, .75}) do
+    local p = wallPoint(a, b, length, s0 + (s1 - s0) * f, A.reach, 0, 0, 0)
+    for _, s in ipairs(bins[(math.floor(p[1] / 50) + 32768) * 65536 + math.floor(p[2] / 50) + 32768] or NONE) do
+      if s.surface and s.len2 > 0 then
+        local t = math.max(0, math.min(1, ((p[1] - s.a[1]) * s.dx + (p[2] - s.a[2]) * s.dy) / s.len2))
+        local d = math.sqrt((s.a[1] + t * s.dx - p[1]) ^ 2 + (s.a[2] + t * s.dy - p[2]) ^ 2) - s.width / 2
+        if d < A.clear then return end
+      end
+    end
+  end
+  local kind = S.colours[hash(tostring(span[4])) % #S.colours + 1]
+  local e0, e1, zo = s0 + A.inset, s1 - A.inset, z - A.drop
+  local function w(s, o, zz, u, v) return wallPoint(a, b, length, s, o, zz, u, v) end
+  local sheet = {w(e0, .04, z, 0, 0), w(e1, .04, z, e1 - e0, 0), w(e1, A.reach, zo, e1 - e0, A.reach),
+    w(e0, A.reach, zo, 0, A.reach)}
+  scene.polygon(kind, sheet, true)
+  scene.polygon(kind, {sheet[4], sheet[3], sheet[2], sheet[1]}, false)
+  BLD.box(scene, kind, a, b, length, e0, e1, A.reach - .02, A.reach, zo - A.valance, zo, true, false, true)
+  for _, s in ipairs({e0, e1}) do
+    scene.polygon(kind, {w(s, .04, z, 0, 0), w(s, A.reach, zo, A.reach, 0), w(s, A.reach, zo - A.valance, A.reach, .2)}, false)
+    scene.polygon(kind, {w(s, A.reach, zo - A.valance, A.reach, .2), w(s, A.reach, zo, A.reach, 0), w(s, .04, z, 0, 0)}, false)
+  end
+  BLD.note('awning', a, b, length, (e0 + e1) / 2, z - base)
+end
+
 -- Tools only (options.detailReport, e.g. a camera list): where a facade detail stands, the
 -- wall point under it and the wall's outward normal. BLD.report is set per build.
 function BLD.note(kind, a, b, length, s, z)
@@ -4477,12 +4550,12 @@ function BLD.shopLinks(lists, options, pause)
     return best
   end
   local links, chosen = {}, {}
-  local function add(b, wall, s0, s1, material, id)
+  local function add(b, wall, s0, s1, material, id, name)
     local own = links[b.id] or {}
     links[b.id], chosen[b.id] = own, b
     local spans = own[wall.key] or {spans = {}, wall = wall}
     own[wall.key] = spans
-    spans.spans[#spans.spans + 1] = {s0, s1, material, id}
+    spans.spans[#spans.spans + 1] = {s0, s1, material, id, name = name}
   end
   local tied = {}
   for n, p in ipairs(pois) do
@@ -4567,7 +4640,7 @@ function BLD.shopLinks(lists, options, pause)
         else
           entry.decision, entry.wall, entry.street, entry.span = 'linked', wall.key, wall.gap, {s0, s1}
           tied[building] = true
-          add(building, wall, s0, s1, S.materials[hash(tostring(p.id)) % #S.materials + 1], tostring(p.id))
+          add(building, wall, s0, s1, S.materials[hash(tostring(p.id)) % #S.materials + 1], tostring(p.id), tags.name)
         end
       end
     end
@@ -4625,9 +4698,15 @@ function BLD.shopLinks(lists, options, pause)
           end
           pieces = kept
         end
+        -- the name goes on the longest piece only: a door cut in the middle leaves one sign
+        local longest
         for _, piece in ipairs(pieces) do
-          if piece[2] - piece[1] >= 1 then out[#out + 1] = {piece[1], piece[2], span[3], span[4]} end
+          if piece[2] - piece[1] >= 1 then
+            out[#out + 1] = {piece[1], piece[2], span[3], span[4]}
+            if not longest or piece[2] - piece[1] > longest[2] - longest[1] then longest = out[#out] end
+          end
         end
+        if longest then longest.name = span.name end
         at = math.max(at, span[2])
       end
       own[key] = #out > 0 and out or nil
@@ -8760,6 +8839,7 @@ local function build(cells, i, j, options)
             for _, span in ipairs(spans) do
               if span[1] > at then piece(wallKind, at, span[1], scale) end
               piece(span[3], span[1], span[2], 6, true)
+              if detailed then BLD.shopFront(scene, a, b, length, span, upper, top, base, segmentBins) end
               at = span[2]
             end
             if at < length then piece(wallKind, at, length, scale) end

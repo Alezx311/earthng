@@ -304,6 +304,8 @@ KINDS['glyphs'] = ('glyphs', [.96, .96, .94, 1], 'METAL', 1.0, 'wall')
 KINDS['plate'] = (None, [.08, .18, .40, 1], 'METAL', 1.0, 'wall')
 # a lift gate's red stripes (generator.lua BLD.liftGate); the white ones are the dish metal
 KINDS['paint_red'] = (None, [.72, .10, .08, 1], 'METAL', 1.0, 'wall')
+# a shop's sign board under its real name (generator.lua BLD.shopFront)
+KINDS['fascia'] = (None, [.11, .12, .13, 1], 'METAL', 1.0, 'wall')
 EXTRA['glyphs'] = {'alphaTest': True, 'alphaRef': 110, 'castShadows': False}
 # covers in the asphalt (generator.lua ROADS.covers): the Italy manhole sheet and the grid
 # drain, cut by their opacity like the lines; drawn only where the game has these maps
