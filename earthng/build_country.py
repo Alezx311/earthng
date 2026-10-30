@@ -218,7 +218,8 @@ def compile_cell(store, rect, include=None):
             continue
         seen.add((kind, fid))
         tags = data.get('tags', {})
-        if kind != 'building' and not shapely.box(*padded).contains(geometry):
+        # a power line stays whole: its nodes are its poles, a cut end would be a wire to nowhere
+        if kind not in ('building', 'power') and not shapely.box(*padded).contains(geometry):
             # A forest or field spans dozens of cells; whole, it was copied into each of them
             # (4/5 of a rural cell). Lua clips to the tile anyway, and the tile lies inside
             # this padded cell, so the cut 100 m outside the cell never shows.
@@ -228,7 +229,8 @@ def compile_cell(store, rect, include=None):
             if kind == 'building':
                 height = max(2.5, min(850., sources.number(tags.get('height'),
                              sources.number(tags.get('building:levels'), 3) * 3)))
-                feature.update(height=height, minHeight=max(0., sources.number(tags.get('min_height'), 0.)))
+                feature.update(height=height, minHeight=max(0., sources.number(tags.get('min_height'),
+                               sources.number(tags.get('building:min_level'), 0.) * 3)))
                 cell['buildings'].append(feature)
             else:
                 cell['areas'].append(feature)

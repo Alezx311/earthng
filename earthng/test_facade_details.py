@@ -218,9 +218,7 @@ class FacadeDetailTests(unittest.TestCase):
         for py, want in ((154, 0.0), (146, math.pi)):
             path = {'id': 'p1', 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[100, py, 0], [200, py, 0]]}
             cells = [{'roads': [self.road], 'points': [bench], 'lines': [path]}]
-            off = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0)[1]
-            self.assertFalse([it for it in off['items'].values() if 'point_' in str(it.name)])
-            on = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0, experimentalDetail=True)[1]
+            on = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0)[1]
             [it] = [it for it in on['items'].values() if 'point_' in str(it.name)]
             self.assertTrue(it.shape.endswith('bench_wood.dae'))
             self.assertEqual((it.pos[1], it.pos[2]), (130, 150))
@@ -248,9 +246,7 @@ class FacadeDetailTests(unittest.TestCase):
         way = {'id': 'yard', 'width': 4, 'tags': {'highway': 'service'}, 'points': [[100, 300, 0], [200, 300, 0]]}
         gate = {'id': '-1000000000888:0', 'kind': 'lift_gate', 'pos': [150, 300, 0], 'tags': {'barrier': 'lift_gate'}}
         cells = [{'roads': [way], 'points': [gate]}]
-        off = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0)[1]
-        self.assertFalse(self.tris(off, 'paint_red'))
-        on = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0, experimentalDetail=True)[1]
+        on = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0)[1]
         red = self.tris(on, 'paint_red')
         self.assertTrue(red)
         pts = [p for t in red for p in t]

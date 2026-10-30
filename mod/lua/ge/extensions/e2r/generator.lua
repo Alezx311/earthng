@@ -3361,9 +3361,12 @@ function BLD.openings(scene, a, b, length, base, height, dress, door, detail)
   end
 end
 
+BLD.worship = {church = true, cathedral = true, chapel = true, monastery = true, basilica = true, mosque = true,
+  synagogue = true, temple = true}
+
 local function wallMaterial(building, look, height)
   local tags = building.tags or {}
-  local h = hash(tostring(building.id or ''))
+  local h = hash(tostring(tags.e2r_of or building.id or ''))
   height = height or building.height or number(tags.height, number(tags['building:levels'], 3) * 3)
   local material = tags['building:material'] or tags['facade:material']
   local b = tags.building
@@ -3373,7 +3376,9 @@ local function wallMaterial(building, look, height)
   -- sheds in rusty corrugated tin, warehouses half clad in metal sheet
   if b == 'shed' then return h % 2 == 0 and 'clad_tin' or 'wall_block' end
   if b == 'industrial' or b == 'warehouse' or b == 'factory' then return h % 2 == 0 and 'clad_metal' or 'wall_block' end
-  local house = BLD.house(tags, height, h)
+  -- a church in plaster, not in a panel block's photo facade
+  if BLD.worship[b or ''] or tags.amenity == 'place_of_worship' then return 'wall_pls_cream' end
+  local house = not tags.e2r_part and BLD.house(tags, height, h)
   if house then return house end
   if material == 'glass' or b == 'office' or b == 'commercial' or b == 'retail' or b == 'hotel' or tags.office then
     local family = height > 20 and {'off_blue', 'off_green', 'off_grey', 'off_ribbon'} or {'off_ribbon', 'off_ribbon_dark'}
@@ -3811,7 +3816,7 @@ function BLD.addressPlate(scene, rings, tags, base, height, roads)
   return true
 end
 
--- A fence run without the stretches at its mapped gates (options.experimentalDetail): a gate
+-- A fence run without the stretches at its mapped gates: a gate
 -- point within `on` m of the run opens `width` (its tag), `drive` m where a road passes within
 -- `road` m of it, else `walk` m. Returns the pieces left, each two points or more.
 BLD.GATE = {on = .6, drive = 3.5, walk = 1.2, road = 4, min = .3}
@@ -3875,7 +3880,7 @@ function BLD.openGates(run, gates, roads)
   return pieces
 end
 
--- A mapped lift gate (barrier=lift_gate, options.experimentalDetail): a post at the right edge
+-- A mapped lift gate (barrier=lift_gate): a post at the right edge
 -- of the way it stands on and its boom raised upright, striped red and white. Raised: a boom
 -- across the way without collision would let a car through it. Returns true when drawn.
 BLD.LIFTGATE = {post = {.3, .3, 1.05}, boom = 3.6, stripe = .6, reach = 3}
@@ -3907,6 +3912,71 @@ function BLD.liftGate(scene, p, roads, ground)
       z + h + k * G.stripe, z + h + (k + 1) * G.stripe, true, k == n - 1, false)
   end
   return true
+end
+
+-- Low-voltage lines (power=minor_line; the main grid stays off the map). A wooden pole on each
+-- node of the way, a long span divided at `step`; the arm square to the line (the game's pole has
+-- it along its x, and stands in common art since 2013). Wires: thin upright ribbons sagging
+-- between the same anchors of two poles, on each tile a span touches (scene.polygon clips them).
+BLD.POWER = {shape = '/art/shapes/common/power_lines_procedural/electric_pole_wood_old_01.dae', step = 45,
+  longest = 70, shortest = 8, sag = .012, thick = .03, segments = 4,
+  wires = {{-.65, 7.25}, {.65, 7.25}, {-.58, 6.19}, {.62, 6.19}}}
+
+function BLD.powerPoles(points, onAsphalt)
+  local P, poles = BLD.POWER, {}
+  for k, a in ipairs(points) do
+    local b = points[k + 1]
+    local n = 1
+    if b then
+      local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+      if length > P.longest then n = math.ceil(length / P.step) end
+    end
+    for i = 0, n - 1 do
+      local t = b and i / n or 0
+      local x, y = a[1] + (b and (b[1] - a[1]) * t or 0), a[2] + (b and (b[2] - a[2]) * t or 0)
+      local last = poles[#poles]
+      if not onAsphalt(x, y) and (not last or (x - last[1]) ^ 2 + (y - last[2]) ^ 2 >= P.shortest ^ 2) then
+        poles[#poles + 1] = {x, y}
+      end
+    end
+  end
+  return poles
+end
+
+function BLD.powerLines(lines, rect, scene, ground, onAsphalt, put, pause)
+  local P = BLD.POWER
+  for _, line in ipairs(lines) do
+    if line.kind == 'power' and #(line.points or NONE) >= 2 and boundsTouch(ringBounds({line.points}), rect, 60) then
+      local poles = BLD.powerPoles(line.points, onAsphalt)
+      for k, p in ipairs(poles) do
+        local before, after = poles[k - 1] or p, poles[k + 1] or p
+        local dx, dy = after[1] - before[1], after[2] - before[2]
+        local d = math.max(EPS, math.sqrt(dx * dx + dy * dy))
+        p.dx, p.dy, p.z = dx / d, dy / d, ground(p[1], p[2])
+      end
+      for k, p in ipairs(poles) do
+        if p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
+          put('power_' .. tostring(line.id):gsub('[^%w_]', '_') .. '_' .. k, P.shape, p[1], p[2], p.z, math.atan2(-p.dx, p.dy))
+        end
+        local q = poles[k + 1]
+        if q and boundsTouch({math.min(p[1], q[1]), math.min(p[2], q[2]), math.max(p[1], q[1]), math.max(p[2], q[2])}, rect, 2) then
+          local span = math.sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2)
+          for _, wire in ipairs(P.wires) do
+            local ax, ay, az = p[1] + wire[1] * p.dy, p[2] - wire[1] * p.dx, p.z + wire[2]
+            local bx, by, bz = q[1] + wire[1] * q.dy, q[2] - wire[1] * q.dx, q.z + wire[2]
+            local function at(t, lift)
+              return {ax + (bx - ax) * t, ay + (by - ay) * t, az + (bz - az) * t - P.sag * span * 4 * t * (1 - t) + lift, t, lift}
+            end
+            for s = 0, P.segments - 1 do
+              local t0, t1 = s / P.segments, (s + 1) / P.segments
+              scene.polygon('wire', {at(t0, 0), at(t1, 0), at(t1, P.thick), at(t0, P.thick)}, false)
+            end
+          end
+        end
+      end
+      pause()
+    end
+  end
 end
 
 -- A stop's name on its own pole beside the shelter (options.experimentalDetail): the real
@@ -4813,10 +4883,55 @@ function BLD.gableWin(scene, frame, top, rise, dress)
 end
 
 -- guess: a house's dress (BLD.dress) for its roof shape, pitch and gables where OSM has none
+-- Domes and onions: a surface of revolution over the ring's middle, `rise` tall by roof:height or
+-- by the radius (BLD.domes: rise per radius, and the profile's radius at each step up).
+BLD.domes = {dome = {rise = 1, profile = {1, .97, .87, .71, .5, .26, 0}},
+  onion = {rise = 2.2, profile = {1, 1.2, 1.16, .84, .42, .14, 0}}}
+BLD.domeGold = {gold = true, golden = true, yellow = true, ['#ffd700'] = true, ['#ffc107'] = true}
+BLD.DOME = {sides = 12}
+
+function BLD.domeRadius(ring)
+  local cx, cy, r = 0, 0, 0
+  for _, p in ipairs(ring) do cx, cy = cx + p[1], cy + p[2] end
+  cx, cy = cx / #ring, cy / #ring
+  for _, p in ipairs(ring) do r = r + math.sqrt((p[1] - cx) ^ 2 + (p[2] - cy) ^ 2) end
+  return r / #ring, cx, cy
+end
+
+function BLD.dome(scene, ring, tags, top, material)
+  local spec, r, cx, cy = BLD.domes[tags['roof:shape']], BLD.domeRadius(ring)
+  local rise = number(tags['roof:height'], r * spec.rise)
+  if BLD.domeGold[tostring(tags['roof:colour'] or ''):lower()] then material = 'roof_gold' end
+  material = material or 'roof_metal'
+  local sides, steps = BLD.DOME.sides, #spec.profile - 1
+  local function at(side, step)
+    local a, w = side / sides * 2 * math.pi, r * spec.profile[step + 1]
+    return {cx + w * math.cos(a), cy + w * math.sin(a), top + rise * step / steps, side / sides * 4, step / steps * 2}
+  end
+  for step = 0, steps - 1 do
+    for side = 0, sides - 1 do
+      scene.polygon(material, {at(side, step), at(side + 1, step), at(side + 1, step + 1), at(side, step + 1)}, false)
+    end
+  end
+  return true
+end
+
+-- Walls under a part's dome: its height is the whole part, roof included
+function BLD.partWalls(height, tags, footprint)
+  local spec = BLD.domes[tags['roof:shape'] or '']
+  if not tags.e2r_part or not tags.height or not (spec or tags['roof:height']) then return height end
+  local rise = number(tags['roof:height'], spec and math.sqrt(footprint / math.pi) * spec.rise or 0)
+  return math.max(2.2, height - rise)
+end
+
 local function pitchedRoof(scene, rings, tags, top, base, kind, height, material, guess)
   if #rings ~= 1 then return false end -- Courtyards always keep their open flat-roof footprint.
   local ring = cleanRing(rings[1])
   if #ring < 3 then return false end
+  if BLD.domes[tags['roof:shape'] or ''] then return BLD.dome(scene, ring, tags, top, material) end
+  -- a part with no roof of its own stays flat: it may be one storey of a tower
+  if tags.e2r_part and not tags['roof:shape'] then return false end
+  if tags['roof:shape'] == 'round' then tags = setmetatable({['roof:shape'] = 'gabled'}, {__index = tags}) end
   local frame = footprintFrame(ring)
   local length, width = frame.u1 - frame.u0, frame.v1 - frame.v0
   local explicit, house = tags['roof:shape'], tags.building == 'house' or tags.building == 'detached' or tags.building == 'bungalow'
@@ -9628,8 +9743,8 @@ local function build(cells, i, j, options)
   for _, building in ipairs(decor and lists.buildings or NONE) do
     local rings, tags = building.rings or {}, building.tags or {}
     local exterior = cleanRing(rings[1])
-    if #exterior >= 3 and ringsTouch(rings, rect) then
-      local footprint, h = math.abs(area2(exterior)) / 2, hash(tostring(building.id or ''))
+    if #exterior >= 3 and not tags.e2r_outline and ringsTouch(rings, rect) then
+      local footprint, h = math.abs(area2(exterior)) / 2, hash(tostring(tags.e2r_of or building.id or ''))
       -- Buildings can cross source-cell boundaries. Their full exported footprint Z
       -- gives both tiles the same datum even when the centroid's DEM cell is absent.
       local sourceLow, sourceSum, sourceCount = math.huge, 0, 0
@@ -9645,7 +9760,7 @@ local function build(cells, i, j, options)
       for _, p in ipairs(exterior) do low, cx, cy = math.min(low, ground(p[1], p[2])), cx + p[1], cy + p[2] end
       local base = sourceCount > 0 and sourceSum / sourceCount or ground(cx / #exterior, cy / #exterior)
       if sourceCount > 0 then low = sourceLow end
-      local height = math.max(2.2, math.min(850, BLD.height(building, tags, footprint, h)))
+      local height = BLD.partWalls(math.max(2.2, math.min(850, BLD.height(building, tags, footprint, h))), tags, footprint)
       local lifted = (building.minHeight or number(tags.min_height, 0)) > 0
       local bottom = lifted and base + (building.minHeight or number(tags.min_height, 0)) or low - .3
       local top, kind = base + height, BLD.wallMaterial(building, look, height)
@@ -9700,7 +9815,7 @@ local function build(cells, i, j, options)
       -- City grammar, near tiles at Balanced and above. Houses stay on dress.mass.
       -- Flat roofs gain a parapet and a crown; street facades and the long yard side gain canopies.
       BLD.city, BLD.face, BLD.faces = nil, nil, nil
-      BLD.city = (not dress and not open and not options.far and not lifted and BLD.mass(options.detail) and BLD.block(use, height)) or nil
+      BLD.city = (not dress and not open and not tags.e2r_part and not options.far and not lifted and BLD.mass(options.detail) and BLD.block(use, height)) or nil
       if BLD.city then BLD.faces = {} end
       local doors = (use == 'garage' or use == 'garages') and (h % 3 == 0 and 'door_rust' or 'door_garage')
       local detailed = options.experimentalDetail and BLD.city and not options.far
@@ -9911,7 +10026,7 @@ local function build(cells, i, j, options)
   -- on a far tile vanished as the camera reached it. Paths stay near-only.
   -- Horizon draws neither. Mapped gates open their fences (BLD.openGates).
   local gatePoints
-  if options.experimentalDetail then
+  if not distant then
     gatePoints = {}
     for _, p in ipairs(lists.points) do
       if p.kind == 'gate' and p.pos then gatePoints[#gatePoints + 1] = p end
@@ -10264,12 +10379,12 @@ local function build(cells, i, j, options)
     local p = point.pos
     if p and point.kind == 'stop' and wantStops then
       shelter(point, p)
-    elseif p and point.kind == 'lift_gate' and options.experimentalDetail and
+    elseif p and point.kind == 'lift_gate' and
         p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
       BLD.liftGate(scene, p, lists.roads, ground)
     elseif p and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
       local shape = point.kind == 'tree' and VEG.tree or (point.kind == 'lamp' and wantLamps) and LAMP or
-        (point.kind == 'bench' and options.experimentalDetail) and BENCH[1]
+        point.kind == 'bench' and BENCH[1] or point.kind == 'waste_basket' and ROUND_BIN[1]
       local x, y, z
       if shape then x, y, z = OFFROAD.offCarriageway(point, p) end
       if x then
@@ -10297,6 +10412,13 @@ local function build(cells, i, j, options)
       end
     end
     pause()
+  end
+  if not distant then
+    BLD.powerLines(lists.lines, rect, scene, ground, OFFROAD.onAsphalt, function(name, shape, x, y, z, yaw)
+      static(name, shape, x, y, z, yaw)
+      local it = scene.items[#scene.items]
+      it.prop, it.streetKind, it.collision = true, 'power', 'Collision Mesh'
+    end, pause)
   end
   if options.experimentalDetail and not distant and lists.signMouths then
     local report = type(options.detailReport) == 'table' and options.detailReport or nil

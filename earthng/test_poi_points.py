@@ -24,7 +24,7 @@ class PoiPointTests(unittest.TestCase):
         self.assertIsNone(style.point_kind({'entrance': 'yes'}))
         self.assertNotIn('office', style.point_keys())
         style.POIS = True
-        self.assertEqual(set(style.point_keys()) - set(style.POINT_KEYS), {'office', 'craft', 'barrier'})
+        self.assertEqual(set(style.point_keys()) - set(style.POINT_KEYS), {'office', 'craft'})
         self.assertEqual(style.point_kind({'entrance': 'yes'}), 'door')
         self.assertEqual(style.point_kind({'entrance': 'shop'}), 'door')
         self.assertEqual(style.point_kind({'entrance': 'emergency'}), None)

@@ -341,6 +341,11 @@ KINDS['brand_sign'] = ('brand_sign', [1, 1, 1, 1], 'METAL', 1.0, 'wall')
 # photographs of real stores squared up into facades (fast_art.SHOP_PHOTOS)
 TEXTURES['brand_photo'] = {'baseColorMap': f'{ART}/real/brand_photo.color.png'}
 KINDS['brand_photo'] = ('brand_photo', [1, 1, 1, 1], 'ROCK', 1.0, 'wall')
+# a low-voltage line's wires (generator.lua BLD.powerLines): thin upright ribbons, seen from both sides
+KINDS['wire'] = (None, [.05, .05, .05, 1], 'METAL', 1.0, 'wall')
+EXTRA['wire'] = {'doubleSided': True, 'castShadows': False}
+# gilded domes (generator.lua BLD.dome)
+KINDS['roof_gold'] = (None, [.83, .66, .22, 1], 'METAL', 2.0, 'roof')
 TEXTURES['railing'] = {'baseColorMap': f'{ART}/real/railing.color.png', 'opacityMap': f'{ART}/real/railing_o.data.png'}
 RAILINGS = {'railing_blue': (52, 98, 150), 'railing_green': (46, 104, 70), 'railing_dark': (52, 54, 56)}
 for _k, _rgb in RAILINGS.items():
@@ -509,6 +514,9 @@ def line_kind(tags):
         return 'guard_rail'
     if tags.get('barrier') == 'hedge':
         return 'hedge'
+    # a street's own wires. The main grid (power=line, its towers, substations) stays off the map
+    if tags.get('power') == 'minor_line':
+        return 'power'
     return None
 
 
@@ -519,7 +527,7 @@ UNMARKED = ('no', 'none', 'unmarked')
 
 
 # Every key point_kind reads: the exporter hands Python only nodes with one of them.
-POINT_KEYS = ('highway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'shop', 'man_made', 'vending', 'brand', 'operator', 'name',
+POINT_KEYS = ('highway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'brand', 'operator', 'name',
               'brand:uk', 'brand:en', 'name:uk', 'name:en', 'name:ru', 'operator:uk',
               'operator:en', 'operator:ru', 'brand:wikidata', 'operator:wikidata')
 
@@ -559,16 +567,19 @@ def point_kind(tags):
         return 'entrance'
     if tags.get('leisure') == 'playground':
         return 'playground'
+    # street furniture where it stands (generator.lua: the points' loop, BLD.openGates)
+    if tags.get('amenity') == 'bench':
+        return 'bench'
+    if tags.get('amenity') == 'waste_basket':
+        return 'waste_basket'
+    if tags.get('barrier') == 'lift_gate':
+        return 'lift_gate'
+    if tags.get('barrier') in ('gate', 'swing_gate', 'sliding_gate', 'wicket_gate'):
+        return 'gate'
     if POIS and poi(tags):
         return 'poi'
     if POIS and tags.get('entrance') in DOORS:
         return 'door'
-    if POIS and tags.get('amenity') == 'bench':
-        return 'bench'
-    if POIS and tags.get('barrier') == 'lift_gate':
-        return 'lift_gate'
-    if POIS and tags.get('barrier') in ('gate', 'swing_gate', 'sliding_gate', 'wicket_gate'):
-        return 'gate'
     return None
 
 

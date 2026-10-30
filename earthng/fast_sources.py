@@ -640,6 +640,40 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
     return target, meta
 
 
+# what a building:part takes from the building round it, when it has none of its own
+PART_TAGS = ('building', 'building:material', 'building:colour')
+
+
+def link_parts(found):
+    """Tie each building:part to the building that holds it: it takes that building's tags and
+    id (e2r_of: one wall material for all its parts). A building mostly covered by its parts gets
+    e2r_outline: the parts draw it, its own box would hide them."""
+    parts = [(ident, tags, geometry) for ident, (kind, tags, geometry) in found.items() if kind == 'building' and tags.get('e2r_part')]
+    if not parts:
+        return
+    outlines = [(ident, tags, geometry) for ident, (kind, tags, geometry) in found.items() if kind == 'building' and not tags.get('e2r_part')]
+    tree = shapely.STRtree([entry[2] for entry in outlines]) if outlines else None
+    covered = {}
+    for _, tags, geometry in parts:
+        inside = geometry.representative_point()
+        holder = None
+        for n in (tree.query(inside) if tree else ()):
+            if outlines[int(n)][2].covers(inside) and (holder is None or outlines[int(n)][2].area < holder[2].area):
+                holder = outlines[int(n)]
+        if holder:
+            covered[holder[0]] = covered.get(holder[0], 0.) + geometry.area
+            tags['e2r_of'] = str(holder[0])
+            for key in PART_TAGS:
+                if key in holder[1] and key not in tags:
+                    tags[key] = holder[1][key]
+            if holder[1].get('amenity') == 'place_of_worship':
+                tags['amenity'] = 'place_of_worship'
+        tags.setdefault('building', 'yes')
+    for ident, tags, geometry in outlines:
+        if covered.get(ident, 0.) >= .5 * geometry.area:
+            tags['e2r_outline'] = '1'
+
+
 class Store:
     def __init__(self, directory):
         self.directory = Path(directory).resolve()
@@ -700,6 +734,8 @@ class Store:
                     point_kind = retail.kind(tags)
                     kind='building' if a.tags.get('building') not in (None,'no') else (
                         'water' if a.tags.get('natural')=='water' or a.tags.get('waterway')=='riverbank' else None)
+                    if kind is None and a.tags.get('building:part') not in (None,'no'):
+                        kind='building'; tags['e2r_part']='1'
                     if kind is None:
                         kind=fast_style.ground_kind(a.tags)
                     if (kind and a.id not in found) or point_kind:
@@ -748,6 +784,7 @@ class Store:
                     nodes[int(i)][3] == tags.get('e2r_post_type') and geometry.covers(nodes[int(i)][2]) for i in tree.query(geometry)))
                 if not duplicate:
                     lines[ident] = (kind, tags, geometry.representative_point())
+            link_parts(found)
             # places from a register (venues.py): every scene holds them, a query takes those it covers
             for n,(venue,record) in enumerate(venues.located()):
                 lines[-(4*10**12+n)]=('venue',venues.point_tags(venue,record),Point(record['lon'],record['lat']))
