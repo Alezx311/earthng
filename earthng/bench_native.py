@@ -54,7 +54,15 @@ def runtime(pack):
       FS={fileExists=function(_,p) return py_exists(p) end, findFiles=function() return py_manifests() end}
       jsonReadFile=function(p) return py_json(p) end
       io.open=function(p) local data=py_bytes(p); if not data then return nil end
-        return {read=function() return data end, close=function() end} end
+        local pos=1
+        return {read=function(_, n)
+          if n == '*a' or n == nil then
+            local chunk=data:sub(pos); pos=#data+1; return chunk
+          end
+          if pos > #data then return nil end
+          local last=math.min(#data, pos+n-1)
+          local chunk=data:sub(pos,last); pos=last+1; return chunk
+        end, close=function() end} end
       hptimer=function() local t0=clock()
         return {stop=function() return (clock()-t0)*1000 end,
                 stopAndReset=function() local n=clock(); local d=(n-t0)*1000; t0=n; return d end} end

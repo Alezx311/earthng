@@ -23,8 +23,9 @@ local function upvalue(f, name)
 end
 local active = upvalue(native.update, 'active')
 local r, d = active.region, active.region.data
-local loadCell = upvalue(upvalue(native.update, 'buildTile'), 'loadCell')
-local hasCell = upvalue(loadCell, 'hasCell')
+local buildTile = upvalue(native.update, 'buildTile')
+local loadCell = upvalue(buildTile, 'loadCell')
+local hasCell = upvalue(buildTile, 'hasCell')
 local x0, y0 = active.landing.x, active.landing.y
 local s = d.cellSize
 local out, seen = {}, {}

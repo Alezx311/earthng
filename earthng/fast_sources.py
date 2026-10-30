@@ -733,7 +733,7 @@ class Store:
             # Only nodes that can be points reach Python (Kyiv tile: 21 k of 218 k, 0.57 -> 0.25 s);
             # the location index still sees every node, so ways and areas keep their geometry.
             Reader().apply_file(str(Path(self.meta['source'])/entry['file']),locations=True,
-                                filters=[osmium.filter.KeyFilter(*fast_style.POINT_KEYS).enable_for(osmium.osm.NODE)])
+                                filters=[osmium.filter.KeyFilter(*fast_style.point_keys()).enable_for(osmium.osm.NODE)])
             # OSM often maps a business both as a node and a containing site/building.
             # Keep the surveyed node when category and known brand match; unknown names
             # or neighbouring businesses are never guessed to be duplicates.

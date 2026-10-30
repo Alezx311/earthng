@@ -233,6 +233,8 @@ def keep_scenery(kind, include):
         return bool(include.get('buildings', True))
     if kind == 'stop':
         return bool(include.get('stops', True))
+    if kind == 'poi':
+        return bool(include.get('pois', True))
     # road details (fast_style.ROAD_DETAILS) belong to the road
     if kind in ('path', 'signal', 'road', 'junction', 'crossing', 'give_way', 'stop_sign',
                 'mini_roundabout', 'turning_circle', 'island', 'gantry'):

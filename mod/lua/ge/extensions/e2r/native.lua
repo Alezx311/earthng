@@ -1199,7 +1199,11 @@ local function buildTile(key, wanted)
       maxTrees = tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = tune.maxGrass,
       maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
       groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = tune.propSpacing,
-      detail = tune.detail, roadReady = roadReady or nil})
+      detail = tune.detail, roadReady = roadReady or nil,
+      -- the storefront experiment: only a pack whose data asks for it (docs/BILYCHI_EXPERIMENT.md)
+      experimentalShopfront = type(r.data.experiments) == 'table' and r.data.experiments.shopfront == true or nil,
+      experimentalDetail = type(r.data.experiments) == 'table' and r.data.experiments.detail == true or nil,
+      cellSize = s})
   if type(road) ~= 'table' or type(road.items) ~= 'table' or type(road.mats) ~= 'table'
     or type(scene) ~= 'table' or type(scene.items) ~= 'table' then error('generator returned an invalid tile manifest') end
   if wanted.far and (type(far) ~= 'table' or type(far.items) ~= 'table') then error('generator returned an invalid far manifest') end

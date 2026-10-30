@@ -2,6 +2,7 @@
 surface kind, and a facade per building. No textures are shipped; all paths are BeamNG's
 /assets (resolved to their .dds). Kinds are the Mesh face groups; material = 'e2rf_' + kind."""
 import math
+import os
 import zlib
 import nature
 import retail
@@ -290,6 +291,37 @@ KINDS['chimney'] = ('hw_brick', [.42, .24, .20, 1], 'ROCK', 1.6, 'wall')
 # flat colours in a game without the maps: every house kind keeps its look's colour
 BUILDING_FALLBACK.update({k: None for k in (*HOUSE_WALLS, 'win_pvc', 'win_wood', 'door_house', 'chimney')})
 BUILDING_FALLBACK['plinth_brown'] = 'concrete'
+# Facade details (generator.lua BLD.details, options.experimentalDetail): galvanised downpipes
+# as a flat grey, air-conditioner boxes on the game's metal cladding
+KINDS['pipe'] = (None, [.50, .51, .52, 1], 'METAL', 1.0, 'wall')
+# Address plates (generator.lua BLD.addressPlate, options.experimentalDetail): a dark blue plate
+# and white letters cut from a glyph atlas (fast_art.glyph_art: Noto Sans Mono Bold, OFL, from the
+# game's own UI fonts), GLYPHS_PER_ROW to a row, row 0 at the top before the flip. The generator
+# keeps the same string (BLD.GLYPHS).
+GLYPHS = "0123456789/-.,'’№ ()АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгґдеєжзиіїйклмнопрстуфхцчшщьюяЁЭЪЫёэъыABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+GLYPHS_PER_ROW = 16
+TEXTURES['glyphs'] = {'baseColorMap': f'{ART}/real/glyphs.color.png', 'opacityMap': f'{ART}/real/glyphs_o.data.png'}
+KINDS['glyphs'] = ('glyphs', [.96, .96, .94, 1], 'METAL', 1.0, 'wall')
+KINDS['plate'] = (None, [.08, .18, .40, 1], 'METAL', 1.0, 'wall')
+# a lift gate's red stripes (generator.lua BLD.liftGate); the white ones are the dish metal
+KINDS['paint_red'] = (None, [.72, .10, .08, 1], 'METAL', 1.0, 'wall')
+# a shop's sign board under its real name (generator.lua BLD.storeFront)
+KINDS['fascia'] = (None, [.11, .12, .13, 1], 'METAL', 1.0, 'wall')
+EXTRA['glyphs'] = {'alphaTest': True, 'alphaRef': 110, 'castShadows': False}
+# covers in the asphalt (generator.lua ROADS.covers): the Italy manhole sheet and the grid
+# drain, cut by their opacity like the lines; drawn only where the game has these maps
+TEXTURES['manhole'] = _maps('/assets/materials/baked_props/italy_ground_parts', 't_manhole_01_decal', 'b', 'nm', 'r', 'ao', 'o')
+TEXTURES['drain'] = _maps(f'{_DR}/detail/m_metal_grid_drain', 't_metal_grid_drain', 'b', 'nm', 'r', 'ao', 'o')
+KINDS['manhole'] = ('manhole', [.42, .41, .40, 1], 'METAL', 1.0, 'strip')
+KINDS['drain'] = ('drain', [.30, .29, .28, 1], 'METAL', 1.0, 'strip')
+TEXTURES['patch'] = _maps(f'{_DR}/asphalt/road_patches1', 't_asphalt_patchstrip', 'b', 'o')
+KINDS['patch'] = ('patch', [.17, .17, .18, 1], 'ASPHALT', 1.0, 'strip')
+for _k in ('manhole', 'drain', 'patch'):
+    EXTRA[_k] = {'alphaTest': True, 'alphaRef': 77, 'castShadows': False}
+    BUILDING_FALLBACK[_k] = None
+KINDS['ac_unit'] = ('cladding', [.84, .84, .82, 1], 'METAL', 1.0, 'wall')
+KINDS['dish'] = ('cladding', [.86, .86, .85, 1], 'METAL', 1.0, 'wall')
+BUILDING_FALLBACK['ac_unit'] = BUILDING_FALLBACK['dish'] = None
 FALLBACK.update(BUILDING_FALLBACK)
 # footpaths and fences (decoration, no collision)
 KINDS['footway'] = ('paving', [.50, .48, .46, 1], 'ASPHALT', 2.0, 'plan')
@@ -352,6 +384,7 @@ def _factor(srgb, mean):
 TINT.update({'roof_sheet': _factor((158, 158, 150), .677), 'roof_mtile_red': _factor((112, 38, 32), .355),
              'roof_mtile_brown': _factor((74, 52, 46), .355), 'roof_mtile_green': _factor((32, 72, 54), .355),
              'clad_metal': _factor((176, 182, 188), .677), 'plinth': _factor((130, 127, 120), .862),
+             'ac_unit': _factor((214, 214, 208), .677), 'dish': _factor((222, 222, 218), .677),
              'gable': _factor((150, 140, 125), .641)})
 # House walls: lime-washed white, ochre, the blue and green of village houses, a pink; aged
 # plaster as it is; red brick as it is; silicate brick off-white; beige siding; old dark wood as
@@ -514,10 +547,48 @@ def point_kind(tags):
         return 'entrance'
     if tags.get('leisure') == 'playground':
         return 'playground'
+    if POIS and poi(tags):
+        return 'poi'
+    if POIS and tags.get('entrance') in DOORS:
+        return 'door'
+    if POIS and tags.get('amenity') == 'bench':
+        return 'bench'
+    if POIS and tags.get('barrier') == 'lift_gate':
+        return 'lift_gate'
+    if POIS and tags.get('barrier') in ('gate', 'swing_gate', 'sliding_gate', 'wicket_gate'):
+        return 'gate'
     return None
 
 
 ENTRANCES = ('staircase', 'main', 'home')
+
+# Commercial OSM nodes kept as facts (kind 'poi') for the storefront experiment: a shop, office
+# or craft, or an amenity from this list (amenity alone is a bench or a school as often as a
+# shop). Off unless EARTHNG_POIS=1 at build time: packs built without it are unchanged, and a
+# runtime that does not know the kind skips it. All the node's tags travel with it.
+POIS = os.environ.get('EARTHNG_POIS') == '1'
+POI_KEYS = ('shop', 'office', 'craft', 'amenity', 'entrance', 'barrier')
+POI_AMENITY = frozenset(('cafe', 'restaurant', 'fast_food', 'bar', 'pub', 'ice_cream', 'bank',
+                         'bureau_de_change', 'money_transfer', 'payment_centre', 'pharmacy',
+                         'post_office', 'dentist', 'doctors', 'clinic', 'veterinary', 'internet_cafe'))
+POI_NOT = ('no', 'vacant', 'closed', 'disused', 'abandoned')
+# Other mapped doors on a building's outline, with POIS: the evidence of which wall a shop opens
+# on (a staircase, main or home door is an 'entrance' already)
+DOORS = ('yes', 'shop', 'service', 'secondary')
+
+
+def poi(tags):
+    """True for a commercial node as defined above."""
+    for key in ('shop', 'office', 'craft'):
+        value = tags.get(key)
+        if value and value not in POI_NOT:
+            return True
+    return tags.get('amenity') in POI_AMENITY
+
+
+def point_keys():
+    """Keys whose nodes the exporter hands to point_kind."""
+    return POINT_KEYS + (POI_KEYS if POIS else ())
 
 
 SIGNALS = False
