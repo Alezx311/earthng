@@ -204,7 +204,7 @@ class GeneratorTests(unittest.TestCase):
             panel = [p for p in photo if 70 < p[1] < 73]
             self.assertAlmostEqual(min(p[0] for p in panel), 126, places=3)     # 8 m wide, mid wall
             self.assertAlmostEqual(max(p[0] for p in panel), 134, places=3)
-            glass = self.corners(scene, 'e2rf_wall_shop_dark')
+            glass = self.corners(scene, 'e2rf_storefront')
             self.assertTrue(glass and all(p[1] > 69.9 for p in glass))
             # banners beside the door, off the road (it starts at y = 86) and off the building
             cloth = [p for p in photo if p[2] > 4.2]
@@ -214,7 +214,7 @@ class GeneratorTests(unittest.TestCase):
     def test_a_mapped_door_chooses_the_wall(self):
         door = {'id': 'd', 'kind': 'entrance', 'pos': [160, 50, 0], 'tags': {'entrance': 'main'}}
         scene = self.build([self.building()], [self.poi(), door])
-        glass = self.corners(scene, 'e2rf_wall_shop_dark')
+        glass = self.corners(scene, 'e2rf_storefront')
         self.assertTrue(glass and all(p[0] > 159.9 for p in glass))
 
     def test_two_places_at_one_address_share_one_panel(self):
@@ -242,7 +242,7 @@ class GeneratorTests(unittest.TestCase):
         scene = self.build([self.building(height=3)], [self.poi()])
         panel = [p for p in self.corners(scene, 'e2rf_brand_photo') if 70 < p[1] < 73]
         self.assertTrue(panel)
-        self.assertGreaterEqual(min(p[2] for p in panel) - min(p[2] for p in self.corners(scene, 'e2rf_wall_shop_dark')), 2.2)
+        self.assertGreaterEqual(min(p[2] for p in panel) - min(p[2] for p in self.corners(scene, 'e2rf_storefront')), 2.2)
 
     def test_a_shed_is_left_alone(self):
         self.assertEqual(self.corners(self.build([self.building(height=2.2)], [self.poi()]), 'e2rf_brand_photo'), [])

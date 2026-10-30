@@ -128,7 +128,7 @@ class BrandGeneratorTests(unittest.TestCase):
             accent = self.flat(scene, 15, 3)
             self.assertAlmostEqual(min(p[2] for t in accent for p in t), top - fascia - .3, places=3)
             # glazing toward the street only
-            glass = self.corners(scene, 'e2rf_wall_shop_dark')
+            glass = self.corners(scene, 'e2rf_storefront')
             self.assertTrue(glass and all(p[1] > 80 for t in glass for p in t))
 
     def test_square_sign_for_a_square_logo(self):
@@ -168,14 +168,14 @@ class BrandGeneratorTests(unittest.TestCase):
         self.assertEqual(len(fronts), 2)
         self.assertEqual(round(self.normal(fronts[0])[1]), 1)       # the street wall
         zs = [p[2] - base for t in fronts for p in t]
-        self.assertTrue(3.1 <= min(zs) and max(zs) <= 4.5)          # on the fascia over the ground floor
+        self.assertTrue(2.42 <= min(zs) and max(zs) <= 3.06)        # a tower's fascia hangs under its visor
         fascia = self.flat(scene, 12, 2)
         xs = [p[0] for t in fascia for p in t]
-        self.assertAlmostEqual(max(xs) - min(xs), 10, places=3)
+        self.assertAlmostEqual(max(xs) - min(xs), 6, places=3)      # two bays round the sign
         self.assertTrue(all(abs(p[1] - 80.07) < 1e-3 for t in fascia for p in t))
-        glass = self.corners(scene, 'e2rf_wall_shop_dark')
-        self.assertEqual(len(glass), 2)
-        self.assertAlmostEqual(max(p[2] for t in glass for p in t) - base, 3.1 - .25, places=3)   # under the red stripe
+        glass = self.corners(scene, 'e2rf_storefront')
+        self.assertEqual(len(glass), 2 * 2)
+        self.assertAlmostEqual(max(p[2] for t in glass for p in t) - base, 2.42 - .1, places=3)   # under the stripe
 
     def test_unknown_convenience_store_reads_produkty_but_supermarket_nothing(self):
         building = {'id': 'b', 'height': 15, 'tags': {'building': 'apartments'},

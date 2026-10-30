@@ -341,6 +341,9 @@ KINDS['brand_sign'] = ('brand_sign', [1, 1, 1, 1], 'METAL', 1.0, 'wall')
 # photographs of real stores squared up into facades (fast_art.SHOP_PHOTOS)
 TEXTURES['brand_photo'] = {'baseColorMap': f'{ART}/real/brand_photo.color.png'}
 KINDS['brand_photo'] = ('brand_photo', [1, 1, 1, 1], 'ROCK', 1.0, 'wall')
+# shop fronts drawn at art build time (fast_storefront.py), by night their rooms glow
+TEXTURES['storefront'] = {'baseColorMap': f'{ART}/real/storefront.color.png'}
+KINDS['storefront'] = ('storefront', [1, 1, 1, 1], 'METAL', 1.0, 'wall')
 # a low-voltage line's wires (generator.lua BLD.powerLines): thin upright ribbons, seen from both sides
 KINDS['wire'] = (None, [.05, .05, .05, 1], 'METAL', 1.0, 'wall')
 EXTRA['wire'] = {'doubleSided': True, 'castShadows': False}

@@ -419,6 +419,7 @@ def fields(pack, base, real):
             put('wall_' + w, emissiveMap=f'{lit}/{w}.glow.png', emissiveFactor=GLOW[pack])
         # shop lightboxes, price boards and the underside of fuel canopies (fast_art.brand_art)
         put('brand_sign', emissiveMap=f'{base}/real/brand_sign.glow.png', emissiveFactor=GLOW[pack])
+        put('storefront', emissiveMap=f'{base}/real/storefront.glow.png', emissiveFactor=GLOW[pack])
         put('brand_photo', emissiveMap=f'{base}/real/brand_photo.glow.png', emissiveFactor=GLOW[pack])
     if pack == 'cyber':
         for w in walls:

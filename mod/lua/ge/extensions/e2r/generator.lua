@@ -4073,40 +4073,52 @@ end
 BLD.SHOPSIGN = {letter = .34, minLetter = .16, pad = .08, out0 = .03, out1 = .10, strip = .05, wide = .6, longest = 30,
   awning = {reach = 1.1, drop = .45, valance = .22, height = 3.2, least = 2.4, clear = 2.0, inset = .2},
   colours = {'paint_red', 'plate', 'pipe'}}
+-- A name set in the glyphs: its characters and the letter height that fits `room` m, at most
+-- `letter`, or nil when too long, too small or mostly outside the atlas.
+function BLD.signFit(name, room, letter)
+  local S, P = BLD.SHOPSIGN, BLD.PLATE
+  if not name or name == '' then return nil end
+  local chars = BLD.glyphs(name)
+  local unknown = 0
+  for _, g in ipairs(chars) do if g < 0 then unknown = unknown + 1 end end
+  local spaces = select(2, tostring(name):gsub(' ', ''))
+  if #chars == 0 or #chars > S.longest or unknown - spaces > #chars / 4 then return nil end
+  local size = math.min(letter, room / (#chars * P.aspect))
+  if size < S.minLetter then return nil end
+  return chars, size
+end
+
+-- The letters centred at c along the wall, standing on z, `out` m before it
+function BLD.signLetters(scene, a, b, length, c, chars, size, z, out)
+  local P = BLD.PLATE
+  local cw = size * P.aspect
+  local text, pad = #chars * cw, (size - cw) / 2
+  for i, g in ipairs(chars) do
+    if g >= 0 then
+      local col, row = g % P.perRow, math.floor(g / P.perRow)
+      local u0, u1 = col / P.perRow, (col + 1) / P.perRow
+      local v0, v1 = 1 - (row + 1) / P.perRow, 1 - row / P.perRow
+      local l = c - text / 2 + (i - 1) * cw
+      scene.polygon('glyphs', {wallPoint(a, b, length, l - pad, out, z, u0, v0),
+        wallPoint(a, b, length, l + cw + pad, out, z, u1, v0),
+        wallPoint(a, b, length, l + cw + pad, out, z + size, u1, v1),
+        wallPoint(a, b, length, l - pad, out, z + size, u0, v1)}, false)
+    end
+  end
+end
+
 function BLD.storeFront(scene, a, b, length, span, upper, top, base, bins)
   local S, P = BLD.SHOPSIGN, BLD.PLATE
   local s0, s1 = span[1], span[2]
-  local name = span.name
-  if name and name ~= '' then
-    local chars = BLD.glyphs(name)
-    local unknown = 0
-    for _, g in ipairs(chars) do if g < 0 then unknown = unknown + 1 end end
-    local spaces = select(2, tostring(name):gsub(' ', ''))
-    if #chars <= S.longest and unknown - spaces <= #chars / 4 then
-      local size = math.min(S.letter, (s1 - s0 - .4 - 2 * S.pad) / (#chars * P.aspect))
-      if size >= S.minLetter then
-        local text, h = #chars * size * P.aspect, size + 2 * S.pad
-        local w = math.min(s1 - s0 - .4, math.max(text + 2 * S.pad, (s1 - s0) * S.wide))
-        local z0 = upper - h - S.strip
-        local c = (s0 + s1) / 2
-        BLD.box(scene, 'fascia', a, b, length, c - w / 2, c + w / 2, S.out0, S.out1, z0, z0 + h, false, true, true)
-        local cw = size * P.aspect
-        local pad = (size - cw) / 2
-        for i, g in ipairs(chars) do
-          if g >= 0 then
-            local col, row = g % P.perRow, math.floor(g / P.perRow)
-            local u0, u1 = col / P.perRow, (col + 1) / P.perRow
-            local v0, v1 = 1 - (row + 1) / P.perRow, 1 - row / P.perRow
-            local l = c - text / 2 + (i - 1) * cw
-            scene.polygon('glyphs', {wallPoint(a, b, length, l - pad, S.out1 + .01, z0 + S.pad, u0, v0),
-              wallPoint(a, b, length, l + cw + pad, S.out1 + .01, z0 + S.pad, u1, v0),
-              wallPoint(a, b, length, l + cw + pad, S.out1 + .01, z0 + S.pad + size, u1, v1),
-              wallPoint(a, b, length, l - pad, S.out1 + .01, z0 + S.pad + size, u0, v1)}, false)
-          end
-        end
-        BLD.note('shopsign', a, b, length, c, z0 - base)
-      end
-    end
+  local chars, size = BLD.signFit(span.name, s1 - s0 - .4 - 2 * S.pad, S.letter)
+  if chars then
+    local text, h = #chars * size * P.aspect, size + 2 * S.pad
+    local w = math.min(s1 - s0 - .4, math.max(text + 2 * S.pad, (s1 - s0) * S.wide))
+    local z0 = upper - h - S.strip
+    local c = (s0 + s1) / 2
+    BLD.box(scene, 'fascia', a, b, length, c - w / 2, c + w / 2, S.out0, S.out1, z0, z0 + h, false, true, true)
+    BLD.signLetters(scene, a, b, length, c, chars, size, z0 + S.pad, S.out1 + .01)
+    BLD.note('shopsign', a, b, length, c, z0 - base)
   end
   local A = S.awning
   local z = base + math.min(A.height, upper - base - .3)
@@ -5127,8 +5139,12 @@ BLD.SHOP = {cols = 4, rows = 32, fuel = 32, grocery = 33, swatch = {34, 36, 38},
   -- its sign's height per m of wall (a lightbox, a square sign) and at most
   whole = {area = 4000, height = 8, fascia = {1.2, 3.0, .28}, accent = .3, glass = 3.2, front = .6,
     long = {.07, .1}, tallest = 4},
-  -- a shop in a bigger building: its fascia over the ground floor, at least `span` m long
-  part = {low = 3.1, high = 4.5, span = 10, accent = .25},
+  -- a shop in a bigger building: its fascia over the ground floor, between a concrete visor's
+  -- top (BLD.canopy: 3.2 m) and the sills of the floor above (3.96 m). A tower's visor is higher
+  -- (3.5 m, from `tall` m up) and the fascia hangs `under` it. Its stretch is whole bays round
+  -- the sign and `margin`, at least two, a name given at most `most` m.
+  part = {low = 3.25, high = 3.93, tall = 22, under = {2.42, 3.06}, margin = 1.6, most = 18, accent = .1},
+  letters = .62,        -- a name's height over the fascia's
   homes = {apartments = true, residential = true, house = true, dormitory = true, hotel = true},
   depth = .22, out = .08, street = 8,
   canopy = {height = 5.6, levels = 4.8, deep = .9, plain = .35, band = .32, column = .45, reach = 12,
@@ -5175,6 +5191,22 @@ function BLD.shopFlat(cell, layer)
   end
   local c, r = cell % S.cols, math.floor(cell / S.cols)
   return {(c + (cell < S.white and .05 or .5)) / S.cols, (r + .5) / S.rows}
+end
+
+-- Shop fronts (fast_storefront.py): a bay of `bay` m in the atlas, a class's window and door side
+-- by side, `per` cells a row. Under `least` m of room (a hillside's raised ground) there is none.
+BLD.FRONT = {bay = 3, per = 4, least = 2, classes = {pharmacy = 1, bank = 2, cafe = 3, restaurant = 3, fast_food = 3, ice_cream = 3,
+  bar = 4, pub = 4, car_repair = 5, tyres = 6, car_wash = 7}}
+
+function BLD.shopClass(tags)
+  local F = BLD.FRONT.classes
+  tags = tags or NONE
+  return F[tags.amenity or ''] or F[tags.shop or ''] or 0
+end
+
+function BLD.shopName(tags)
+  tags = tags or NONE
+  return tags.name or tags.brand
 end
 
 -- A network's own sign, not a plain one: it may wear its colours on the walls
@@ -5256,13 +5288,29 @@ function BLD.shopBand(scene, a, b, length, s0, s1, z0, z1, out, flat)
     wallPoint(a, b, length, s1, out, z1), wallPoint(a, b, length, s0, out, z1)}, flat)
 end
 
--- The shop glazing (wall_shop_dark: windows, a granite plinth, the sign band at 3.3-4.2 m)
--- over s0..s1 of a wall, as the facade maps it (6 m a repeat from the base), over any cladding
-function BLD.shopFront(scene, a, b, length, s0, s1, z0, z1, base)
-  scene.polygon('wall_shop_dark', {wallPoint(a, b, length, s0, .06, z0, s0 / 6, (z0 - base) / 6),
-    wallPoint(a, b, length, s1, .06, z0, s1 / 6, (z0 - base) / 6),
-    wallPoint(a, b, length, s1, .06, z1, s1 / 6, (z1 - base) / 6),
-    wallPoint(a, b, length, s0, .06, z1, s0 / 6, (z1 - base) / 6)}, false)
+-- The pavement before a wall at s: on a hillside the door stands on it, not on the building's
+-- mean height
+function BLD.frontFloor(a, b, length, s, base, ground)
+  local p = wallPoint(a, b, length, s, 1.5, 0)
+  return math.max(base, ground(p[1], p[2]))
+end
+
+-- A class's shop front over s0..s1 of a wall from z0 to at most a bay's height: whole bays, the
+-- door in the middle one. Below the base the bay's foot stretches down to the ground.
+function BLD.shopFront(scene, a, b, length, s0, s1, z0, z1, base, class)
+  local F = BLD.FRONT
+  local bays = math.max(1, math.floor((s1 - s0) / F.bay + .5))
+  local width, door, top = (s1 - s0) / bays, math.ceil(bays / 2), math.min(z1, base + F.bay)
+  if top - base < F.least then return end
+  for n = 1, bays do
+    local cell = (class or 0) * 2 + (n == door and 1 or 0)
+    local col, row = cell % F.per, math.floor(cell / F.per)
+    local u0, u1 = (col + .004) / F.per, (col + .996) / F.per
+    local function v(z) return (row + 1 - math.max(.004, math.min(.996, (z - base) / F.bay))) / F.per end
+    local x0, x1 = s0 + (n - 1) * width, s0 + n * width
+    scene.polygon('storefront', {wallPoint(a, b, length, x0, .06, z0, u0, v(z0)), wallPoint(a, b, length, x1, .06, z0, u1, v(z0)),
+      wallPoint(a, b, length, x1, .06, top, u1, v(top)), wallPoint(a, b, length, x0, .06, top, u0, v(top))}, false)
+  end
 end
 
 -- A quad of brand_photo over s0..s1 and z0..z1 of a wall, `out` m in front of it, over a uv box
@@ -5354,7 +5402,7 @@ function BLD.shopSites(shops, lists, rect, scene, ground, segmentBins, pause)
     if cell then
       local key = math.floor(p[1] / 100) * 65536 + math.floor(p[2] / 100)
       shops.points[key] = shops.points[key] or {}
-      table.insert(shops.points[key], {pos = p, cell = cell, kind = poi.kind})
+      table.insert(shops.points[key], {pos = p, cell = cell, kind = poi.kind, name = BLD.shopName(poi.tags), class = BLD.shopClass(poi.tags)})
       any = true
     end
   end
@@ -5420,7 +5468,10 @@ function BLD.shopSites(shops, lists, rect, scene, ground, segmentBins, pause)
       end
     end
     -- one sign per building: the lower cell where two sites hold it
-    if best and entry.cell and (not shops.own[best] or entry.cell < shops.own[best]) then shops.own[best] = entry.cell end
+    if best and entry.cell and (not shops.own[best] or entry.cell < shops.own[best]) then
+      shops.own[best] = entry.cell
+      shops.info[best] = {name = BLD.shopName(site.tags), class = BLD.shopClass(site.tags)}
+    end
     if entry.kind == 'fuel' and entry.cell then
       BLD.shopPylon(scene, site, entry.cell, held, ground, segmentBins)
     end
@@ -5593,10 +5644,11 @@ end
 -- (and cladding) round every wall, a sign on the longest wall of each side, glazing on the street
 -- walls (or the longest). Any other point dresses the street wall nearest it: its fascia over the
 -- ground floor, the sign on it, glazing under it.
-function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins, ground)
+function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins, ground, info)
   local S = BLD.SHOP
   local W, P = S.whole, S.part
   local tags = building.tags or NONE
+  info = info or {name = BLD.shopName(tags), class = BLD.shopClass(tags)}
   local ring = BLD.orient(rings[1], rings)
   local footprint = footprintFrame(ring).area
   local walls, longest = {}, nil
@@ -5619,11 +5671,12 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
   end
   local small = footprint <= W.area and height <= W.height and not S.homes[tags.building or 'yes']
     and not (tags['building:levels'] and number(tags['building:levels'], 1) > 2)
-  if not own and #parts == 1 and small then own, parts = parts[1].cell, {} end
+  if not own and #parts == 1 and small then own, parts, info = parts[1].cell, {}, parts[1] end
   local top = base + height
   if own then
     local style = BLD.shopStyle(own)
     local branded = BLD.shopBranded(own)
+    local plain = own >= S.more and not branded
     local fh = math.max(W.fascia[1], math.min(W.fascia[2], height * W.fascia[3], height - 2.6))
     local low = top - fh
     local face, accent = BLD.shopFlat(own, 2), style.accent and BLD.shopFlat(own, 3)
@@ -5646,7 +5699,7 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
     end
     for _, wall in ipairs(walls) do
       local a, b, length = wall.a, wall.b, wall.length
-      if branded then
+      if branded or plain then
         if style.clad then BLD.shopBand(scene, a, b, length, -.04, length + .04, bottom, low, .04, face) end
         BLD.shopBand(scene, a, b, length, -.07, length + .07, low, top + .15, .07, face)
         if accent then BLD.shopBand(scene, a, b, length, -.07, length + .07, low - W.accent, low, .07, accent) end
@@ -5665,7 +5718,8 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
             end
           end
         else
-          BLD.shopFront(scene, a, b, length, length * (1 - W.front) / 2, length * (1 + W.front) / 2, bottom, glass, base)
+          BLD.shopFront(scene, a, b, length, length * (1 - W.front) / 2, length * (1 + W.front) / 2, bottom, glass,
+            BLD.frontFloor(a, b, length, length / 2, base, ground), info.class)
         end
       end
       -- the longest wall of each of four sides carries the sign, sized by the whole side (OSM
@@ -5686,9 +5740,15 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
       BLD.shopPhoto(scene, a, b, length, length / 2 - w, length / 2 + w, base, base + tower.h, out + .01, photo.bay)
     end
     if style.pylon == 'arches' then BLD.shopPoleSign(scene, front.a, front.b, front.length, rings, ground, segmentBins) end
+    -- a place with no network of its own goes by its own name on its fascia, over the street
+    local chars, size
+    if plain then chars, size = BLD.signFit(info.name, front.length * .9, fh * S.letters) end
+    if chars then
+      BLD.signLetters(scene, front.a, front.b, front.length, front.length / 2, chars, size, low + (top + .15 - low - size) / 2, .09)
+    end
     for side = 1, 4 do
       local wall = sides[side]
-      if wall and wall.length >= 4 and not (tower and wall == front) then
+      if wall and wall.length >= 4 and not (tower and wall == front) and not chars then
         -- as tall as the fascia, more on a long wall (a 100 m hypermarket's name is read from the
         -- far side of its car park), at most half the building and clear of the glazing
         local h = math.min(math.max(fh * (aspect == 1 and 1.15 or .8), sides[side + 4] * W.long[aspect == 1 and 2 or 1]),
@@ -5713,24 +5773,29 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
     end
     local style = BLD.shopStyle(poi.cell)
     local uv, aspect = BLD.shopMark(poi.cell)
-    local z0, z1 = base + P.low, math.min(base + P.high, top - .2)
-    if z1 - z0 < 1 then z0 = math.max(base + 2.4, z1 - 1) end
+    local z0, z1 = base + (height >= P.tall and P.under[1] or P.low), math.min(base + (height >= P.tall and P.under[2] or P.high), top - .2)
+    if z1 - z0 < .6 then z0 = math.max(base + 2.4, z1 - .7) end
     local h = best and math.min((z1 - z0) * (aspect == 1 and 1.1 or .85), (best.length - .4) / aspect) or 0
     if h >= .4 then
       local a, b, length = best.a, best.b, best.length
-      local span = math.min(length, math.max(P.span, h * aspect + 4))
+      local chars, size
+      if not BLD.shopBranded(poi.cell) then chars, size = BLD.signFit(poi.name, math.min(length, P.most) - .6, (z1 - z0) * S.letters) end
+      local bay = BLD.FRONT.bay
+      local span = math.min(length, bay * math.max(2, math.ceil(((chars and #chars * size * BLD.PLATE.aspect or h * aspect) + P.margin) / bay)))
       local s = math.max(span / 2, math.min(length - span / 2, bestT * length))
       local under = z0
-      if BLD.shopBranded(poi.cell) then
-        BLD.shopBand(scene, a, b, length, s - span / 2, s + span / 2, z0, z1, .07, BLD.shopFlat(poi.cell, 2))
-        if style.accent then
-          under = z0 - P.accent
-          BLD.shopBand(scene, a, b, length, s - span / 2, s + span / 2, under, z0, .07, BLD.shopFlat(poi.cell, 3))
-        end
+      BLD.shopBand(scene, a, b, length, s - span / 2, s + span / 2, z0, z1, .07, BLD.shopFlat(poi.cell, 2))
+      if style.accent and BLD.shopBranded(poi.cell) then
+        under = z0 - P.accent
+        BLD.shopBand(scene, a, b, length, s - span / 2, s + span / 2, under, z0, .07, BLD.shopFlat(poi.cell, 3))
       end
-      BLD.shopFront(scene, a, b, length, s - span / 2, s + span / 2, bottom, under, base)
+      BLD.shopFront(scene, a, b, length, s - span / 2, s + span / 2, bottom, under, BLD.frontFloor(a, b, length, s, base, ground), poi.class)
       local m = (z0 + z1) / 2
-      BLD.shopSign(scene, a, b, length, s, h * aspect, m - h / 2, m + h / 2, uv)
+      if chars then
+        BLD.signLetters(scene, a, b, length, s, chars, size, m - size / 2, .09)
+      else
+        BLD.shopSign(scene, a, b, length, s, h * aspect, m - h / 2, m + h / 2, uv)
+      end
       -- McDonald's in a mall keeps its pole sign: beyond the ends of its stretch of the wall
       if style.pylon == 'arches' then
         BLD.shopPoleSign(scene, wallPoint(a, b, length, s - span / 2, 0, 0), wallPoint(a, b, length, s + span / 2, 0, 0),
@@ -9737,7 +9802,7 @@ local function build(cells, i, j, options)
   mark('areas')
   -- Shops and fuel stations (BLD.SHOP): the mapped points by bin, the buildings their sites
   -- hold, the roofs over pumps, the pylons
-  local shops = {points = {}, own = {}, roofs = {}, venue = {}, stands = {}}
+  local shops = {points = {}, own = {}, info = {}, roofs = {}, venue = {}, stands = {}}
   if decor and not distant then BLD.shopSites(shops, lists, rect, scene, ground, segmentBins, pause) end
   shops.links = decor and options.experimentalShopfront and not options.far and BLD.shopLinks(lists, options, pause) or nil
   for _, building in ipairs(decor and lists.buildings or NONE) do
@@ -9780,7 +9845,7 @@ local function build(cells, i, j, options)
             end
           end
         end
-        if own or #points > 0 then BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins, ground) end
+        if own or #points > 0 then BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins, ground, shops.info[building]) end
         if shops.venue[building] then BLD.venueSigns(scene, rings, base, bottom, height, shops.venue[building], segmentBins, ground) end
       end
       -- Storefront spans (BLD.shopLinks). A lifted block and a wall lower than the band keep
@@ -11301,6 +11366,9 @@ M.BRANDS = SOLID.BRANDS
 M.shopFlat = BLD.shopFlat
 M.VENUE = BLD.VENUE
 M.shopUV = BLD.shopUV
+M.frontFloor = BLD.frontFloor
+M.shopFront_ = BLD.shopFront
+M.FRONT = BLD.FRONT
 M.shopCell = BLD.shopCell
 M.shopMark = BLD.shopMark
 M.shopHeight = BLD.height

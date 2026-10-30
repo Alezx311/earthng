@@ -18,6 +18,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 import fast_packs
 import fast_pixel
+import fast_storefront
 import fast_photo as photo
 import fast_style as style
 
@@ -412,7 +413,7 @@ def pack_fields(pack, base):
                 f['baseColorFactor'] = colour(SYNTH.get(kind, (30, 20, 50)))
         else:
             f['baseColorFactor'] = colour(FLAT.get(kind, ((200, 200, 200), (230, 230, 230)))[0 if pack == 'toon' else 1])
-        if kind in ('brand_sign', 'brand_photo'):
+        if kind in ('brand_sign', 'brand_photo', 'storefront'):
             f['baseColorMap'] = f'{base}/real/{kind}.color.png'
             f['baseColorFactor'] = '1 1 1 1'
         if pack != 'real':
@@ -625,7 +626,7 @@ YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (2
 # network's real logo where
 # earthng/brand_logos.py fetched one into data/brands/<key>.png (Wikimedia Commons): on a white
 # panel when the logo is see-through, else on its own background; otherwise its name in type.
-BRAND_ART_VERSION = '11'  # change whenever an existing atlas cell changes
+BRAND_ART_VERSION = '12'  # change whenever an existing atlas cell changes
 # (label, sign colour, key in generator.lua SOLID.BRANDS[, letters when not white])
 BRAND_SIGNS = [
     ('OKKO', (0,90,50), 'okko', (255,205,0)), ('WOG', (0,150,60), 'wog'), ('УКРНАФТА', (0,72,150), 'ukrnafta'),
@@ -891,6 +892,7 @@ def brand_art(r, logos=None):
             photo.paste(Image.open(path).convert('RGB'), at)
     photo.save(r / 'brand_photo.color.png')
     photo.point(lambda v: round(v * .7)).save(r / 'brand_photo.glow.png')
+    fast_storefront.art(r, _shop_font)
     (r / 'brand_sign.version').write_text(BRAND_ART_VERSION)
 
 
