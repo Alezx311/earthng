@@ -33,11 +33,11 @@ def build(source, output, force=False):
     fingerprint = {'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
     if not force and output.is_file() and metadata.is_file():
         old = json.loads(metadata.read_text(encoding='utf-8'))
-        if old.get('source_stat') == fingerprint and old.get('schema') == 3:
+        if old.get('source_stat') == fingerprint and old.get('schema') == 4:
             return old
     output.parent.mkdir(parents=True, exist_ok=True)
     temp = output.with_name(output.name + '.part')
-    counts = {'fuel': 0, 'grocery': 0, 'fast_food': 0, 'post': 0, 'invalid_geometry': 0}
+    counts = {'fuel': 0, 'grocery': 0, 'fast_food': 0, 'post': 0, 'service': 0, 'invalid_geometry': 0}
     start = time.monotonic()
     factory = osmium.geom.GeoJSONFactory()
     try:
@@ -84,7 +84,7 @@ def build(source, output, force=False):
 
             Reader().apply_file(str(source), locations=True, filters=[
                 osmium.filter.KeyFilter(*retail.POINT_KEYS).enable_for(osmium.osm.NODE)])
-        info = {'schema': 3, 'source': source.name, 'source_stat': fingerprint,
+        info = {'schema': 4, 'source': source.name, 'source_stat': fingerprint,
                 'source_sha256': sha256(source),
                 'copyright': 'OpenStreetMap contributors, ODbL 1.0',
                 'generated_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),

@@ -2684,13 +2684,13 @@ local function drawMap(width, height, view, pick)
           if not occupied[key] then
             occupied[key], count = true, count + 1
             local brand = M.brandStyles[poi.brand]
-            local rgb = brand and brand[3]
+            local rgb = poi.rgb or (brand and brand[3])
             local c = rgb and col(rgb[1] / 255, rgb[2] / 255, rgb[3] / 255)
               or (poi.kind == 'fuel' and col(0.10, 0.43, 0.70) or col(0.16, 0.55, 0.27))
             im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), 7, col(1, 1, 1))
             im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), 5.5, c)
-            if z >= 17 and poi.brand then
-              im.ImDrawList_AddText1(dl, im.ImVec2(x + 8, y - 7), col(0.12, 0.12, 0.12), brand and brand[2] or poi.brand)
+            if z >= 17 and (poi.brand or poi.label) then
+              im.ImDrawList_AddText1(dl, im.ImVec2(x + 8, y - 7), col(0.12, 0.12, 0.12), poi.label or (brand and brand[2] or poi.brand))
             end
           end
         end

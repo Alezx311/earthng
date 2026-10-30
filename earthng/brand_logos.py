@@ -34,6 +34,16 @@ WIDTH = 1024            # the rendering's width: a 512 px lightbox cell with roo
 
 # key: (Wikidata item, Commons file or None[, crop: the part of the image kept, in fractions])
 LOGOS = {
+    # the service networks: files from each item's Wikidata logo (P154), looked over by eye
+    'oschadbank': ('Q4340839', 'Oschadbank (uk).png'), 'privatbank': ('Q1515015', 'ПриватБанк.png'),
+    'raiffeisen': ('Q4389243', 'Raiffeisen Bank.svg'), 'ukrsibbank': ('Q1976290', 'Ukrsibbank logo.svg'),
+    'sense': ('Q16691757', 'Sense bank logo.svg'), 'pumb': ('Q4341156', 'Pumb logo.svg'),
+    'ukrgasbank': ('Q4470692', 'UGB logo.svg'), 'a_bank': ('Q28705400', 'Abank logo.svg'),
+    'credit_agricole': ('Q590952', 'Crédit Agricole 2020 logo.svg'), 'otp': ('Q16688676', 'Otp bank Logo.svg'),
+    'podorozhnyk': ('Q117706903', 'Dan-89.png'), 'anc': ('Q100148965', 'Аптечна мережа АНЦ new.svg'),
+    'apteka_911': ('Q117705836', 'Аптека 9-1-1.jpg'), 'lviv_croissants': ('Q116871093', 'Моту.jpg'),
+    'kfc': ('Q524757', 'KFC logo wordmark.svg'), 'dominos': ('Q839466', "Domino's 2025.svg"),
+    'ionity': ('Q42717773', 'Ionity logo cmyk.svg'),
     'okko': ('Q2045483', None),      # Commons has the old pill and Galnaftogaz's, not the griffin
     'wog': ('Q12072939', 'WOG-logo-background-RGB.svg'),
     'ukrnafta': ('Q2447961', 'Ukrnafta.png'),

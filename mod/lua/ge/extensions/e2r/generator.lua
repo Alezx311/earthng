@@ -293,6 +293,9 @@ VEG.shopFront = {
 VEG.backyard = {{GDC .. 'ind_dumpster_full.DAE', 50, face = true, away = true, fp = {-1.516, 1.501, -.818, .818}},
   {GDC .. 'ind_dumpster_empty.DAE', 50, face = true, away = true, fp = {-1.516, 1.501, -.818, .818}}}
 VEG.propSets = {'yard', 'park', 'square', 'village', 'entrance', 'container', 'gate', 'shopFront', 'backyard'}
+-- A sports ground is a meadow for the ground and the trees (fast_style.ground_kind), mown short:
+-- no tufts or flowers on the field
+VEG.fields = {pitch = true, track = true}
 -- Sidewalk mixes by look.block. america is VEG.props itself, so a test can still replace that
 -- table before the first placement. europe: postsoviet, central, western, british, nordic,
 -- east and southeast Asia. med: plaster countries. No mailboxes and no scattered signs.
@@ -4893,6 +4896,17 @@ SOLID.BRANDS = {
   amic={26,'AMIC',{0,150,70}}, parallel={27,'Parallel',{0,140,70}},
   vst={28,'VST',{230,75,32}}, bvs={29,'БВС',{16,106,164}},
   mcdonalds={30,"McDonald's",{200,16,46}}, nova_poshta={31,'Нова пошта',{218,41,28}},
+  oschadbank={71,'Ощадбанк',{8,72,72}}, privatbank={72,'ПриватБанк',{88,184,72}},
+  raiffeisen={73,'Райффайзен',{250,240,10}}, ukrsibbank={74,'УкрСиббанк',{0,140,110}}, sense={75,'Sense Bank',{40,40,248}},
+  pumb={76,'ПУМБ',{232,8,40}}, ukrgasbank={77,'Укргазбанк',{40,88,168}}, a_bank={78,'А-Банк',{8,200,88}},
+  credit_agricole={79,'Crédit Agricole',{0,110,80}}, otp={80,'OTP Bank',{8,104,72}},
+  podorozhnyk={81,'Подорожник',{8,104,72}}, anc={82,'АНЦ',{8,152,216}}, apteka_911={83,'Аптека 911',{168,40,40}},
+  apteka_opt={84,'Аптека оптових цін',{0,128,92}}, bazhaemo={85,"Бажаємо здоров'я",{0,128,92}},
+  dobroho_dnya={86,'Доброго дня',{0,128,92}}, zdorova_rodyna={87,'Здорова родина',{0,128,92}},
+  lviv_croissants={88,'Lviv Croissants',{30,30,30}}, kfc={89,'KFC',{228,8,40}}, dominos={90,"Domino's",{8,152,232}},
+  aroma_kava={91,'Aroma Kava',{122,66,36}}, kulynychi={92,'Кулиничі',{122,66,36}}, puzata_hata={93,'Пузата Хата',{122,66,36}},
+  pizza_day={94,'Pizza Day',{122,66,36}}, ionity={95,'IONITY',{72,8,120}}, toka={96,'TOKA',{20,130,80}},
+  autoenterprise={97,'EVA Chargers',{20,130,80}}, vianor={98,'Vianor',{42,44,50}},
 }
 function SOLID.frame(x, y, z, yaw)
   local c, s = math.cos(yaw), math.sin(yaw)
@@ -4982,11 +4996,17 @@ end
 -- sign and glazing on the street wall nearest its point. building=roof is open: a slab on
 -- columns, and over a fuel station a canopy in the network's colours with pump islands. A mapped
 -- fuel site gets a price pylon (grades, no prices) by its street.
-BLD.SHOP = {cols = 4, rows = 16, fuel = 32, grocery = 33, swatch = {34, 36, 38}, price = {0, 10, 1, 4},
-  square = {x = 512, y = 1280, side = 256, per = 6, atlas = 2048},
+BLD.SHOP = {cols = 4, rows = 32, fuel = 32, grocery = 33, swatch = {34, 36, 38}, price = {0, 10, 1, 4},
+  square = {x = 512, y = 1280, side = 256, per = 6, atlas = 2048, tall = 4096},
   white = 56, lit = 57, dark = 58, metal = 59, concrete = 60, gold = 63,
-  kinds = {fuel = true, grocery = true, fast_food = true, post = true},
-  sites = {fuel_site = 'fuel', grocery_site = 'grocery', fast_food_site = 'fast_food', post_site = 'post'},
+  kinds = {fuel = true, grocery = true, fast_food = true, post = true, service = true},
+  sites = {fuel_site = 'fuel', grocery_site = 'grocery', fast_food_site = 'fast_food', post_site = 'post',
+    service_site = 'service'},
+  -- the atlas's second half (fast_art.SERVICE_SIGNS): cells from `more`, the plain signs of the
+  -- service classes first, the networks from `networks`, their colours in `more_swatch`
+  more = 64, networks = 71, more_swatch = {112, 115, 118},
+  service = {car_repair = 64, tyres = 65, car_wash = 66, charging_station = 67, pharmacy = 68, bank = 69,
+    cafe = 70, restaurant = 70, fast_food = 70, bar = 70, pub = 70},
   -- a whole shop: up to that many m of footprint and of height; its fascia (least and most m, and
   -- share of the wall), the accent stripe under it, the glazing's top and share of a street wall;
   -- its sign's height per m of wall (a lightbox, a square sign) and at most
@@ -5033,12 +5053,18 @@ end
 -- colour in the swatch cells (16 a cell), a plain sign's left edge, or a flat cell's middle
 function BLD.shopFlat(cell, layer)
   local S = BLD.SHOP
-  if cell < S.fuel then
-    local swatch = S.swatch[layer or 1] + math.floor(cell / 16)
-    return {(swatch % S.cols + (cell % 16 + .5) / 16) / S.cols, (math.floor(swatch / S.cols) + .5) / S.rows}
+  if cell < S.fuel or cell >= S.more then
+    local index = cell < S.fuel and cell or cell - S.more
+    local swatch = (cell < S.fuel and S.swatch or S.more_swatch)[layer or 1] + math.floor(index / 16)
+    return {(swatch % S.cols + (index % 16 + .5) / 16) / S.cols, (math.floor(swatch / S.cols) + .5) / S.rows}
   end
   local c, r = cell % S.cols, math.floor(cell / S.cols)
   return {(c + (cell < S.white and .05 or .5)) / S.cols, (r + .5) / S.rows}
+end
+
+-- A network's own sign, not a plain one: it may wear its colours on the walls
+function BLD.shopBranded(cell)
+  return cell < BLD.SHOP.fuel or cell >= BLD.SHOP.networks
 end
 
 -- A network's dress (BLD.SHOP.style), NONE for the plain signs
@@ -5052,7 +5078,7 @@ function BLD.shopMark(cell)
   if not slot then return BLD.shopUV(cell), 4 end
   local Q = BLD.SHOP.square
   local x, y = Q.x + slot % Q.per * Q.side, Q.y + math.floor(slot / Q.per) * Q.side
-  return {(x + 1) / Q.atlas, (y + 1) / Q.atlas, (x + Q.side - 1) / Q.atlas, (y + Q.side - 1) / Q.atlas}, 1
+  return {(x + 1) / Q.atlas, (y + 1) / Q.tall, (x + Q.side - 1) / Q.atlas, (y + Q.side - 1) / Q.tall}, 1
 end
 
 -- The sign cell of a point, site or building: its network's lightbox, the plain sign of a fuel
@@ -5068,7 +5094,7 @@ function BLD.shopCell(kind, tags)
         or tags.shop == 'greengrocer') then
     return BLD.SHOP.grocery
   end
-  return nil
+  return BLD.SHOP.service[tags.amenity] or BLD.SHOP.service[tags.shop]
 end
 
 -- A quad from four points (counter-clockwise seen from its front: bottom left first) in the
@@ -5205,9 +5231,10 @@ end
 -- the roofs over pumps (shops.roofs: building -> {fuel, cell}), and each fuel site's pylon.
 function BLD.shopSites(shops, lists, rect, scene, ground, segmentBins, pause)
   local S = BLD.SHOP
-  local any = false
+  local any, venues = false, {}
   for _, poi in ipairs(lists.points) do
     local p = poi.pos
+    if p and poi.kind == 'venue' then venues[#venues + 1] = poi; any = true end
     local cell = p and S.kinds[poi.kind] and BLD.shopCell(poi.kind, poi.tags)
     if cell then
       local key = math.floor(p[1] / 100) * 65536 + math.floor(p[2] / 100)
@@ -5248,6 +5275,15 @@ function BLD.shopSites(shops, lists, rect, scene, ground, segmentBins, pause)
       end
     end
     return out
+  end
+  for _, poi in ipairs(venues) do
+    local x, y, r = poi.pos[1], poi.pos[2], BLD.VENUE.reach
+    BLD.venueBuilding(shops, poi, near({x, y, x, y}, r), lists.points)
+  end
+  for _, poi in ipairs(shops.stands) do
+    if poi.pos[1] >= rect[1] and poi.pos[1] < rect[3] and poi.pos[2] >= rect[2] and poi.pos[2] < rect[4] then
+      BLD.venueStand(scene, poi, ground, segmentBins)
+    end
   end
   for _, entry in ipairs(sites) do
     local site, held, best, bestArea = entry.site, {}, nil, 0
@@ -5347,7 +5383,7 @@ function BLD.shopCanopy(scene, rings, base, top, info, ground, pause, rect)
   local deep = fuel and C.deep or math.min(C.plain, (top - base) * .15)
   local low = top - deep
   local ring = BLD.orient(rings[1], rings)
-  local branded = fuel and info.cell and info.cell < S.fuel
+  local branded = fuel and info.cell and BLD.shopBranded(info.cell)
   local white, under = BLD.shopFlat(S.white), BLD.shopFlat(fuel and S.lit or S.white)
   local face = branded and BLD.shopFlat(info.cell, 2) or white
   local stripe = branded and BLD.shopStyle(info.cell).accent and BLD.shopFlat(info.cell, 3)
@@ -5472,7 +5508,7 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
   local top = base + height
   if own then
     local style = BLD.shopStyle(own)
-    local branded = own < S.fuel
+    local branded = BLD.shopBranded(own)
     local fh = math.max(W.fascia[1], math.min(W.fascia[2], height * W.fascia[3], height - 2.6))
     local low = top - fh
     local face, accent = BLD.shopFlat(own, 2), style.accent and BLD.shopFlat(own, 3)
@@ -5570,7 +5606,7 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
       local span = math.min(length, math.max(P.span, h * aspect + 4))
       local s = math.max(span / 2, math.min(length - span / 2, bestT * length))
       local under = z0
-      if poi.cell < S.fuel then
+      if BLD.shopBranded(poi.cell) then
         BLD.shopBand(scene, a, b, length, s - span / 2, s + span / 2, z0, z1, .07, BLD.shopFlat(poi.cell, 2))
         if style.accent then
           under = z0 - P.accent
@@ -5587,6 +5623,200 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
       end
     end
   end
+end
+
+-- A place from a register (earthng/venues.py, docs/VENUES.md): the point's building keeps its own
+-- walls, the type adds what shows from the street. reach: a point this far from a building still
+-- means it. No type is in use. A type: rgb on the map; sign and banner, uv boxes in brand_photo
+-- (its free half, x from 1024; fast_art.brand_art draws them); panel over the door, wide and
+-- tall, its underside `low` over the ground and `deep` m out on a canopy; door: glazed width and
+-- height; banners: count, step along the wall, poles' height, cloth width and height, its top
+-- `drop` under the pole's; aside: from the door along the wall; out: distances from the wall to try.
+BLD.VENUE = {reach = 30, types = {}}
+
+-- The building of a venue point: the one it stands in, else the nearest within reach; the first
+-- point of a building keeps it (two numbered places may share an address). doors: the entrances
+-- mapped within 40 m, for the wall of its door.
+function BLD.venueBuilding(shops, poi, candidates, points)
+  local x, y, best, bestD = poi.pos[1], poi.pos[2], nil, math.huge
+  for _, b in ipairs(candidates) do
+    if (b.tags or NONE).building ~= 'roof' then
+      local d = inside(b.rings, x, y) and 0 or math.huge
+      if d > 0 then
+        local ring = cleanRing(b.rings[1])
+        for k, a in ipairs(ring) do
+          local c = ring[k % #ring + 1]
+          d = math.min(d, (segDistance(x, y, a, c)))
+        end
+      end
+      if d < bestD or (d == bestD and best and tostring(b.id or '') < tostring(best.id or '')) then best, bestD = b, d end
+    end
+  end
+  if not best or bestD > BLD.VENUE.reach then
+    shops.stands[#shops.stands + 1] = poi
+    return
+  end
+  if shops.venue[best] then return end
+  local doors = {}
+  for _, p in ipairs(points) do
+    if p.pos and (p.kind == 'entrance' or p.kind == 'door') and (p.pos[1] - x) ^ 2 + (p.pos[2] - y) ^ 2 < 1600 then
+      doors[#doors + 1] = p
+    end
+  end
+  shops.venue[best] = {poi = poi, doors = doors}
+end
+
+-- The wall of a venue's door and how far along it: the wall of a mapped door (a main one first),
+-- in a mall the street wall nearest the point, else the longest street wall's middle, else the
+-- longest wall's.
+function BLD.venueWall(ring, info, within, segmentBins)
+  local S, walls, front, longest = BLD.SHOP, {}, nil, nil
+  for k, a in ipairs(ring) do
+    local b = ring[k % #ring + 1]
+    local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+    if length >= 3 then
+      local probe = wallPoint(a, b, length, length / 2, S.street, 0)
+      local wall = {a = a, b = b, length = length, street = BLD.street(segmentBins, probe[1], probe[2], S.street + 4)}
+      walls[#walls + 1] = wall
+      if not longest or length > longest.length then longest = wall end
+      if wall.street and (not front or length > front.length) then front = wall end
+    end
+  end
+  if #walls == 0 then return end
+  local function along(wall, p)
+    local a, dx, dy = wall.a, wall.b[1] - wall.a[1], wall.b[2] - wall.a[2]
+    local t = math.max(0, math.min(1, ((p[1] - a[1]) * dx + (p[2] - a[2]) * dy) / wall.length ^ 2))
+    return t * wall.length, math.sqrt((p[1] - a[1] - t * dx) ^ 2 + (p[2] - a[2] - t * dy) ^ 2)
+  end
+  local best, bestS, bestScore
+  for _, door in ipairs(info.doors) do
+    for _, wall in ipairs(walls) do
+      local s, d = along(wall, door.pos)
+      local score = d + ((door.tags or NONE).entrance == 'main' and 0 or 2)
+      if d <= 3 and (not bestScore or score < bestScore) then best, bestS, bestScore = wall, s, score end
+    end
+  end
+  if best then return best, bestS end
+  if within == 'mall' then
+    for _, wall in ipairs(walls) do
+      local s, d = along(wall, info.poi.pos)
+      local score = d + (wall.street and 0 or S.street)
+      if not bestScore or score < bestScore then best, bestS, bestScore = wall, s, score end
+    end
+    return best, bestS
+  end
+  best = front or longest
+  return best, best.length / 2
+end
+
+-- A cloth of brand_photo in frame T at x, both faces reading the right way round
+function BLD.venueCloth(scene, T, x, y, wide, z0, z1, uv)
+  local x0, x1 = x - wide / 2, x + wide / 2
+  local function corner(px, u, pz, v) local q = T(px, y, pz); return {q[1], q[2], q[3], u, v} end
+  scene.polygon('brand_photo', {corner(x0, uv[1], z0, uv[4]), corner(x1, uv[3], z0, uv[4]),
+    corner(x1, uv[3], z1, uv[2]), corner(x0, uv[1], z1, uv[2])}, false)
+  scene.polygon('brand_photo', {corner(x1, uv[1], z0, uv[4]), corner(x0, uv[3], z0, uv[4]),
+    corner(x0, uv[3], z1, uv[2]), corner(x1, uv[1], z1, uv[2])}, false)
+end
+
+-- The banners by the door: a row beside its stretch of wall, out towards the street, at the
+-- first distance where every pole clears the carriageway and the building.
+function BLD.venueBanners(scene, wall, s, rings, ground, segmentBins, kind)
+  local S, B, a, b, length = BLD.SHOP, BLD.VENUE.types[kind].banners, wall.a, wall.b, wall.length
+  local yaw = math.atan2(b[2] - a[2], b[1] - a[1])
+  local half = (B.count - 1) * B.step / 2
+  for _, out in ipairs(B.out) do
+    for _, side in ipairs({-1, 1}) do
+      local mid, clear = s + side * B.aside, true
+      for n = 0, B.count - 1 do
+        local p = wallPoint(a, b, length, mid - half + n * B.step, out, 0)
+        if BLD.street(segmentBins, p[1], p[2], 1.2) or inside(rings, p[1], p[2]) or nearEdge(rings, p[1], p[2], 1.5) then
+          clear = false
+        end
+      end
+      if clear then
+        for n = 0, B.count - 1 do
+          local p = wallPoint(a, b, length, mid - half + n * B.step, out, 0)
+          local T = SOLID.frame(p[1], p[2], ground(p[1], p[2]), yaw)
+          BLD.shopBox(scene, T, -.05, -.05, -.3, .05, .05, B.pole, BLD.shopFlat(S.white))
+          local top = B.pole - B.drop
+          BLD.venueCloth(scene, T, B.wide / 2 + .06, -.02, B.wide, top - B.high, top, BLD.VENUE.types[kind].banner)
+        end
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- A place OSM holds no building for: its panel on two posts and its banners where the point is,
+-- along the nearest street and facing it. Never on a carriageway.
+function BLD.venueStand(scene, poi, ground, segmentBins)
+  local tags, S = poi.tags or NONE, BLD.SHOP
+  local V = BLD.VENUE.types[tags.e2r_venue]
+  if not V or tags.e2r_within == 'metro' then return end
+  local x, y, best, bestD = poi.pos[1], poi.pos[2], nil, math.huge
+  if BLD.street(segmentBins, x, y, 1.2) then return end
+  for bx = -2, 2 do
+    for by = -2, 2 do
+      local key = (math.floor(x / 50) + bx + 32768) * 65536 + math.floor(y / 50) + by + 32768
+      for _, s in ipairs(segmentBins[key] or NONE) do
+        if s.surface and s.len2 > 0 then
+          local d = (segDistance(x, y, s.a, {s.a[1] + s.dx, s.a[2] + s.dy}))
+          if d < bestD then best, bestD = s, d end
+        end
+      end
+    end
+  end
+  local dx, dy = 1, 0
+  if best then
+    local length = math.sqrt(best.len2)
+    dx, dy = best.dx / length, best.dy / length
+    -- the frame's -y faces the road
+    local t = math.max(0, math.min(1, ((x - best.a[1]) * best.dx + (y - best.a[2]) * best.dy) / best.len2))
+    if (best.a[1] + t * best.dx - x) * dy - (best.a[2] + t * best.dy - y) * dx < 0 then dx, dy = -dx, -dy end
+  end
+  local T = SOLID.frame(x, y, ground(x, y), math.atan2(dy, dx))
+  local P, w, flat = V.panel, V.panel.wide / 2, BLD.shopFlat(S.metal)
+  for _, at in ipairs({-w + .4, w - .4}) do BLD.shopBox(scene, T, at - .06, -.06, -.3, at + .06, .06, P.low + P.tall, flat) end
+  BLD.shopBox(scene, T, -w, 0, P.low, w, .1, P.low + P.tall, flat)
+  BLD.venueCloth(scene, T, 0, -.01, P.wide, P.low, P.low + P.tall, V.sign)
+  local B = V.banners
+  for n = 0, B.count - 1 do
+    local at = w + 2 + n * B.step
+    BLD.shopBox(scene, T, at - .05, -.05, -.3, at + .05, .05, B.pole, BLD.shopFlat(S.white))
+    BLD.venueCloth(scene, T, at + B.wide / 2 + .06, -.02, B.wide, B.pole - B.drop - B.high, B.pole - B.drop, V.banner)
+  end
+end
+
+-- A venue on its building: glazing at the door, a canopy with the panel on its front edge, a
+-- step and the banners. In a mall only the door's stretch of wall is its own; a metro hall shows
+-- nothing above ground.
+function BLD.venueSigns(scene, rings, base, bottom, height, info, segmentBins, ground)
+  local tags, S = info.poi.tags or NONE, BLD.SHOP
+  local kind = tags.e2r_venue
+  local V = BLD.VENUE.types[kind]
+  if not V or tags.e2r_within == 'metro' then return end
+  local wall, s = BLD.venueWall(BLD.orient(rings[1], rings), info, tags.e2r_within, segmentBins)
+  if not wall then return end
+  local P, a, b, length = V.panel, wall.a, wall.b, wall.length
+  local wide = math.min(P.wide, length - .4)
+  s = math.max(wide / 2 + .2, math.min(length - wide / 2 - .2, s))
+  -- on a single storey the panel stands at the eaves, a little over the roof line
+  local low = math.max(P.least, math.min(P.low, height - P.tall - .2))
+  if height < P.shed then return end
+  local door = math.min(V.door.wide, wide - .6)
+  BLD.shopFront(scene, a, b, length, s - door / 2, s + door / 2, bottom, base + math.min(V.door.high, low - .1), base)
+  local p = wallPoint(a, b, length, s, 0, 0)
+  local T = SOLID.frame(p[1], p[2], base, math.atan2(b[2] - a[2], b[1] - a[1]))
+  local w = wide / 2
+  BLD.shopBox(scene, T, -w, -P.deep, low - .15, w, 0, low, BLD.shopFlat(S.metal), {under = true})
+  BLD.shopBox(scene, T, -w, -P.deep, bottom - base, w, 0, .16, BLD.shopFlat(S.concrete))
+  BLD.shopBox(scene, T, -w, -P.deep - .1, low, w, -P.deep, low + P.tall, BLD.shopFlat(S.metal))
+  local function corner(px, u, pz, v) local q = T(px, -P.deep - .11, pz); return {q[1], q[2], q[3], u, v} end
+  scene.polygon('brand_photo', {corner(-w, V.sign[1], low, V.sign[4]), corner(w, V.sign[3], low, V.sign[4]),
+    corner(w, V.sign[3], low + P.tall, V.sign[2]), corner(-w, V.sign[1], low + P.tall, V.sign[2])}, false)
+  if tags.e2r_within ~= 'mall' then BLD.venueBanners(scene, wall, s, rings, ground, segmentBins, kind) end
 end
 
 -- A parked car, 4.4 x 1.76 m: a body with a sloped bonnet and boot, a glasshouse with its
@@ -9392,7 +9622,7 @@ local function build(cells, i, j, options)
   mark('areas')
   -- Shops and fuel stations (BLD.SHOP): the mapped points by bin, the buildings their sites
   -- hold, the roofs over pumps, the pylons
-  local shops = {points = {}, own = {}, roofs = {}}
+  local shops = {points = {}, own = {}, roofs = {}, venue = {}, stands = {}}
   if decor and not distant then BLD.shopSites(shops, lists, rect, scene, ground, segmentBins, pause) end
   shops.links = decor and options.experimentalShopfront and not options.far and BLD.shopLinks(lists, options, pause) or nil
   for _, building in ipairs(decor and lists.buildings or NONE) do
@@ -9436,6 +9666,7 @@ local function build(cells, i, j, options)
           end
         end
         if own or #points > 0 then BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins, ground) end
+        if shops.venue[building] then BLD.venueSigns(scene, rings, base, bottom, height, shops.venue[building], segmentBins, ground) end
       end
       -- Storefront spans (BLD.shopLinks). A lifted block and a wall lower than the band keep
       -- their walls; a small shop the look dresses as a house takes plain walls under the band.
@@ -10703,8 +10934,9 @@ local function build(cells, i, j, options)
               local y = (gy + .5 + (floor(h / 1000) % 1000 / 1000 - .5) * .55) * spacing
               local position = latticeKey(0, gx, gy, code)
               if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and not positions[position] then
-                local kind = coverAt(x, y)
-                if spacingOf[kind] == spacing and keyHash(seed + 100, position) % 1000 / 1000 < (chanceOf[kind] or 0) then
+                local kind, where = coverAt(x, y)
+                if spacingOf[kind] == spacing and keyHash(seed + 100, position) % 1000 / 1000 < (chanceOf[kind] or 0)
+                    and not (where and VEG.fields[(where.tags or NONE).leisure]) then
                   positions[position] = true
                   candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = kind}
                 end
@@ -10786,6 +11018,10 @@ local function build(cells, i, j, options)
       if distant or maxGrass <= 0 then return end
       local cell, step = 8, 2
       local lawn = {ground = true, park = true, meadow = true, residential = true}
+      local function lawnAt(x, y)
+        local kind, where = coverAt(x, y)
+        return lawn[kind] and not (where and VEG.fields[(where.tags or NONE).leisure])
+      end
       local function climate(x, y)
         if not bio.on then return true end
         local p = bio.at(x, y)
@@ -10806,7 +11042,7 @@ local function build(cells, i, j, options)
             for sy = 0, 3 do
               for sx = 0, 3 do
                 local x, y = ox + sx * step + 1, oy + sy * step + 1
-                if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and lawn[coverAt(x, y)] then
+                if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and lawnAt(x, y) then
                   local z = ground(x, y)
                   local nx, ny, nz = groundNormal(x, y)
                   if nz >= .72 and (not sea or z > sea) and not blocked(x, y, 2.4) then
@@ -10916,10 +11152,14 @@ local function build(cells, i, j, options)
     sceneManifest.brandPOIs = {}
     for _, poi in ipairs(lists.points) do
       local p, tags = poi.pos, poi.tags or NONE
-      if p and (poi.kind == 'fuel' or poi.kind == 'grocery' or poi.kind == 'fast_food' or poi.kind == 'post') and SOLID.BRANDS[tags.e2r_brand]
+      if p and BLD.SHOP.kinds[poi.kind] and SOLID.BRANDS[tags.e2r_brand]
           and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
         sceneManifest.brandPOIs[#sceneManifest.brandPOIs + 1] =
           {id = poi.id, kind = poi.kind, x = p[1], y = p[2], brand = tags.e2r_brand, postType = tags.e2r_post_type}
+      elseif p and poi.kind == 'venue' and BLD.VENUE.types[tags.e2r_venue]
+          and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
+        sceneManifest.brandPOIs[#sceneManifest.brandPOIs + 1] =
+          {id = poi.id, kind = poi.kind, x = p[1], y = p[2], label = tags.name, rgb = BLD.VENUE.types[tags.e2r_venue].rgb}
       end
     end
   end
@@ -10937,6 +11177,9 @@ M.build = build
 M.YARD = YARD
 M.BRANDS = SOLID.BRANDS
 M.shopFlat = BLD.shopFlat
+M.VENUE = BLD.VENUE
+M.shopUV = BLD.shopUV
+M.shopCell = BLD.shopCell
 M.shopMark = BLD.shopMark
 M.shopHeight = BLD.height
 M.shopStyle = BLD.shopStyle

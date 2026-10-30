@@ -693,6 +693,7 @@ class Store:
             found={}; lines={}; retail_areas={}; factory=osmium.geom.GeoJSONFactory()
             import fast_style
             import retail
+            import venues
             class Reader(osmium.SimpleHandler):
                 def area(self,a):
                     tags = retail.enriched(a.tags)
@@ -738,7 +739,7 @@ class Store:
             # Keep the surveyed node when category and known brand match; unknown names
             # or neighbouring businesses are never guessed to be duplicates.
             nodes = [(kind, tags.get('e2r_brand'), geom, tags.get('e2r_post_type')) for kind, tags, geom in lines.values()
-                     if kind in ('fuel', 'grocery', 'fast_food', 'post') and tags.get('e2r_brand')]
+                     if kind in ('fuel', 'grocery', 'fast_food', 'post', 'service') and tags.get('e2r_brand')]
             tree = shapely.STRtree([entry[2] for entry in nodes]) if nodes else None
             for ident, (kind, tags, geometry) in retail_areas.items():
                 brand = tags.get('e2r_brand')
@@ -747,6 +748,9 @@ class Store:
                     nodes[int(i)][3] == tags.get('e2r_post_type') and geometry.covers(nodes[int(i)][2]) for i in tree.query(geometry)))
                 if not duplicate:
                     lines[ident] = (kind, tags, geometry.representative_point())
+            # places from a register (venues.py): every scene holds them, a query takes those it covers
+            for n,(venue,record) in enumerate(venues.located()):
+                lines[-(4*10**12+n)]=('venue',venues.point_tags(venue,record),Point(record['lon'],record['lat']))
             found.update(lines)
             ordered=sorted(found.items())
             geoms=shapely.make_valid(shapely.transform([v[1][2] for v in ordered],self.frame.local,interleaved=False))

@@ -16,7 +16,8 @@
 GeoJSON Feature з OSM ID `node/`, `way/` або `relation/`, координатами, лінією незамкненого way або повною
 геометрією полігона та **оригінальними тегами**. Зберігаються всі `amenity=fuel`,
 `shop=supermarket|convenience|grocery|general|food|greengrocer`, зокрема невідомі
-бренди й сільські крамниці. Окремо відбираються McDonald's і Нова пошта за
+бренди й сільські крамниці. З 30.10 також сервіси: СТО, шиномонтаж, мийки, зарядки, аптеки, банки
+й кафе ([VENUES.md](VENUES.md)). Окремо відбираються McDonald's і Нова пошта за
 назвами, `brand` / `operator` та `brand:wikidata` / `operator:wikidata`. Поштомати
 впізнаються за `amenity=parcel_locker`, а також старими `vending=parcel_pickup` і
 `parcel_mail_in`, відділення — за `amenity=post_office`; усі оригінальні теги
@@ -61,7 +62,7 @@ GeoJSON Feature з OSM ID `node/`, `way/` або `relation/`, координат
 Торгова будівля з `building:levels` без `height` має 4 м на поверх плюс 1 м.
 
 Кольори фасаду й акценту — `BRAND_STYLE` у `earthng/fast_art.py` (дзеркало в
-`BLD.SHOP.style`). Для АТБ, Фори, Велмарту, ОККО, WOG, Нової пошти, ЕКО й AMIC їх звірено
+`BLD.SHOP.style`). Велмарт червоний із жовтою смугою, як його магазини. Для АТБ, Фори, ОККО, WOG, Нової пошти, ЕКО й AMIC їх звірено
 з фото магазинів і АЗС на Wikimedia Commons, для решти взято кольори логотипів. Квадратні
 знаки (ОККО, Авіас, UPG, KLO, АТБ, Сім23, Файно, ЕКО, McDonald's) лежать в окремих
 клітинках атласу. АТБ має намальований знак за фото фасадів (біла панель, синє коло,

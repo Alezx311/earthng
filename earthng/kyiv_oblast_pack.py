@@ -81,9 +81,8 @@ def build(jobs):
     print(f'{archive}: {archive.stat().st_size / 1e6:.1f} MB', flush=True)
 
 
-def control(jobs):
-    # Bilychi: Velmart, Fora, Novus, McDonald's and Nova Poshta near Akademmistechko.
-    lat, lon = 50.4619, 30.3500
+def control(jobs, lat=50.4619, lon=30.3500, name='bilychi'):
+    # By default Bilychi: Velmart, Fora, Novus, McDonald's and Nova Poshta near Akademmistechko.
     # The whole-country index is reusable even while the polygon's indexes are still building.
     core = [30., 50., 31.5, 51.]
     pad = build_country.PAD
@@ -109,8 +108,8 @@ def control(jobs):
     bbox = [float(x)-1000, float(y)-1000, float(x)+1000, float(y)+1000]
     known = places.by_id(places.load_index(ROOT))
     look = looks.recommended('ukraine', known)
-    archive = build_country.build_country('bilychi-retail-check', 'Біличі — тест закладів', '0.4.0',
-                                          [region], OUT / 'bilychi-control', bbox=bbox, jobs=jobs,
+    archive = build_country.build_country(f'{name}-retail-check', f'{name}: тест закладів', '0.4.0',
+                                          [region], OUT / f'{name}-control', bbox=bbox, jobs=jobs,
                                           landing=(lat, lon), look=look)
     print(f'{archive}: {archive.stat().st_size / 1e6:.1f} MB', flush=True)
 
@@ -120,6 +119,7 @@ def main():
     p.add_argument('phase', choices=('prepare', 'build', 'control'))
     p.add_argument('--boundary', type=Path, default=OUT / 'boundary.json')
     p.add_argument('--jobs', type=int, default=4)
+    p.add_argument('--at', nargs=3, metavar=('LAT', 'LON', 'NAME'), help='control: 2 km round this point')
     args = p.parse_args()
     started = time.monotonic()
     if args.phase == 'prepare':
@@ -127,7 +127,7 @@ def main():
     elif args.phase == 'build':
         build(args.jobs)
     else:
-        control(args.jobs)
+        control(args.jobs, *([float(args.at[0]), float(args.at[1]), args.at[2]] if args.at else []))
     print(f'{args.phase}: {time.monotonic() - started:.1f} s', flush=True)
 
 

@@ -451,6 +451,11 @@ PARKS = {'park', 'garden', 'recreation_ground', 'cemetery', 'village_green'}
 
 
 ISLANDS = {'area:highway': 'traffic_island', 'traffic_calming': 'island'}
+# Zones that keep their ground free (GENERATION_GAPS G03): each takes the cover that plants like
+# it. A sports ground is open, a school or hospital site a yard, allotments an orchard.
+FIELDS = {'pitch', 'track'}
+HARD_FIELDS = {'asphalt', 'concrete', 'tartan', 'rubber', 'acrylic', 'paving_stones', 'paved', 'clay', 'sand', 'dirt', 'gravel'}
+SITES = {'school', 'kindergarten', 'college', 'university', 'hospital', 'clinic'}
 
 
 def ground_kind(tags):
@@ -460,6 +465,12 @@ def ground_kind(tags):
         return 'island'
     if tags.get('leisure') == 'playground':
         return 'playground'           # a yard's sandpit and swings (generator.lua YARD.playground)
+    if tags.get('leisure') in FIELDS:
+        return 'paved' if tags.get('surface') in HARD_FIELDS else 'meadow'     # generator.lua VEG.fields
+    if tags.get('amenity') in SITES or tags.get('leisure') in ('sports_centre', 'stadium'):
+        return 'residential'
+    if tags.get('landuse') == 'allotments':
+        return 'orchard'
     if (tags.get('landuse') in PAVED or tags.get('amenity') == 'parking' or tags.get('place') == 'square'
             or tags.get('highway') == 'pedestrian' and tags.get('area') == 'yes'):
         return 'paved'                # a pedestrian area is a square to the generator
@@ -516,7 +527,8 @@ POINT_KEYS = ('highway', 'natural', 'public_transport', 'entrance', 'leisure', '
 def point_kind(tags):
     """'stop', 'signal' or one of ROAD_DETAILS for an OSM node, else None."""
     retail_kind = retail.kind(tags)
-    if retail_kind:
+    # a pack with the storefront experiment keeps its shops as POIs with their real names
+    if retail_kind and not (POIS and retail_kind == 'service' and poi(tags)):
         return retail_kind
     highway = tags.get('highway')
     if tags.get('natural') == 'tree':

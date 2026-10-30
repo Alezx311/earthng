@@ -59,6 +59,10 @@ class CountryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        # the fixture's box is Kyiv: the registers' real places stay out of it
+        venues = patch.object(country.venues, 'catalogue', return_value=[])
+        self.venues = venues.start()
+        self.addCleanup(venues.stop)
         self.root = Path(self.temp.name)
         self.region = self.root / 'source'
         self.region.mkdir()
@@ -304,6 +308,16 @@ class CountryTests(unittest.TestCase):
         self.assertNotIn('/private', json.dumps(fields))
         fields = country._provenance(self.meta, {'source': 'area-261399.osm.pbf'})
         self.assertNotIn('sourceDate', fields)
+
+    def test_a_pack_lists_its_places_for_missions(self):
+        self.venues.return_value = [{'type': 'demo', 'ref': '12', 'lat': 50.44, 'lon': 30.63}]
+        credit = {'source': 'Оператор мережі', 'data': 'list of places', 'url': 'https://example.org/'}
+        with patch.dict(country.venues.TYPES, {'demo': {'credit': credit}}), zipfile.ZipFile(self.build()) as archive:
+            manifest = json.loads(archive.read('earthng/countries/ua/manifest.json'))
+            self.assertEqual(manifest['venues'], 1)
+            self.assertEqual(manifest['credits'][-1], credit)
+            self.assertEqual(json.loads(archive.read('earthng/countries/ua/venues.json')), self.venues.return_value)
+            self.assertIn('Оператор мережі', archive.read('earthng/countries/ua/CREDITS.txt').decode('utf-8'))
 
     def test_a_pack_carries_the_credits_of_its_data(self):
         # a pack shared without the repo still names its sources and their licences

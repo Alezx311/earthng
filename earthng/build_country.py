@@ -31,6 +31,7 @@ import country_format as binary
 import fast_sources as sources
 import looks
 import nature
+import venues
 
 
 FORMAT = 'earthng-features-v2'
@@ -249,7 +250,7 @@ def compile_cell(store, rect, include=None):
         # carry no sampled Z: runtime drapes them on the shared final surface.
         overrides = [shapely.Polygon(f['rings'][0], f['rings'][1:])
                      for f in cell['areas'] + cell['buildings']
-                     if f.get('rings') and f.get('kind') not in ('fuel_site', 'grocery_site', 'fast_food_site', 'post_site')]
+                     if f.get('rings') and f.get('kind') not in ('fuel_site', 'grocery_site', 'fast_food_site', 'post_site', 'service_site')]
         for n, (kind, geometry, tags) in enumerate(cover.areas(rect, overrides)):
             if not looks.keep_scenery(kind, include):
                 continue
@@ -934,6 +935,11 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
             if include:
                 manifest['include'] = include
             manifest['credits'] = [*CREDITS, *(credits or ())]
+            # the register's places in this pack, for missions and the map (docs/VENUES.md)
+            places = venues.catalogue(manifest['coverage'])
+            if places:
+                manifest['venues'] = len(places)
+                manifest['credits'].extend(venues.credits(places))
             if section is None:
                 folder = f'earthng/countries/{country_id}'
                 _write_json(archive, f'{folder}/manifest.json', manifest)
@@ -946,6 +952,8 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
                 _write_json(archive, f'{folder}/section.json', manifest)
             label = title.strip() + (f" - {section['title']}" if section else '')
             _write(archive, f'{folder}/CREDITS.txt', _credits_text(label, manifest['credits']))
+            if places:
+                _write_json(archive, f'{folder}/venues.json', places)
             # the offline map is the country's: a section's zip leaves it to the country pack
             if map_data is not None and section is None:
                 from build_map import write_archive

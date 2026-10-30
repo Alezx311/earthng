@@ -91,8 +91,8 @@ class BrandGeneratorTests(unittest.TestCase):
             seen.save(Path(logos) / 'okko.png')
             fast_art.brand_art(Path(tmp), logos)
             colour, glow = (Image.open(Path(tmp) / f'brand_sign.{n}.png').copy() for n in ('color', 'glow'))
-            self.assertEqual(colour.size, (2048, 2048))
-            self.assertEqual(glow.size, (2048, 2048))
+            self.assertEqual(colour.size, (2048, 4096))
+            self.assertEqual(glow.size, (2048, 4096))
             self.assertGreater(min(colour.getpixel((20, 64))), 230)               # okko: a see-through logo on white
             self.assertEqual(colour.getpixel((256, 64)), (0, 120, 60))            # trimmed and fitted
             self.assertLess(max(abs(a - b) for a, b in zip(colour.getpixel((512 + 20, 64)), (200, 30, 30))), 16)   # wog: its own background
@@ -102,7 +102,7 @@ class BrandGeneratorTests(unittest.TestCase):
             # every network's colour where generator.lua samples its stripe
             for index, (_, rgb, key, *_) in enumerate(fast_art.BRAND_SIGNS):
                 uv = self.g.shopFlat(index)
-                self.assertEqual(colour.getpixel((int(uv[1] * 2048), int(uv[2] * 2048))), rgb, key)
+                self.assertEqual(colour.getpixel((int(uv[1] * 2048), int(uv[2] * 4096))), rgb, key)
             # lightboxes glow at night, the dark pump body does not
             self.assertGreater(sum(glow.getpixel((256, 64))), 60)
             self.assertEqual(glow.getpixel((2 * 512 + 256, 14 * 128 + 64)), (0, 0, 0))
@@ -220,7 +220,7 @@ class BrandGeneratorTests(unittest.TestCase):
         # faces of the pylon; the canopy's fascia in its dark green, the yellow stripe under it
         self.assertEqual(len(self.faces_of(scene, 0)), 2 * 2 + 4 * 2 + 2 * 2)
         self.assertTrue(self.flat(scene, 0, 2) and self.flat(scene, 0, 3))
-        board = [t for t in tris if all(p[3] < .25 and 10 / 16 < p[4] < 14 / 16 for p in t)]
+        board = [t for t in tris if all(p[3] < .25 and 10 / 32 < p[4] < 14 / 32 for p in t)]
         self.assertEqual(len(board), 4)
         self.assertTrue(all(p[1] > 80 for t in board for p in t))     # by the street's edge of the site
         self.assertEqual(len(scene.brandPOIs), 1)

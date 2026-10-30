@@ -613,7 +613,7 @@ YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (2
                 (162, 160, 152), (214, 184, 58), (122, 178, 92), (92, 62, 40)]
 
 
-# The shop and fuel station atlas (generator.lua BLD.SHOP): 4 x 16 cells of 512 x 128 px, the
+# The shop and fuel station atlas (generator.lua BLD.SHOP): 4 x 32 cells of 512 x 128 px, the
 # shape of a lightbox 4 m x 1 m. Cells 0..31 are the networks of retail.ALIASES in the order of
 # generator.lua SOLID.BRANDS, 32 and 33 the plain 'АЗС' and 'ПРОДУКТИ' of an unknown network.
 # Cells 34-35, 36-37 and 38-39 hold each network's sign, facade and accent colours as stripes of
@@ -624,7 +624,7 @@ YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (2
 # network's real logo where
 # earthng/brand_logos.py fetched one into data/brands/<key>.png (Wikimedia Commons): on a white
 # panel when the logo is see-through, else on its own background; otherwise its name in type.
-BRAND_ART_VERSION = '7'  # change whenever an existing atlas cell changes
+BRAND_ART_VERSION = '11'  # change whenever an existing atlas cell changes
 # (label, sign colour, key in generator.lua SOLID.BRANDS[, letters when not white])
 BRAND_SIGNS = [
     ('OKKO', (0,90,50), 'okko', (255,205,0)), ('WOG', (0,150,60), 'wog'), ('УКРНАФТА', (0,72,150), 'ukrnafta'),
@@ -642,8 +642,9 @@ BRAND_SIGNS = [
 # How a network dresses a building (generator.lua BLD.SHOP.style mirrors clad, square and
 # accent): facade, the colour of its fascia (and of every wall when clad); accent, a stripe under
 # the fascia; square, its slot of SHOP_SQUARE (a square sign: a square logo, or the name stacked).
-# From photographs of the stores on Wikimedia Commons where there are some (ATB, Fora, Velmart,
-# OKKO, WOG, Nova Poshta, EKO, AMIC), the networks' own colours otherwise.
+# From photographs of the stores on Wikimedia Commons where there are some (ATB, Fora, OKKO, WOG,
+# Nova Poshta, EKO, AMIC), the networks' own colours otherwise; Velmart's red and yellow as the
+# user knows its stores.
 BRAND_STYLE = {
     'okko': {'facade': (0, 90, 50), 'accent': (255, 205, 0), 'square': 0},
     'wog': {'facade': (0, 150, 60)},
@@ -660,7 +661,7 @@ BRAND_STYLE = {
     'fora': {'facade': (100, 190, 50), 'accent': (220, 40, 40), 'clad': True},
     'novus': {'facade': (0, 160, 70)},
     'auchan': {'facade': (220, 30, 52)},
-    'velmart': {'facade': (60, 140, 50), 'accent': (240, 200, 0), 'clad': True},
+    'velmart': {'facade': (214, 32, 38), 'accent': (250, 205, 0), 'clad': True},
     'kolo': {'facade': (235, 92, 37)},
     'rukavychka': {'facade': (110, 35, 60)},
     'sim23': {'facade': (231, 52, 54), 'square': 5},
@@ -680,7 +681,32 @@ BRAND_STYLE = {
     'mcdonalds': {'facade': (38, 38, 40), 'accent': (150, 100, 60), 'clad': True, 'square': 8},
     'nova_poshta': {'facade': (218, 41, 28)},
 }
-SHOP_COLS, SHOP_ROWS, SHOP_CELL = 4, 16, (512, 128)
+# The atlas's second half (2048 x 2048 below the first, generator.lua BLD.SHOP.more): cell 64 on.
+# The plain signs of the service classes, then the networks. A network with a logo takes its
+# colour from the logo (brand_logos, measured), one without keeps its class's colour and its name
+# in type: a colour nobody has checked is not invented.
+SERVICE_CLASS = {'car': (42, 44, 50), 'wash': (20, 110, 180), 'charge': (20, 130, 80), 'pharmacy': (0, 128, 92),
+                 'bank': (30, 50, 100), 'food': (122, 66, 36)}
+SERVICE_SIGNS = [
+    ('СТО', SERVICE_CLASS['car'], 'plain_car_repair'), ('ШИНОМОНТАЖ', SERVICE_CLASS['car'], 'plain_tyres'),
+    ('АВТОМИЙКА', SERVICE_CLASS['wash'], 'plain_car_wash'), ('ЗАРЯДКА', SERVICE_CLASS['charge'], 'plain_charging'),
+    ('АПТЕКА', SERVICE_CLASS['pharmacy'], 'plain_pharmacy'), ('БАНК', SERVICE_CLASS['bank'], 'plain_bank'),
+    ('КАФЕ', SERVICE_CLASS['food'], 'plain_food'),
+    ('ОЩАДБАНК', (8, 72, 72), 'oschadbank'), ('ПРИВАТБАНК', (88, 184, 72), 'privatbank'),
+    ('РАЙФФАЙЗЕН', (250, 240, 10), 'raiffeisen', (30, 30, 30)), ('УКРСИББАНК', (0, 140, 110), 'ukrsibbank'),
+    ('SENSE BANK', (40, 40, 248), 'sense'), ('ПУМБ', (232, 8, 40), 'pumb'), ('УКРГАЗБАНК', (40, 88, 168), 'ukrgasbank'),
+    ('А-БАНК', (8, 200, 88), 'a_bank'), ('CRÉDIT AGRICOLE', (0, 110, 80), 'credit_agricole'), ('OTP BANK', (8, 104, 72), 'otp'),
+    ('ПОДОРОЖНИК', (8, 104, 72), 'podorozhnyk'), ('АНЦ', (8, 152, 216), 'anc'), ('АПТЕКА 911', (168, 40, 40), 'apteka_911'),
+    ('АПТЕКА ОПТОВИХ ЦІН', SERVICE_CLASS['pharmacy'], 'apteka_opt'), ("БАЖАЄМО ЗДОРОВ'Я", SERVICE_CLASS['pharmacy'], 'bazhaemo'),
+    ('ДОБРОГО ДНЯ', SERVICE_CLASS['pharmacy'], 'dobroho_dnya'), ('ЗДОРОВА РОДИНА', SERVICE_CLASS['pharmacy'], 'zdorova_rodyna'),
+    ('LVIV CROISSANTS', (30, 30, 30), 'lviv_croissants'), ('KFC', (228, 8, 40), 'kfc'), ("DOMINO'S", (8, 152, 232), 'dominos'),
+    ('AROMA KAVA', SERVICE_CLASS['food'], 'aroma_kava'), ('КУЛИНИЧІ', SERVICE_CLASS['food'], 'kulynychi'),
+    ('ПУЗАТА ХАТА', SERVICE_CLASS['food'], 'puzata_hata'), ('PIZZA DAY', SERVICE_CLASS['food'], 'pizza_day'),
+    ('IONITY', (72, 8, 120), 'ionity'), ('TOKA', SERVICE_CLASS['charge'], 'toka'), ('EVA CHARGERS', SERVICE_CLASS['charge'], 'autoenterprise'),
+    ('VIANOR', SERVICE_CLASS['car'], 'vianor'),
+]
+SERVICE_CELL, SERVICE_SWATCH = 64, (112, 115, 118)                         # generator.lua BLD.SHOP.more, more_swatch
+SHOP_COLS, SHOP_ROWS, SHOP_CELL = 4, 32, (512, 128)
 SHOP_GENERIC = [('АЗС', (46,72,104)), ('ПРОДУКТИ', (38,92,62))]          # cells 32, 33
 SHOP_PRICE = (0, 10, 1, 4)                                                # column, row, columns, rows
 SHOP_SWATCH = (34, 36, 38)                                                # sign, facade, accent: 16 colours a cell
@@ -839,6 +865,14 @@ def brand_art(r, logos=None):
             paste(face, (sx + slot % per * side, sy + slot // per * side), True)
     for n, (label, colour) in enumerate(SHOP_GENERIC):
         put(32 + n, _lightbox(colour, label, (255, 255, 255)), True)
+    for index, (label, colour, key, *letters) in enumerate(SERVICE_SIGNS):
+        path = own / f'{key}.png'
+        logo = Image.open(path) if path.is_file() else None
+        put(SERVICE_CELL + index, _lightbox(colour, label, letters[0] if letters else (255, 255, 255), logo), True)
+        for base in SERVICE_SWATCH:
+            stripe, cell = w // 16, base + index // 16
+            x, y = cell % SHOP_COLS * w + index % 16 * stripe, cell // SHOP_COLS * h
+            atlas.paste(colour, (x, y, x + stripe, y + h))
     at = (SHOP_PRICE[0] * w, SHOP_PRICE[1] * h)
     atlas.paste(_price_board(False), at)
     glow.paste(_price_board(True), at)
