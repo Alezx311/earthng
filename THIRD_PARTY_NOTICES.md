@@ -30,7 +30,17 @@ of the following data and assets:
   and line paint: Poly Haven asphalt_01 and aerial_asphalt_01, ambientCG Asphalt025C,
   Asphalt026C and RoadLines025B. Desert, dune, steppe, tundra, alpine and snow ground:
   ambientCG Ground037, Ground063, Ground068, Ground079S, Ground080, Ground097,
-  Ground102, Ground110, Snow014 and Snow015.
+  Ground102, Ground110, Snow014 and Snow015. Drawn facades, walls, roofs, fences, setts
+  and fields (`earthng/fast_facade.py`): the sets of `MATERIAL_SETS` in
+  `earthng/fetch_textures.py`, ambientCG Concrete035, Concrete037, Concrete043A,
+  Ground048, Ground072, PaintedPlaster014, PaintedPlaster018, Plaster002,
+  RoofingTiles013B, RoofingTiles014A, ThatchedRoof001A, WoodSiding003, WoodSiding005 and
+  WoodSiding009; Poly Haven bitumen, box_profile_metal_sheet, brick_wall_10, clay_plaster,
+  clay_roof_tiles_02, cobblestone_03, exterior_wall_cladding_02, exterior_wall_cladding_03,
+  grey_roof_01, medieval_red_brick, red_brick_03, red_laterite_soil_stones,
+  roof_slates_03, rough_block_wall, rusty_corrugated_iron, sandstone_blocks_05,
+  t_concrete_wall_002, white_sandstone_blocks_02, whitewashed_brick, worn_corrugated_iron
+  and yellow_brick.
   https://kureca.itch.io/panelka-pack, https://ambientcg.com/ and https://polyhaven.com/
 - Climate classes (the planet's `earthng/planet/climate`): Köppen-Geiger 1991-2020,
   resampled to one arc minute, from Beck, H. E., T. R. McVicar, N. Vergopolan, A. Berg,

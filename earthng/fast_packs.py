@@ -14,6 +14,7 @@ import zipfile
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
+import fast_facade as facade
 import fast_photo as photo
 import fast_style as style
 
@@ -41,6 +42,8 @@ def _pick(palette, u):
 def windows_of(name):
     """(box px, role) of every window of a photo wall, row 0 at the top of the repeat; role is
     'home', 'office', 'shop', 'sign' or 'plate'."""
+    if name.startswith('layout_'):
+        return [(box, 'home') for box in facade.boxes(name[7:])]
     family, _, _ = photo.PHOTO_WALLS[name]
     C, T = photo.CELL, photo.TILE_PX
     out = []
@@ -113,8 +116,8 @@ def wall_glow(name, mood, colour_image=None):
     """Emissive map of a photo wall (same size and orientation as its colour map in fast_art,
     i.e. upside down): some windows lit. mood 'night' (homes warm, offices white) or 'cyber'
     (neon, shop signs with letters, a neon line along every office floor)."""
-    family = photo.PHOTO_WALLS[name][0]
-    size = photo.SHEET_PX if family == 'loggia' else photo.CELL * photo.PANEL_N if family == 'panel' else photo.TILE_PX
+    family = 'layout' if name.startswith('layout_') else photo.PHOTO_WALLS[name][0]
+    size = photo.SHEET_PX if family == 'loggia' else photo.CELL * photo.PANEL_N if family in ('panel', 'layout') else photo.TILE_PX
     im = Image.new('RGB', (size, size), (0, 0, 0))
     if family.startswith('end_'):
         return im
@@ -188,6 +191,20 @@ def wall_glow(name, mood, colour_image=None):
 
 def _flip(im):
     return im.transpose(Image.FLIP_TOP_BOTTOM)
+
+
+def glow_of(wall):
+    """The emissive map a wall's windows use: a drawn facade's layout's, a patched panel's sibling's."""
+    st = facade.STYLES.get(wall)
+    return 'layout_' + st['layout'] if st else facade.PATCHED.get(wall, wall)
+
+
+def layout_glows(r):
+    """Night and cyber windows of every facade layout (fast_facade.LAYOUTS)."""
+    for layout in facade.LAYOUTS:
+        for mood in ('night', 'cyber'):
+            (r / mood).mkdir(parents=True, exist_ok=True)
+            wall_glow('layout_' + layout, mood).save(r / mood / f'layout_{layout}.glow.png')
 
 
 def facade_glow(kind, mood):
@@ -341,7 +358,7 @@ def build(r, base):
     layers = photo.panel_atlas()
     for name in photo.PHOTO_WALLS:
         colour = Image.open(r / 'real' / f'{name}.color.png') if (r / 'real' / f'{name}.color.png').exists() else None
-        if photo.PHOTO_WALLS[name][0].startswith('end_'):
+        if photo.PHOTO_WALLS[name][0].startswith('end_') or glow_of(name) != name:
             continue
         for mood in ('night', 'cyber'):
             wall_glow(name, mood, colour).save(r / mood / f'{name}.glow.png')
@@ -416,7 +433,7 @@ def fields(pack, base, real):
         for w in walls:
             if w in photo.PHOTO_WALLS and photo.PHOTO_WALLS[w][0].startswith('end_'):
                 continue
-            put('wall_' + w, emissiveMap=f'{lit}/{w}.glow.png', emissiveFactor=GLOW[pack])
+            put('wall_' + w, emissiveMap=f'{lit}/{glow_of(w)}.glow.png', emissiveFactor=GLOW[pack])
         # shop lightboxes, price boards and the underside of fuel canopies (fast_art.brand_art)
         put('brand_sign', emissiveMap=f'{base}/real/brand_sign.glow.png', emissiveFactor=GLOW[pack])
         put('storefront', emissiveMap=f'{base}/real/storefront.glow.png', emissiveFactor=GLOW[pack])

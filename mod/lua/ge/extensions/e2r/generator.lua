@@ -24,9 +24,9 @@ local CLAIM = {paved = 1, water = 2, glacier = 3, bare_rock = 4, scree = 5, beac
 -- Asphalt: the aerial street photo over 30 m, its fine detail through the detail maps
 -- (fast_style.ROAD_M, DETAIL_M).
 local COVER_SCALE = {ground = 24, forest = 24, park = 24, meadow = 24, orchard = 24,
-  scrub = 24, heath = 24, glacier = 24, farmland = 12, vineyard = 12, bare_rock = 12,
+  scrub = 24, heath = 24, glacier = 24, farmland = 24, vineyard = 12, bare_rock = 12,
   scree = 12, beach = 12, wetland = 12, bare_ground = 12,
-  road = 30, road_major = 30, road_worn = 30, footway_asphalt = 30,
+  road = 30, road_major = 30, road_worn = 30, footway_asphalt = 30, road_sett = 3,
   -- the climate's open ground (biome.lua): photo sheets of fast_photo.GROUND_M
   desert = 24, dune = 24, steppe = 24, dry_grass = 24, tundra = 24, alpine = 24, snow = 24, snow_edge = 24}
 local ABIN = 12.5      -- m: bins of asphalt pieces that sidewalks and verges are cut by
@@ -3256,18 +3256,218 @@ BLD.colour = {red = 'roof_mtile_red', darkred = 'roof_mtile_red', maroon = 'roof
   white = 'roof_sheet', silver = 'roof_metal'}
 -- metres per texture repeat on a pitched roof (u along the ridge, v down the slope)
 BLD.repeats = {roof_tile = 2, roof_metal = 2, roof_sheet = 1.75, roof_mtile_red = 1.4,
-  roof_mtile_brown = 1.4, roof_mtile_green = 1.4}
+  roof_mtile_brown = 1.4, roof_mtile_green = 1.4, roof_slate = 3, roof_shingle = 8, roof_zinc = 1.8}
 
-function BLD.roof(tags, h, postsoviet)
+-- A region's own buildings by look.block (looks.py), for a planet whose art has them: what stands
+-- in for each family of wallMaterial, the walls of its houses and the roofs over them, as
+-- 'kind weight' words. A block not named here, and a pack without a look, keep the older lists.
+-- A house's weights add up to 100; its plaster comes first and stays under 38 (BLD.house).
+BLD.spec = {
+  -- byHeight: the block's default 'panel' does not put a panel on every block of an old town; its
+  -- towers stay panel and loggia, what is lower goes by height as a mixed look does
+  postsoviet = {
+    byHeight = true,
+    panel = 'pnl_grey 3 pnl_beige 3 pnl_pink 2 pnl_blue 2 pnl_white 2 pnl_patch_grey 3 pnl_patch_beige 3 pnl_patch_white 2',
+    brick = 'brk_d_sil 4 brk_d_red 3 brk_d_old 2 brk_red 1 brk_white 1',
+    plaster = 'pls_d_dash 4 pls_d_stalin 3 pls_d_stalin_red 2 pls_d_aged 2 pls_d_flake 2 pls_yellow 1 pls_cream 1 pls_peach 1 pls_grey 1',
+    new = 'pls_d_new 2 brk_d_new 1',
+    houses = 'hw_white 7 hw_yellow 5 hw_blue 6 hw_green 4 hw_pink 2 hw_aged 6 hw_dash 4 hw_dash_cream 4 hw_brick_red 9 hw_oldbrick 6 hw_flatbrick 5 '
+      .. 'hw_flaking 6 hw_flaking_yellow 4 hw_stone 5 hw_silicate 9 hw_siding 8 hw_boards 10',
+    roofs = 'roof_sheet 6 roof_mtile_red 3 roof_mtile_brown 3 roof_mtile_green 2 roof_prof_red 2 roof_prof_brown 2 roof_prof_green 1 '
+      .. 'roof_prof_grey 1 roof_metal 2 roof_tile 1 roof_shingle 2',
+    fences = 'fence_prof_green 3 fence_prof_brown 3 fence_prof_grey 2 fence_boards 5 fence_mesh 3'},
+  nordic = {
+    panel = 'pnl_grey 2 pnl_white 2', brick = 'brk_d_dark 2 brk_d_vic 2 brk_red 1', plaster = 'pls_d_euro 3 pls_d_euro_warm 2 pls_cream 1',
+    new = 'pls_d_new 2 brk_d_new 2',
+    houses = 'hw_render_white 12 hw_render_sand 8 hw_falu 30 hw_clapboard_white 18 hw_clapboard_yellow 12 hw_clapboard_blue 8 hw_brick_red 8 hw_clinker 4',
+    roofs = 'roof_concrete 4 roof_clay 2 roof_prof_red 2 roof_prof_grey 2 roof_zinc 1'},
+  british = {
+    panel = 'pnl_grey 1', brick = 'brk_d_stock 3 brk_d_vic 4 brk_d_dark 2 brk_red 1', plaster = 'pls_d_euro 2 pls_d_dash 2 pls_cream 1',
+    new = 'brk_d_new 2 pls_d_new 1',
+    houses = 'hw_dash 18 hw_render_white 14 hw_stock 26 hw_brick_red 30 hw_brick_dark 12',
+    roofs = 'roof_slate 5 roof_concrete 4 roof_clay 2 roof_shingle 2'},
+  western = {
+    brick = 'brk_d_dark 3 brk_d_old 2 brk_d_new 2 brk_red 1', plaster = 'pls_d_euro 4 pls_d_euro_warm 3 pls_d_ashlar 2 pls_cream 1 pls_grey 1',
+    new = 'pls_d_new 2 brk_d_new 2',
+    houses = 'hw_render_white 20 hw_render_sand 18 hw_clinker 16 hw_stock 12 hw_brick_red 14 hw_stone 10 hw_fieldstone 10',
+    roofs = 'roof_clay 5 roof_concrete 4 roof_slate 2 roof_zinc 1'},
+  central = {
+    panel = 'pnl_grey 3 pnl_beige 2 pnl_white 2 pnl_patch_grey 2 pnl_patch_beige 2',
+    brick = 'brk_d_old 3 brk_d_red 3 brk_red 1', plaster = 'pls_d_euro_warm 3 pls_d_stalin 2 pls_d_aged 2 pls_d_dash 3 pls_d_euro 2 pls_yellow 1',
+    new = 'pls_d_new 2 brk_d_new 1',
+    houses = 'hw_render_white 12 hw_render_sand 12 hw_dash 8 hw_flaking 6 hw_brick_red 18 hw_oldbrick 10 hw_flatbrick 8 hw_stone 10 hw_block 8 hw_silicate 8',
+    roofs = 'roof_clay 5 roof_concrete 3 roof_prof_red 2 roof_prof_brown 2 roof_sheet 1'},
+  mediterranean = {
+    brick = 'pls_d_ashlar 2 brk_d_old 1', plaster = 'pls_d_shutter 4 pls_d_white 3 pls_d_euro_warm 2 pls_d_ashlar 2 pls_yellow 1',
+    new = 'pls_d_euro 2 pls_d_new 1',
+    houses = 'hw_render_white 16 hw_render_ochre 12 hw_render_sand 10 hw_render_terracotta 10 hw_sandstone 22 hw_fieldstone 18 hw_ashlar 12',
+    roofs = 'roof_pantile 7 roof_clay 2 roof_concrete 1'},
+  ['north-america'] = {
+    brick = 'brk_d_vic 3 brk_d_dark 3 brk_d_stock 1', plaster = 'pls_d_euro 2 pls_d_euro_warm 2',
+    new = 'pls_d_new 1 brk_d_new 2',
+    houses = 'hw_render_sand 12 hw_render_white 8 hw_vinyl_white 16 hw_vinyl_grey 12 hw_vinyl_cream 12 hw_clapboard_white 12 hw_clapboard_blue 6 hw_brick_red 14 hw_brick_dark 8',
+    roofs = 'roof_shingle 8 roof_prof_grey 1 roof_zinc 1'},
+  latin = {
+    brick = 'pls_d_stain 2 brk_d_red 1', plaster = 'pls_d_blue 3 pls_d_pink 3 pls_d_stain 3 pls_d_shutter 2 pls_d_white 2',
+    new = 'pls_d_euro 1 pls_d_tile 1',
+    houses = 'hw_render_white 8 hw_render_teal 10 hw_render_pink 10 hw_render_ochre 10 hw_block 30 hw_brick_red 20 hw_tin 6 hw_zinc 6',
+    roofs = 'roof_pantile 3 roof_zinc 3 roof_tin 2 roof_concrete 1'},
+  ['east-asia'] = {
+    brick = 'pls_d_tile 3 brk_d_dark 1', plaster = 'pls_d_tile 4 pls_d_stain 2 pls_d_euro 2',
+    new = 'pls_d_tile 1 pls_d_new 2',
+    houses = 'hw_render_white 20 hw_render_sand 10 hw_vinyl_grey 20 hw_vinyl_white 20 hw_block 10 hw_clinker 10 hw_zinc 10',
+    roofs = 'roof_concrete 4 roof_prof_grey 2 roof_prof_red 1 roof_zinc 2 roof_clay 1'},
+  ['south-asia'] = {
+    brick = 'pls_d_stain 3 brk_d_red 1', plaster = 'pls_d_stain 4 pls_d_pink 2 pls_d_blue 2 pls_d_sand 2',
+    new = 'pls_d_tile 1 pls_d_euro 1',
+    houses = 'hw_render_pink 10 hw_render_teal 10 hw_render_ochre 10 hw_render_sand 8 hw_block 30 hw_brick_red 18 hw_tin 8 hw_zinc 6',
+    roofs = 'roof_zinc 4 roof_tin 3 roof_clay 2 roof_thatch 1'},
+  ['southeast-asia'] = {
+    brick = 'pls_d_stain 3 pls_d_tile 1', plaster = 'pls_d_stain 3 pls_d_tile 2 pls_d_blue 2 pls_d_pink 2',
+    new = 'pls_d_tile 1 pls_d_new 1',
+    houses = 'hw_render_white 12 hw_render_teal 13 hw_render_ochre 13 hw_block 26 hw_clapboard_blue 12 hw_tin 12 hw_zinc 12',
+    roofs = 'roof_zinc 4 roof_tin 3 roof_pantile 2 roof_thatch 1'},
+  ['middle-east'] = {
+    brick = 'pls_d_sand 3 pls_d_stain 1', plaster = 'pls_d_sand 4 pls_d_stain 2 pls_d_adobe 2',
+    new = 'pls_d_sand 1 pls_d_euro 1',
+    houses = 'hw_render_sand 24 hw_adobe 14 hw_sandstone 26 hw_block 26 hw_fieldstone 10',
+    roofs = 'roof_zinc 2 roof_concrete 1'},
+  africa = {
+    brick = 'pls_d_stain 2 pls_d_adobe 1', plaster = 'pls_d_stain 3 pls_d_blue 2 pls_d_pink 2 pls_d_adobe 2 pls_d_sand 2',
+    new = 'pls_d_stain 1 pls_d_euro 1',
+    houses = 'hw_render_sand 10 hw_render_teal 8 hw_render_ochre 8 hw_adobe 12 hw_block 34 hw_brick_red 14 hw_tin 8 hw_zinc 6',
+    roofs = 'roof_zinc 5 roof_tin 4 roof_thatch 1'},
+  oceania = {
+    brick = 'brk_d_vic 3 brk_d_dark 2', plaster = 'pls_d_euro 2 pls_d_euro_warm 2',
+    new = 'pls_d_new 1 brk_d_new 1',
+    houses = 'hw_render_white 14 hw_render_sand 12 hw_clapboard_white 24 hw_vinyl_cream 10 hw_brick_red 28 hw_brick_dark 12',
+    roofs = 'roof_prof_grey 2 roof_prof_green 1 roof_prof_red 1 roof_concrete 4 roof_clay 2'},
+  general = {brick = 'brk_d_red 2 brk_d_dark 2', plaster = 'pls_d_euro 2 pls_d_euro_warm 2 pls_cream 1 pls_grey 1'},
+}
+
+-- Packs built before looks name only their country: looks.BLOCKS's ids, the US states released as
+-- packs, Britain's parts. 'germany-berlin' goes by its first word.
+BLD.countries = {
+  nordic = 'sweden norway finland denmark iceland faroe-islands greenland',
+  british = 'united-kingdom great-britain england scotland wales ireland britain-and-ireland isle-of-man guernsey-jersey '
+    .. 'ireland-and-northern-ireland greater-london',
+  western = 'germany france netherlands belgium austria switzerland luxembourg liechtenstein monaco andorra alps dach',
+  central = 'poland czech-republic slovakia hungary croatia slovenia serbia bosnia-herzegovina montenegro macedonia kosovo albania',
+  mediterranean = 'italy spain portugal greece turkey cyprus malta azores',
+  ['north-america'] = 'us canada us-midwest us-northeast us-pacific us-south us-west new-york california nevada kentucky indiana ohio',
+  latin = 'mexico south-america central-america chile',
+  ['east-asia'] = 'japan china south-korea north-korea taiwan mongolia',
+  ['south-asia'] = 'india pakistan bangladesh sri-lanka nepal bhutan maldives',
+  ['southeast-asia'] = 'indonesia philippines thailand vietnam cambodia laos myanmar malaysia-singapore-brunei east-timor sea',
+  ['middle-east'] = 'iran iraq israel-and-palestine jordan lebanon syria yemen gcc-states afghanistan',
+  africa = 'africa zanzibar tanzania south-africa',
+  oceania = 'australia-oceania australia new-zealand',
+}
+
+function BLD.blockOf(country)
+  if not country then return nil end
+  if not BLD.blockIds then
+    BLD.blockIds = {}
+    for id in pairs(BLD.postsoviet) do BLD.blockIds[id] = 'postsoviet' end
+    for block, ids in pairs(BLD.countries) do
+      for id in ids:gmatch('%S+') do BLD.blockIds[id] = block end
+    end
+  end
+  local id = tostring(country)
+  return BLD.blockIds[id] or BLD.blockIds[id:match('^[^-]+') or '']
+end
+
+-- 'a 2 b 1' -> {'a', 'a', 'b'}; for a house list, the {upper bound, kind} of BLD.walls.
+function BLD.words(spec)
+  local out = {}
+  for kind, weight in spec:gmatch('(%S+) (%d+)') do
+    for _ = 1, tonumber(weight) do out[#out + 1] = kind end
+  end
+  -- dealt out, not in runs: neighbouring hashes must not fall on the same kind
+  local n, dealt, step = #out, {}, #out % 7 ~= 0 and 7 or 11
+  for k = 1, n do dealt[k] = out[k * step % n + 1] end
+  return dealt
+end
+
+function BLD.bounds(spec)
+  local out, sum = {}, 0
+  for kind, weight in spec:gmatch('(%S+) (%d+)') do
+    sum = sum + tonumber(weight)
+    out[#out + 1] = {sum, kind}
+  end
+  return out
+end
+
+-- The planet's art has the region's walls: 'Refresh planet code' can bring this file to a planet
+-- ZIP built before them, whose materials do not know these kinds.
+function BLD.drawnArt()
+  if BLD.artFound == nil then
+    BLD.artFound = not FS or FS:fileExists('/e2r_stream/fast-art/v10/real/sh_render.color.dds') or false
+  end
+  return BLD.artFound
+end
+
+-- The expanded lists of a look's block, or NONE.
+function BLD.region(look)
+  local block = type(look) == 'table' and look.block or BLD.packBlock
+  local spec = block and BLD.spec[block]
+  if not spec or not BLD.drawnArt() then return NONE end
+  BLD.regions = BLD.regions or {}
+  local r = BLD.regions[block]
+  if not r then
+    r = {}
+    for _, key in ipairs({'panel', 'brick', 'plaster', 'new', 'roofs', 'fences'}) do
+      if spec[key] then r[key] = BLD.words(spec[key]) end
+    end
+    r.houses = spec.houses and BLD.bounds(spec.houses)
+    r.byHeight = spec.byHeight
+    BLD.regions[block] = r
+  end
+  return r
+end
+
+function BLD.roof(tags, h, postsoviet, region)
   local m, colour = tags['roof:material'], BLD.colour[tostring(tags['roof:colour'] or ''):lower()]
+  local r = region or NONE
   if m == 'metal' or m == 'tin' or m == 'metal_sheet' then
     return colour and colour:find('mtile', 1, true) and colour or 'roof_metal'
+  end
+  if r.roofs then
+    if m == 'thatch' or m == 'reed' or m == 'grass' then return 'roof_thatch' end
+    if m == 'asphalt' or m == 'bitumen' or m == 'tar_paper' or m == 'shingle' then return 'roof_shingle' end
+    if m == 'concrete' then return 'roof_concrete' end
+    if m == 'slate' and not postsoviet then return 'roof_slate' end
+    if m == 'roof_tiles' or m == 'tile' or m == 'clay' then
+      for _, kind in ipairs(r.roofs) do
+        if kind == 'roof_pantile' or kind == 'roof_clay' then return kind end
+      end
+    end
   end
   if m == 'roof_tiles' or m == 'tile' or m == 'clay' then return 'roof_tile' end
   if m == 'eternit' or m == 'asbestos' or (m == 'slate' and postsoviet) then return 'roof_sheet' end
   if colour then return colour end
+  if r.roofs then return r.roofs[math.floor(h / 13) % #r.roofs + 1] end
   if postsoviet then return BLD.mix[math.floor(h / 13) % #BLD.mix + 1] end
   return 'roof_tile'
+end
+
+-- A fence's look: (kind, a wall's thickness and height, metres a repeat). By OSM's tags where it
+-- has them; an untagged one takes the region's mix, and walls stay concrete unless tagged.
+function BLD.fenceKind(tags, h, region)
+  local ft, r = tags.fence_type, region or NONE
+  local art = BLD.drawnArt()
+  if art and (ft == 'brick' or tags.wall == 'brick') then return 'fence_brick', true, 2 end
+  if art and (ft == 'stone' or tags.wall == 'dry_stone' or tags.wall == 'stone') then return 'fence_stone', true, 3 end
+  if tags.barrier == 'wall' or ft == 'concrete' or ft == 'brick' or ft == 'stone' then return 'fence_wall', true, 2.5 end
+  if art and (ft == 'wood' or ft == 'boards' or ft == 'split_rail' or ft == 'pole') then return 'fence_boards', false, 2 end
+  if art and (ft == 'metal' or ft == 'corrugated' or ft == 'sheet') then
+    return ({'fence_prof_green', 'fence_prof_brown', 'fence_prof_grey'})[h % 3 + 1], false, 2
+  end
+  if ft == nil and r.fences then
+    local kind = r.fences[math.floor(h / 5) % #r.fences + 1]
+    return kind, false, 2
+  end
+  return 'fence_mesh', false, 2
 end
 
 -- Houses of one or two floors: a plain wall from the game's tileable set, and the windows and a
@@ -3284,7 +3484,11 @@ BLD.wallColour = {white = 'hw_white', ivory = 'hw_white', cream = 'hw_aged', bei
   pink = 'hw_pink', red = 'hw_brick_red', brown = 'hw_brick_red', grey = 'hw_silicate', gray = 'hw_silicate'}
 -- metres per texture repeat on a house wall. Big flat bricks and stone courses are wider than a plaster repeat.
 BLD.wallScale = {hw_brick_red = 1.6, hw_oldbrick = 1.6, hw_flatbrick = 2.4, hw_stone = 2,
-  hw_silicate = 1.6, hw_siding = 1.2, hw_boards = 1.2, hw_wood = 2}
+  hw_silicate = 1.6, hw_siding = 1.2, hw_boards = 1.2, hw_wood = 2,
+  hw_dash = 1.5, hw_dash_cream = 1.5, hw_flaking = 2.5, hw_flaking_yellow = 2.5, hw_render_white = 2.5, hw_render_ochre = 2.5,
+  hw_render_terracotta = 2.5, hw_render_sand = 2.5, hw_render_teal = 2.5, hw_render_pink = 2.5, hw_adobe = 2, hw_ashlar = 2,
+  hw_clapboard_white = 1.2, hw_clapboard_blue = 1.2, hw_clapboard_yellow = 1.2, hw_vinyl_white = 2, hw_vinyl_grey = 2,
+  hw_vinyl_cream = 2, hw_falu = 2, hw_stock = 2, hw_brick_dark = 1.9, hw_clinker = 2, hw_tin = 2, hw_zinc = 1.8}
 -- atlas cells {u0, v0, u1, v1} (v0 at the image's top) and the opening's size in metres
 BLD.windows = {
   win_pvc = {w = 1.15, h = 1.5, cells = {{.441, .002, .641, .264}, {.644, .002, .846, .264},
@@ -3293,11 +3497,17 @@ BLD.windows = {
     {.264, .025, .386, .214}, {.632, .116, .753, .306}, {.503, .307, .624, .496}, {.629, .308, .751, .5}}}}
 BLD.doors = {w = 1.0, h = 2.05, cells = {{0, 0, .25, .5}, {.252, 0, .498, .5}, {.752, 0, 1, .5}}}
 
-function BLD.house(tags, height, h)
+function BLD.house(tags, height, h, region)
   if height >= 8 or not BLD.homes[tags.building or 'yes'] then return nil end
   local m = tostring(tags['building:material'] or tags['facade:material'] or '')
   if m == 'panel' or m == 'concrete' or m == 'reinforced_concrete' or m == 'glass' or m == 'metal' then return nil end
   local colour = BLD.wallColour[(tostring(tags['building:colour'] or ''):lower():gsub('[%s_]', ''))]
+  local r = region or NONE
+  if r.houses then
+    if m == 'adobe' or m == 'mud' or m == 'clay' then return 'hw_adobe' end
+    if m == 'cement_block' or m == 'concrete_block' or m == 'block' then return 'hw_block' end
+    if m == 'vinyl' or m == 'plastic' then return h % 2 == 0 and 'hw_vinyl_white' or 'hw_vinyl_grey' end
+  end
   if m == 'brick' then
     if colour == 'hw_white' or colour == 'hw_silicate' then return 'hw_silicate' end
     if h % 5 == 0 then return 'hw_oldbrick' end
@@ -3313,7 +3523,7 @@ function BLD.house(tags, height, h)
   end
   if colour and (m == 'plaster' or m == 'stucco' or m == '') then return colour end
   local plaster = m == 'plaster' or m == 'stucco'
-  for _, w in ipairs(BLD.walls) do
+  for _, w in ipairs(r.houses or BLD.walls) do
     if h % 100 < w[1] then
       if plaster and w[1] > 38 then return 'hw_white' end   -- tagged plaster: not brick, stone or wood
       return w[2]
@@ -3326,12 +3536,15 @@ end
 function BLD.dress(kind, h)
   local old = kind == 'hw_wood' or kind == 'hw_aged' or kind == 'hw_blue' or kind == 'hw_green'
     or kind == 'hw_oldbrick' or kind == 'hw_flatbrick' or kind == 'hw_stone' or kind == 'hw_boards'
+    or kind == 'hw_flaking' or kind == 'hw_flaking_yellow' or kind == 'hw_adobe' or kind == 'hw_fieldstone'
+    or kind == 'hw_falu' or kind == 'hw_tin' or kind == 'hw_block'
   local win = (old and h % 10 < 8 or not old and h % 10 < 4) and 'win_wood' or 'win_pvc'
   local cells = BLD.windows[win].cells
   return {win = win, cell = cells[math.floor(h / 11) % #cells + 1],
     door = BLD.doors.cells[math.floor(h / 17) % #BLD.doors.cells + 1],
     plinth = (h % 20 < 7) and 'plinth_brown' or 'plinth',
-    gable = (kind == 'hw_siding' or kind == 'hw_wood' or kind == 'hw_boards' or math.floor(h / 3) % 3 ~= 0) and kind or 'gable',
+    gable = (kind == 'hw_siding' or kind == 'hw_wood' or kind == 'hw_boards' or kind == 'hw_falu' or kind:find('hw_clapboard', 1, true)
+      or kind:find('hw_vinyl', 1, true) or math.floor(h / 3) % 3 ~= 0) and kind or 'gable',
     shape = math.floor(h / 23) % 20 < 9 and 'hipped' or 'gabled', pitch = 26 + math.floor(h / 29) % 13}
 end
 
@@ -3405,24 +3618,28 @@ local function wallMaterial(building, look, height)
   if b == 'industrial' or b == 'warehouse' or b == 'factory' then return h % 2 == 0 and 'clad_metal' or 'wall_block' end
   -- a church in plaster, not in a panel block's photo facade
   if BLD.worship[b or ''] or tags.amenity == 'place_of_worship' then return 'wall_pls_cream' end
-  local house = not tags.e2r_part and BLD.house(tags, height, h)
+  local region = BLD.region(look)
+  local house = not tags.e2r_part and BLD.house(tags, height, h, region)
   if house then return house end
   if material == 'glass' or b == 'office' or b == 'commercial' or b == 'retail' or b == 'hotel' or tags.office then
     local family = height > 20 and {'off_blue', 'off_green', 'off_grey', 'off_ribbon'} or {'off_ribbon', 'off_ribbon_dark'}
     return 'wall_' .. family[h % #family + 1]
   end
-  local panel = {'pnl_grey', 'pnl_beige', 'pnl_pink', 'pnl_blue', 'pnl_white'}
+  local panel = region.panel or {'pnl_grey', 'pnl_beige', 'pnl_pink', 'pnl_blue', 'pnl_white'}
   local loggia = {'lgg_cream', 'lgg_grey', 'lgg_pink'}
-  local brick = {'brk_red', 'brk_white'}
-  local plaster = {'pls_yellow', 'pls_cream', 'pls_peach', 'pls_green', 'pls_blue', 'pls_grey'}
+  local brick = region.brick or {'brk_red', 'brk_white'}
+  local plaster = region.plaster or {'pls_yellow', 'pls_cream', 'pls_peach', 'pls_green', 'pls_blue', 'pls_grey'}
   local family
-  if material == 'brick' then family = brick
+  -- a tower of this century, unless its tags say what it is built of
+  if region.new and not material and height >= 26 and h % 4 == 0 then family = region.new
+  elseif material == 'brick' then family = brick
   elseif material == 'panel' or material == 'concrete' or material == 'reinforced_concrete' then family = height >= 26 and h % 3 ~= 0 and loggia or panel
   elseif material == 'plaster' or material == 'stucco' then family = plaster
   elseif height < 8 then family = h % 5 < 3 and plaster or brick   -- a house is not a panel block
-  elseif look.buildings == 'panel' then family = height >= 26 and (h % 3 ~= 0 and loggia or panel) or panel
+  elseif look.buildings == 'panel' and not region.byHeight then family = height >= 26 and (h % 3 ~= 0 and loggia or panel) or panel
   elseif look.buildings == 'brick' then family = brick
   elseif look.buildings == 'plaster' then family = plaster
+  elseif region.brick and not region.panel then family = h % 5 < 2 and brick or plaster   -- no panel blocks here
   elseif height >= 26 then family = h % 9 < 4 and loggia or panel
   elseif height >= 14 then family = h % 20 < 8 and panel or h % 20 < 15 and brick or plaster
   else family = h % 5 < 3 and plaster or brick end
@@ -3431,6 +3648,7 @@ end
 
 local function facadeScale(kind)
   if kind:find('_end$', 1) then return 6 end
+  if kind:find('_d_', 1, true) then return 12 end       -- drawn facades (fast_facade.REPEAT_M)
   if kind:find('door_', 1, true) == 1 or kind:find('clad_', 1, true) == 1 or kind == 'plinth' then return 3 end
   if kind == 'gable' then return 1.5 end
   if kind:find('hw_', 1, true) == 1 then return BLD.wallScale[kind] or 3 end
@@ -7984,6 +8202,7 @@ local function build(cells, i, j, options)
   -- mark(name): the stage that just ended (the road quality bench times them)
   local mark = options.mark or function() end
   local look = type(options.look) == 'table' and options.look or NONE
+  BLD.packBlock = BLD.blockOf(options.country)
   local postsoviet = look.block == 'postsoviet' or BLD.postsoviet[tostring(options.country or '')] or false
   local function lookOf(slot)
     local value = look[slot]
@@ -7997,6 +8216,9 @@ local function build(cells, i, j, options)
   -- a junction takes the material of its most important road
   local function roadMaterial(tags)
     local grade = roadGrade(tags)
+    if grade == 1 and (tags.surface == 'sett' or tags.surface == 'cobblestone' or tags.surface == 'unhewn_cobblestone') and BLD.drawnArt() then
+      return 'road_sett', grade
+    end
     if grade ~= 0 then return ROAD_GRADE_MAT[grade], grade end
     return ROADS.rankOf(tags) >= 4.5 and majorRoad or minorRoad, grade
   end
@@ -10024,7 +10246,7 @@ local function build(cells, i, j, options)
       if options.experimentalDetail and not options.far and not lifted then
         BLD.addressPlate(scene, rings, tags, base, height, lists.roads)
       end
-      if options.far or open or not BLD.pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet), dress) then
+      if options.far or open or not BLD.pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet, BLD.region(look)), dress) then
         for _, tri in ipairs(triangulate(rings, pause, rect)) do
           for _, p in ipairs(tri) do p[3] = top end
           scene.polygon('roof', tri, true)
@@ -10050,12 +10272,9 @@ local function build(cells, i, j, options)
   -- Concrete for walls and concrete/brick/stone fences, chain link for the rest (fast.add_fence).
   local function fence(line)
     local tags = line.tags or NONE
-    local ft = tags.fence_type
-    local concrete = tags.barrier == 'wall' or ft == 'concrete' or ft == 'brick' or ft == 'stone'
-    local kind = concrete and 'fence_wall' or 'fence_mesh'
+    local kind, concrete, scale = BLD.fenceKind(tags, hash(tostring(line.id or tags.e2r_of or #(line.points or NONE))), BLD.region(look))
     local height = math.min(3, number(tags.height, concrete and 2 or 1.6))
     local half = (concrete and tune.wallThick or tune.fenceThick) / 2
-    local scale = concrete and 2.5 or 2
     local raw, pts, along = line.points or NONE, {}, {}
     for index = 1, #raw - 1 do
       local a, b = raw[index], raw[index + 1]

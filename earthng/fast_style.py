@@ -418,7 +418,7 @@ for _name, _path in {
 # Macrocolour comes from mapped land use; fine grain uses existing tileable PBR.
 for _kind, _tex, _tint, _ground, _scale in (
     ('meadow', 'grass', [.72, .83, .48, 1], 'GRASS', 24),
-    ('farmland', 'dirt', [.68, .60, .36, 1], 'DIRT', 12),
+    ('farmland', 'dirt', [.68, .60, .36, 1], 'DIRT', 24),
     ('orchard', 'grass', [.59, .72, .38, 1], 'GRASS', 24),
     ('vineyard', 'dirt', [.70, .65, .46, 1], 'DIRT', 12),
     ('scrub', 'grass', [.57, .64, .37, 1], 'GRASS', 24),
@@ -672,7 +672,7 @@ for _k, _ground in BIOME_GROUND.items():
                                               'snow': (232, 236, 242), 'snow_edge': (206, 212, 204)}[_k]), 1],
                  _ground, _photo.GROUND_M, 'plan')
 KINDS['glacier'] = KINDS['glacier'][:3] + (_photo.GROUND_M,) + KINDS['glacier'][4:]
-PHOTO_GROUND = ('ground', 'park', 'forest', *BIOME_GROUND, 'glacier')
+PHOTO_GROUND = ('ground', 'park', 'forest', *BIOME_GROUND, 'glacier', 'farmland')
 
 # Lawns, parks and meadows are soil with a fine relief, not the flat lawn photo. The mesh UV
 # repeats every COVER_SCALE metre (generator.lua, 24). The detail maps tile every 2 m, the same
@@ -714,7 +714,7 @@ def real_stage(kind):
         if _photo.PHOTO_WALLS[w][0] == 'curtain':
             # glass that mirrors the sky: smooth and part metal (BeamNG PBR)
             stage.update(roughnessFactor=.12, metallicFactor=.55)
-        if _photo.PHOTO_WALLS[w][0] in ('brick', 'end_brick'):
+        if _photo.PHOTO_WALLS[w][0] in ('brick', 'end_brick', 'facade', 'end_facade'):
             stage['normalMap'] = f'{ART}/real/{w}.normal.png'
         return stage
     if kind.startswith('wall_'):
@@ -745,6 +745,74 @@ def material(kind):
                               'groundType': ground, 'doubleSided': EXTRA.get(kind, {}).get('doubleSided', False),
                               'Stages': [dict(TEXTURES[old]) if old else {'diffuseColor': colour}, {}, {}, {}]}
     return out
+
+
+# Plain sheets of CC0 photos (fast_facade.SHEETS), made at art build and shipped with the planet:
+# a roughness for the whole sheet, no map, to keep them small. The walls of houses go with the
+# game's own (HOUSE_WALLS; generator.lua BLD.regions, BLD.wallScale), the roofs with ROOFS
+# (BLD.regions, BLD.repeats).
+import fast_facade as _facade
+_ROUGH = {'sh_tin_rust': (.72, .4), 'sh_tin_zinc': (.55, .6), 'sh_profile': (.5, .55), 'sh_roof_tin': (.72, .4),
+          'sh_roof_zinc': (.55, .6), 'sh_roof_profile': (.5, .55), 'sh_roof_slate': (.6, 0), 'sh_setts': (.8, 0)}
+for _s in _facade.SHEETS:
+    _rough, _metal = _ROUGH.get(_s, (.92, 0))
+    TEXTURES[_s] = {'baseColorMap': f'{ART}/real/{_s}.color.png', 'normalMap': f'{ART}/real/{_s}.normal.png',
+                    'roughnessFactor': _rough, 'metallicFactor': _metal}
+_G = _facade.GREY_MEAN
+SHEET_WALLS = {   # kind: (sheet, colour of the wall, metres a repeat, linear mean of the sheet when tinted)
+    'hw_dash': ('sh_dash', (176, 170, 156), 1.5, .31), 'hw_dash_cream': ('sh_dash', (204, 188, 150), 1.5, .31),
+    'hw_flaking': ('sh_flaking', (168, 166, 154), 2.5, None), 'hw_flaking_yellow': ('sh_flaking_yellow', (190, 166, 96), 2.5, None),
+    'hw_render_white': ('sh_render', (232, 228, 218), 2.5, .67), 'hw_render_ochre': ('sh_render', (208, 158, 100), 2.5, .67),
+    'hw_render_terracotta': ('sh_render', (184, 112, 84), 2.5, .67), 'hw_render_sand': ('sh_render', (214, 192, 150), 2.5, .67),
+    'hw_render_teal': ('sh_render', (106, 164, 164), 2.5, .67), 'hw_render_pink': ('sh_render', (214, 148, 136), 2.5, .67),
+    'hw_adobe': ('sh_adobe', (150, 110, 74), 2.0, None), 'hw_block': ('sh_block', (150, 142, 128), 3.0, None),
+    'hw_ashlar': ('sh_ashlar', (190, 180, 160), 2.0, None), 'hw_sandstone': ('sh_sandstone', (186, 164, 130), 3.0, None),
+    'hw_fieldstone': ('sh_fieldstone', (130, 120, 100), 3.0, None),
+    'hw_clapboard_white': ('sh_clapboard', (232, 230, 222), 1.2, _G), 'hw_clapboard_blue': ('sh_clapboard', (150, 176, 194), 1.2, _G),
+    'hw_clapboard_yellow': ('sh_clapboard', (222, 200, 140), 1.2, _G),
+    'hw_vinyl_white': ('sh_vinyl', (226, 226, 216), 2.0, _G), 'hw_vinyl_grey': ('sh_vinyl', (168, 172, 170), 2.0, _G),
+    'hw_vinyl_cream': ('sh_vinyl', (218, 204, 170), 2.0, _G),
+    'hw_falu': ('sh_boards_red', (130, 50, 40), 2.0, None), 'hw_stock': ('sh_stock', (176, 136, 90), 2.0, None),
+    'hw_brick_dark': ('sh_brick_dark', (84, 66, 58), 1.9, None), 'hw_clinker': ('sh_clinker', (120, 66, 48), 2.0, None),
+    'hw_tin': ('sh_tin_rust', (120, 60, 36), 2.0, None), 'hw_zinc': ('sh_tin_zinc', (120, 118, 114), 1.8, None),
+}
+for _k, (_tex, _rgb, _m, _mean) in SHEET_WALLS.items():
+    KINDS[_k] = (_tex, [_c / 255 for _c in _rgb] + [1], 'ROCK', _m, 'wall')
+    if _mean:
+        TINT[_k] = _factor(_rgb, _mean)
+SHEET_ROOFS = {   # kind: (sheet, colour, metres a repeat, linear mean of the sheet when tinted)
+    'roof_clay': ('sh_roof_clay', (150, 80, 56), 2.0, None), 'roof_pantile': ('sh_roof_pantile', (168, 96, 70), 2.0, None),
+    'roof_concrete': ('sh_roof_concrete', (58, 58, 64), 2.0, None), 'roof_slate': ('sh_roof_slate', (92, 96, 100), 3.0, None),
+    'roof_shingle': ('sh_roof_shingle', (96, 96, 96), 8.0, None), 'roof_thatch': ('sh_roof_thatch', (120, 100, 76), 2.0, None),
+    'roof_tin': ('sh_roof_tin', (120, 60, 36), 2.0, None), 'roof_zinc': ('sh_roof_zinc', (124, 122, 118), 1.8, None),
+    'roof_prof_red': ('sh_roof_profile', (112, 38, 32), 2.0, _G), 'roof_prof_green': ('sh_roof_profile', (40, 84, 62), 2.0, _G),
+    'roof_prof_brown': ('sh_roof_profile', (74, 52, 46), 2.0, _G), 'roof_prof_grey': ('sh_roof_profile', (120, 124, 124), 2.0, _G),
+}
+for _k, (_tex, _rgb, _m, _mean) in SHEET_ROOFS.items():
+    KINDS[_k] = (_tex, [_c / 255 for _c in _rgb] + [1], 'METAL' if _tex in ('sh_roof_tin', 'sh_roof_zinc', 'sh_roof_profile') else 'ROCK', _m, 'roof')
+    if _mean:
+        TINT[_k] = _factor(_rgb, _mean)
+    EXTRA[_k] = {'doubleSided': True}
+ROOFS += tuple(SHEET_ROOFS)
+# Fences (generator.lua BLD.fenceKind): profiled sheet in its three usual paints, brick and rubble
+# walls, a fence of upright boards with its gaps cut by opacity
+TEXTURES['fence_boards'] = {'baseColorMap': f'{ART}/real/fence_boards.color.png', 'opacityMap': f'{ART}/real/fence_boards_o.data.png',
+                            'roughnessFactor': .92}
+FENCE_BOARDS_MIP_REF = 80
+for _k, _rgb in (('fence_prof_green', (46, 96, 70)), ('fence_prof_brown', (92, 62, 50)), ('fence_prof_grey', (140, 144, 144))):
+    KINDS[_k] = ('sh_profile', [_c / 255 for _c in _rgb] + [1], 'METAL', 2.0, 'wall')
+    TINT[_k] = _factor(_rgb, _G)
+    EXTRA[_k] = {'doubleSided': True}
+KINDS['fence_brick'] = ('sh_brick_red', [.5, .3, .25, 1], 'ROCK', 2.0, 'wall')
+KINDS['fence_stone'] = ('sh_fieldstone', [.5, .46, .4, 1], 'ROCK', 3.0, 'wall')
+KINDS['fence_boards'] = ('fence_boards', [.42, .34, .26, 1], 'WOOD', 2.0, 'wall')
+EXTRA['fence_boards'] = {'alphaTest': True, 'alphaRef': 60, 'doubleSided': True}
+for _k in ('fence_brick', 'fence_stone'):
+    EXTRA[_k] = {'doubleSided': True}
+# a street of granite setts: what the tyres feel stays asphalt, as the worn road it replaces
+KINDS['road_sett'] = ('sh_setts', [.45, .44, .42, 1], 'ASPHALT', 3.0, 'plan')
+SHEET_KINDS = (*SHEET_WALLS, *SHEET_ROOFS, 'fence_prof_green', 'fence_prof_brown', 'fence_prof_grey', 'fence_brick', 'fence_stone',
+               'fence_boards', 'road_sett')
 
 
 def dds(obj):

@@ -2195,8 +2195,9 @@ class GeneratorTests(unittest.TestCase):
             scene = self.build([{'buildings': houses}], terrainStep=100, tileSize=1000, country=country)[1]
             roofs = {m.material for _i, m in self.meshes(scene) if str(m.material).startswith('e2rf_roof_')}
             kinds.add(frozenset(roofs))
-            if country == 'germany':
-                self.assertEqual(roofs, {'e2rf_roof_tile'})
+            if country == 'germany':     # a pack from before looks: its country stands for the block
+                self.assertLessEqual(roofs, {'e2rf_roof_clay', 'e2rf_roof_concrete', 'e2rf_roof_slate', 'e2rf_roof_zinc'})
+                self.assertGreater(len(roofs), 1)
             else:
                 self.assertTrue({'e2rf_roof_sheet', 'e2rf_roof_mtile_red'} <= roofs, roofs)
                 # u along the 12 m ridge (x), v down the 4 m half width: the corrugation runs downhill
@@ -2208,6 +2209,34 @@ class GeneratorTests(unittest.TestCase):
         tagged = dict(houses[0], tags={'building': 'house', 'roof:colour': 'green'})
         scene = self.build([{'buildings': [tagged]}], terrainStep=100)[1]
         self.assertTrue(list(self.triangles(scene, 'e2rf_roof_mtile_green')))
+
+    def materials_of(self, buildings, look=None, fences=()):
+        scene = self.build([{'buildings': buildings, 'scenery': list(fences)}], terrainStep=100, tileSize=1000, look=look)[1]
+        return {str(m.material) for _i, m in self.meshes(scene)}
+
+    def test_a_block_builds_in_its_own_materials(self):
+        houses = [{'id': f'h{k}', 'height': 4, 'tags': {'building': 'house'},
+                   'rings': [[[k * 30, 100, 10], [k * 30 + 12, 100, 10], [k * 30 + 12, 108, 10], [k * 30, 108, 10]]]}
+                  for k in range(30)]
+        blocks = [{'id': f'b{k}', 'height': 18, 'tags': {'building': 'apartments'},
+                   'rings': [[[k * 40, 200, 10], [k * 40 + 30, 200, 10], [k * 40 + 30, 214, 10], [k * 40, 214, 10]]]}
+                  for k in range(20)]
+        american = self.materials_of(houses + blocks, {'block': 'north-america'})
+        self.assertTrue(any(m.startswith(('e2rf_hw_vinyl', 'e2rf_hw_clapboard')) for m in american), american)
+        self.assertIn('e2rf_roof_shingle', american)
+        self.assertTrue(any('_d_' in m for m in american), american)
+        ukrainian = self.materials_of(houses + blocks, {'block': 'postsoviet'})
+        self.assertTrue(any('_d_' in m for m in ukrainian), ukrainian)
+        self.assertFalse(any(m.startswith('e2rf_hw_vinyl') for m in ukrainian), ukrainian)
+        # a pack without a look keeps the older walls
+        self.assertFalse(any('_d_' in m for m in self.materials_of(houses + blocks)))
+
+    def test_tags_outrank_a_region(self):
+        house = {'id': 'h', 'height': 4, 'tags': {'building': 'house', 'roof:material': 'thatch', 'building:material': 'adobe'},
+                 'rings': [[[0, 100, 10], [12, 100, 10], [12, 108, 10], [0, 108, 10]]]}
+        found = self.materials_of([house], {'block': 'africa'})
+        self.assertIn('e2rf_roof_thatch', found)
+        self.assertIn('e2rf_hw_adobe', found)
 
     def test_garage_rows_get_doors_and_houses_a_plinth(self):
         row = {'id': 'row', 'height': 9, 'tags': {'building': 'garages'},

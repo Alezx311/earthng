@@ -10,6 +10,7 @@ import fast_art as art
 import fast_pixel as pixel
 import fast_style as style
 import fast_packs
+import fast_photo as photo
 import fast_dds
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,9 @@ class AssetTests(unittest.TestCase):
         self.assertEqual(kind({'highway': 'turning_loop'}), 'turning_circle')
         self.assertEqual(kind({'highway': 'mini_roundabout'}), 'mini_roundabout')
         self.assertEqual(kind({'highway': 'bus_stop'}), 'stop')
+        self.assertEqual(kind({'highway': 'traffic_signals', 'traffic_signals:direction': 'forward'}), 'signal')
+        self.assertEqual(kind({'traffic_sign': 'UA:2.1'}), 'traffic_sign')
+        self.assertIn('traffic_sign', style.point_keys())
 
     def test_yard_features_have_kinds(self):
         # a playground (area or node), a hedge and a block's stair doors reach the pack
@@ -109,8 +113,10 @@ class AssetTests(unittest.TestCase):
             fields = pixel.fields(style.ART)
             self.assertTrue(all('e2rf_' + k in fields for k in style.KINDS))
             for kind in style.KINDS:
-                with Image.open(root / 'pixel' / f'{kind}.color.png') as im:
-                    self.assertGreater(im.width, 0)
+                drawn = fields['e2rf_' + kind]['baseColorMap']
+                if '/pixel/' in drawn:
+                    with Image.open(root / 'pixel' / drawn.rsplit('/', 1)[1].replace('.dds', '.png')) as im:
+                        self.assertGreater(im.width, 0)
                 self.assertEqual(fields['e2rf_' + kind]['metallicFactor'], 0)
             image = pixel.facade('panel')
             dest = root / 'panel.color.dds'
@@ -219,6 +225,94 @@ class RoadDecalTests(unittest.TestCase):
         self.assertEqual(autumn['e2rf_park']['detailNormalMapStrength'], 0)
         self.assertEqual(autumn['e2rf_edge_grass']['opacityFactor'], 0)
         self.assertNotIn('opacityFactor', autumn['e2rf_edge_dirt'])
+
+
+class DrawnArtTests(unittest.TestCase):
+    def spec(self):
+        return self.source().split('BLD.spec = {', 1)[1].split('\n}\n', 1)[0]
+
+    def source(self):
+        return (ROOT / 'mod/lua/ge/extensions/e2r/generator.lua').read_text(encoding='utf8')
+
+    def test_every_kind_a_region_names_has_a_material(self):
+        import re
+        named = set(re.findall(r'\b((?:hw|roof|fence|pnl|brk|pls)_[a-z_0-9]+) \d+', self.spec()))
+        self.assertGreater(len(named), 60)
+        for kind in named:
+            self.assertTrue(kind in style.KINDS or 'wall_' + kind in style.KINDS, kind)
+
+    def test_a_house_list_adds_up_to_a_hundred_with_plaster_first(self):
+        import re
+        lists = re.findall(r"houses = ('.*?'(?:\s*\.\.\s*'.*?')?),?\s*(?:roofs|\n)", self.spec(), re.S)
+        self.assertGreater(len(lists), 12)
+        for words in lists:
+            self.assertEqual(sum(int(n) for n in re.findall(r' (\d+)', words)), 100, words)
+
+    def test_blocks_of_the_spec_are_blocks_of_looks(self):
+        import re
+        import looks
+        ids = re.findall(r"^  (?:\['([a-z-]+)'\]|([a-z]+)) = \{", self.spec(), re.M)
+        self.assertGreater(len(ids), 12)
+        self.assertLessEqual({a or b for a, b in ids}, set(looks.BLOCK_BY_ID))
+
+    def test_countries_of_old_packs_match_the_look_blocks(self):
+        import re
+        import looks
+        table = self.source().split('BLD.countries = {', 1)[1].split('\n}\n', 1)[0]
+        lua = {}
+        for key, body in re.findall(r"^  (\S+) = ('.*?'(?:\s*\.\.\s*'.*?')?),?$", table, re.M | re.S):
+            block = key.strip("[]'")
+            for word in ' '.join(re.findall(r"'([^']*)'", body)).split():
+                lua[word] = block
+        for block in looks.BLOCKS:
+            if block['id'] in ('postsoviet', 'general'):
+                continue
+            for place in block['ids']:
+                self.assertEqual(lua.get(place), block['id'], place)
+
+    def test_lua_repeats_are_the_kinds_own(self):
+        import re
+        source = self.source()
+        scale = source.split('BLD.wallScale = {', 1)[1].split('}', 1)[0]
+        repeats = source.split('BLD.repeats = {', 1)[1].split('}', 1)[0]
+        lua = {k: float(v) for k, v in re.findall(r'(\w+) = ([\d.]+)', scale + repeats)}
+        for kind in (*style.SHEET_WALLS, *style.SHEET_ROOFS):
+            self.assertEqual(lua.get(kind, 3 if kind in style.SHEET_WALLS else 2), style.KINDS[kind][3], kind)
+
+    def test_a_drawn_wall_is_a_12_m_repeat_with_a_normal_map(self):
+        import fast_facade
+        self.assertEqual(fast_facade.REPEAT_M, 12)
+        for name in fast_facade.STYLES:
+            self.assertEqual(style.KINDS['wall_' + name][3], 12, name)
+            self.assertIn('_d_', name)
+            self.assertIn('normalMap', style.MATERIALS['e2rf_wall_' + name]['Stages'][0], name)
+
+    def test_flat_packs_and_glow_reuse_older_art(self):
+        import fast_facade
+        base = '/e2r_stream/fast-art/' + art.VERSION
+        toon, real = art.pack_fields('toon', base), art.pack_fields('real', base)
+        night = fast_packs.fields('night', base, real)
+        for name in photo.PHOTO_WALLS:
+            if fast_facade.like(name) != name:
+                self.assertIn(fast_facade.like(name), photo.PHOTO_WALLS)
+                self.assertNotIn(f'/{name}.color', toon['e2rf_wall_' + name]['baseColorMap'])
+        self.assertTrue(night['e2rf_wall_brk_d_sil']['emissiveMap'].endswith('/night/layout_std.glow.dds'))
+        self.assertTrue(night['e2rf_wall_pnl_patch_grey']['emissiveMap'].endswith('/night/pnl_grey.glow.dds'))
+
+    def test_layout_boxes_stay_centred_on_the_3_m_grid(self):
+        import fast_facade
+        for layout, (x0, y0, x1, y1) in fast_facade.LAYOUTS.items():
+            self.assertLess(y0, y1)
+            self.assertAlmostEqual(x0 + x1, 1, msg=layout)
+            self.assertEqual(len(fast_facade.boxes(layout)), fast_facade.BAYS ** 2)
+        self.assertEqual(len(fast_packs.windows_of('layout_tall')), fast_facade.BAYS ** 2)
+
+    def test_warm_up_does_not_repeat_a_map(self):
+        seen = set()
+        fields = {'e2rf_a': {'baseColorMap': 'x', 'normalMap': 'y'}, 'e2rf_b': {'baseColorMap': 'x'},
+                  'e2rf_c': {'baseColorMap': 'x', 'normalMap': 'z'}}
+        self.assertEqual(set(art.warm_defs('real', fields, seen)), {'e2rf_pk_real_a', 'e2rf_pk_real_c'})
+        self.assertEqual(art.warm_defs('night', fields, seen), {})
 
 
 class BuildingStyleTests(unittest.TestCase):

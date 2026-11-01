@@ -16,6 +16,7 @@ import zipfile
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
+import fast_facade
 import fast_packs
 import fast_pixel
 import fast_storefront
@@ -106,6 +107,7 @@ FLAT = {   # kind: (toon colour, model colour)
     'win_pvc': ((70, 96, 120), (180, 190, 200)), 'win_wood': ((96, 74, 56), (176, 176, 176)),
     'door_house': ((110, 76, 54), (190, 190, 190)), 'plinth_brown': ((120, 74, 60), (206, 206, 206)),
 }
+FLAT.update({k: (tuple(round(c * 255) for c in style.KINDS[k][1][:3]), (222, 222, 222)) for k in style.SHEET_KINDS})
 BASE_PACKS = ('real', 'toon', 'model', 'synth')
 PACKS = BASE_PACKS + ('pixel',) + fast_packs.PACKS
 LABELS = {'real': 'Реальний', 'toon': 'Мультяшний', 'model': 'Макет', 'synth': 'Синтвейв', 'pixel': 'Ретро-місто', **fast_packs.LABELS}
@@ -381,7 +383,8 @@ def pack_fields(pack, base):
         f = {k: '' for k in MAP_FIELDS}
         f['emissiveFactor'] = '0 0 0'
         if kind.startswith('wall_'):
-            w = kind[5:]
+            # a flat pack draws a new wall with the art of the older one it resembles
+            w = kind[5:] if pack == 'real' else fast_facade.like(kind[5:])
             f['baseColorMap'] = f'{base}/{pack}/{w}.color.png'
             if pack == 'real':
                 f.update(style.real_stage(kind))
@@ -448,15 +451,17 @@ def environment(pack):
         'sun': {'azimuth': 250, 'distance': 3200, 'size': 1500, 'height': 420, 'material': 'e2rf_synth_sun'}}
 
 
-def warm_defs(pack, fields):
+def warm_defs(pack, fields, seen):
     """One material per pack and texture, loaded at the landing on a hidden triangle: a texture
     the engine first meets through a runtime map swap streams into a slot sized for the old one
-    and breaks (\"dds mip chain (11) does not match texture (9)\", fast-game-packs-02)."""
+    and breaks (\"dds mip chain (11) does not match texture (9)\", fast-game-packs-02). `seen`
+    holds the maps warmed already: a material with nothing new adds only an object to the landing."""
     out = {}
     for mat, f in fields.items():
         stage = {k: v for k, v in f.items() if k in MAP_FIELDS and v}
-        if not stage:
+        if not stage or seen.issuperset(stage.values()):
             continue
+        seen.update(stage.values())
         name = f'e2rf_pk_{pack}_{mat.removeprefix("e2rf_")}'
         out[name] = {'name': name, 'mapTo': name, 'class': 'Material', 'version': 1.5,
                      'Stages': [stage, {}, {}, {}]}
@@ -471,7 +476,7 @@ SMOOTH_GROUND = ('snow', 'snow_edge', 'glacier', 'dune')
 
 def ground_sheet(kind):
     im, nm = photo.ground_sheet(kind)
-    if kind in style.BIOME_GROUND or kind == 'glacier':
+    if kind in style.BIOME_GROUND or kind in ('glacier', 'farmland'):
         nm = nm.resize((1024, 1024), Image.LANCZOS)
         if kind in SMOOTH_GROUND:
             im = im.resize((1024, 1024), Image.LANCZOS)
@@ -530,6 +535,11 @@ def prebuild(distributable=False):
         # and the address plates' letters
         if not (shared / 'real' / 'glyphs_o.data.dds').exists() and glyph_art(shared / 'real'):
             to_dds(shared / 'real')
+        # and the drawn facades and plain sheets
+        stamp = shared / 'real' / 'facade.version'
+        if not stamp.exists() or stamp.read_text() != FACADE_ART_VERSION:
+            facade_art(shared)
+            to_dds(shared)
         write_manifest(shared)  # environment/fields are code, not a texture cache
     return shared
 
@@ -546,6 +556,8 @@ def build(r, game_assets=True):
             if pack == 'synth':
                 synth_glow(name).save(r / pack / f'{name}.glow.png')
         for name in photo.PHOTO_WALLS:
+            if fast_facade.like(name) != name:
+                continue                        # facade_art
             if pack == 'real':
                 if not LAYERS:
                     LAYERS.append(photo.panel_atlas())
@@ -600,14 +612,41 @@ def build(r, game_assets=True):
     road_sheets(r)
     fast_packs.build(r, base)
     fast_pixel.build(r)
+    facade_art(r)
     to_dds(r)
     write_manifest(r)
     return r
 
 
+FACADE_ART_VERSION = '4'  # change whenever a drawn facade or sheet changes
+
+
+def facade_art(r):
+    """The drawn facades, their end walls and their night glow, and the plain sheets (fast_facade)."""
+    real = r / 'real'
+    if not LAYERS:
+        LAYERS.append(photo.panel_atlas())
+    for name, (family, _, _) in photo.PHOTO_WALLS.items():
+        if fast_facade.like(name) == name and family != 'end_panel':
+            continue
+        im, nm = photo_real(name)
+        im.save(real / f'{name}.color.png')
+        if nm is not None:
+            nm.resize((fast_facade.NORMAL_PX, fast_facade.NORMAL_PX), Image.LANCZOS).save(real / f'{name}.normal.png')
+    for name in fast_facade.SHEETS:
+        im, nm = fast_facade.sheet(name)
+        im.save(real / f'{name}.color.png')
+        nm.save(real / f'{name}.normal.png')
+    boards, gaps = fast_facade.fence_boards()
+    boards.save(real / 'fence_boards.color.png')
+    gaps.save(real / 'fence_boards_o.data.png')
+    fast_packs.layout_glows(r)
+    (real / 'facade.version').write_text(FACADE_ART_VERSION)
+
+
 # alphaRef per opacity map whose mips keep its coverage (fast_dds.keep_coverage)
 MIP_REFS = {'chainlink_o.data.png': style.CHAINLINK_MIP_REF, 'line_o.data.png': style.EXTRA['mark']['alphaRef'],
-            'railing_o.data.png': style.RAILING_MIP_REF}
+            'railing_o.data.png': style.RAILING_MIP_REF, 'fence_boards_o.data.png': style.FENCE_BOARDS_MIP_REF}
 # The yard atlas (generator.lua YARD.cell keeps the same order): playground paint, wood, metal,
 # sand, container screens and the yellow of the hemisphere bollards.
 YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (228, 118, 40), (146, 104, 62),
@@ -985,7 +1024,8 @@ def manifest_text():
                               'doubleSided': True,
                               'Stages': [{'baseColorMap': f'{base}/synth/sun.color.png', 'emissiveMap': f'{base}/synth/sun.color.png',
                                           'emissiveFactor': [1, 1, 1]}, {}, {}, {}]}}
-    return json.dumps(style.dds({'order': list(PACKS), 'labels': LABELS, 'fields': fields, 'warm': {p: warm_defs(p, fields[p]) for p in PACKS},
+    seen = set()
+    return json.dumps(style.dds({'order': list(PACKS), 'labels': LABELS, 'fields': fields, 'warm': {p: warm_defs(p, fields[p], seen) for p in PACKS},
                                  'environment': {p: environment(p) for p in PACKS}, 'extra': sun}))
 
 

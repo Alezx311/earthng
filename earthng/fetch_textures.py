@@ -1,7 +1,8 @@
 """Download the CC0 sets the packs add into data/textures/<set>/<map>.jpg, with their sources in
 data/textures/manifest.json (as Earth2Road's tools/fetch_textures.py does for the rest):
-the ambientCG sets of the season packs (fast_art: winter, autumn) at 1K, and the road surfaces
-and line paint from ambientCG and Poly Haven (fast_art.road_sheets).
+the ambientCG sets of the season packs (fast_art: winter, autumn) at 1K, the road surfaces and
+line paint from ambientCG and Poly Haven (fast_art.road_sheets), and the materials of the drawn
+facades and plain sheets (fast_facade).
 
     python earthng/fetch_textures.py
 """
@@ -42,6 +43,51 @@ ROAD_SETS = {
     'road_fresh': ('ambientcg', 'Asphalt025C', ('albedo', 'normal', 'roughness'), '2K'),   # dark, even
     'road_macro': ('polyhaven', 'aerial_asphalt_01', ('albedo', 'normal', 'roughness'), '4K'),  # 30 m of a street
     'road_line': ('ambientcg', 'RoadLines025B', ('albedo', 'normal', 'roughness', 'opacity'), '2K'),  # worn solid line
+}
+# Walls, roofs, fences and streets of the wider world at 1K: fast_facade draws its facades over them
+# and makes its plain sheets of them. (site, asset, what it is)
+MATERIAL_SETS = {
+    # brick
+    'mat_brick_red': ('polyhaven', 'red_brick_03'),              # machine-made red, pale joints
+    'mat_brick_old': ('polyhaven', 'medieval_red_brick'),        # hand-made, uneven: before 1917
+    'mat_brick_silicate': ('polyhaven', 'whitewashed_brick'),    # pale sand-lime brick of Soviet blocks
+    'mat_brick_stock': ('polyhaven', 'yellow_brick'),            # London stock
+    'mat_brick_dark': ('polyhaven', 'brick_wall_10'),            # brown-grey, North Sea and American
+    'mat_clinker': ('polyhaven', 'exterior_wall_cladding_02'),   # brick slips of new blocks
+    'mat_block': ('polyhaven', 't_concrete_wall_002'),           # bare concrete block
+    # render and concrete
+    'mat_dash': ('ambientcg', 'Concrete037'),                    # dash render ('шуба', pebbledash)
+    'mat_render': ('ambientcg', 'Plaster002'),                   # even render
+    'mat_render_flaking': ('ambientcg', 'PaintedPlaster014'),    # white paint off old brick
+    'mat_render_yellow': ('ambientcg', 'PaintedPlaster018'),     # yellow paint off old render
+    'mat_adobe': ('polyhaven', 'clay_plaster'),                  # mud plaster
+    'mat_concrete_stain': ('ambientcg', 'Concrete035'),          # stained by the tropics
+    'mat_concrete_board': ('ambientcg', 'Concrete043A'),         # board-marked, grey
+    # stone
+    'mat_ashlar': ('polyhaven', 'white_sandstone_blocks_02'),    # dressed pale limestone
+    'mat_sandstone': ('polyhaven', 'sandstone_blocks_05'),       # warm coursed sandstone
+    'mat_fieldstone': ('polyhaven', 'rough_block_wall'),         # rubble
+    # boards and sheet
+    'mat_clapboard': ('ambientcg', 'WoodSiding009'),             # painted clapboard
+    'mat_boards_red': ('ambientcg', 'WoodSiding005'),            # Nordic red
+    'mat_vinyl': ('polyhaven', 'exterior_wall_cladding_03'),     # vinyl siding
+    'mat_tin_rust': ('polyhaven', 'rusty_corrugated_iron'),
+    'mat_tin_zinc': ('polyhaven', 'worn_corrugated_iron'),
+    'mat_profile': ('polyhaven', 'box_profile_metal_sheet'),     # profiled sheet of fences and roofs
+    'mat_planks': ('ambientcg', 'WoodSiding003'),                # bare boards of a village fence
+    # roofs
+    'mat_roof_clay': ('polyhaven', 'clay_roof_tiles_02'),         # interlocking clay
+    'mat_roof_pantile': ('ambientcg', 'RoofingTiles014A'),       # round Mediterranean tiles
+    'mat_roof_concrete': ('ambientcg', 'RoofingTiles013B'),      # dark concrete tile
+    'mat_roof_slate': ('polyhaven', 'roof_slates_03'),
+    'mat_roof_shingle': ('polyhaven', 'grey_roof_01'),           # asphalt shingle
+    'mat_roof_thatch': ('ambientcg', 'ThatchedRoof001A'),
+    'mat_bitumen': ('polyhaven', 'bitumen'),                     # flat roofs
+    # streets and fields
+    'mat_setts': ('polyhaven', 'cobblestone_03'),                # granite setts
+    'mat_soil': ('ambientcg', 'Ground048'),                      # dark ploughed earth
+    'mat_stubble': ('ambientcg', 'Ground072'),                   # straw on soil
+    'mat_laterite': ('polyhaven', 'red_laterite_soil_stones'),   # red earth of the tropics
 }
 ACG_MAPS = {'Color': 'albedo', 'NormalGL': 'normal', 'Roughness': 'roughness', 'AmbientOcclusion': 'ao',
             'Opacity': 'opacity'}
@@ -106,6 +152,16 @@ def main():
         if missing:
             raise RuntimeError(f'{asset}: missing maps {missing}')
         _save(manifest, name, asset, maps, record)
+    for name, (site, asset) in MATERIAL_SETS.items():
+        if manifest.get(name, {}).get('asset') == asset and all((DEST / name / f'{m}.jpg').exists() for m in MAPS.values()):
+            continue
+        maps, record = _ambientcg(asset, '1K', ACG_MAPS) if site == 'ambientcg' else _polyhaven(asset, '1K')
+        record['resolution'] = '1K'
+        missing = set(MAPS.values()) - set(maps)
+        if missing:
+            raise RuntimeError(f'{asset}: missing maps {missing}')
+        _save(manifest, name, asset, maps, record)
+        manifest_path.write_text(json.dumps(manifest, indent=2))
     manifest_path.write_text(json.dumps(manifest, indent=2))
 
 

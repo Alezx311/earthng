@@ -58,10 +58,28 @@ PHOTO_WALLS = {
     'shop_green': ('shop',    (.12, .36, .24), 6.0),
     'shop_blue':  ('shop',    (.12, .24, .45), 6.0),
 }
+# Drawn at art build (fast_facade.STYLES): a block's own materials, windows and weather over a
+# 12 m repeat. Their colours stand for them in the flat packs' lists.
+DRAWN = {
+    'brk_d_sil': (.86, .84, .78), 'brk_d_red': (.55, .32, .26), 'brk_d_old': (.56, .32, .24), 'brk_d_new': (.46, .24, .18),
+    'brk_d_stock': (.72, .56, .36), 'brk_d_vic': (.50, .30, .26), 'brk_d_dark': (.32, .24, .22),
+    'pls_d_dash': (.69, .67, .61), 'pls_d_stalin': (.87, .78, .63), 'pls_d_stalin_red': (.72, .44, .33), 'pls_d_aged': (.78, .70, .36),
+    'pls_d_flake': (.66, .66, .64), 'pls_d_new': (.84, .80, .72), 'pls_d_euro': (.89, .87, .83), 'pls_d_euro_warm': (.85, .77, .63),
+    'pls_d_ashlar': (.81, .77, .69), 'pls_d_shutter': (.84, .63, .38), 'pls_d_white': (.93, .93, .89), 'pls_d_sand': (.80, .71, .57),
+    'pls_d_adobe': (.75, .60, .44), 'pls_d_tile': (.89, .88, .85), 'pls_d_stain': (.73, .71, .65), 'pls_d_blue': (.38, .63, .67),
+    'pls_d_pink': (.85, .53, .50),
+}
+for _n, _c in DRAWN.items():
+    PHOTO_WALLS[_n] = ('facade', _c, 12.0)
+# Soviet panels with some flats insulated (fast_facade.patched)
+for _n, _key in (('pnl_patch_grey', 'pnl_grey'), ('pnl_patch_beige', 'pnl_beige'), ('pnl_patch_white', 'pnl_white')):
+    PHOTO_WALLS[_n] = ('patched', PHOTO_WALLS[_key][1], 3.0 * PANEL_N)
 # blank end walls of elongated panel and brick blocks (no windows across the short side)
 for _n, (_f, _c, _m) in list(PHOTO_WALLS.items()):
-    if _f in ('panel', 'loggia', 'brick'):
+    if _f in ('panel', 'loggia', 'brick', 'patched'):
         PHOTO_WALLS[_n + '_end'] = ('end_brick' if _f == 'brick' else 'end_panel', _c, 6.0)
+    elif _f == 'facade' and _n.startswith('brk_'):
+        PHOTO_WALLS[_n + '_end'] = ('end_facade', _c, 6.0)
 
 END_WALL_MAX_M = 16.0   # deeper walls are a wing's long side (Soviet blocks are 11-14 m deep)
 
@@ -87,7 +105,8 @@ def tiled(path, metres, size=TILE_PX, span=6.0):
     for i in range(nx):
         for j in range(ny):
             out.paste(cell, (i * cell.width, j * cell.height))
-    return out.resize((size, size))
+    # size // n leaves a few black pixels on the seam when n does not divide size
+    return out.crop((0, 0, cell.width * nx, cell.height * ny)).resize((size, size), Image.LANCZOS)
 
 
 def windows(image, glass=(52, 62, 70)):
@@ -181,17 +200,21 @@ def wall_image(name, layers=None):
     """(colour image, normal image or None) of one repeat; row 0 at the top of the wall."""
     family, colour, _ = PHOTO_WALLS[name]
     layers = layers or panel_atlas()
+    if family in ('facade', 'patched', 'end_facade'):
+        import fast_facade
+        if family == 'facade':
+            return fast_facade.draw(name, layers)
+        if family == 'patched':
+            return fast_facade.patched(name, layers), None
+        return fast_facade.end_wall(name[:-4])
     if family == 'panel':
         return panel(colour, name, layers), None
     if family == 'loggia':
         a = Image.open(TEXTURES / 'panelka_loggias/albedo.jpg').convert('RGB')
         return tint(a.resize((SHEET_PX, SHEET_PX), Image.LANCZOS), colour, .3, 1.12), None
     if family == 'end_panel':
-        out = Image.new('RGB', (TILE_PX, TILE_PX))
-        for bx in range(2):
-            for sy in range(2):
-                out.paste(layers[PANEL_LAYERS - 1], (bx * CELL, sy * CELL))
-        return tint(out, colour, gain=PANEL_GAIN), None
+        import fast_facade
+        return fast_facade.blank_panel(colour), None
     if family in ('curtain', 'ribbon', 'shop'):
         return drawn(family, colour, name), None
     white = colour[0] > .8
@@ -291,6 +314,8 @@ GROUND = {
     'snow':      (('snow_wind', 4.0), ('snow_fresh', 4.0, .25), ('rock_debris', 3.0, .03), (1.0, 1.0, 1.0), 1.0),
     'snow_edge': (('snow_wind', 4.0), ('snow_melt', 3.0, .38), ('lichen_stones', 3.0, .3), (1.0, 1.0, 1.0), .8),
     'glacier':   (('snow_wind', 4.0), ('snow_fresh', 4.0, .5), ('snow_dirty', 3.0, .06), (.95, .98, 1.02), .9),
+    # ploughed black earth with last year's straw on it and paler dry stretches
+    'farmland':  (('mat_soil', 2.0), ('mat_stubble', 2.0, .42), ('photo_worn', 3.0, .1), (.98, .94, .86), .9),
 }
 # Mean brightness (0..1, after tone and saturation) a sheet is brought to: Snow005 photographs
 # grey, the dune sand dark; a kind not named keeps its photos' own.
