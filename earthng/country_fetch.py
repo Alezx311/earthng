@@ -299,6 +299,16 @@ def tiles_current(tiles):
         return False
 
 
+def map_cache_dir(root, slug_id, pbf):
+    """Keep each source generation separate so changed PBFs never mix map tiles."""
+    import build_map
+    pbf = Path(pbf)
+    stat = pbf.stat()
+    stamp = [build_map.VERSION, pbf.name, stat.st_size, stat.st_mtime_ns]
+    digest = hashlib.sha256(json.dumps(stamp).encode()).hexdigest()[:16]
+    return Path(root) / 'out' / 'map-data' / slug_id / digest
+
+
 def cut_tiles(pbf, tiles, box=None, jobs=None, emit=print, cancel=None, heavy_jobs=None):
     """Cut pbf into tiles. A cut by older rules stays usable until its replacement is done.
     jobs: cut workers; heavy_jobs: of them, how many may read the whole PBF at once. None: sized
@@ -529,7 +539,7 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
     elif not (map_data / 'index.json').is_file():
         if pbf.is_file():
             # A separate worker keeps this cancellable, just like source extraction.
-            map_data = Path(root) / 'out' / 'map-data' / slug_id
+            map_data = map_cache_dir(root, slug_id, pbf)
             with stage('Map detail'):
                 run_step([_python(), str(HERE / 'build_map.py'), '--pbf', str(pbf), '--out', str(map_data)], emit, cancel)
         else:
@@ -557,6 +567,8 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
         run_build_job({'command': 'export', 'id': slug_id, 'title': place['name'], 'version': '0.4.0',
                        'regions': regions, 'out': str(out), 'jobs': jobs or sysmem.jobs(1.5), 'landing': landing,
                        'look': look, 'include': include,
+                       # Same mapped POIs and runtime details as the Kyiv oblast experiment.
+                       'rich_data': True, 'experiments': {'detail': True, 'shopfront': True},
                        'map_data': None if map_data is None else str(map_data),
                        'work': str(work), 'result': str(export_path), 'credits': credits,
                        'section': None if section is None else {'id': section['id'], 'title': section['name']}},

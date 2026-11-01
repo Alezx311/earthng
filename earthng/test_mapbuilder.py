@@ -270,6 +270,16 @@ class AssemblyTests(unittest.TestCase):
 
 
 class BuildLifecycleTests(unittest.TestCase):
+    def test_map_cache_is_reused_for_a_snapshot_and_separated_for_an_updated_pbf(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pbf = root / 'test.osm.pbf'
+            pbf.write_bytes(b'first')
+            first = country_fetch.map_cache_dir(root, 'test', pbf)
+            self.assertEqual(first, country_fetch.map_cache_dir(root, 'test', pbf))
+            pbf.write_bytes(b'updated snapshot')
+            self.assertNotEqual(first, country_fetch.map_cache_dir(root, 'test', pbf))
+
     def test_tiles_cut_by_older_rules_are_cut_again_and_replaced(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -313,12 +323,14 @@ class BuildLifecycleTests(unittest.TestCase):
             (tiles / 'index.json').write_text(json.dumps({'select': osm_select.VERSION}))
             events = []
             commands = []
+            jobs = []
 
             def fake_step(command, emit=None, cancel=None):
                 commands.append(command)
                 if '--job' not in command:
                     return
                 job = json.loads(Path(command[command.index('--job') + 1]).read_text(encoding='utf-8'))
+                jobs.append(job)
                 if job['command'] == 'index':
                     Path(job['result']).write_text('[]', encoding='utf-8')
                 else:
@@ -338,6 +350,9 @@ class BuildLifecycleTests(unittest.TestCase):
                              ['--job', '--job'])
             self.assertEqual([name for name, seconds in events if seconds is None], list(timing.STAGES))
             self.assertTrue(all(seconds >= 0 for _, seconds in events if seconds is not None))
+            export = next(job for job in jobs if job['command'] == 'export')
+            self.assertTrue(export['rich_data'])
+            self.assertEqual(export['experiments'], {'detail': True, 'shopfront': True})
 
     def test_the_export_job_credits_the_register_and_the_burnt_lidar(self):
         import est_dem
@@ -439,6 +454,80 @@ class BuildLifecycleTests(unittest.TestCase):
             regions = export.call_args.args[3]
             self.assertTrue(regions[0]['shape'].equals(outline))
             self.assertEqual(export.call_args.kwargs['section'], {'id': 'harju', 'title': 'Harju'})
+
+    def test_rich_job_enables_pois_for_spawned_workers_and_restores_state(self):
+        import build_country
+        import fast_style
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job = root / 'job.json'
+            job.write_text(json.dumps({'command': 'export', 'id': 'test', 'title': 'Test',
+                                       'version': '1', 'regions': [], 'out': str(root),
+                                       'result': str(root / 'result'), 'rich_data': True,
+                                       'experiments': {'detail': True, 'shopfront': True}}), encoding='utf-8')
+            def export(*args, **kwargs):
+                self.assertTrue(fast_style.POIS)
+                self.assertEqual(os.environ.get('EARTHNG_POIS'), '1')
+                self.assertEqual(kwargs['experiments'], {'detail': True, 'shopfront': True})
+                return root / 'pack.zip'
+            with patch.object(fast_style, 'POIS', False), patch.dict(os.environ, {}, clear=True), \
+                    patch.object(build_country, 'build_country', side_effect=export):
+                build_country.run_job(job)
+                self.assertFalse(fast_style.POIS)
+                self.assertNotIn('EARTHNG_POIS', os.environ)
+
+    def test_rich_export_job_preserves_osm_poi_through_spawned_workers(self):
+        import hashlib
+        import subprocess
+        import sys
+        import zipfile
+        from PIL import Image
+        import build_country
+        import country_format
+        import fast_sources
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'tiles'
+            source.mkdir()
+            osm = source / 'tile.osm'
+            osm.write_text('<osm version="0.6"><node id="1" lat="50.005" lon="30.005">'
+                           '<tag k="office" v="insurance"/><tag k="name" v="Example"/>'
+                           '</node></osm>', encoding='utf-8')
+            box = [30., 50., 30.01, 50.01]
+            index = {'package_box': box, 'cell': .05, 'buffer': .03,
+                     'tiles': {'600_1000': {'file': osm.name, 'cell': [30., 50., 30.05, 50.05],
+                                            'coverage': [29.97, 49.97, 30.08, 50.08],
+                                            'sha256': hashlib.sha256(osm.read_bytes()).hexdigest()}}}
+            (source / 'index.json').write_text(json.dumps(index), encoding='utf-8')
+            dem = root / 'dem'
+            for x, y in fast_sources.dem_tiles(box):
+                tile = dem / 'terrain' / '12' / str(x) / f'{y}.png'
+                tile.parent.mkdir(parents=True, exist_ok=True)
+                Image.new('RGB', (256, 256), (128, 100, 0)).save(tile)
+            directory, _ = fast_sources.prepare(source, root / 'index', dem, emit=lambda _: None)
+            job = root / 'job.json'
+            job.write_text(json.dumps({'command': 'export', 'id': 'test', 'title': 'Test',
+                                       'version': '1', 'regions': [{'dir': str(directory), 'id': 'r'}],
+                                       'out': str(root / 'out'), 'jobs': 2, 'rich_data': True,
+                                       'experiments': {'detail': True, 'shopfront': True},
+                                       'result': str(root / 'result')}), encoding='utf-8')
+            script = Path(build_country.__file__)
+            subprocess.run([sys.executable, str(script), '--job', str(job)], check=True, capture_output=True)
+            with zipfile.ZipFile((root / 'result').read_text(encoding='utf-8')) as archive:
+                manifest = json.loads(archive.read('earthng/countries/test/regions/r/manifest.json'))
+                self.assertEqual(manifest['experiments'], {'detail': True, 'shopfront': True})
+                points = []
+                for key, block in manifest['blocks'].items():
+                    bi, bj = map(int, key.split('_'))
+                    data = archive.read(block['path'].lstrip('/'))
+                    for slot, offset in country_format.decode_block(data).items():
+                        i, j = bi * 8 + slot % 8, bj * 8 + slot // 8
+                        rect = [i * 1000, j * 1000, (i + 1) * 1000, (j + 1) * 1000]
+                        cell = country_format.decode_cell(data, (i * 1000, j * 1000), rect, *offset)
+                        points.extend(cell['points'])
+                self.assertTrue(any(p['kind'] == 'poi' and p['tags'].get('office') == 'insurance'
+                                    and p['tags'].get('name') == 'Example' for p in points))
 
     def test_cancel_before_sources_never_downloads_or_installs(self):
         cancel = threading.Event()

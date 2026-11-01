@@ -530,7 +530,7 @@ UNMARKED = ('no', 'none', 'unmarked')
 
 
 # Every key point_kind reads: the exporter hands Python only nodes with one of them.
-POINT_KEYS = ('highway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'brand', 'operator', 'name',
+POINT_KEYS = ('highway', 'traffic_sign', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'brand', 'operator', 'name',
               'brand:uk', 'brand:en', 'name:uk', 'name:en', 'name:ru', 'operator:uk',
               'operator:en', 'operator:ru', 'brand:wikidata', 'operator:wikidata')
 
@@ -557,10 +557,11 @@ def point_kind(tags):
         return 'mini_roundabout'
     if highway in ('turning_circle', 'turning_loop'):
         return 'turning_circle'
-    # traffic signals: the game's trafficlight_city1.dae is a head without a pole (it lay at the
-    # curb, vis-13-signals); placing is written (fast.add_street_points), off until a pole model
-    if tags.get('highway') == 'traffic_signals' and SIGNALS:
+    # Retain the surveyed fact even when an older runtime does not draw it.
+    if highway == 'traffic_signals':
         return 'signal'
+    if tags.get('traffic_sign'):
+        return 'traffic_sign'
     if tags.get('highway') == 'bus_stop' or (tags.get('public_transport') == 'platform' and
                                               any(tags.get(k) == 'yes' for k in ('bus', 'trolleybus', 'tram'))):
         return 'stop'
@@ -617,7 +618,6 @@ def point_keys():
     return POINT_KEYS + (POI_KEYS if POIS else ())
 
 
-SIGNALS = False
 BUS_STOP = '/art/shapes/objects/s_busstop_jri.dae'
 TRAFFIC_LIGHT = '/art/shapes/objects/trafficlight_city1.dae'
 # the shapes' own facing: the yaw that turns their front to +x of the world (measured in game)

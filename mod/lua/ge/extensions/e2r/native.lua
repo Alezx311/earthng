@@ -1454,8 +1454,11 @@ local function pose(p)
   active.pose = {x = p.x, y = p.y, z = finite(p.z) and p.z or nil,
     vx = finite(p.vx) and math.max(-10000, math.min(10000, p.vx)) or 0,
     vy = finite(p.vy) and math.max(-10000, math.min(10000, p.vy)) or 0}
-  -- The wanted set depends on the car's tile, the look-ahead point's tile and the far switch;
-  -- recomputing it (~170 tiles) for every pose made garbage in every frame.
+  -- The wanted set and arrival times depend on the car's position, heading and speed.
+  -- Recomputing it (~170 tiles) on every pose made garbage in every frame, but waiting for
+  -- a whole 500 m tile leaves arrival times up to 7 s stale at 250 km/h. The renderer and
+  -- the urgent-generation budget use those same times. Refresh at most every 100 m of travel
+  -- along either axis as well as at the existing heading/speed/radius changes.
   local t = active.region.data.tileSize
   local speed = math.sqrt(active.pose.vx ^ 2 + active.pose.vy ^ 2)
   local ahead = math.min(speed * 3, 2000)
@@ -1465,7 +1468,8 @@ local function pose(p)
   local reach = speed >= 15 and math.min(speed * AHEAD.corridor, AHEAD.reach) or 0
   local ex = speed > 0 and p.x + active.pose.vx / speed * reach or p.x
   local ey = speed > 0 and p.y + active.pose.vy / speed * reach or p.y
-  local signature = string.format('%d_%d_%d_%d_%d_%d_%d_%s_%s_%d', math.floor(p.x / t), math.floor(p.y / t),
+  local refresh = t / 5
+  local signature = string.format('%d_%d_%d_%d_%d_%d_%d_%s_%s_%d', math.floor(p.x / refresh), math.floor(p.y / refresh),
     math.floor(ax / t), math.floor(ay / t), math.floor(ex / t), math.floor(ey / t), math.floor(speed / 10),
     tostring(speed <= state.stream.farFast), tostring(speed < VISTA_SPEED),
     finite(p.z) and math.floor(p.z / 100) or 0)

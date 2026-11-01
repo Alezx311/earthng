@@ -69,6 +69,75 @@ class RoadSignTests(unittest.TestCase):
         kinds = [s[0] for s in self.signs(roads, [node])]
         self.assertEqual(kinds.count('give_way'), 1)
 
+    def test_explicit_sign_codes_are_conservative(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        node = {'id': 's', 'kind': 'traffic_sign', 'tags': {'traffic_sign': 'UA:2.2', 'direction': 'forward'},
+                'pos': [250, 250, 10]}
+        self.assertEqual([s[0] for s in self.signs([road], [node])], ['stop'])
+        node['tags']['traffic_sign'] = 'US:R1-1'
+        self.assertEqual(self.signs([road], [node]), [])
+
+    def test_signal_is_placed_on_allowed_approaches_and_suppresses_guessed_priority(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        signal = {'id': 's', 'kind': 'signal', 'tags': {'highway': 'traffic_signals'}, 'pos': [250, 250, 10]}
+        def run(roads, point, **opts):
+            report = self.h.lua.table()
+            opts.setdefault('experimentalDetail', True)
+            scene = self.h.build([{'roads': roads, 'points': [point]}], 0, 0, terrainStep=100,
+                                 maxTrees=0, maxGrass=0, propSpacing=0, detailReport=report, **opts)[1]
+            return report, scene
+        report, scene = run([road], signal, statics='none')
+        self.assertEqual(report.signs.signal, 2)
+        meshes = list(self.h.meshes(scene, 'e2rf_yard'))
+        self.assertTrue(meshes)
+        self.assertTrue(all(item.decor for item, _ in meshes))
+        signal['tags']['traffic_signals:direction'] = 'forward'
+        report, _ = run([road], signal)
+        self.assertEqual(report.signs.signal, 1)
+        report, _ = run([road], signal, experimentalDetail=False)
+        self.assertIsNone(report.signs)
+        signal['pos'] = J
+        report, _ = run(self.t_junction(), signal)
+        self.assertIsNone(report.signs.give_way)
+        self.assertIsNone(report.signs.priority)
+
+    def test_old_pack_crossing_can_make_unlit_signals(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        point = {'id': 'c', 'kind': 'crossing', 'tags': {'highway': 'crossing', 'crossing': 'traffic_signals'},
+                 'pos': [250, 250, 10]}
+        report = self.h.lua.table()
+        self.h.build([{'roads': [road], 'points': [point]}], 0, 0, terrainStep=100, maxTrees=0,
+                     maxGrass=0, propSpacing=0, experimentalDetail=True, detailReport=report)
+        self.assertEqual(report.signs.signal, 2)
+
+    def test_missing_stock_sign_does_not_create_a_broken_object(self):
+        self.h.lua.execute('FS = {fileExists = function(_, path) return not path:find("italy_traf_sign_", 1, true) end}')
+        self.assertEqual(self.signs(self.t_junction()), [])
+
+    def test_signal_avoids_buildings_and_does_not_duplicate_at_tile_boundary(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[0, 250, 10], [500, 250, 10], [1000, 250, 10]]}
+        signal = {'id': 's', 'kind': 'signal', 'tags': {'highway': 'traffic_signals'}, 'pos': [500, 250, 10]}
+        reports = []
+        for i in (0, 1):
+            report = self.h.lua.table()
+            self.h.build([{'roads': [road], 'points': [signal]}], i, 0, terrainStep=100, maxTrees=0,
+                         maxGrass=0, propSpacing=0, experimentalDetail=True, detailReport=report)
+            reports.extend([(round(r.x, 2), round(r.y, 2)) for r in report.values()
+                            if getattr(r, 'kind', None) == 'sign_signal'])
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(len(set(reports)), 2)
+        building = {'id': 'b', 'kind': 'building', 'height': 6, 'tags': {'building': 'yes'},
+                    'rings': [[[490, 245], [510, 245], [510, 240], [490, 240]]]}
+        report = self.h.lua.table()
+        self.h.build([{'roads': [road], 'points': [signal], 'buildings': [building]}], 0, 0,
+                     terrainStep=100, maxTrees=0, maxGrass=0, propSpacing=0, experimentalDetail=True,
+                     detailReport=report)
+        self.assertIsNone(report.signs.signal)
+
     def test_a_speed_change_and_a_marked_crossing(self):
         roads = [{'id': 'a', 'nodes': ['x', 'k'], 'width': 8, 'tags': {'highway': 'tertiary', 'maxspeed': '50'},
                   'points': [[0, 250, 10], [100, 250, 10], [250, 250, 10]]},   # the crossing is a vertex

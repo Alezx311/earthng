@@ -2383,16 +2383,23 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
     local dist = arc(road)
     local length = dist[#dist]
     if length < 2 then return end
-    out[#out + 1] = {kind = kind, model = SIGNS.dir .. (model or SIGNS.models[kind]) .. '.dae', road = road, dist = dist,
+    local shape = model or SIGNS.models[kind]
+    out[#out + 1] = {kind = kind, model = shape and (SIGNS.dir .. shape .. '.dae') or nil, road = road, dist = dist,
       s = math.max(.5, math.min(length - .5, s)), dir = dir, key = key}
   end
   -- the mapped nodes on a road vertex: give-way, stop, a marked crossing
   local vertices, wanted = {}, {}
   for _, point in ipairs(points) do
-    if point.pos and (point.kind == 'give_way' or point.kind == 'stop_sign' or point.kind == 'crossing') then
+    if point.pos and (point.kind == 'give_way' or point.kind == 'stop_sign' or point.kind == 'crossing'
+        or point.kind == 'signal' or point.kind == 'traffic_sign') then
       wanted[#wanted + 1] = point
     end
   end
+  -- Mapped signals take precedence over inferred signs at the same place.
+  local sorted = {}
+  for _, p in ipairs(wanted) do if p.kind == 'signal' then sorted[#sorted + 1] = p end end
+  for _, p in ipairs(wanted) do if p.kind ~= 'signal' then sorted[#sorted + 1] = p end end
+  wanted = sorted
   if #wanted > 0 then
     for index, road in ipairs(roads) do
       for k, p in ipairs(road.points or NONE) do
@@ -2406,7 +2413,7 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
   local lights = {}
   for _, point in ipairs(wanted) do
     local p, tags = point.pos, point.tags or NONE
-    if point.kind == 'crossing' and (tags.crossing == 'traffic_signals' or tags['crossing:signals'] == 'yes') then
+    if point.kind == 'signal' or point.kind == 'crossing' and (tags.crossing == 'traffic_signals' or tags['crossing:signals'] == 'yes') then
       lights[#lights + 1] = p
     end
     local found
@@ -2424,12 +2431,30 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
       local dist = arc(road)
       local length, s = dist[#dist], dist[k]
       local fwd, back = SIGNS.ways(road.tags or NONE)
-      if point.kind == 'crossing' then
+      if point.kind == 'signal' then
+        -- A single way vertex can control two directions. Direction is relative to that way;
+        -- when absent, show both allowed directions. It is a visual, unlit signal, not a
+        -- traffic controller. Nodes detached from a road are retained but not guessed into place.
+        local direction = tags['traffic_signals:direction'] or tags.direction
+        if fwd and direction ~= 'backward' then add('signal', road, s - 2, 1, point.id .. ':f') end
+        if back and direction ~= 'forward' then add('signal', road, s + 2, -1, point.id .. ':b') end
+      elseif point.kind == 'crossing' then
         -- a street's crossing, not a footway over a yard's service way or a car park's aisle
         if ROADS.rankOf(road.tags or NONE) < SIGNS.minor then fwd, back = false, false end
+        if tags.crossing == 'traffic_signals' or tags['crossing:signals'] == 'yes' then
+          if fwd then add('signal', road, s - SIGNS.crossing, 1, point.id .. ':signal:f') end
+          if back then add('signal', road, s + SIGNS.crossing, -1, point.id .. ':signal:b') end
+        end
         if fwd then add('crossing', road, s - SIGNS.crossing, 1, point.id .. ':f') end
         if back then add('crossing', road, s + SIGNS.crossing, -1, point.id .. ':b') end
       else
+        local kind = point.kind
+        if kind == 'traffic_sign' then
+          local sign = tostring(tags.traffic_sign or ''):lower()
+          kind = ({['stop'] = 'stop_sign', ['ua:2.2'] = 'stop_sign',
+            ['give_way'] = 'give_way', ['ua:2.1'] = 'give_way'})[sign]
+        end
+        if kind then
         local direction = tostring(tags.direction or '')
         local forward
         if direction == 'forward' then forward = true
@@ -2442,9 +2467,10 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
           local toEnd = forward and (length - s) or s
           local at = s
           if cut > 0 and toEnd <= cut + 6 then at = forward and length - cut - SIGNS.mouth or cut + SIGNS.mouth end
-          add(point.kind, road, at, forward and 1 or -1, point.id)
+          add(kind, road, at, forward and 1 or -1, point.id)
           handled[road] = handled[road] or {}
           handled[road][forward and 2 or 1] = true
+        end
         end
       end
     end
@@ -2569,7 +2595,8 @@ function SIGNS.place(requests, env, pause)
   for index, r in ipairs(requests) do
     if index % 32 == 0 then pause() end
     local road, tags = r.road, r.road.tags or NONE
-    if not ROADS.bridge(tags) and not ROADS.tunnel(tags) then
+    if not ROADS.bridge(tags) and not ROADS.tunnel(tags) and
+        (not r.model or not FS or FS:fileExists(r.model)) then
       local side = -r.dir
       local s = r.s
       for _ = 1, 3 do
@@ -2585,7 +2612,7 @@ function SIGNS.place(requests, env, pause)
         end
         if env.nearAsphalt(x, y, .3) then break end
         local z = env.ground(x, y)
-        if env.nearestOn(x, y, z, false, road) or env.nearestOn(x, y, z, true, road) then break end
+        if env.nearestOn(x, y, z, false, road) or env.nearestOn(x, y, z, true, road) or not env.clear(x, y) then break end
         local crowded = false
         for _, q in ipairs(placed) do
           if (q[1] - x) ^ 2 + (q[2] - y) ^ 2 < 1 then crowded = true; break end
@@ -2602,7 +2629,7 @@ function SIGNS.place(requests, env, pause)
       end
     end
   end
-  return counts
+  return counts, placed
 end
 
 -- Street parking (options.experimentalDetail): where a road's own parking tags say cars stand,
@@ -6382,6 +6409,9 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
       if p.kind == 'lamp' then band(surveyedLamps, {x - .001, y}, {x + .001, y}, 12) end
     end
   end
+  for _, p in ipairs(context.signs or NONE) do
+    band(occupied, {p[1] - .001, p[2]}, {p[1] + .001, p[2]}, .6)
+  end
   -- paths on the ground (their paving and 0.3 m more; a crossing 2 m either side) and the
   -- streets' sidewalks (a footway's prop does not stand on them)
   local paths, walks = {}, {}
@@ -6737,6 +6767,9 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
     end
   end
   local reserved = {}
+  for _, p in ipairs(context.signs or NONE) do
+    band(reserved, {p[1] - .001, p[2]}, {p[1] + .001, p[2]}, 2.6)
+  end
   for index, c in ipairs(candidates) do
     local clear = true
     for _, q in ipairs(near(bins, c.ax, c.ay, c.bx, c.by, c.r + .4, 0)) do
@@ -10485,19 +10518,98 @@ local function build(cells, i, j, options)
       it.prop, it.streetKind, it.collision = true, 'power', 'Collision Mesh'
     end, pause)
   end
-  if options.experimentalDetail and not distant and lists.signMouths then
+  OFFROAD.signs = {}
+  OFFROAD.signRequests = options.experimentalDetail and not distant and lists.signMouths and
+    SIGNS.plan(lists.roads, lists.signMouths, lists.signOrder, lists.points, cutsOf, pause) or nil
+  if OFFROAD.signRequests and #OFFROAD.signRequests > 0 then
+    OFFROAD.signDecorBefore = #sceneDecor.items
     local report = type(options.detailReport) == 'table' and options.detailReport or nil
-    local counts = SIGNS.place(SIGNS.plan(lists.roads, lists.signMouths, lists.signOrder, lists.points, cutsOf, pause),
+    -- The small known footprint of a sign/signal must avoid buildings, water, paths and
+    -- surveyed furniture as well as roads. Index once; the same positions are passed to the
+    -- furniture planner, including the halo, so adjacent tiles make the same decision.
+    OFFROAD.signBins = {}
+    function OFFROAD.signIndex(bounds, entry)
+      -- Large water polygons may span whole regions; only the halo can affect this tile.
+      local x0, y0 = math.max(bounds[1] - 1, rect[1] - 40), math.max(bounds[2] - 1, rect[2] - 40)
+      local x1, y1 = math.min(bounds[3] + 1, rect[3] + 40), math.min(bounds[4] + 1, rect[4] + 40)
+      for bx = floor(x0 / 50), floor(x1 / 50) do
+        for by = floor(y0 / 50), floor(y1 / 50) do
+          local key = bx * 65536 + by
+          local bin = OFFROAD.signBins[key] or {}
+          OFFROAD.signBins[key], bin[#bin + 1] = bin, entry
+        end
+      end
+    end
+    for _, b in ipairs(lists.buildings) do
+      OFFROAD.signIndex(ringBounds(b.rings), {rings = b.rings}); pause()
+    end
+    for _, a in ipairs(lists.areas) do
+      if a.kind == 'water' then OFFROAD.signIndex(ringBounds(a.rings), {rings = a.rings}) end
+      pause()
+    end
+    for _, l in ipairs(lists.lines) do
+      if l.kind == 'path' and pathOnGround(l.tags or NONE) then
+        local pts = l.points or NONE
+        for k = 1, #pts - 1 do
+          local a, b = pts[k], pts[k + 1]
+          local radius = (tonumber((l.tags or NONE).width) or 2) / 2 + .3
+          OFFROAD.signIndex({math.min(a[1], b[1]) - radius, math.min(a[2], b[2]) - radius,
+            math.max(a[1], b[1]) + radius, math.max(a[2], b[2]) + radius}, {a = a, b = b, radius = radius})
+          if k % 64 == 0 then pause() end
+        end
+      end
+      pause()
+    end
+    for index, p in ipairs(lists.points) do
+      if p.pos and (p.kind == 'tree' or p.kind == 'lamp' or p.kind == 'bench' or p.kind == 'waste_basket' or p.kind == 'stop') then
+        local q = p.pos
+        OFFROAD.signIndex({q[1], q[2], q[1], q[2]}, {a = q, b = q, radius = p.kind == 'stop' and 3 or 1})
+      end
+      if index % 128 == 0 then pause() end
+    end
+    function OFFROAD.signClear(x, y)
+      for _, e in ipairs(OFFROAD.signBins[floor(x / 50) * 65536 + floor(y / 50)] or NONE) do
+        if e.rings and (inside(e.rings, x, y) or nearEdge(e.rings, x, y, .4)) then return false end
+        if e.a then
+          local dx, dy = e.b[1] - e.a[1], e.b[2] - e.a[2]
+          local length2 = dx * dx + dy * dy
+          local t = length2 > EPS and math.max(0, math.min(1, ((x - e.a[1]) * dx + (y - e.a[2]) * dy) / length2)) or 0
+          if (x - e.a[1] - t * dx) ^ 2 + (y - e.a[2] - t * dy) ^ 2 < (e.radius + .3) ^ 2 then return false end
+        end
+      end
+      return true
+    end
+    local counts
+    counts, OFFROAD.signs = SIGNS.place(OFFROAD.signRequests,
       {rect = rect, nearAsphalt = OFFROAD.nearAsphalt, nearestOn = OFFROAD.nearestOn, walkAt = OFFROAD.walkAt,
-        ground = ground, put = function(name, shape, x, y, z, yaw, kind)
-          static(name, shape, x, y, z, yaw)
-          local it = scene.items[#scene.items]
-          it.prop, it.streetKind, it.collision = true, 'sign', 'Collision Mesh'
+        ground = ground, clear = OFFROAD.signClear, put = function(name, shape, x, y, z, yaw, kind)
+          if kind == 'signal' then
+            -- Bounded, unlit visual only: 12 cm pole, 40 x 24 cm head. It does not control AI.
+            local T, c = SOLID.frame(x, y, z, -yaw), YARD.cell
+            SOLID.box(sceneDecor, 'yard', c.metal, T, -.06, -.06, 0, .06, .06, 3.5)
+            SOLID.box(sceneDecor, 'yard', c.dark, T, -.20, -.12, 2.65, .20, .12, 3.55)
+            for k, colour in ipairs({c.red, c.yellow, c.green}) do
+              local zc = 3.4 - (k - 1) * .28
+              SOLID.face(sceneDecor, 'yard', colour, T, {{-.10, -.125, zc - .10}, {.10, -.125, zc - .10},
+                {.10, -.125, zc + .10}, {-.10, -.125, zc + .10}})
+            end
+          else
+            static(name, shape, x, y, z, yaw)
+            local it = scene.items[#scene.items]
+            it.prop, it.streetKind, it.collision = true, 'sign', 'Collision Mesh'
+          end
           -- the face looks at the driver: against travel, (-sin, -cos) of the yaw
           if report then report[#report + 1] = {kind = 'sign_' .. kind, x = x, y = y, z = z + 2.6,
             nx = -math.sin(yaw), ny = -math.cos(yaw)} end
         end}, pause)
     if report then report.signs = counts end
+    sceneDecor.finish() -- signals also need flushing when street furniture is disabled
+    for k = OFFROAD.signDecorBefore + 1, #sceneDecor.items do
+      local item = sceneDecor.items[k]
+      item.decor = true
+      scene.items[#scene.items + 1] = item
+    end
+    for material in pairs(sceneDecor.used) do scene.used[material] = true end
   end
   if wantLamps and not distant then
     local function treeAt(x, y)
@@ -10520,7 +10632,7 @@ local function build(cells, i, j, options)
     end
     local _, reserved = VEG.streetProps(strips, lists.lines, lists.buildings, segmentBins, rect,
       options.propSpacing, lift, tune.sidewalk, ground, put, pause,
-      {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points, look = look,
+      {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points, signs = OFFROAD.signs, look = look,
         shopLinks = shops.links})
     local yardCtx = {rect = rect, scene = scene, decor = sceneDecor, ground = ground, drapeRings = drapeRings,
       put = put, lists = lists, strips = strips, segmentBins = segmentBins, reserved = reserved,
@@ -10540,6 +10652,12 @@ local function build(cells, i, j, options)
     scene.streetReservations = reserved
     -- what the yard laid out, for the offline maps and tests (cars and kit are mesh, not items)
     scene.yard = {cars = yardCtx.cars, kit = yardCtx.kit, containers = containers}
+  end
+  if not wantLamps and #OFFROAD.signs > 0 then
+    scene.streetReservations = scene.streetReservations or {}
+    for _, p in ipairs(OFFROAD.signs) do
+      YARD.reserve(scene.streetReservations, {p[1] - .001, p[2]}, {p[1] + .001, p[2]}, 2.6)
+    end
   end
   if decor then
     local WALL = 3

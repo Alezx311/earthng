@@ -151,6 +151,27 @@ class CountryTests(unittest.TestCase):
             self.assertEqual(cell['roads'][0]['nodes'][0], '9007199254740993')
         self.store.db.close.assert_called_once()
 
+    def test_rich_export_does_not_resume_a_baseline_region(self):
+        import fast_style
+        output = self.root / 'mods'
+        opts = dict(bbox=(-1000, 0, 2000, 1000), emit=lambda _: None)
+        # Simulate an interrupted country with this completed part still on disk.
+        with patch.object(country.shutil, 'rmtree'), patch.object(sources, 'Store', return_value=self.store), \
+                patch.object(fast_style, 'POIS', False):
+            country.build_country('ua', 'Україна', '1', [self.region], output,
+                                  experiments={'detail': True, 'shopfront': True}, **opts)
+        parts = output / '.earthng_ua.parts'
+        self.assertEqual(len(list(parts.glob('*.part'))), 1)
+        calls_before = len(self.store.queries)
+        with patch.object(sources, 'Store', return_value=self.store), patch.object(fast_style, 'POIS', True):
+            path = country.build_country('ua', 'Україна', '1', [self.region], output,
+                                         experiments={'detail': True, 'shopfront': True}, **opts)
+        self.assertGreater(len(self.store.queries), calls_before)
+        with zipfile.ZipFile(path) as archive:
+            index = json.loads(archive.read('earthng/countries/ua/manifest.json'))
+            region = json.loads(archive.read(index['regions'][0]['manifest'].lstrip('/')))
+            self.assertEqual(region['experiments'], {'detail': True, 'shopfront': True})
+
     def test_deflated_block_reads_back(self):
         data = b'terrain-grid' * 80
         target = self.root / 'one.zip'

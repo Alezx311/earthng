@@ -83,8 +83,11 @@ def build_spot(spot_id, title, lat, lon, km, source, look, out, jobs=2, landing=
     map_data = tiles / 'map'
     if not (map_data / 'index.json').exists():
         map_data = build_map(pbf, ROOT / 'out/map-data' / country_id, emit=emit)
+    # the same mapped points and details as a Map Builder pack (country_fetch._build_place)
+    experiments = {'detail': True, 'shopfront': True} if pois else None
     return build_country.build_country(country_id, title, '0.4.0', regions, out, emit=emit, jobs=jobs,
-                                       landing=landing or (lat, lon), look=look, map_data=map_data)
+                                       landing=landing or (lat, lon), look=look, map_data=map_data,
+                                       experiments=experiments)
 
 
 def main():
@@ -100,7 +103,7 @@ def main():
     p.add_argument('--landing', type=float, nargs=2, metavar=('LAT', 'LON'))
     p.add_argument('--jobs', type=int, default=2)
     p.add_argument('--out', type=Path, default=ROOT / 'out' / 'spots')
-    p.add_argument('--pois', action='store_true', help="keep shops, offices and the like as 'poi' points (experiment)")
+    p.add_argument('--pois', action='store_true', help="shops, offices and the like as 'poi' points and the city details, as Map Builder builds")
     a = p.parse_args()
     if a.block:
         block = looks.BLOCK_BY_ID.get(a.block)

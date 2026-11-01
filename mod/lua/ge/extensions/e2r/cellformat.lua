@@ -42,7 +42,8 @@ M.ROAD_MARGIN, M.MARGIN = 120, 5
 -- road details at a way node (fast_style.ROAD_DETAILS): a zebra or a turning circle reaches
 -- into the tile from up to this far outside it
 M.DETAIL_MARGIN = 30
-M.DETAILS = {crossing = true, give_way = true, stop_sign = true, mini_roundabout = true, turning_circle = true}
+M.DETAILS = {crossing = true, give_way = true, stop_sign = true, mini_roundabout = true, turning_circle = true,
+  signal = true, traffic_sign = true}
 
 -- One cell from data[first..last]; ox, oy: its south-west corner in region metres.
 -- keep (optional {x0, y0, x1, y1}): only features whose bounds reach it (with the margins above)

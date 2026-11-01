@@ -703,6 +703,21 @@ class NativeV2Tests(NativeTests.__base__):
         self.assertAlmostEqual(wanted['7_10'], wanted['5_12'])
         self.assertGreaterEqual(wanted['8_10'], 1_000_000)
 
+    def test_arrival_time_is_refreshed_within_the_same_tile_at_high_speed(self):
+        _, mod, cv = self.make(fixture(12))
+        lat, lon = geographic(2700, 5250)
+        mod.land(cv(dict(seq=13, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        mod.pose(cv(dict(x=2700, y=5250, vx=60, vy=0, state='driving')))
+        mod.update(.016, 2)
+        before = mod.status().stream.wanted['7_10']
+        # Position, look-ahead point and corridor end all remain in the same 500 m
+        # tiles. The road becomes closer and must not retain the old ETA.
+        mod.pose(cv(dict(x=2810, y=5250, vx=60, vy=0, state='driving')))
+        mod.update(.016, 2)
+        after = mod.status().stream.wanted['7_10']
+        self.assertAlmostEqual(before - after, 110 / 60)
+
     def test_while_driving_a_road_goes_out_before_its_scene(self):
         lua, mod, cv = self.make(fixture(10))
         lat, lon = geographic(1250, 4750)

@@ -647,7 +647,8 @@ def _worker_run(tasks):
     return [_worker_block(task) for task in tasks]
 
 
-def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None, cancel=None, record=None):
+def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None, cancel=None, record=None,
+                experiments=None):
     """Write a begun region's blocks as they finish, then its manifest. record (a list) also
     collects every written member, for _save_part."""
     store, core, region_id, frame, base = ctx['store'], ctx['core'], ctx['region_id'], ctx['frame'], ctx['base']
@@ -724,6 +725,8 @@ def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None,
             manifest['look'] = look
         if include:
             manifest['include'] = include
+        if experiments:
+            manifest['experiments'] = experiments
         path = f'{base}/manifest.json'
         _write_json(archive, path, manifest)
         if record is not None:
@@ -797,7 +800,7 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
 
 
 def build_country(country_id, title, version, regions, out, bbox=None, emit=print, jobs=1, landing=None, landcover=(), vegetation=None,
-                  look=None, include=None, cancel=None, map_data=None, section=None, credits=()):
+                  look=None, include=None, cancel=None, map_data=None, section=None, credits=(), experiments=None):
     """Stream source blocks to ZIP64 and atomically replace the completed archive.
     section: {'id', 'title'}: one region, written as a section of the country
     (earthng_<country>_<section>.zip with sections/<id>/section.json and no country manifest),
@@ -859,13 +862,18 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
             # Each finished region is kept beside the pack until the pack is complete: a stopped
             # or failed export (an hour and a half for Ukraine) resumes with the regions it lacks.
             parts = output / f'.{target.stem}.parts'
-            settings = (bbox, look, include, cover_meta, vegetation, [str(p) for p in landcover or ()])
+            # The point switch changes the actual data, even when the Python source and region
+            # index did not change. Never resume a baseline part for a data-rich export.
+            import fast_style
+            settings = (bbox, look, include, cover_meta, vegetation, [str(p) for p in landcover or ()],
+                        bool(fast_style.POIS), experiments)
 
             def end(region, ctx):
                 part = parts / _part_key(region, *settings)
                 members = []
                 try:
-                    result = _region_end(archive, ctx, emit, cover_meta, vegetation, look, cancel, members)
+                    result = _region_end(archive, ctx, emit, cover_meta, vegetation, look, cancel, members,
+                                         experiments=experiments)
                 except ValueError as exc:
                     skipped(region, exc)
                     _save_part(part, None, [('skip', str(exc))])
@@ -1099,12 +1107,26 @@ def run_job(path):
         destination.write_text(json.dumps([_region_record(region) for region in regions]), encoding='utf-8')
         return
     if command == 'export':
-        archive = build_country(
-            job['id'], job['title'], job['version'],
-            [_revive_region(region) for region in job['regions']], job['out'],
-            jobs=job.get('jobs') or 1, landing=job.get('landing'), look=job.get('look'),
-            include=job.get('include'), map_data=job.get('map_data'), section=job.get('section'),
-            credits=job.get('credits') or ())
+        import fast_style
+        previous_pois = fast_style.POIS
+        previous_env = os.environ.get('EARTHNG_POIS')
+        try:
+            if job.get('rich_data'):
+                # Spawned export workers import fast_style afresh and inherit this environment.
+                os.environ['EARTHNG_POIS'] = '1'
+                fast_style.POIS = True
+            archive = build_country(
+                job['id'], job['title'], job['version'],
+                [_revive_region(region) for region in job['regions']], job['out'],
+                jobs=job.get('jobs') or 1, landing=job.get('landing'), look=job.get('look'),
+                include=job.get('include'), map_data=job.get('map_data'), section=job.get('section'),
+                credits=job.get('credits') or (), experiments=job.get('experiments'))
+        finally:
+            fast_style.POIS = previous_pois
+            if previous_env is None:
+                os.environ.pop('EARTHNG_POIS', None)
+            else:
+                os.environ['EARTHNG_POIS'] = previous_env
         destination.write_text(str(archive), encoding='utf-8')
         return
     raise ValueError(f'unknown build job {command}')

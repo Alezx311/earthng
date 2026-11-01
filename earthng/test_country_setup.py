@@ -73,6 +73,8 @@ class LookTests(unittest.TestCase):
         self.assertTrue(looks.keep_scenery('water', include))
         self.assertTrue(looks.keep_scenery('road', include))
         self.assertTrue(looks.keep_scenery('crossing', {'cover': False, 'stops': False}))
+        self.assertTrue(looks.keep_scenery('signal', {'cover': False, 'stops': False}))
+        self.assertTrue(looks.keep_scenery('traffic_sign', {'cover': False, 'stops': False}))
         self.assertTrue(looks.keep_scenery('forest', None))
 
     def test_slug_flattens_a_state_id(self):
