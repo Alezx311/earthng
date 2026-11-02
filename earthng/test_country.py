@@ -82,6 +82,14 @@ class CountryTests(unittest.TestCase):
             return country.build_country('ua', 'Україна', '0.1.0', [self.region],
                                          self.root / 'mods', bbox, emit=lambda _: None)
 
+    def test_a_pack_carries_its_routing_graph(self):
+        with zipfile.ZipFile(self.build()) as archive:
+            graphs = [n for n in archive.namelist() if '/routing/' in n]
+            manifests = [n for n in archive.namelist() if n.endswith('/manifest.json') and '/regions/' in n]
+            self.assertEqual(len(graphs), len(manifests))
+            region = manifests[0].split('/')[4]
+            self.assertTrue(archive.read(f'earthng/countries/ua/routing/{region}.bin'))
+
     def test_a_section_zip_holds_one_region_and_no_country_manifest(self):
         import shapely
         region = {'dir': self.region, 'core': None, 'id': 'kyiv'}
@@ -119,7 +127,7 @@ class CountryTests(unittest.TestCase):
             self.assertTrue(all(name.startswith('earthng/countries/ua/') and name.endswith(('.json', '.bin'))
                                 for name in names if name != 'earthng/countries/ua/CREDITS.txt'))
             self.assertIn('earthng/countries/ua/CREDITS.txt', names)     # the data's credits travel along
-            self.assertEqual(len(names), 4)  # country, region, one block of two source cells and the credits
+            self.assertEqual(len(names), 5)  # country, region, one block of two source cells, the credits, the routing graph
             index = json.loads(archive.read('earthng/countries/ua/manifest.json'))
             self.assertEqual(index['runtime'], 'native')
             self.assertEqual(index['sourceFormat'], country.FORMAT)

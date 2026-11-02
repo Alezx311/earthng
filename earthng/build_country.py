@@ -993,11 +993,39 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
             if map_data is not None and section is None:
                 from build_map import write_archive
                 write_archive(archive, map_data, f'earthng/countries/{country_id}/map')
+        _add_routing(temporary, jobs, emit, cancel)
         os.replace(temporary, target)
         shutil.rmtree(output / f'.{target.stem}.parts', ignore_errors=True)
     finally:
         Path(temporary).unlink(missing_ok=True)
     return target
+
+
+def _add_routing(pack, jobs, emit, cancel=None):
+    """The navigation's graph of every region (docs/NAVIGATION.md), from the pack's own roads, so
+    the route a player picks works in the pack as it comes. Ukraine: 101 regions, ~40 min at 3 jobs."""
+    import build_routing
+    from concurrent.futures import ProcessPoolExecutor
+    with zipfile.ZipFile(pack) as archive:
+        regions = build_routing.regions_of(archive)
+    tasks = [(str(pack), region, prefix) for region, prefix in sorted(regions.items())]
+    if not tasks:
+        return
+    built, workers = [], min(jobs or 1, len(tasks))
+    pool = ProcessPoolExecutor(workers) if workers > 1 else None
+    try:
+        for done, (region, data, info) in enumerate((pool.map if pool else map)(build_routing.build_region, tasks), 1):
+            if _stopped(cancel):
+                raise InterruptedError('build stopped')
+            built.append((region, data))
+            emit(f"routing {done}/{len(tasks)}: {region}, {info['nodes']} nodes")
+    finally:
+        if pool:
+            pool.shutdown(cancel_futures=True)
+    with zipfile.ZipFile(pack, 'a', zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        for region, data in built:
+            country = regions[region].split('/')[2]
+            archive.writestr(f'earthng/countries/{country}/routing/{region}.bin', data)
 
 
 def section_region(source, dem, work, core, region_id, outline=None, emit=print):
