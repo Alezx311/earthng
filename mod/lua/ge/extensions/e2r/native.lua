@@ -1016,8 +1016,13 @@ local function trimTiles()
     for key, entry in pairs(a.tiles) do
       local required = a.landing and a.startupPinned and a.landing.required[key]
       local selected = a.startupPinned and a.landing and a.landing.selected == key
-      local priority = a.desired[key] and a.desired[key].priority or 1e20
+      local want = a.desired[key]
+      local priority = want and want.priority or 1e20
       local helps = anyEntry or entry.triangles > 0 or entry.vertices > 0
+      -- A near tile the renderer has yet to take stays: a tile of central Kyiv alone is over
+      -- TRIANGLE_LIMIT (140k), so each one was evicted unseen and built again at the next epoch,
+      -- and at 9 m/s the car drove through a city of bare roads (rebuilds 17 of 37 builds).
+      if want and not want.far and not want.horizon and not anyEntry then helps = false end
       -- a tile whose road is out and whose scene is being built or parked (update) stays
       local building = (a.parked and a.parked[key]) or (a.work and a.workKey == key and not a.workFar and not a.workHorizon)
       if helps and not required and not selected and not building and not inRenderer(entry) and (not worst or priority > worstPriority or (priority == worstPriority and entry.used < oldest)) then
