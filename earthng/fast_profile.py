@@ -416,12 +416,18 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     # the clearance springs act only where a deck would be too low (a lower bound): on a
     # crossing in an active set, outside the CSR matrix
     active = np.zeros(len(xa))
+    work = np.empty(len(col))
 
     def gap(h):
         return sum(c * h[v] for c, v in zip(xc, xv))
 
     def matvec(h, springs=True):
-        out = np.add.reduceat(data * h[col], ptr[:-1])
+        # 3000 times a solve over millions of entries: the same sums in buffers kept between calls
+        if len(work) != len(col):
+            work.resize(len(col), refcheck=False)
+        np.take(h, col, out=work, mode='clip')
+        np.multiply(work, data, work)
+        out = np.add.reduceat(work, ptr[:-1])
         if springs and active.any():
             g = CLEAR_WEIGHT * active * gap(h)
             for c, v in zip(xc, xv):
@@ -431,6 +437,7 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     def cg(b):
         diag = diag0 + sum(np.bincount(v, CLEAR_WEIGHT * active * c * c, nvar) for c, v in zip(xc, xv))
         x = np.zeros(nvar); r = b.copy(); z = r / diag; p = z.copy(); rz = r @ z
+        step = np.empty(nvar)
         norm0 = math.sqrt(b @ b) or 1.
         it = 0
         for it in range(iterations):
@@ -438,11 +445,12 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
                 break                              # e.g. a flat DEM is already the answer
             ap = matvec(p)
             alpha = rz / (p @ ap)
-            x += alpha * p; r -= alpha * ap
+            np.multiply(p, alpha, step); x += step
+            np.multiply(ap, alpha, step); r -= step
             if math.sqrt(r @ r) < tol * norm0:
                 break
-            z = r / diag; rz2 = r @ z
-            p = z + (rz2 / rz) * p; rz = rz2
+            np.divide(r, diag, z); rz2 = r @ z
+            p *= rz2 / rz; p += z; rz = rz2
         return x, it + 1, math.sqrt(r @ r) / norm0
 
     # solve for the offset from the DEM: the start residual is small and well scaled. A spring
