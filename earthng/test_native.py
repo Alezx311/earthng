@@ -311,6 +311,13 @@ class NativeTests(unittest.TestCase):
         mod.pose(cv(dict(x=1750, y=1750, vx=0, vy=0, state='driving')))
         for _ in range(1000):
             mod.update(.016, 2)
+            stream = mod.status().stream
+            for key in list(stream.ready.keys()):
+                mod.manifest(key, 'road')
+                mod.release(key, 'road')
+            for key in list(stream.scenes.keys()):
+                mod.manifest(key, 'scene')
+                mod.release(key, 'scene')
         stream = mod.status().stream
         self.assertLessEqual(stream.cachedTiles, stream.cacheLimits.tiles)
         self.assertLessEqual(stream.cachedCells, stream.cacheLimits.cells)
@@ -378,9 +385,11 @@ class NativeTests(unittest.TestCase):
         def run(frames):
             for _ in range(frames):
                 mod.update(.016, 8)
-                for key in list(mod.status().stream.far.keys()):
-                    if mod.manifest(key, 'far') is not None:
-                        mod.release(key, 'far')
+                stream = mod.status().stream
+                for layer, keys in (('far', stream.far), ('road', stream.ready), ('scene', stream.scenes)):
+                    for key in list(keys.keys()):
+                        if mod.manifest(key, layer) is not None:
+                            mod.release(key, layer)
         run(1500)
         stream = mod.status().stream
         far_wanted = [k for k, p in stream.wanted.items() if not str(k).startswith('h') and p >= 1e6]
@@ -425,6 +434,22 @@ class NativeTests(unittest.TestCase):
             if mod.manifest(key, 'road') is not None:
                 break
         self.assertIsNotNone(mod.manifest(key, 'road')['items'][1].meshes)
+
+    def test_a_near_tile_over_the_geometry_budget_waits_for_the_renderer(self):
+        # A tile of central Kyiv alone is over the budget: evicted before the renderer took it, it
+        # was built again at the next epoch and the city along the road never came up.
+        lua, mod, cv = self.make(fixture(6))
+        lat, lon = geographic(1750, 1750)
+        mod.land(cv(dict(seq=7, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        lua.globals().fakeTriangles = 130000
+        mod.pose(cv(dict(x=1750, y=1750, vx=0, vy=0, state='driving')))
+        for _ in range(2000):
+            mod.update(.016, 2)
+        stream = mod.status().stream
+        self.assertTrue(stream.cacheOverBudget)
+        self.assertEqual(stream.rebuilds, 0)
+        self.assertGreater(len(list(stream.ready.keys())), 9)
 
     def test_taken_manifests_are_neither_evicted_nor_rebuilt_until_released(self):
         # A layer the renderer has taken is queued for spawning there. Evicting it freed nothing
