@@ -7556,7 +7556,7 @@ function SIGNS.drawTown(mesh, x, y, z, yaw, name)
 end
 -- The two streets of a crossing on one pole: the blade across the approach names the street
 -- ahead, the one along it this street; each reads from both sides.
-SIGNS.blades = {z = 3.1, height = .22, size = .13, least = .08, width = 2.2, pad = .08, gap = .24}
+SIGNS.blades = {z = 3.1, height = .3, size = .22, least = .12, width = 2.6, pad = .1, gap = .32}
 function SIGNS.blade(mesh, T, name, z)
   local B = SIGNS.blades
   local chars, size = SIGNS.fit(BLD.streetLabel(name), B.size, B.least, B.width)
