@@ -59,7 +59,7 @@ class Recorder:
             self.clips.append(clip.name)
             self.proc = subprocess.Popen(
                 [shutil.which('ffmpeg') or 'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
-                 '-i', f'gfxcapture=window_exe=BeamNG.drive.x64.exe:max_framerate={self.fps}:capture_cursor=0',
+                 '-i', f'gfxcapture=window_exe=BeamNG.drive.x64.exe:window_title=^BeamNG:max_framerate={self.fps}:capture_cursor=0',
                  '-c:v', 'h264_nvenc', '-preset', 'p5', '-rc', 'vbr', '-cq', '18', '-b:v', '0', str(clip)],
                 stdin=subprocess.PIPE)
         elif state == 'stop':

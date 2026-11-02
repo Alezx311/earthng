@@ -224,6 +224,21 @@ class CountryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'truncated'):
             binary.decode_cell(binary.encode_cell(a, (0, 0))[:-3], (0, 0), [0, 0, 1000, 1000])
 
+    def test_roads_read_alone_are_the_roads_of_the_cell_and_each_comes_once(self):
+        road = {'id': 'way/7', 'width': 8, 'tags': {'highway': 'primary', 'name': 'Хрещатик'}, 'nodes': ['1', '2'],
+                'points': [[10, 20, 3], [900, 40.5, 4]]}
+        other = {'id': 'way/8', 'width': 4, 'tags': {}, 'nodes': ['2', '3'], 'points': [[5, 5, 0], [6, 6, 0]]}
+        cell = {'terrain': {'nx': 2, 'ny': 2, 'heights': [1, 2, 3, 4]}, 'roads': [road, other],
+                'buildings': [{'id': 'b', 'kind': 'yes', 'height': 3, 'minHeight': 0, 'tags': {}, 'rings': [[[0, 0, 0], [1, 0, 0], [1, 1, 0]]]}]}
+        data = binary.encode_cell(cell, (1000, 0))
+        whole = binary.decode_cell(data, (1000, 0), [1000, 0, 2000, 1000])['roads']
+        seen = set()
+        self.assertEqual(binary.decode_roads(data, (1000, 0), 0, len(data), seen), whole)
+        self.assertEqual(seen, {'way/7', 'way/8'})
+        self.assertEqual(binary.decode_roads(data, (1000, 0), 0, len(data), seen), [])
+        seen = {'way/7'}
+        self.assertEqual(binary.decode_roads(data, (1000, 0), 0, len(data), seen), whole[1:])
+
     def test_large_areas_are_cut_to_the_padded_cell(self):
         forest = (5, 'forest', {'tags': {'landuse': 'forest'}},
                   Polygon([(-5000, -5000), (6000, -5000), (6000, 6000), (-5000, 6000)]))

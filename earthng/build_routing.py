@@ -24,7 +24,8 @@ BLOCK_NAME = re.compile(r'(-?\d+)_(-?\d+)\.bin\Z')
 
 
 def region_roads(archive, prefix, cell_size, block=country_format.BLOCK):
-    """Every road feature of a region's blocks with region-local coordinates."""
+    """Every road of a region's blocks with region-local coordinates, once."""
+    seen = set()
     for name in archive.namelist():
         if not name.startswith(prefix + 'blocks/'):
             continue
@@ -35,9 +36,7 @@ def region_roads(archive, prefix, cell_size, block=country_format.BLOCK):
         data = archive.read(name)
         for slot, (start, end) in country_format.decode_block(data).items():
             i, j = bi * block + slot % block, bj * block + slot // block
-            origin = (i * cell_size, j * cell_size)
-            rect = (origin[0], origin[1], origin[0] + cell_size, origin[1] + cell_size)
-            yield from country_format.decode_cell(data, origin, rect, start, end)['roads']
+            yield from country_format.decode_roads(data, (i * cell_size, j * cell_size), start, end, seen)
 
 
 def regions_of(archive):

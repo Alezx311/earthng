@@ -540,7 +540,7 @@ UNMARKED = ('no', 'none', 'unmarked')
 
 
 # Every key point_kind reads: the exporter hands Python only nodes with one of them.
-POINT_KEYS = ('highway', 'traffic_sign', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'brand', 'operator', 'name',
+POINT_KEYS = ('highway', 'traffic_sign', 'railway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'brand', 'operator', 'name',
               'brand:uk', 'brand:en', 'name:uk', 'name:en', 'name:ru', 'operator:uk',
               'operator:en', 'operator:ru', 'brand:wikidata', 'operator:wikidata')
 
@@ -570,6 +570,10 @@ def point_kind(tags):
     # Retain the surveyed fact even when an older runtime does not draw it.
     if highway == 'traffic_signals':
         return 'signal'
+    if highway == 'speed_camera':
+        return 'speed_camera'
+    if tags.get('railway') == 'level_crossing':
+        return 'level_crossing'
     if tags.get('traffic_sign'):
         return 'traffic_sign'
     if tags.get('highway') == 'bus_stop' or (tags.get('public_transport') == 'platform' and

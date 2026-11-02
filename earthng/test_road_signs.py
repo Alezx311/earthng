@@ -2,6 +2,7 @@
 import math
 import unittest
 
+import fast_style
 import test_generator
 
 J = [250, 250, 10]
@@ -10,6 +11,14 @@ J = [250, 250, 10]
 def arm(ident, end, highway='residential', **tags):
     return {'id': ident, 'nodes': ['j', ident], 'width': 8, 'tags': {'highway': highway, **tags},
             'points': [J, end]}
+
+
+class Points(unittest.TestCase):
+    def test_level_crossings_and_cameras_are_kept(self):
+        self.assertIn('railway', fast_style.POINT_KEYS)
+        self.assertEqual(fast_style.point_kind({'railway': 'level_crossing'}), 'level_crossing')
+        self.assertEqual(fast_style.point_kind({'highway': 'speed_camera'}), 'speed_camera')
+        self.assertIsNone(fast_style.point_kind({'railway': 'crossing'}), 'a footpath over the rails')
 
 
 class RoadSignTests(unittest.TestCase):
@@ -27,6 +36,12 @@ class RoadSignTests(unittest.TestCase):
                 yaw = 2 * math.atan2(item.rot[3], item.rot[4])
                 out.append((item.shape.split('italy_traf_sign_')[1][:-4], item.pos[1], item.pos[2], yaw))
         return sorted(out)
+
+    def counts(self, roads, points=()):
+        report = self.h.lua.table()
+        self.h.build([{'roads': roads, 'points': list(points)}], 0, 0, terrainStep=100, maxTrees=0, maxGrass=0,
+                     propSpacing=0, detailReport=report, experimentalDetail=True)
+        return dict(report.signs.items())
 
     def t_junction(self, minor='residential', **extra):
         return [arm('w', [0, 250, 10], 'primary'), arm('e', [500, 250, 10], 'primary'),
@@ -166,6 +181,24 @@ class RoadSignTests(unittest.TestCase):
         self.assertTrue(left('new-zealand', 'general'))
         self.assertFalse(left('ukraine', 'postsoviet'))
         self.assertFalse(left('california', 'general'))
+
+    def test_a_level_crossing_has_its_cross_on_both_ways(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        counts = self.counts([road], [{'id': 'x', 'kind': 'level_crossing', 'tags': {}, 'pos': [250, 250, 10]}])
+        self.assertEqual(counts['rail'], 2)
+
+    def test_out_of_town_a_level_crossing_is_warned_of(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'secondary', 'maxspeed': '90'},
+                'points': [[0, 250, 10], [250, 250, 10], [499, 250, 10]]}
+        counts = self.counts([road], [{'id': 'x', 'kind': 'level_crossing', 'tags': {}, 'pos': [250, 250, 10]}])
+        self.assertEqual(counts['danger'], 2)
+
+    def test_a_camera_stands_for_the_way_it_watches(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        camera = {'id': 'c', 'kind': 'speed_camera', 'tags': {'direction': 'forward'}, 'pos': [250, 250, 10]}
+        self.assertEqual(self.counts([road], [camera])['speed_camera'], 1)
 
     def test_a_road_with_no_overtaking_says_so(self):
         road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'tertiary', 'overtaking': 'no'},

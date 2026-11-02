@@ -2381,7 +2381,7 @@ end
 -- driver's side of travel along `road` in direction `dir` (+1 the point order) at arc length s.
 local SIGNS = {dir = GDC .. 'italy_traf_sign_', near = .5, mouth = 1.2, priority = 5, speedAt = 8,
   oneway = 3, noentry = 1, crossing = 2, minor = 2, top = 3, lights = 30,
-  lead = 45, pair = 30, cluster = 45, slots = 3, reach = 15,
+  lead = 45, pair = 30, cluster = 45, slots = 3, reach = 15, rail = 6,
   speeds = {[30] = true, [50] = true, [60] = true, [80] = true, [90] = true, [100] = true}}
 SIGNS.models = {give_way = 'give_way', stop_sign = 'stop', priority = 'priorityroad', crossing = 'zebra',
   oneway = 'one_way', noentry = 'noentry', roundabout = 'roundabout', dead_end = 'dead_end',
@@ -2599,11 +2599,20 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
     seen[#seen + 1] = {s, dir}
     add('signal', road, s, dir, key)
   end
+  -- what stands on a road out of town is warned of
+  local function warnAhead(kind, road, s, id, fwd, back)
+    local limit, mph = limitOf(road.tags or NONE)
+    if (limit or 0) * (mph and 1.6 or 1) < SIGNS.along.open then return end
+    local dist, ahead = arc(road), SIGNS.along.ahead
+    if fwd and s > ahead then add(kind, road, s - ahead, 1, id .. ':wf') end
+    if back and dist[#dist] - s > ahead then add(kind, road, s + ahead, -1, id .. ':wb') end
+  end
   -- the mapped nodes on a road vertex: give-way, stop, a marked crossing
   local vertices, wanted = {}, {}
   for _, point in ipairs(points) do
     if point.pos and (point.kind == 'give_way' or point.kind == 'stop_sign' or point.kind == 'crossing'
-        or point.kind == 'signal' or point.kind == 'traffic_sign') then
+        or point.kind == 'signal' or point.kind == 'traffic_sign' or point.kind == 'level_crossing'
+        or point.kind == 'speed_camera') then
       wanted[#wanted + 1] = point
     end
   end
@@ -2640,7 +2649,7 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
     end
     -- a sign mapped beside the road: for the road it stands by, and the side says who it faces
     local beside
-    if not found and point.kind == 'traffic_sign' then
+    if not found and (point.kind == 'traffic_sign' or point.kind == 'speed_camera') then
       local best = SIGNS.reach ^ 2
       for _, road in ipairs(roads) do
         local pts = road.points or NONE
@@ -2693,12 +2702,11 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
         end
         if fwd then add('crossing', road, s - SIGNS.crossing, 1, point.id .. ':f') end
         if back then add('crossing', road, s + SIGNS.crossing, -1, point.id .. ':b') end
-        -- a crossing out of town is warned of
-        local limit, mph = limitOf(road.tags or NONE)
-        if (limit or 0) * (mph and 1.6 or 1) >= SIGNS.along.open then
-          if fwd and s > SIGNS.along.ahead then add('zebra_ahead', road, s - SIGNS.along.ahead, 1, point.id .. ':wf') end
-          if back and length - s > SIGNS.along.ahead then add('zebra_ahead', road, s + SIGNS.along.ahead, -1, point.id .. ':wb') end
-        end
+        warnAhead('zebra_ahead', road, s, point.id, fwd, back)
+      elseif point.kind == 'level_crossing' then
+        if fwd then add('rail', road, s - SIGNS.rail, 1, point.id .. ':f') end
+        if back then add('rail', road, s + SIGNS.rail, -1, point.id .. ':b') end
+        warnAhead('danger', road, s, point.id, fwd, back)
       else
         local kinds = point.kind == 'traffic_sign' and SIGNS.decode(tags) or {{point.kind}}
         for index, sign in ipairs(kinds) do
@@ -7546,6 +7554,41 @@ function SIGNS.drawNames(mesh, x, y, z, yaw, own, cross)
   SIGNS.blade(mesh, T, cross, B.z + B.gap)
   SIGNS.blade(mesh, SOLID.frame(x, y, z, -yaw + math.pi / 2), own, B.z)
 end
+-- A level crossing: the Saint Andrew's cross, the one mark of it every country reads. The game has
+-- no such sign.
+SIGNS.cross = {z = 2.15, arm = .6, width = .085, angle = math.rad(35), stripes = 5}
+function SIGNS.drawRail(mesh, x, y, z, yaw)
+  local C, T = SIGNS.cross, SOLID.frame(x, y, z, -yaw)
+  SIGNS.pole(mesh, T, C.z + .35)
+  local step = 2 * C.arm / C.stripes
+  for _, a in ipairs({C.angle, math.pi - C.angle}) do
+    local ux, uz, nx, nz = math.cos(a), math.sin(a), -math.sin(a) * C.width, math.cos(a) * C.width
+    local function quad(from, to, y0)
+      local x0, z0, x1, z1 = ux * from, C.z + uz * from, ux * to, C.z + uz * to
+      return {{x0 - nx, y0, z0 - nz}, {x1 - nx, y0, z1 - nz}, {x1 + nx, y0, z1 + nz}, {x0 + nx, y0, z0 + nz}}
+    end
+    for k = 1, C.stripes do
+      local from = -C.arm + (k - 1) * step
+      SOLID.face(mesh, k % 2 == 1 and 'paint_red' or 'sign_white', 0, T, quad(from, from + step, -.03))
+    end
+    local back = quad(-C.arm, C.arm, -.02)
+    back[2], back[4] = back[4], back[2]
+    SOLID.face(mesh, 'yard', YARD.cell.metal, T, back)
+  end
+end
+-- A speed camera: a box on a tall pole looking at the driver
+SIGNS.camera = {z = 3.1, w = .22, deep = .28, high = .3, lens = .07}
+function SIGNS.drawCamera(mesh, x, y, z, yaw)
+  local C, T = SIGNS.camera, SOLID.frame(x, y, z, -yaw)
+  SIGNS.pole(mesh, T, C.z)
+  SOLID.box(mesh, 'yard', YARD.cell.dark, T, -C.w, -C.deep, C.z, C.w, C.deep, C.z + C.high)
+  local ring = {}
+  for k = 1, 8 do
+    local a = (k - .5) * math.pi / 4
+    ring[k] = {math.cos(a) * C.lens, -C.deep - .005, C.z + C.high / 2 + math.sin(a) * C.lens}
+  end
+  SOLID.face(mesh, 'lens_dark', 0, T, ring)
+end
 function SIGNS.drawLight(mesh, lit, x, y, z, yaw, group, width)
   local H, c = SIGNS.head, YARD.cell
   local T = SOLID.frame(x, y, z, -yaw)
@@ -11370,6 +11413,10 @@ local function build(cells, i, j, options)
             SIGNS.drawTown(sceneDecor, x, y, z, yaw, request.value)
           elseif kind == 'names' then
             SIGNS.drawNames(sceneDecor, x, y, z, yaw, request.value[1], request.value[2])
+          elseif kind == 'rail' then
+            SIGNS.drawRail(sceneDecor, x, y, z, yaw)
+          elseif kind == 'speed_camera' then
+            SIGNS.drawCamera(sceneDecor, x, y, z, yaw)
           else
             static(name, shape, x, y, z, yaw)
             local it = scene.items[#scene.items]
