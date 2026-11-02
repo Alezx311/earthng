@@ -3603,6 +3603,15 @@ end
 
 BLD.worship = {church = true, cathedral = true, chapel = true, monastery = true, basilica = true, mosque = true,
   synagogue = true, temple = true}
+-- What stands for itself has no storeys: bare masonry, no windows, no city grammar (the Colosseum
+-- came out a curved block of flats). building= and historic= values.
+BLD.monuments = {ruins = true, triumphal_arch = true, amphitheatre = true, gate = true, monument = true, memorial = true,
+  archaeological_site = true, city_gate = true, citywalls = true, castle_wall = true, aqueduct = true, fort = true}
+
+function BLD.isMonument(tags)
+  return BLD.monuments[tags.building or ''] or BLD.monuments[tags.historic or ''] or BLD.worship[tags.building or '']
+    or tags.amenity == 'place_of_worship' or tags.man_made == 'tower' or false
+end
 
 local function wallMaterial(building, look, height)
   local tags = building.tags or {}
@@ -3616,8 +3625,14 @@ local function wallMaterial(building, look, height)
   -- sheds in rusty corrugated tin, warehouses half clad in metal sheet
   if b == 'shed' then return h % 2 == 0 and 'clad_tin' or 'wall_block' end
   if b == 'industrial' or b == 'warehouse' or b == 'factory' then return h % 2 == 0 and 'clad_metal' or 'wall_block' end
-  -- a church in plaster, not in a panel block's photo facade
-  if BLD.worship[b or ''] or tags.amenity == 'place_of_worship' then return 'wall_pls_cream' end
+  -- a church in plaster, not in a panel block's photo facade; a cathedral's towers and a mapped
+  -- church's parts in stone (window rows made the Sagrada Familia a block of flats)
+  if BLD.worship[b or ''] or tags.amenity == 'place_of_worship' then
+    return (tags.e2r_part or height > 30) and 'hw_ashlar' or 'wall_pls_cream'
+  end
+  -- a steel tower is no office: its parts take the outline's building=tower (link_parts)
+  if (tags.man_made == 'tower' and not material) or (material == 'steel' and (b == 'tower' or tags.man_made == 'tower')) then return 'clad_metal' end
+  if BLD.isMonument(tags) then return 'hw_ashlar' end
   local region = BLD.region(look)
   local house = not tags.e2r_part and BLD.house(tags, height, h, region)
   if house then return house end
@@ -5158,7 +5173,8 @@ end
 function BLD.dome(scene, ring, tags, top, material)
   local spec, r, cx, cy = BLD.domes[tags['roof:shape']], BLD.domeRadius(ring)
   local rise = number(tags['roof:height'], r * spec.rise)
-  if BLD.domeGold[tostring(tags['roof:colour'] or ''):lower()] then material = 'roof_gold' end
+  if BLD.domeGold[tostring(tags['roof:colour'] or ''):lower()] then material = 'roof_gold'
+  elseif BLD.isMonument(tags) then material = 'roof_metal' end -- lead, not the street's tiles
   material = material or 'roof_metal'
   local sides, steps = BLD.DOME.sides, #spec.profile - 1
   local function at(side, step)
@@ -5173,12 +5189,55 @@ function BLD.dome(scene, ring, tags, top, material)
   return true
 end
 
--- Walls under a part's dome: its height is the whole part, roof included
-function BLD.partWalls(height, tags, footprint)
+-- Walls under a part's dome: its height is the whole part, roof included. A far tile draws boxes,
+-- so a skillion part keeps its whole height (the Eiffel Tower's legs are skillions).
+function BLD.partWalls(height, tags, footprint, far)
   local spec = BLD.domes[tags['roof:shape'] or '']
   if not tags.e2r_part or not tags.height or not (spec or tags['roof:height']) then return height end
+  if far and tags['roof:shape'] == 'skillion' then return height end
   local rise = number(tags['roof:height'], spec and math.sqrt(footprint / math.pi) * spec.rise or 0)
   return math.max(2.2, height - rise)
+end
+
+-- A skillion: one plane falling along roof:direction, from the high side to the low, rise over
+-- the walls' top. Gives the plane's height at a point, nil for any other roof; with no direction
+-- it falls across the footprint's width. pitch: rise per metre without roof:height, up to rise.
+BLD.SKILLION = {pitch = .2, rise = 2.5}
+BLD.COMPASS = {N = 0, NNE = 22.5, NE = 45, ENE = 67.5, E = 90, ESE = 112.5, SE = 135, SSE = 157.5, S = 180,
+  SSW = 202.5, SW = 225, WSW = 247.5, W = 270, WNW = 292.5, NW = 315, NNW = 337.5}
+
+function BLD.skillion(rings, tags, top)
+  if tags['roof:shape'] ~= 'skillion' or #rings ~= 1 then return nil end
+  local ring = cleanRing(rings[1])
+  if #ring < 3 then return nil end
+  local compass = number(tags['roof:direction'], BLD.COMPASS[tostring(tags['roof:direction'] or ''):upper()])
+  local dx, dy
+  if compass then
+    dx, dy = math.sin(math.rad(compass)), math.cos(math.rad(compass))
+  else
+    local frame = footprintFrame(ring)
+    dx, dy = frame.bx, frame.by
+  end
+  local lo, hi = math.huge, -math.huge
+  for _, p in ipairs(ring) do
+    local s = p[1] * dx + p[2] * dy
+    lo, hi = math.min(lo, s), math.max(hi, s)
+  end
+  if hi - lo < EPS then return nil end
+  local rise = number(tags['roof:height'], math.min(BLD.SKILLION.rise, (hi - lo) * BLD.SKILLION.pitch))
+  return function(x, y)
+    return top + rise * math.max(0, math.min(1, (hi - (x * dx + y * dy)) / (hi - lo)))
+  end
+end
+
+-- The wall from the top of the walls up to the skillion over it
+function BLD.skillionWall(scene, kind, a, b, top, along, length, base, scale)
+  local za, zb = BLD.plane(a[1], a[2]), BLD.plane(b[1], b[2])
+  if za <= top + EPS and zb <= top + EPS then return end
+  local poly = {{a[1], a[2], top, along / scale, (top - base) / scale}, {b[1], b[2], top, (along + length) / scale, (top - base) / scale}}
+  if zb > top + EPS then poly[#poly + 1] = {b[1], b[2], zb, (along + length) / scale, (zb - base) / scale} end
+  if za > top + EPS then poly[#poly + 1] = {a[1], a[2], za, along / scale, (za - base) / scale} end
+  scene.polygon(kind, poly, false)
 end
 
 local function pitchedRoof(scene, rings, tags, top, base, kind, height, material, guess)
@@ -10080,7 +10139,7 @@ local function build(cells, i, j, options)
       for _, p in ipairs(exterior) do low, cx, cy = math.min(low, ground(p[1], p[2])), cx + p[1], cy + p[2] end
       local base = sourceCount > 0 and sourceSum / sourceCount or ground(cx / #exterior, cy / #exterior)
       if sourceCount > 0 then low = sourceLow end
-      local height = BLD.partWalls(math.max(2.2, math.min(850, BLD.height(building, tags, footprint, h))), tags, footprint)
+      local height = BLD.partWalls(math.max(2.2, math.min(850, BLD.height(building, tags, footprint, h))), tags, footprint, options.far)
       local lifted = (building.minHeight or number(tags.min_height, 0)) > 0
       local bottom = lifted and base + (building.minHeight or number(tags.min_height, 0)) or low - .3
       local top, kind = base + height, BLD.wallMaterial(building, look, height)
@@ -10123,7 +10182,7 @@ local function build(cells, i, j, options)
       -- doors along a row's long walls, or a single garage's short ones.
       local plinth = not lifted and height <= 13 and (kind:find('wall_brk_', 1, true) == 1 or kind:find('wall_pls_', 1, true) == 1)
       -- a house (BLD.house): its plinth colour, windows, door, gables and roof guesses
-      local dress = kind:find('hw_', 1, true) == 1 and BLD.dress(kind, h) or nil
+      local dress = kind:find('hw_', 1, true) == 1 and not BLD.isMonument(tags) and BLD.dress(kind, h) or nil
       if dress then plinth = not lifted and dress.plinth end
       -- Grammar v0, near tiles at Balanced and above: cornice, porch, one balcony, chimney.
       if dress and not options.far and BLD.mass(options.detail) then
@@ -10135,13 +10194,16 @@ local function build(cells, i, j, options)
       -- City grammar, near tiles at Balanced and above. Houses stay on dress.mass.
       -- Flat roofs gain a parapet and a crown; street facades and the long yard side gain canopies.
       BLD.city, BLD.face, BLD.faces = nil, nil, nil
-      BLD.city = (not dress and not open and not tags.e2r_part and not options.far and not lifted and BLD.mass(options.detail) and BLD.block(use, height)) or nil
+      BLD.city = (not dress and not open and not tags.e2r_part and not options.far and not lifted and not BLD.isMonument(tags) and BLD.mass(options.detail) and BLD.block(use, height)) or nil
       if BLD.city then BLD.faces = {} end
+      -- a skillion over the walls; wall=no on a part leaves the plane alone (the Eiffel Tower's legs)
+      BLD.plane = not options.far and not open and BLD.skillion(rings, tags, top) or nil
+      BLD.bare = BLD.plane and tags.e2r_part and tags.wall == 'no'
       local doors = (use == 'garage' or use == 'garages') and (h % 3 == 0 and 'door_rust' or 'door_garage')
       local detailed = options.experimentalDetail and BLD.city and not options.far
       BLD.report = type(options.detailReport) == 'table' and options.detailReport or nil
       local acRoom = BLD.DETAIL.acMax
-      for _, raw in ipairs(open and NONE or rings) do
+      for _, raw in ipairs((open or BLD.bare) and NONE or rings) do
         local ring, along = cleanRing(raw), 0
         local signed = 0
         for k, p in ipairs(ring) do local q = ring[k % #ring + 1]; signed = signed + p[1] * q[2] - q[1] * p[2] end
@@ -10201,6 +10263,7 @@ local function build(cells, i, j, options)
             {b[1], b[2], upper, (along + length) / scale, (upper - base) / scale},
             {b[1], b[2], top, (along + length) / scale, height / scale},
             {a[1], a[2], top, along / scale, height / scale}}, false)
+          if BLD.plane then BLD.skillionWall(scene, wallKind, a, b, top, along, length, base, scale) end
           if door and length > EPS then
             -- one door a bay, 2 cm out from the cement: a row of doors between piers, not one
             -- shutter along the whole row (bld-garages-03)
@@ -10248,7 +10311,7 @@ local function build(cells, i, j, options)
       end
       if options.far or open or not BLD.pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet, BLD.region(look)), dress) then
         for _, tri in ipairs(triangulate(rings, pause, rect)) do
-          for _, p in ipairs(tri) do p[3] = top end
+          for _, p in ipairs(tri) do p[3] = BLD.plane and BLD.plane(p[1], p[2]) or top end
           scene.polygon('roof', tri, true)
         end
         if open then BLD.shopCanopy(scene, rings, base, top, shops.roofs[building], ground, pause, rect) end

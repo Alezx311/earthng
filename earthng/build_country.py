@@ -212,12 +212,14 @@ def compile_cell(store, rect, include=None):
                 cell['junctions'].append({'id': f'{fid}:{n}',
                                           'rings': _rings(store, part, height), 'height': height})
     seen.clear()
-    pending, points = [], []
+    pending, points, tidal = [], [], []
     for fid, kind, data, geometry in _scenery(store, padded):
         if kind == 'coastline' or (kind, fid) in seen or not looks.keep_scenery(kind, include):
             continue
         seen.add((kind, fid))
         tags = data.get('tags', {})
+        if kind == 'water' and tags.get('water') == 'harbour' and _at_sea_level(store, geometry):
+            tidal.append(geometry)
         # a power line stays whole: its nodes are its poles, a cut end would be a wire to nowhere
         if kind not in ('building', 'power') and not shapely.box(*padded).contains(geometry):
             # A forest or field spans dozens of cells; whole, it was copied into each of them
@@ -272,8 +274,8 @@ def compile_cell(store, rect, include=None):
         heights = np.asarray(store.terrain.sample(np.array([(x, y) for y in ys for x in xs])), dtype=float)
     if not np.isfinite(heights).all():
         raise ValueError('non-finite terrain grid')
-    heights = _coast(store, rect, xs, ys, heights)
-    cell['terrain'] = {'rect': list(rect), 'nx': len(xs), 'ny': len(ys), 'heights': heights.tolist()}
+    heights = _flood(xs, ys, _coast(store, rect, xs, ys, heights), tidal)
+    cell['terrain'] ={'rect': list(rect), 'nx': len(xs), 'ny': len(ys), 'heights': heights.tolist()}
     return cell
 
 
@@ -367,6 +369,29 @@ def _coast(store, rect, xs, ys, heights):
     dry = (side > 0) & (distance <= COAST_DRY)
     out[wet] = np.minimum(out[wet], level - 1.0 - 0.01 * np.minimum(distance[wet], 600))
     out[dry] = np.maximum(out[dry], level + 0.6)
+    return out
+
+
+HARBOUR_RISE = 12.  # a water=harbour is the sea's when the DEM keeps it this close to sea level
+HARBOUR_FLOOR = 2.  # metres its ground lies under the sea plane
+
+
+def _at_sea_level(store, geometry):
+    """An inland river port is water=harbour too: its own level, no pit under it. The polygon's
+    one inner point answers, so every cell of it agrees."""
+    point = geometry.representative_point()
+    return float(np.ravel(store.terrain.sample(np.array([(point.x, point.y)])))[0]) <= sources.LIFT + HARBOUR_RISE
+
+
+def _flood(xs, ys, heights, waters):
+    """Port Jackson: the coastline stops at the Heads and the harbour is natural=water, so _coast
+    does not reach it and the water lay on the DEM's blur, a hump over the Opera House."""
+    if not waters:
+        return heights
+    gx, gy = np.meshgrid(xs, ys)
+    wet = shapely.contains_xy(shapely.union_all(waters), gx.ravel(), gy.ravel())
+    out = np.asarray(heights, dtype=float).copy()
+    out[wet] = np.minimum(out[wet], sources.LIFT - HARBOUR_FLOOR)
     return out
 
 

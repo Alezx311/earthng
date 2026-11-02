@@ -195,6 +195,24 @@ class GeneratorTests(unittest.TestCase):
         walls = {m.material for i in scene['items'].values() for m in (i.meshes or self.lua.table()).values() if m.material.startswith('e2rf_wall')}
         self.assertEqual(walls, {'e2rf_wall_pls_cream'})
 
+    def test_a_monument_is_bare_masonry(self):
+        for tags in ({'building': 'amphitheatre'}, {'building': 'ruins'}, {'historic': 'archaeological_site'}, {'building': 'triumphal_arch'}):
+            scene = self.build(buildings=[self.building(height=40, **tags)])
+            walls = {m.material for i in scene['items'].values() for m in (i.meshes or self.lua.table()).values() if m.material.startswith('e2rf_')}
+            self.assertIn('e2rf_hw_ashlar', walls, tags)
+            self.assertFalse([w for w in walls if 'wall_' in w or 'win' in w], tags)
+
+    def test_a_cathedral_tower_is_stone(self):
+        scene = self.build(buildings=[self.building(height=60, building='cathedral')])
+        self.assertTrue(self.corners(scene, 'e2rf_hw_ashlar'))
+        self.assertFalse(self.corners(scene, 'e2rf_wall_pls_cream'))
+
+    def test_a_steel_tower_is_metal(self):
+        scene = self.build(buildings=[self.building(height=80, building='tower', **{'building:material': 'steel'})])
+        self.assertTrue(self.corners(scene, 'e2rf_clad_metal'))
+        scene = self.build(buildings=[self.building(height=80, e2r_part='1', man_made='tower', **{'tower:type': 'bridge'})])
+        self.assertTrue(self.corners(scene, 'e2rf_clad_metal'))
+
     def test_a_dome_rises_from_the_walls(self):
         scene = self.build(buildings=[self.building(height=12, **{'roof:shape': 'dome'})])
         roofs = [p for mesh in ('e2rf_roof_metal', 'e2rf_roof_tile', 'e2rf_roof_sheet', 'e2rf_roof_mtile_red', 'e2rf_roof_mtile_brown', 'e2rf_roof_mtile_green')
@@ -216,6 +234,33 @@ class GeneratorTests(unittest.TestCase):
     def test_a_low_part_without_a_roof_of_its_own_stays_flat(self):
         scene = self.build(buildings=[self.building(height=6, e2r_part='1')])
         self.assertTrue(self.corners(scene, 'e2rf_roof'))
+
+    def test_a_skillion_falls_along_its_direction(self):
+        tags = {'roof:shape': 'skillion', 'roof:height': '5', 'roof:direction': '90'}
+        for direction in ('90', 'E'):
+            tags['roof:direction'] = direction
+            scene = self.build(buildings=[self.building(height=10, **tags)])
+            roof = self.corners(scene, 'e2rf_roof')
+            west = max(p[2] for p in roof if p[0] < 101)
+            east = max(p[2] for p in roof if p[0] > 119)
+            self.assertAlmostEqual(west - east, 5, delta=.01)     # high on the west, facing east
+
+    def test_a_skillion_part_rises_to_its_height_on_walls_under_the_plane(self):
+        part = self.building(height=10, e2r_part='1', **{'roof:shape': 'skillion', 'roof:height': '8', 'roof:direction': '0'})
+        part['tags']['height'] = '10'
+        scene = self.build(buildings=[part])
+        roof = self.corners(scene, 'e2rf_roof')
+        self.assertAlmostEqual(max(p[2] for p in roof) - min(p[2] for p in roof), 8, delta=.01)
+        self.assertTrue([m for i in scene['items'].values() for m in (i.meshes or self.lua.table()).values()
+                         if m.material.startswith('e2rf_wall')])
+
+    def test_a_part_without_walls_is_the_plane_alone(self):
+        part = self.building(height=10, e2r_part='1', wall='no', **{'roof:shape': 'skillion', 'roof:height': '8', 'roof:direction': '0'})
+        part['tags']['height'] = '10'
+        scene = self.build(buildings=[part])
+        self.assertTrue(self.corners(scene, 'e2rf_roof'))
+        self.assertFalse([m for i in scene['items'].values() for m in (i.meshes or self.lua.table()).values()
+                          if m.material.startswith('e2rf_wall')])
 
 
 if __name__ == '__main__':

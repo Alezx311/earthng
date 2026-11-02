@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 import zipfile
 
 import numpy as np
+import shapely
 from shapely.geometry import LineString, Point, Polygon
 
 import build_country as country
@@ -459,6 +460,22 @@ class CountryTests(unittest.TestCase):
         self.assertLess(heights[10, 36], sources.LIFT - 1)               # x = 900: sea east of the cape
         self.assertLess(heights[10, 4], sources.LIFT - 1)                # x = 100: sea west of it
         self.assertEqual(heights[10, 20], sources.LIFT + 3.0)            # x = 500: the cape itself
+
+    def test_a_harbour_at_sea_level_sinks_under_the_sea_plane(self):
+        harbour = shapely.box(100, 100, 500, 500)
+        water = (-9, 'water', {'tags': {'natural': 'water', 'water': 'harbour'}}, harbour)
+        self.store.scenery = lambda rect: [water]
+        self.store.terrain = Mock(sample=lambda xy: np.full(len(xy), sources.LIFT + 6.0))
+        heights = np.array(country.compile_cell(self.store, [0, 0, 1000, 1000])['terrain']['heights']).reshape(41, 41)
+        self.assertLess(heights[12, 12], sources.LIFT)                   # (300, 300): the harbour
+        self.assertEqual(heights[30, 30], sources.LIFT + 6.0)            # (750, 750): the shore
+
+    def test_an_inland_port_keeps_its_level(self):
+        water = (-9, 'water', {'tags': {'natural': 'water', 'water': 'harbour'}}, shapely.box(100, 100, 500, 500))
+        self.store.scenery = lambda rect: [water]
+        self.store.terrain = Mock(sample=lambda xy: np.full(len(xy), sources.LIFT + 90.0))
+        heights = np.array(country.compile_cell(self.store, [0, 0, 1000, 1000])['terrain']['heights']).reshape(41, 41)
+        self.assertEqual(heights[12, 12], sources.LIFT + 90.0)
 
     def test_nonfinite_geometry_and_terrain_are_rejected(self):
         data = copy.deepcopy(ROAD)
