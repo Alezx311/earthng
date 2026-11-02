@@ -2378,7 +2378,7 @@ end
 -- what the pack already says at a node: road classes, oneway, maxspeed. Where the data says
 -- nothing (a speed with no model, a junction that may have lights) no sign stands.
 -- SIGNS.plan returns requests {kind, model, road, dist, s, dir, key}: the sign stands on the
--- right of travel along `road` in direction `dir` (+1 the point order) at arc length s.
+-- driver's side of travel along `road` in direction `dir` (+1 the point order) at arc length s.
 local SIGNS = {dir = GDC .. 'italy_traf_sign_', near = .5, mouth = 1.2, priority = 5, speedAt = 8,
   oneway = 3, noentry = 1, crossing = 2, minor = 2, top = 3, lights = 30,
   lead = 45, pair = 30, cluster = 45, slots = 3, reach = 15,
@@ -3047,8 +3047,8 @@ function ROADS.streetParking(roads, env)
         elseif s.where == 'none' then off = nil
         else off = hw + .25 + depth / 2 end
         -- the direction cars face: with the traffic on their side, against the point order on
-        -- the left of a two-way street
-        local along = (oneway and flip) and -1 or (not oneway and s.side == 1) and -1 or 1
+        -- the left of a two-way street (the right, where traffic keeps left)
+        local along = (oneway and flip) and -1 or (not oneway and (s.side == 1) ~= (ROADS.leftHand or false)) and -1 or 1
         local lo, hi = (cuts[1] or 0) + P.mouth, length - (cuts[2] or 0) - P.mouth
         -- the turn lanes before a junction (DETAIL.arrows) are not parked in: the side's traffic
         -- runs towards the way's end, or its start against the point order
@@ -3191,7 +3191,10 @@ function DETAIL.arrows(ctx)
                   if any then
                     -- the lane's middle, as an offset left of the point order
                     local o
-                    if dir == 1 then o = lo + (n - k + .5) * lw else o = hi - (n - k + .5) * lw end
+                    if ROADS.leftHand then
+                      if dir == 1 then o = hi - (k - .5) * lw else o = lo + (k - .5) * lw end
+                    elseif dir == 1 then o = lo + (n - k + .5) * lw
+                    else o = hi - (n - k + .5) * lw end
                     DETAIL.arrow(emit, {c[1] - ty * o, c[2] + tx * o}, sx, sy, turns, z0)
                     painted = painted + 1
                     if ctx.report then ctx.report[#ctx.report + 1] = {kind = 'arrow', x = c[1] - ty * o,
@@ -11088,7 +11091,7 @@ local function build(cells, i, j, options)
     if not hit then return end
     local nx, ny = -hit.dy / hit.len, hit.dx / hit.len
     local side = (p[1] - hit.x) * nx + (p[2] - hit.y) * ny >= 0 and 1 or -1
-    if math.sqrt(best) < hit.strip.hw + .5 then side = -1 end  -- on the carriageway: its right side
+    if math.sqrt(best) < hit.strip.hw + .5 then side = ROADS.leftHand and 1 or -1 end  -- on the carriageway: the kerb's side
     local walk = hit.strip.walk[hit.k][side] and tune.sidewalk or 0
     local off = hit.strip.hw + walk + 1.4
     local x, y = hit.x + nx * side * off, hit.y + ny * side * off
