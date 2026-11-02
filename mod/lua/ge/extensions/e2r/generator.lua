@@ -1151,10 +1151,16 @@ end
 function ROADS.tunnel(tags)
   return tags.tunnel ~= nil and tags.tunnel ~= 'no' and tags.tunnel ~= 'building_passage'
 end
+-- A foot bridge is the only foot way among the roads (fast_sources.foot_segments): a deck for
+-- people, with no sidewalks, no traffic and no say in the height of the roads round it.
+ROADS.feet = {footway = true, path = true, pedestrian = true, cycleway = true, steps = true, bridleway = true}
+function ROADS.foot(tags)
+  return ROADS.feet[tags.highway or ''] == true
+end
 -- a deck's concrete: its edge face reaches depth under the road, a parapet height over it.
 -- Piers: a wall every `every` m of a bridge at least `min` long, `across` of the half width,
 -- `thick` along the road, kept `clear` m off any road under it; abutments `thick` deep.
-ROADS.deck = {depth = 1, parapet = .9, thick = .3, repeatU = 2.5,
+ROADS.deck = {depth = 1, footDepth = .5, parapet = .9, thick = .3, repeatU = 2.5,
   pier = {every = 25, min = 16, across = .85, thick = 1.6, clear = 1.5, gap = 1, sink = .5}}
 -- A deck's ends: OSM draws many decks barely longer than the road under them, and on the 10 m
 -- lattice the ground between the approach's bank and that road stood at 60-70 degrees, a wall
@@ -1169,6 +1175,7 @@ ROADS.wing = {steep = 55, reach = 15, material = 'fence_wall', decals = {edge_gr
 -- main roads' decks are girders deeper than a street's slab (fast_profile.CLEARANCE leaves
 -- 4.5 m under the deepest)
 function ROADS.deckDepth(tags)
+  if ROADS.foot(tags) then return ROADS.deck.footDepth end
   local rank = ROADS.rankOf(tags)
   return rank >= 4.5 and 1.5 or rank >= 2.5 and 1.2 or ROADS.deck.depth
 end
@@ -3638,6 +3645,8 @@ local function wallMaterial(building, look, height, footprint)
   -- building:part stands on the rest of its building
   local lifted = building.minHeight or number(tags.min_height, 0)
   if lifted >= 20 and footprint and not tags.e2r_part and height - lifted > 2.5 * math.sqrt(footprint) then return 'clad_metal' end
+  -- what OSM says is clad in metal and names no other material: a big wheel's rim and spokes
+  if tags['building:cladding'] == 'metal' and (not material or material == 'metal' or material == 'steel') then return 'clad_metal' end
   if BLD.isMonument(tags) then return 'hw_ashlar' end
   local region = BLD.region(look)
   local house = not tags.e2r_part and BLD.house(tags, height, h, region)
@@ -8248,7 +8257,13 @@ local function build(cells, i, j, options)
   end
   -- Old country packs store bridge profiles with about a metre under the soffit. Raise those
   -- decks, and the roads that run up to them, before any mesh or junction reads the points.
-  ROADS.liftDecks(lists.roads, pause)
+  do
+    local carried = {}
+    for _, road in ipairs(lists.roads) do
+      if not ROADS.foot(road.tags or NONE) then carried[#carried + 1] = road end
+    end
+    ROADS.liftDecks(carried, pause)
+  end
   local roads, scene = collector(rect, key, 'road', pause), collector(rect, key, layerName, pause, distant and MIXED_TRIS or nil)
   local roadDecor, sceneDecor = collector(rect, key .. '_marks', 'road', pause), collector(rect, key .. '_cars', 'scene', pause)
   -- A far tile (the ring past the near radius, ~1 km) draws each road's surface into its scene layer,
@@ -8281,6 +8296,7 @@ local function build(cells, i, j, options)
   -- a junction takes the material of its most important road
   local function roadMaterial(tags)
     local grade = roadGrade(tags)
+    if ROADS.foot(tags) then return tags.surface == 'asphalt' and 'footway_asphalt' or 'footway', grade end
     if grade == 1 and (tags.surface == 'sett' or tags.surface == 'cobblestone' or tags.surface == 'unhewn_cobblestone') and BLD.drawnArt() then
       return 'road_sett', grade
     end
@@ -9019,7 +9035,8 @@ local function build(cells, i, j, options)
           local t = math.max(0, math.min(1, ((target[1] - a[1]) * dx + (target[2] - a[2]) * dy) / (length * length)))
           local p = lerp(a, b, t)
           local distance = (p[1] - target[1]) ^ 2 + (p[2] - target[2]) ^ 2
-          if distance < bestDistance and p[1] >= rect[1] and p[1] <= rect[3] and p[2] >= rect[2] and p[2] <= rect[4] then
+          if distance < bestDistance and p[1] >= rect[1] and p[1] <= rect[3] and p[2] >= rect[2] and p[2] <= rect[4]
+              and not ROADS.foot(tags) then
             bestDistance = distance
             bestSpawn = {pos = {p[1], p[2], (p[3] or 0) + lift}, yaw = math.atan2(dx, dy)}
           end

@@ -1214,6 +1214,34 @@ class GeneratorTests(unittest.TestCase):
         self.assertAlmostEqual(item.pos[2], 254 - .15, places=3)     # in the parapet, 0.3 m thick
         self.assertAlmostEqual(item.pos[3], 20 + .1 + .9, places=2)  # its top, over the deck
 
+    def test_a_foot_bridge_is_a_deck_for_people(self):
+        deck = {'id': 'deck', 'nodes': ['fa', 'fb'], 'width': 16, 'points': line(0, 250, 500, 250, 20),
+                'tags': {'highway': 'pedestrian', 'bridge': 'yes', 'layer': '1', 'surface': 'asphalt'}}
+        lamp = {'id': 'l', 'kind': 'lamp', 'tags': {}, 'pos': [250, 257, 5]}
+        road, scene = self.build([{'roads': [deck], 'points': [lamp]}], terrainStep=100)[:2]
+        self.assertTrue(list(self.triangles(road, 'e2rf_footway_asphalt')))
+        self.assertFalse(list(self.triangles(road, 'e2rf_road')))
+        walls = [p for t in self.triangles(scene, 'e2rf_fence_wall') for p in t if p[2] > 15]
+        self.assertAlmostEqual(min(p[2] for p in walls), 20 + .1 - .5, places=2)     # a slab, no girder
+        self.assertAlmostEqual(max(p[1] for p in walls), 258 + .3, places=3)         # no sidewalks on it
+        item = next(item for item in scene['items'].values() if item.kind == 'static' and '_point_' in item.name)
+        self.assertAlmostEqual(item.pos[2], 258 - .15, places=3)                     # the lamp on its parapet
+        self.assertAlmostEqual(item.pos[3], 20 + .1 + .9, places=2)
+        self.assertFalse(road['nav']['segments'] if 'nav' in road else None)
+
+    def test_a_foot_bridge_moves_no_road_and_no_car_lands_on_it(self):
+        deck = {'id': 'deck', 'nodes': ['fa', 'fb'], 'width': 3, 'points': [[100, 10, 26.1], [100, 490, 26.1]],
+                'tags': {'highway': 'footway', 'bridge': 'yes', 'layer': '1'}}
+        street = {'id': 'street', 'nodes': ['a', 'b'], 'width': 8, 'points': line(0, 200, 500, 200, 20),
+                  'tags': {'highway': 'residential', 'bridge': 'yes', 'layer': '2'}}
+        over = {'id': 'over', 'nodes': ['c', 'd'], 'width': 8, 'points': line(300, 0, 300, 500, 20),
+                'tags': {'highway': 'residential'}}
+        road = self.build([{'roads': [deck, street, over]}], terrainStep=100)[0]
+        strip = [p for t in self.triangles(road, 'e2rf_road') for p in t]
+        self.assertLess(max(p[2] for p in strip), 21)
+        alone = self.build([{'roads': [deck]}], terrainStep=100)[0]
+        self.assertFalse(alone['drivable'])
+
     def test_street_props_line_sidewalks_and_footways_but_not_carriageways(self):
         # four arms meeting at a junction node (250, 250)
         roads = [{'id': arm, 'nodes': ['j', arm], 'width': 8, 'tags': {'highway': 'residential', 'sidewalk': 'both'},

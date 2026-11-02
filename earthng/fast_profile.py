@@ -36,6 +36,9 @@ COUPLE = 1000.0
 # A deck over a road: 4.5 m headroom + the deepest girder (ROADS.deckDepth of a
 # main road, 1.5 m), per layer. A street slab is 1 m and keeps a little more air.
 CLEARANCE, CLEAR_WEIGHT, CLEAR_PASSES = 6.0, 1e4, 12
+# A foot bridge (foot_decks): stations every FOOT_STEP m, the slab's FOOT_CLEAR over a road
+# (generator DECK_CLEAR.gap and its slack), a ramp of FOOT_GRADE up to it.
+FOOT_STEP, FOOT_LIFT, FOOT_CLEAR, FOOT_GRADE = 5., .3, 6.1, .12
 # Reserve the possible sidewalks of the rendered deck; clearance is measured at its
 # soffit over the whole lower carriageway, including skew crossings. Numerical slack
 # stays above the 4.5 m headroom rather than silently accepting a shortfall from it.
@@ -484,6 +487,46 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     bounds = np.r_[run, len(s)]
     profiles = [(s[bounds[k]:bounds[k + 1]], hs[bounds[k]:bounds[k + 1]]) for k in range(len(segments))]
     return profiles, {n: float(h[k]) for n, k in node_index.items()}
+
+
+def foot_decks(segments, sample, crossings):
+    """(s, h) per foot bridge, solved alone: roads are never moved for one.
+
+    Ends lie on the ground and pieces of one bridge share their nodes (spans). Between them the
+    deck runs straight, FOOT_LIFT over the ground at least, so that a little bridge over a stream
+    shows, and climbs at FOOT_GRADE to clear a road under it, its ends staying where they are
+    however short the climb. crossings[k]: (s along the deck, the road's height, its half width).
+    A road well over the deck's line passes above it."""
+    nodes = sorted({n for seg in segments for n in seg['nodes']})
+    node_index = {n: k for k, n in enumerate(nodes)}
+    at = np.zeros((len(nodes), 2))
+    for seg in segments:
+        at[node_index[seg['nodes'][0]]], at[node_index[seg['nodes'][1]]] = seg['xy'][0], seg['xy'][-1]
+
+    def known(heights):
+        return np.where(np.isfinite(heights), heights, np.nanmedian(heights) if np.isfinite(heights).any() else 0.)
+
+    dem = known(np.asarray(sample(at), dtype=float))
+    deck = spans(segments, node_index, np.ones(len(segments)), dem)
+    out = []
+    for seg, over in zip(segments, crossings):
+        xy = np.asarray(seg['xy'], dtype=float)
+        cum = np.r_[0., np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
+        s = np.unique(np.r_[cum, np.linspace(0., cum[-1], max(2, int(math.ceil(cum[-1] / FOOT_STEP)) + 1))])
+        a, b = (node_index[n] for n in seg['nodes'])
+        z0, z1 = deck.get(a, dem[a]), deck.get(b, dem[b])
+        chord = z0 + (z1 - z0) * s / max(cum[-1], 1e-6)
+        ground = known(np.asarray(sample(np.column_stack([np.interp(s, cum, xy[:, 0]), np.interp(s, cum, xy[:, 1])])), dtype=float))
+        h = np.maximum(chord, ground + FOOT_LIFT)
+        for sc, road, half in over:
+            top = road + FOOT_CLEAR
+            if road < np.interp(sc, s, chord) + 2.:
+                before = max(FOOT_GRADE, (top - z0) / max(sc - half, 1.))
+                after = max(FOOT_GRADE, (top - z1) / max(cum[-1] - sc - half, 1.))
+                h = np.maximum(h, top - np.where(s < sc, before * np.maximum(sc - s - half, 0.), after * np.maximum(s - sc - half, 0.)))
+        h[0], h[-1] = z0, z1
+        out.append((s, h))
+    return out
 
 
 class Mosaic:

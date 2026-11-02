@@ -214,6 +214,73 @@ class ProfileTests(unittest.TestCase):
         self.assertGreater(min(h.min() for _,h in prof),55)
         self.assertAlmostEqual(nodes[3],60,delta=2)
 
+    def test_a_foot_bridge_runs_from_bank_to_bank_over_the_water(self):
+        river = lambda xy: 40 - 8. * (np.abs(np.asarray(xy, dtype=float)[:, 0] - 60) < 40)
+        seg = {'xy': [[0, 0], [120, 0]], 'nodes': ['fa', 'fb'], 'tags': {'highway': 'pedestrian', 'bridge': 'yes'}}
+        (_, h), = fast_profile.foot_decks([seg], river, [[]])
+        self.assertLess(np.ptp(h), .5)
+        self.assertGreater(h.min(), 39.9)
+
+    def test_a_foot_bridge_split_over_water_keeps_its_deck(self):
+        river = lambda xy: 40 - 30. * (np.abs(np.asarray(xy, dtype=float)[:, 0] - 100) < 80)
+        pieces = [{'xy': [[0, 0], [100, 0]], 'nodes': ['fa', 'fb'], 'tags': {}}, {'xy': [[100, 0], [200, 0]], 'nodes': ['fb', 'fc'], 'tags': {}}]
+        for _, h in fast_profile.foot_decks(pieces, river, [[], []]):
+            self.assertGreater(h.min(), 39)
+
+    def test_a_foot_bridge_clears_a_road_and_ends_on_the_ground(self):
+        flat = lambda xy: np.full(len(xy), 40.)
+        seg = {'xy': [[0, 0], [100, 0]], 'nodes': ['fa', 'fb'], 'tags': {}}
+        (s, h), = fast_profile.foot_decks([seg], flat, [[(50., 40., 5.)]])
+        self.assertAlmostEqual(np.interp(50, s, h), 40 + fast_profile.FOOT_CLEAR)
+        self.assertAlmostEqual(np.interp(47, s, h), 40 + fast_profile.FOOT_CLEAR)      # all across the road
+        self.assertEqual((h[0], h[-1]), (40, 40))
+        # a road far over the deck's line, a viaduct, passes above it
+        (_, low), = fast_profile.foot_decks([seg], flat, [[(50., 60., 5.)]])
+        self.assertLess(low.max(), 41)
+
+    def test_a_road_bridges_sidewalk_is_no_bridge_of_its_own(self):
+        class Plain:
+            local = staticmethod(lambda lon, lat: (np.asarray(lon, dtype=float), np.asarray(lat, dtype=float)))
+        road = {'tags': {'highway': 'tertiary', 'bridge': 'yes'}, 'xy': [[0, 0], [200, 0]], 'width': 8., 'prof': [[0, 200], [40, 40]]}
+        feet = {1: ({'highway': 'footway', 'footway': 'sidewalk', 'bridge': 'yes'}, [(1, 0, 5), (2, 200, 5)]),
+                2: ({'highway': 'footway', 'bridge': 'yes'}, [(3, 100, 30), (4, 300, 30)])}
+        flat = lambda xy: np.full(len(xy), 40.)
+        found = sources.foot_segments(feet, {}, Plain, [road], flat, emit=lambda _: None)
+        self.assertEqual([seg['way'] for seg in found], [2])
+        self.assertEqual(found[0]['nodes'], ['f3', 'f4'])                               # no node of a road
+
+    def test_a_foot_bridge_takes_the_width_of_its_outline(self):
+        class Plain:
+            local = staticmethod(lambda lon, lat: (np.asarray(lon, dtype=float), np.asarray(lat, dtype=float)))
+        feet = {1: ({'highway': 'pedestrian', 'bridge': 'yes'}, [(1, 0, 0), (2, 70, 0)])}
+        outline = {9: [(0, -8), (70, -8), (70, 8), (0, 8), (0, -8)]}
+        flat = lambda xy: np.full(len(xy), 40.)
+        (seg,) = sources.foot_segments(feet, outline, Plain, [], flat, emit=lambda _: None)
+        self.assertAlmostEqual(seg['width'], 16)
+        (plain,) = sources.foot_segments(feet, {}, Plain, [], flat, emit=lambda _: None)
+        self.assertEqual(plain['width'], 4)
+        self.assertEqual(sources.road_width({'highway': 'footway', 'width': '3'}), 3)
+
+    def test_lanes_of_one_foot_bridge_are_one_deck(self):
+        class Plain:
+            local = staticmethod(lambda lon, lat: (np.asarray(lon, dtype=float), np.asarray(lat, dtype=float)))
+        way = lambda y, n: ({'highway': 'footway', 'bridge': 'yes'}, [(n, 0, y), (n + 1, 70, y)])
+        feet = {1: way(-5, 1), 2: way(0, 3), 3: way(5, 5)}
+        outline = {9: [(0, -8), (70, -8), (70, 8), (0, 8), (0, -8)]}
+        flat = lambda xy: np.full(len(xy), 40.)
+        found = sources.foot_segments(feet, outline, Plain, [], flat, emit=lambda _: None)
+        self.assertEqual([(seg['way'], seg['width']) for seg in found], [(2, 16)])
+
+    def test_a_stub_inside_a_road_bridges_outline_takes_nothing_from_it(self):
+        class Plain:
+            local = staticmethod(lambda lon, lat: (np.asarray(lon, dtype=float), np.asarray(lat, dtype=float)))
+        road = {'tags': {'highway': 'tertiary', 'bridge': 'yes'}, 'xy': [[0, 0], [100, 0]], 'width': 8., 'prof': [[0, 100], [40, 40]]}
+        feet = {1: ({'highway': 'footway', 'bridge': 'yes'}, [(1, 50, 2), (2, 50, 18)])}
+        outline = {9: [(0, -20), (100, -20), (100, 20), (0, 20), (0, -20)]}
+        flat = lambda xy: np.full(len(xy), 40.)
+        (seg,) = sources.foot_segments(feet, outline, Plain, [road], flat, emit=lambda _: None)
+        self.assertEqual(seg['width'], 2.5)
+
     def test_a_split_bridge_stays_clear_of_the_ground(self):
         # a pass under a bridge in two pieces: the node between them is no abutment either
         hill=lambda xy: 40+10*(np.abs(np.asarray(xy)[:,0]-300)<60)
