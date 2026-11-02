@@ -3,6 +3,7 @@
 Unknown brands are retained as source facts. The ASCII key is a presentation hint,
 not a replacement for OSM's original brand, name, operator or object geometry.
 """
+import functools
 import re
 import unicodedata
 
@@ -81,9 +82,16 @@ def _recognized(tags):
             return WIKIDATA[tags[field]]
     for field in ('brand', 'brand:uk', 'brand:en', 'name', 'name:uk', 'name:en', 'name:ru',
                   'operator', 'operator:uk', 'operator:en', 'operator:ru'):
-        value = tags.get(field)
-        if not value:
-            continue
+        found = _named(tags.get(field))
+        if found:
+            return found
+    return None
+
+
+@functools.lru_cache(maxsize=1 << 16)
+def _named(value):
+    """The network a name, brand or operator says, or None."""
+    if value:
         normalized = _key(value)
         # a branch's number after the name: 'Подорожник №12'
         found = _LOOKUP.get(normalized) or _LOOKUP.get(re.sub(r'(?:no)?[0-9]+$', '', normalized))

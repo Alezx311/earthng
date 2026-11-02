@@ -105,7 +105,7 @@ class LocationTests(unittest.TestCase):
 
     def test_a_name_the_pack_repeats_is_said_once(self):
         self.lua.execute("places = L.index({{48.85, 2.35, 7, 'Paris', 'Париж', 1, 2100000, 'city'}})")
-        got = self.text("env.lat, env.lon, env.region = 48.85, 2.35, function() return nil, 'Париж' end; go(0, 0, 0)")
+        got = self.text("env.lat, env.lon, env.region = 48.85, 2.35, function() return 'Paris', 'Париж' end; go(0, 0, 0)")
         self.assertEqual(got[:2], ('Париж', None))
 
     def test_an_unnamed_stretch_keeps_the_name_for_a_moment(self):

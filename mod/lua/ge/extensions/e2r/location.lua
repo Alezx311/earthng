@@ -156,8 +156,10 @@ function M.step(t, now, x, y, vx, vy, env)
   push(where, place(t.part))
   push(where, place(t.town))
   if t.near and env.near then push(where, env.near(place(t.near))) end
-  push(where, t.region)
-  push(where, t.country)
+  -- a spot pack is called after its town: 'London' over 'Лондон'
+  local function itself(name) return name and t.town and (name == t.town[4] or name == t.town[5]) end
+  if not itself(t.region) then push(where, t.region) end
+  if not itself(t.country) then push(where, t.country) end
   if not street then street = table.remove(where, 1) end
   t.ref, t.main, t.rest = ref, street, #where > 0 and table.concat(where, ', ') or nil
   return true

@@ -129,12 +129,37 @@ function M.navgraph(nodes, nav, x, y, traffic, makePos)
         if a then
           local out = st.edges[a]
           if not out then out = {}; st.edges[a] = out end
-          if not out[b] then out[b] = {group = q.group, x = q.x, y = q.y, pos = makePos(q.x, q.y, q.z)} end
+          if not out[b] then
+            out[b] = {group = q.group, x = q.x, y = q.y, dx = q.dx, dy = q.dy, pos = makePos(q.x, q.y, q.z)}
+          end
         end
       end
     end
   end
   if traffic and st.now then send(st.now) end
+end
+
+-- The game test's look at the AI: cars {x, y, vx, vy} against the lights it was given. waiting: stand
+-- short of a red line, ran: cross it at speed, crossed: cross a line that is not red.
+function M.watch(cars, tally)
+  for _, out in pairs(st.edges) do
+    for _, e in pairs(out) do
+      tally.lights = (tally.lights or 0) + 1
+      local red = st.colours[e.group] == 'red'
+      for _, c in ipairs(cars) do
+        local rx, ry = c.x - e.x, c.y - e.y
+        local along, across = rx * e.dx + ry * e.dy, math.abs(rx * e.dy - ry * e.dx)
+        local speed = c.vx * e.dx + c.vy * e.dy
+        if across < 8 then
+          if red and along > -25 and along < 2 and math.abs(speed) < 1 then tally.waiting = (tally.waiting or 0) + 1
+          elseif along > -4 and along < 4 and speed > 3 then
+            local key = red and 'ran' or 'crossed'
+            tally[key] = (tally[key] or 0) + 1
+          end
+        end
+      end
+    end
+  end
 end
 
 -- once a frame: traffic is true while the game's AI drives

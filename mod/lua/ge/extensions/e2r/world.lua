@@ -3974,14 +3974,20 @@ local function runTest()
       result.trace = S.trace
       if test.traffic and gameplay_traffic then
         -- how many AI cars there are, how many move, the nearest one
-        local n, moving, nearest = 0, 0, math.huge
+        local n, moving, nearest, cars = 0, 0, math.huge, {}
         for _, id in ipairs(gameplay_traffic.getTrafficList() or {}) do
           local o = be:getObjectByID(id)
           if o then
             n = n + 1
-            if o:getVelocity():length() > 2 then moving = moving + 1 end
-            nearest = math.min(nearest, (o:getPosition() - p):length())
+            local v, at = o:getVelocity(), o:getPosition()
+            if v:length() > 2 then moving = moving + 1 end
+            nearest = math.min(nearest, (at - p):length())
+            cars[n] = {x = at.x, y = at.y, vx = v.x, vy = v.y}
           end
+        end
+        if M.signals then
+          result.signalWatch = result.signalWatch or {}
+          M.signals.watch(cars, result.signalWatch)
         end
         result.trafficTrace = result.trafficTrace or {}
         table.insert(result.trafficTrace, {math.floor(S.now), n, moving, nearest < math.huge and math.floor(nearest) or -1})

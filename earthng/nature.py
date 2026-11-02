@@ -22,15 +22,19 @@ def partition(areas):
     """
     import shapely
     rank = {kind: n for n, kind in enumerate(PRIORITY)}
-    claimed, result = None, []
+    claimed, result = [], []
     for feature in sorted(areas, key=lambda f: (rank.get(f['kind'], 100), f['id'])):
         if feature['kind'] not in rank:
             result.append(feature)
             continue
         rings = feature['rings']
         original = shapely.make_valid(shapely.Polygon(rings[0], rings[1:]))
-        geometry = original if claimed is None else shapely.difference(original, claimed)
-        claimed = original if claimed is None else shapely.union(claimed, original)
+        # only what is near: a union of the whole cell for each of its hundreds of footprints
+        # was a seventh of a cell's export
+        x0, y0, x1, y1 = box = original.bounds
+        near = [g for b, g in claimed if b[0] <= x1 and b[2] >= x0 and b[1] <= y1 and b[3] >= y0]
+        geometry = shapely.difference(original, shapely.union_all(near)) if near else original
+        claimed.append((box, original))
         def parts(g):
             if g.geom_type == 'Polygon':
                 yield g

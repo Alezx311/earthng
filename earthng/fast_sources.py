@@ -17,7 +17,7 @@ import numpy as np
 from PIL import Image
 import pyproj
 import shapely
-from shapely.geometry import LineString, MultiPoint, Point, shape
+from shapely.geometry import LineString, MultiPoint, Point
 from shapely.ops import transform
 
 VERSION = 'fast-22'         # source index cache; 22: level crossings and speed cameras are kept; 21: foot bridges have decks; 14: full clearance and abutments; 15: widths, shoulders, rails, raceways; 16: both, clearance matches a 1.5 m deck; 17: deck and road share the clearance (no runaway hills); 18: only crossing centre lines are overpasses; 19: a bridge split over water keeps its deck; 20: a dome on a building leaves the building standing
@@ -851,7 +851,7 @@ class Store:
             raise ValueError(f'no_osm scenery coverage: {bbox}')
         key,entry=hit
         if key not in self.scenes:
-            found={}; lines={}; retail_areas={}; factory=osmium.geom.GeoJSONFactory()
+            found={}; lines={}; retail_areas={}; marks=[]; factory=osmium.geom.WKBFactory()
             import fast_style
             import retail
             import venues
@@ -859,15 +859,15 @@ class Store:
                 def area(self,a):
                     tags = retail.enriched(a.tags)
                     point_kind = retail.kind(tags)
-                    kind='building' if a.tags.get('building') not in (None,'no') else (
-                        'water' if a.tags.get('natural')=='water' or a.tags.get('waterway')=='riverbank' else None)
-                    if kind is None and a.tags.get('building:part') not in (None,'no'):
+                    kind='building' if tags.get('building') not in (None,'no') else (
+                        'water' if tags.get('natural')=='water' or tags.get('waterway')=='riverbank' else None)
+                    if kind is None and tags.get('building:part') not in (None,'no'):
                         kind='building'; tags['e2r_part']='1'
                     if kind is None:
-                        kind=fast_style.ground_kind(a.tags)
+                        kind=fast_style.ground_kind(tags)
                     if (kind and a.id not in found) or point_kind:
                         try:
-                            geometry=shape(json.loads(factory.create_multipolygon(a)))
+                            geometry=shapely.from_wkb(factory.create_multipolygon(a))
                         except RuntimeError:
                             return      # broken OSM ring (e.g. area 29961653): skip that area alone
                         if kind:
@@ -880,9 +880,10 @@ class Store:
                 def node(self,n):
                     # bus stops and traffic signals where OSM has them (way nodes keep their tags
                     # in the source tiles); keyed apart from areas and ways
-                    kind=fast_style.point_kind(n.tags)
+                    tags=dict(n.tags)
+                    kind=fast_style.point_kind(tags)
                     if kind and n.location.valid():
-                        lines[-(10**12+n.id)]=(kind,retail.enriched(n.tags),Point(n.location.lon,n.location.lat))
+                        marks.append((-(10**12+n.id),kind,retail.enriched(tags),n.location.lon,n.location.lat))
                 def way(self,w):
                     # footpaths, fences, tree rows: lines, not areas (an area id is 2 x way id,
                     # so a line keys as -way id to stay apart)
@@ -898,6 +899,8 @@ class Store:
             # the location index still sees every node, so ways and areas keep their geometry.
             Reader().apply_file(str(Path(self.meta['source'])/entry['file']),locations=True,
                                 filters=[osmium.filter.KeyFilter(*fast_style.point_keys()).enable_for(osmium.osm.NODE)])
+            for (ident,kind,tags,*_),geometry in zip(marks,shapely.points([m[3:] for m in marks] or np.empty((0,2)))):
+                lines[ident]=(kind,tags,geometry)
             # OSM often maps a business both as a node and a containing site/building.
             # Keep the surveyed node when category and known brand match; unknown names
             # or neighbouring businesses are never guessed to be duplicates.

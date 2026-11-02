@@ -173,6 +173,17 @@ class Clock(unittest.TestCase):
         self.lua.execute('S.step(28, true)')
         self.assertEqual(self.lua.eval('mailbox[2][4]'), 2)
 
+    def test_the_test_sees_who_waits_and_who_runs_a_red(self):
+        self.feed()
+        self.lua.execute('''
+          S.step(0, true)
+          S.step(30, true)
+          tally = {}
+          S.watch({{x = 140, y = 0, vx = 0, vy = 0}, {x = 150, y = 1, vx = 9, vy = 0}, {x = 150, y = 40, vx = 9, vy = 0}}, tally)''')
+        self.assertEqual(self.lua.eval('tally.waiting'), 1)
+        self.assertEqual(self.lua.eval('tally.ran'), 1)
+        self.assertEqual(self.lua.eval('tally.lights'), 1)
+
     def test_no_traffic_nothing_is_sent(self):
         self.lua.execute('''
           S.step(0, false)
