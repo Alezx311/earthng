@@ -1,5 +1,24 @@
 # EarthNG native mod migration
 
+## 2026-11-02: release 0.7.0, landmark fixes from the stills
+
+- Stills of ten world landmarks showed what no bench had: the Eiffel Tower as floating plates (skillion
+  roofs were not drawn, `partWalls` took `roof:height` off the walls), the Colosseum as a curved block of
+  flats, window rows on the Golden Gate's towers, Tokyo Tower as an office (a stack of `building=yes`
+  with `min_height`). Now: `BLD.skillion`, `BLD.isMonument` (bare stone), metal towers, lead domes, and a
+  slim block hanging with nothing under it is a mast section.
+- Golden Gate deck: the way is split at the north tower, where the DEM is the sea, and `solve` took
+  every segment end for an abutment; the deck ran from 74 m down to the water and back. `fast_profile.spans`:
+  a node only bridges meet at is no abutment, heights run linearly along the deck between the ends on
+  the ground. Index version fast-19. In the rebuilt spot pack the deck stays at 55-75 over the strait.
+- Port Jackson is `natural=water, water=harbour` and the coastline stops at the Heads: `_flood` sinks
+  sea-level harbours under the sea (pack rebuild).
+- Map Builder did not build routing graphs, so navigation found routes only in packs with a graph
+  built by hand. `build_country._add_routing` writes them into every pack; Ukraine adds about 40 min.
+- Stills only: with gen-budget 40 and dense tiles (~300k triangles) undelivered scenes were evicted
+  and a parked camera kept the holes until the next epoch. In driving it heals, so the release keeps
+  `CELL_LIMIT, TILE_LIMIT, TRIANGLE_LIMIT, VERTEX_LIMIT`; only the stills planets raise them.
+
 ## 2026-10-28 (branch feature/navigation): drive and route past the landing region
 
 - The user: a marker cannot be set far away; 100 km at least, where the packs have the roads.
