@@ -213,6 +213,13 @@ class GeneratorTests(unittest.TestCase):
         scene = self.build(buildings=[self.building(height=80, e2r_part='1', man_made='tower', **{'tower:type': 'bridge'})])
         self.assertTrue(self.corners(scene, 'e2rf_clad_metal'))
 
+    def test_a_slim_block_in_the_air_is_a_mast(self):
+        scene = self.build(buildings=[self.building(height=150, min_height='20')])
+        self.assertTrue(self.corners(scene, 'e2rf_clad_metal'))
+        for building in (self.building(height=130, min_height='120'), self.building(height=150, min_height='20', e2r_part='1'),
+                         self.building(height=150)):
+            self.assertFalse(self.corners(self.build(buildings=[building]), 'e2rf_clad_metal'), building['tags'])
+
     def test_a_dome_rises_from_the_walls(self):
         scene = self.build(buildings=[self.building(height=12, **{'roof:shape': 'dome'})])
         roofs = [p for mesh in ('e2rf_roof_metal', 'e2rf_roof_tile', 'e2rf_roof_sheet', 'e2rf_roof_mtile_red', 'e2rf_roof_mtile_brown', 'e2rf_roof_mtile_green')

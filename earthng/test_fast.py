@@ -206,6 +206,21 @@ class ProfileTests(unittest.TestCase):
         prof,_=fast_profile.solve(segs,flat)
         self.assertLess(max(np.abs(h-40).max() for _,h in prof),1e-3)
 
+    def test_a_bridge_split_over_water_keeps_its_deck(self):
+        # the Golden Gate: one way ends at the tower, the DEM there is the sea
+        strait=lambda xy: 60-60*(np.abs(np.asarray(xy)[:,0]-900)<600)
+        segs=self.chain([0,200,900,1600,1800],lambda k:{'bridge':'yes','layer':'1'} if k in (1,2) else {})
+        prof,nodes=fast_profile.solve(segs,strait)
+        self.assertGreater(min(h.min() for _,h in prof),55)
+        self.assertAlmostEqual(nodes[3],60,delta=2)
+
+    def test_a_split_bridge_stays_clear_of_the_ground(self):
+        # a pass under a bridge in two pieces: the node between them is no abutment either
+        hill=lambda xy: 40+10*(np.abs(np.asarray(xy)[:,0]-300)<60)
+        segs=self.chain([0,150,300,450,600],lambda k:{'bridge':'yes','layer':'1'} if k in (1,2) else {})
+        _,nodes=fast_profile.solve(segs,hill)
+        self.assertGreater(nodes[3],52)                    # a soft pull: over the ground, not all the clearance
+
     def test_bridge_over_a_valley_ramps_smoothly(self):
         # river valley 12 m deep under a 300 m bridge: no step at the abutments
         valley=lambda xy: 40-12*(np.abs(np.asarray(xy)[:,0]-500)<150)

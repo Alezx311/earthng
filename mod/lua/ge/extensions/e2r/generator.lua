@@ -3613,7 +3613,7 @@ function BLD.isMonument(tags)
     or tags.amenity == 'place_of_worship' or tags.man_made == 'tower' or false
 end
 
-local function wallMaterial(building, look, height)
+local function wallMaterial(building, look, height, footprint)
   local tags = building.tags or {}
   local h = hash(tostring(tags.e2r_of or building.id or ''))
   height = height or building.height or number(tags.height, number(tags['building:levels'], 3) * 3)
@@ -3632,6 +3632,11 @@ local function wallMaterial(building, look, height)
   end
   -- a steel tower is no office: its parts take the outline's building=tower (link_parts)
   if (tags.man_made == 'tower' and not material) or (material == 'steel' and (b == 'tower' or tags.man_made == 'tower')) then return 'clad_metal' end
+  -- a slim block hanging with nothing under it is a mast's section (Tokyo Tower is a stack of
+  -- building=yes with min_height); a squat one, the observation deck, keeps its windows, and a
+  -- building:part stands on the rest of its building
+  local lifted = building.minHeight or number(tags.min_height, 0)
+  if lifted >= 20 and footprint and not tags.e2r_part and height - lifted > 2.5 * math.sqrt(footprint) then return 'clad_metal' end
   if BLD.isMonument(tags) then return 'hw_ashlar' end
   local region = BLD.region(look)
   local house = not tags.e2r_part and BLD.house(tags, height, h, region)
@@ -10142,7 +10147,7 @@ local function build(cells, i, j, options)
       local height = BLD.partWalls(math.max(2.2, math.min(850, BLD.height(building, tags, footprint, h))), tags, footprint, options.far)
       local lifted = (building.minHeight or number(tags.min_height, 0)) > 0
       local bottom = lifted and base + (building.minHeight or number(tags.min_height, 0)) or low - .3
-      local top, kind = base + height, BLD.wallMaterial(building, look, height)
+      local top, kind = base + height, BLD.wallMaterial(building, look, height, footprint)
       -- building=roof stands open on columns (BLD.shopCanopy); a canopy over pumps clears a
       -- lorry unless OSM gives its height
       local open = tags.building == 'roof' and not options.far

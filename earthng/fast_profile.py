@@ -219,6 +219,50 @@ def csr(rows, cols, vals, n):
     return ptr, c, data
 
 
+def spans(segments, node_index, kinds, dem):
+    """{node variable: height} of the nodes inside a bridge mapped in pieces.
+
+    Only an end on the ground is an abutment: a node where nothing but bridges meet is a split
+    of the way, and the DEM under it is the water (the Golden Gate's deck, split at its north
+    tower, dived to the sea). Between the abutments the heights run linearly along the deck."""
+    ends = [(k, node_index[seg['nodes'][0]], node_index[seg['nodes'][1]]) for k, seg in enumerate(segments)]
+    ground = {n for k, a, b in ends if kinds[k] <= 0 for n in (a, b)}
+    links = {}
+    for k, a, b in ends:
+        if kinds[k] > 0 and a != b:
+            xy = np.asarray(segments[k]['xy'], dtype=float)
+            weight = 1. / max(float(np.linalg.norm(np.diff(xy, axis=0), axis=1).sum()), .5)
+            links.setdefault(a, []).append((b, weight))
+            links.setdefault(b, []).append((a, weight))
+    inside = {n for n, near in links.items() if n not in ground and len(near) >= 2}
+    heights, seen = {}, set()
+    for start in inside:
+        if start in seen:
+            continue
+        part, stack = [], [start]
+        seen.add(start)
+        while stack:
+            n = stack.pop()
+            part.append(n)
+            for m, _ in links[n]:
+                if m in inside and m not in seen:
+                    seen.add(m)
+                    stack.append(m)
+        where = {n: i for i, n in enumerate(part)}
+        system, values, anchored = np.zeros((len(part), len(part))), np.zeros(len(part)), False
+        for n, i in where.items():
+            for m, weight in links[n]:
+                system[i, i] += weight
+                if m in where:
+                    system[i, where[m]] -= weight
+                else:
+                    values[i] += weight * dem[m]
+                    anchored = True
+        if anchored:                       # a ring of bridges with no way down keeps its DEM
+            heights.update(zip(part, np.linalg.solve(system, values).tolist()))
+    return heights
+
+
 def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     """Heights for every segment's stations. sample(xy) -> DEM height (vectorised, NaN outside).
 
@@ -249,16 +293,21 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     # A span keeps the chord between its abutments. The river bed is not a target, or the
     # deck sags into the valley. Flat overpasses still want BRIDGE_CLEAR above the ground.
     bounds = np.r_[run, len(s)]
+    deck = spans(segments, node_index, kinds, dem) if (kinds > 0).any() else {}
     for k in np.flatnonzero(kinds > 0):
         sl = slice(int(bounds[k]), int(bounds[k + 1]))
         sid = ids[sl]
+        for n in (int(sid[0]), int(sid[-1])):
+            if n in deck:
+                target[n] = max(deck[n], dem[n] + BRIDGE_CLEAR * layers[k])
+                weight[n] = SOFT if known[n] else 1e-3
         interior = sid >= len(node_index)
         if not interior.any():
             continue
         ss = s[sl]
         span = float(ss[-1] - ss[0])
         t = (ss - ss[0]) / span if span > 1e-6 else np.zeros(len(ss))
-        chord = dem[sid[0]] * (1 - t) + dem[sid[-1]] * t
+        chord = deck.get(int(sid[0]), dem[sid[0]]) * (1 - t) + deck.get(int(sid[-1]), dem[sid[-1]]) * t
         want = np.maximum(chord, dem[sid] + BRIDGE_CLEAR * layers[k])
         target[sid[interior]] = want[interior]
         weight[sid[interior]] = np.where(known[sid[interior]], SOFT, 1e-3)
