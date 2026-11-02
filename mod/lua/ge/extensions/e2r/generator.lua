@@ -1157,6 +1157,14 @@ ROADS.feet = {footway = true, path = true, pedestrian = true, cycleway = true, s
 function ROADS.foot(tags)
   return ROADS.feet[tags.highway or ''] == true
 end
+-- Is (x, y) under the water of this tile's cells (ROADS.waters, set at the top of a build)?
+function ROADS.wet(x, y)
+  for _, water in ipairs(ROADS.waters) do
+    local b = water.bounds
+    if x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] and inside(water.rings, x, y) then return true end
+  end
+  return false
+end
 -- a deck's concrete: its edge face reaches depth under the road, a parapet height over it.
 -- Piers: a wall every `every` m of a bridge at least `min` long, `across` of the half width,
 -- `thick` along the road, kept `clear` m off any road under it; abutments `thick` deep.
@@ -8919,14 +8927,20 @@ local function build(cells, i, j, options)
   end
   -- The DEM pulled to the roads round a point (fast.ground_corners): fully at a road's profile
   -- within pullFull of its edge, the DEM alone from pullZero. Nearer roads weigh more in the
-  -- height, the strongest pull wins. Bridges and tunnels do not pull.
+  -- height, the strongest pull wins. Bridges and tunnels do not pull, and water stays where the
+  -- DEM has it unless a road runs on it: quays on both banks of a 60 m arm of the Seine lifted the
+  -- river 4 m, over the deck of Pont Saint-Louis.
+  ROADS.waters = {}
+  for _, area in ipairs(lists.areas) do
+    if area.kind == 'water' then ROADS.waters[#ROADS.waters + 1] = {rings = area.rings, bounds = ringBounds(area.rings)} end
+  end
   local heightOperations = 0
   local span = math.max(1, tune.pullZero - tune.pullFull)
   local function pulled(x, y)
     local base = demAt(x, y)
     if base == nil then return nil end
     local nearby = segmentBins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE
-    local sa, sz, pull = 0, 0, 0
+    local sa, sz, pull, near = 0, 0, 0, math.huge
     for _, segment in ipairs(nearby) do
       if segment.surface then
         local a = segment.a
@@ -8939,12 +8953,13 @@ local function build(cells, i, j, options)
           local weight = w / math.max(d, 1)
           sa, sz = sa + weight, sz + weight * ((a[3] or 0) + t * ((segment.b[3] or 0) - (a[3] or 0)))
           if w > pull then pull = w end
+          if d < near then near = d end
         end
       end
       heightOperations = heightOperations + 1
       if heightOperations % 512 == 0 then pause() end
     end
-    if sa > 0 then return base + (sz / sa - base) * pull end
+    if sa > 0 and not (near > tune.shoulder and ROADS.wet(x, y)) then return base + (sz / sa - base) * pull end
     return base
   end
 

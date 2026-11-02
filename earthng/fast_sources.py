@@ -20,7 +20,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point
 from shapely.ops import transform
 
-VERSION = 'fast-22'         # source index cache; 22: level crossings and speed cameras are kept; 21: foot bridges have decks; 14: full clearance and abutments; 15: widths, shoulders, rails, raceways; 16: both, clearance matches a 1.5 m deck; 17: deck and road share the clearance (no runaway hills); 18: only crossing centre lines are overpasses; 19: a bridge split over water keeps its deck; 20: a dome on a building leaves the building standing
+VERSION = 'fast-22'         # source index cache; 22: level crossings and speed cameras are kept, a foot bridge ends level with its bank's street; 21: foot bridges have decks; 14: full clearance and abutments; 15: widths, shoulders, rails, raceways; 16: both, clearance matches a 1.5 m deck; 17: deck and road share the clearance (no runaway hills); 18: only crossing centre lines are overpasses; 19: a bridge split over water keeps its deck; 20: a dome on a building leaves the building standing
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -30,6 +30,7 @@ ORIGIN = (324000., 5590000.)
 DRIVABLE = {'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'residential',
             'unclassified', 'service', 'living_street', 'road', 'raceway'}
 # Foot and cycle ways on a bridge of their own: the deck's width without a width tag.
+FOOT_REACH = 30.       # m: the street a foot bridge's end comes to (fast_profile.foot_decks)
 FOOT_WIDTH = {'footway': 2.5, 'path': 2.0, 'pedestrian': 4.0, 'cycleway': 2.5, 'steps': 2.5, 'bridleway': 2.5}
 SIDEWALK_REACH, SIDEWALK_SHARE = 6., .6     # a foot way this far past a road bridge's edge over this share of it is its sidewalk
 DECK_SHARE = .6                             # a foot way this much inside a man_made=bridge outline is on that bridge
@@ -468,7 +469,18 @@ def foot_segments(feet, decks, frame, segments, sample, emit=print):
                 if shapely.get_type_id(point) == 0:
                     height = np.interp(shapely.line_locate_point(roads[j], point), *over[j]['prof'])
                     crossings[i].append((float(shapely.line_locate_point(foot[i], point)), float(height), over[j]['width'] / 2))
-    profiles = fast_profile.foot_decks(out, sample, crossings)
+    streets = [k for k, seg in enumerate(over) if fast_profile.kind(seg['tags']) != 'bridge']
+
+    def banks(xy):
+        heights = np.full(len(xy), np.nan)
+        if streets:
+            points = shapely.points(xy)
+            near = shapely.STRtree(roads[streets])
+            for i, j in near.query_nearest(points, max_distance=FOOT_REACH, all_matches=False).T.tolist():
+                k = streets[j]
+                heights[i] = np.interp(shapely.line_locate_point(roads[k], points[i]), *over[k]['prof'])
+        return heights
+    profiles = fast_profile.foot_decks(out, sample, crossings, banks)
     for seg, (ps, ph) in zip(out, profiles):
         seg['prof'] = [np.round(ps, 2).tolist(), np.round(ph, 3).tolist()]
     emit(f'foot bridges: {len(out)} of {len(order)} ways, {sum(map(len, crossings))} road crossings')

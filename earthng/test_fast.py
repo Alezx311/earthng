@@ -221,6 +221,14 @@ class ProfileTests(unittest.TestCase):
         self.assertLess(np.ptp(h), .5)
         self.assertGreater(h.min(), 39.9)
 
+    def test_a_foot_bridge_ends_level_with_the_street_of_its_bank(self):
+        river = lambda xy: 40 - 8. * (np.abs(np.asarray(xy, dtype=float)[:, 0] - 60) < 40)
+        seg = {'xy': [[0, 0], [120, 0]], 'nodes': ['fa', 'fb'], 'tags': {'highway': 'pedestrian', 'bridge': 'yes'}}
+        (_, h), = fast_profile.foot_decks([seg], river, [[]], lambda xy: np.array([44., 39.]))
+        self.assertEqual((h[0], h[-1]), (44, 40), 'a lower street leaves the end on the ground')
+        (_, h), = fast_profile.foot_decks([seg], river, [[]], lambda xy: np.array([70., np.nan]))
+        self.assertEqual(h[0], 40 + fast_profile.FOOT_BANK)
+
     def test_a_foot_bridge_split_over_water_keeps_its_deck(self):
         river = lambda xy: 40 - 30. * (np.abs(np.asarray(xy, dtype=float)[:, 0] - 100) < 80)
         pieces = [{'xy': [[0, 0], [100, 0]], 'nodes': ['fa', 'fb'], 'tags': {}}, {'xy': [[100, 0], [200, 0]], 'nodes': ['fb', 'fc'], 'tags': {}}]

@@ -2329,6 +2329,24 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(list(self.triangles(scene, 'e2rf_roof_tile')), [])
         self.assertAlmostEqual(sum(map(area, self.triangles(scene, 'e2rf_roof'))), 1200)
 
+    def test_quays_do_not_lift_the_river_between_them(self):
+        """The ground of a 75 m arm of a river, under quays 5 m over it, stays on the DEM."""
+        size = 41
+        heights = [10. if 12 <= y <= 15 else 15. for y in range(size) for x in range(size)]
+        grid = {'rect': [0, 0, 1000, 1000], 'nx': size, 'ny': size, 'heights': heights}
+        water = {'id': 'seine', 'kind': 'water', 'tags': {}, 'rings': [[[0, 300], [1000, 300], [1000, 375], [0, 375], [0, 300]]]}
+        quay = lambda ident, y: {'id': ident, 'nodes': [ident + 'a', ident + 'b'], 'width': 8,
+                                 'tags': {'highway': 'residential'}, 'points': line(0, y, 500, y, 15)}
+        cells = [{'roads': [quay('n', 395), quay('s', 280)], 'terrain': grid, 'areas': [water]}]
+        road = self.build(cells, 0, 0, maxTrees=0, maxGrass=0)[0]
+        wet = [p[2] for t in self.triangles(road, 'e2rf_water') for p in t if 320 <= p[1] <= 355]
+        self.assertTrue(wet)
+        self.assertLess(max(wet), 11)
+        dry = dict(cells[0], areas=[])
+        ground = [p[2] for t in self.triangles(self.build([dry], 0, 0, maxTrees=0, maxGrass=0)[0], 'e2rf_ground')
+                  for p in t if 320 <= p[1] <= 355]
+        self.assertGreater(max(ground), 12, 'land between two roads is pulled to them')
+
     def test_sea_below_zero_gets_a_water_plane_only_where_ground_dips(self):
         def cell(heights):
             return {'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 2, 'ny': 2, 'heights': heights}}

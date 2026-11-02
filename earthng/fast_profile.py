@@ -39,6 +39,8 @@ CLEARANCE, CLEAR_WEIGHT, CLEAR_PASSES = 6.0, 1e4, 12
 # A foot bridge (foot_decks): stations every FOOT_STEP m, the slab's FOOT_CLEAR over a road
 # (generator DECK_CLEAR.gap and its slack), a ramp of FOOT_GRADE up to it.
 FOOT_STEP, FOOT_LIFT, FOOT_CLEAR, FOOT_GRADE = 5., .3, 6.1, .12
+# The most a bank's street lifts a foot bridge's end over the DEM, whose 25 m blur fills a quay in
+FOOT_BANK = 6.
 # Reserve the possible sidewalks of the rendered deck; clearance is measured at its
 # soffit over the whole lower carriageway, including skew crossings. Numerical slack
 # stays above the 4.5 m headroom rather than silently accepting a shortfall from it.
@@ -489,10 +491,12 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     return profiles, {n: float(h[k]) for n, k in node_index.items()}
 
 
-def foot_decks(segments, sample, crossings):
+def foot_decks(segments, sample, crossings, banks=None):
     """(s, h) per foot bridge, solved alone: roads are never moved for one.
 
-    Ends lie on the ground and pieces of one bridge share their nodes (spans). Between them the
+    Ends lie on the ground, or level with the street of the bank where it stands higher (banks(xy):
+    the height of the street by each point, nan without one), and pieces of one bridge share their
+    nodes (spans). Between them the
     deck runs straight, FOOT_LIFT over the ground at least, so that a little bridge over a stream
     shows, and climbs at FOOT_GRADE to clear a road under it, its ends staying where they are
     however short the climb. crossings[k]: (s along the deck, the road's height, its half width).
@@ -507,6 +511,8 @@ def foot_decks(segments, sample, crossings):
         return np.where(np.isfinite(heights), heights, np.nanmedian(heights) if np.isfinite(heights).any() else 0.)
 
     dem = known(np.asarray(sample(at), dtype=float))
+    if banks is not None:
+        dem = np.minimum(np.fmax(dem, banks(at)), dem + FOOT_BANK)
     deck = spans(segments, node_index, np.ones(len(segments)), dem)
     out = []
     for seg, over in zip(segments, crossings):
@@ -517,6 +523,7 @@ def foot_decks(segments, sample, crossings):
         z0, z1 = deck.get(a, dem[a]), deck.get(b, dem[b])
         chord = z0 + (z1 - z0) * s / max(cum[-1], 1e-6)
         ground = known(np.asarray(sample(np.column_stack([np.interp(s, cum, xy[:, 0]), np.interp(s, cum, xy[:, 1])])), dtype=float))
+        # a bank's height may stand in for the DEM's at an end: the slope to it stays in the deck
         h = np.maximum(chord, ground + FOOT_LIFT)
         for sc, road, half in over:
             top = road + FOOT_CLEAR
