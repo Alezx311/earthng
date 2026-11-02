@@ -1,5 +1,16 @@
 # EarthNG native mod migration
 
+## 2026-11-02: after the 0.7.0 release, domes over Hagia Sophia's tombs
+
+- A still from the south of Hagia Sophia showed its tombs as flats with balconies, and a dome hanging in
+  the air with nothing under it. `historic=tomb` was no monument: `tomb`, `mausoleum` and `fountain` are
+  now, and a part takes `historic` from its building.
+- The dome is a `building:part` with `min_height` 17 over a `building=yes` outline. It covered most of
+  the outline, so `link_parts` set `e2r_outline` and the tomb was gone. Only parts that reach the ground
+  count as covering now; parts in the air leave the building standing, and a building with no height
+  of its own reaches up to the lowest of them. Index version fast-20, so this one needs a pack rebuild.
+  The tomb walls need only the planet.
+
 ## 2026-11-02: release 0.7.0, landmark fixes from the stills
 
 - Stills of ten world landmarks showed what no bench had: the Eiffel Tower as floating plates (skillion

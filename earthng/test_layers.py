@@ -59,6 +59,14 @@ class PartTests(unittest.TestCase):
         self.assertNotIn('e2r_outline', outline)
         self.assertEqual(part['building:material'], 'brick')
 
+    def test_a_dome_in_the_air_leaves_the_building_under_it(self):
+        outline = {'building': 'yes', 'historic': 'tomb'}
+        dome = {'e2r_part': '1', 'building:part': 'roof', 'min_height': '17', 'roof:shape': 'dome'}
+        sources.link_parts({7: ('building', outline, box(0, 0, 10, 10)), 8: ('building', dome, box(1, 1, 9, 9))})
+        self.assertNotIn('e2r_outline', outline)
+        self.assertEqual(outline['height'], '17.0')
+        self.assertEqual(dome['historic'], 'tomb')
+
     def test_a_shop_inside_lends_its_part_no_sign(self):
         outline = {'building': 'retail', 'amenity': 'bank'}
         part = {'e2r_part': '1', 'building:part': 'yes'}
@@ -196,7 +204,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(walls, {'e2rf_wall_pls_cream'})
 
     def test_a_monument_is_bare_masonry(self):
-        for tags in ({'building': 'amphitheatre'}, {'building': 'ruins'}, {'historic': 'archaeological_site'}, {'building': 'triumphal_arch'}):
+        for tags in ({'building': 'amphitheatre'}, {'building': 'ruins'}, {'historic': 'archaeological_site'}, {'building': 'triumphal_arch'}, {'building': 'yes', 'historic': 'tomb'}):
             scene = self.build(buildings=[self.building(height=40, **tags)])
             walls = {m.material for i in scene['items'].values() for m in (i.meshes or self.lua.table()).values() if m.material.startswith('e2rf_')}
             self.assertIn('e2rf_hw_ashlar', walls, tags)

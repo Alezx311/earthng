@@ -3606,7 +3606,8 @@ BLD.worship = {church = true, cathedral = true, chapel = true, monastery = true,
 -- What stands for itself has no storeys: bare masonry, no windows, no city grammar (the Colosseum
 -- came out a curved block of flats). building= and historic= values.
 BLD.monuments = {ruins = true, triumphal_arch = true, amphitheatre = true, gate = true, monument = true, memorial = true,
-  archaeological_site = true, city_gate = true, citywalls = true, castle_wall = true, aqueduct = true, fort = true}
+  archaeological_site = true, city_gate = true, citywalls = true, castle_wall = true, aqueduct = true, fort = true,
+  tomb = true, mausoleum = true, fountain = true}
 
 function BLD.isMonument(tags)
   return BLD.monuments[tags.building or ''] or BLD.monuments[tags.historic or ''] or BLD.worship[tags.building or '']

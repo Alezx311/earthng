@@ -20,7 +20,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point, shape
 from shapely.ops import transform
 
-VERSION = 'fast-19'         # source index cache; 14: full clearance and abutments; 15: widths, shoulders, rails, raceways; 16: both, clearance matches a 1.5 m deck; 17: deck and road share the clearance (no runaway hills); 18: only crossing centre lines are overpasses; 19: a bridge split over water keeps its deck
+VERSION = 'fast-20'         # source index cache; 14: full clearance and abutments; 15: widths, shoulders, rails, raceways; 16: both, clearance matches a 1.5 m deck; 17: deck and road share the clearance (no runaway hills); 18: only crossing centre lines are overpasses; 19: a bridge split over water keeps its deck; 20: a dome on a building leaves the building standing
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -641,19 +641,28 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
 
 
 # what a building:part takes from the building round it, when it has none of its own
-PART_TAGS = ('building', 'building:material', 'building:colour')
+PART_TAGS = ('building', 'building:material', 'building:colour', 'historic')
+
+
+def lifted(tags):
+    """Metres a building:part hangs over the ground: min_height, or 3 m for each building:min_level."""
+    try:
+        return float(tags.get('min_height') or 3 * float(tags.get('building:min_level', 0)))
+    except ValueError:
+        return 0.
 
 
 def link_parts(found):
     """Tie each building:part to the building that holds it: it takes that building's tags and
-    id (e2r_of: one wall material for all its parts). A building mostly covered by its parts gets
-    e2r_outline: the parts draw it, its own box would hide them."""
+    id (e2r_of: one wall material for all its parts). A building mostly covered by parts that reach
+    the ground gets e2r_outline: the parts draw it, its own box would hide them. Parts in the air
+    stand on the building (a dome on a tomb), so it stays and reaches up to them."""
     parts = [(ident, tags, geometry) for ident, (kind, tags, geometry) in found.items() if kind == 'building' and tags.get('e2r_part')]
     if not parts:
         return
     outlines = [(ident, tags, geometry) for ident, (kind, tags, geometry) in found.items() if kind == 'building' and not tags.get('e2r_part')]
     tree = shapely.STRtree([entry[2] for entry in outlines]) if outlines else None
-    covered = {}
+    covered, under = {}, {}
     for _, tags, geometry in parts:
         inside = geometry.representative_point()
         holder = None
@@ -661,7 +670,10 @@ def link_parts(found):
             if outlines[int(n)][2].covers(inside) and (holder is None or outlines[int(n)][2].area < holder[2].area):
                 holder = outlines[int(n)]
         if holder:
-            covered[holder[0]] = covered.get(holder[0], 0.) + geometry.area
+            if lifted(tags) > 0:
+                under[holder[0]] = min(lifted(tags), under.get(holder[0], lifted(tags)))
+            else:
+                covered[holder[0]] = covered.get(holder[0], 0.) + geometry.area
             tags['e2r_of'] = str(holder[0])
             for key in PART_TAGS:
                 if key in holder[1] and key not in tags:
@@ -672,6 +684,8 @@ def link_parts(found):
     for ident, tags, geometry in outlines:
         if covered.get(ident, 0.) >= .5 * geometry.area:
             tags['e2r_outline'] = '1'
+        elif ident in under and 'height' not in tags and 'building:levels' not in tags:
+            tags['height'] = str(under[ident])
 
 
 class Store:
