@@ -313,7 +313,9 @@ class CountryTests(unittest.TestCase):
 
     def test_identical_sources_produce_identical_zip(self):
         first = self.build().read_bytes()
-        second = self.build().read_bytes()
+        # the clock has moved on: a member stamped with it (routing was) shows now, not once in a while
+        with patch('time.time', return_value=1.8e9):
+            second = self.build().read_bytes()
         self.assertEqual(first, second)
 
     def test_failed_export_preserves_previous_archive_and_removes_temporary(self):
