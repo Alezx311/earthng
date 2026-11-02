@@ -5,6 +5,7 @@
 local M = {}
 local imguiUtils = require('ui/imguiUtils')
 local catalog = require('ge/extensions/e2r/mapCatalog')
+local location = require('ge/extensions/e2r/location')
 
 local ROOT = '/earthng/planet/basemap/'
 local TEX_MAX, LOADS_PER_FRAME = 400, 6
@@ -163,6 +164,26 @@ local function loadLabels()
 end
 
 function M.update(countries) catalog.step(countries) end
+
+-- the settlements for the line of where the car is, indexed once for each set of labels
+local settlements, settlementsOf
+function M.settlements()
+  local set = loadLabels()
+  if settlementsOf ~= set then settlements, settlementsOf = location.index(set.places), set end
+  return settlements
+end
+
+-- a country's name in the UI language: the labels know both, a pack has its title
+local countryNames, countryNamesOf
+function M.countryName(title, lang)
+  if lang == 'en' then return title end
+  local set = loadLabels()
+  if countryNamesOf ~= set then
+    countryNames, countryNamesOf = {}, set
+    for _, c in ipairs(set.countries) do countryNames[c[4]] = c[5] end
+  end
+  return countryNames[title] or title
+end
 function M.revision() return catalog.revision end
 
 -- lower case for Latin and Cyrillic (string.lower knows ASCII only): А-Я, Ѐ-Џ (Є, І, Ї), Ґ

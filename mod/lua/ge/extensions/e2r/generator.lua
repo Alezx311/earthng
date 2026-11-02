@@ -2059,6 +2059,13 @@ local SPEED = {motorway = 110, trunk = 90, primary = 60, secondary = 60, tertiar
 local DRIVE = {motorway = 1, trunk = 1, primary = 1, secondary = 1, tertiary = .9,
   unclassified = .7, residential = .7, living_street = .4}
 local NAV_MIN = .5     -- m: the shortest navgraph edge
+-- a street's names and limit for the line of where the car is (location.lua): nil when it has none
+local function navNames(road)
+  local tags = road.tags or {}
+  local limit = tostring(tags.maxspeed or ''):match('^%d+')
+  local name, uk, en, ref = tags.name, tags['name:uk'], tags['name:en'], tags.ref
+  if name or uk or en or ref or limit then return {n = name, u = uk, e = en, r = ref, l = limit} end
+end
 local function navSegment(road)
   local tags, points = road.tags or {}, road.points or {}
   local highway = (tags.highway or 'residential'):gsub('_link$', '')
@@ -8335,7 +8342,7 @@ local function build(cells, i, j, options)
   -- A road shapes the ground up to pullZero from its edge, and the ground lattice reaches one
   -- step past the tile (its border nodes are lowered for roads in the neighbour's cells too).
   local reach = tune.pullZero + step + 5
-  local segments, segmentBins, nav, bestSpawn, bestDistance = {}, {}, {segments = {}}, nil, math.huge
+  local segments, segmentBins, nav, bestSpawn, bestDistance = {}, {}, {segments = {}, names = {}}, nil, math.huge
   for _, road in ipairs(lists.roads) do
     local tags, points, width = road.tags or {}, road.points or {}, math.max(.5, math.min(80, road.width or 7))
     for index = 1, #points - 1 do
@@ -8362,7 +8369,10 @@ local function build(cells, i, j, options)
       if index % 32 == 0 then pause() end
     end
     local navigation = visualRoads and navSegment(road)
-    if navigation then nav.segments[#nav.segments + 1] = navigation end
+    if navigation then
+      nav.segments[#nav.segments + 1] = navigation
+      nav.names[navigation[1]] = navNames(road)
+    end
     pause()
   end
 

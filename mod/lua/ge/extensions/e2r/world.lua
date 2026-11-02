@@ -25,6 +25,7 @@ M.fifo = require('ge/extensions/e2r/fifo') -- keep below LuaJIT's 200 chunk loca
 M.brandStyles = NATIVE and require('ge/extensions/e2r/generator').BRANDS or {}
 -- the route to a point picked on the map (docs/NAVIGATION.md); on M for the same reason
 M.navigator = NATIVE and require('ge/extensions/e2r/navigator') or nil
+M.location = NATIVE and require('ge/extensions/e2r/location') or nil
 if M.navigator then M.navigator.source = native end
 M.gc = require('ge/extensions/e2r/gc')   -- the collector's step while in the level (gc.lua)
 local detailStream
@@ -1053,7 +1054,7 @@ local function startTile(key, i, j)
                 left = #manifest.items, roadLeft = #manifest.items, startedAt = S.now}
   S.tiles[key] = tile
   if manifest.nav then table.insert(S.navPending, {key = key, path = manifest.nav}) end
-  if manifest.navSegments then table.insert(S.navPending, {key = key, data = {segments = manifest.navSegments}}) end
+  if manifest.navSegments then table.insert(S.navPending, {key = key, data = {segments = manifest.navSegments, names = manifest.navNames}}) end
   for _, it in ipairs(manifest.items) do table.insert(S.queue, {tile = tile, key = key, item = it}) end
   if #manifest.items == 0 then tile.state = 'loaded'; tile.roadComplete = true end
 end
@@ -1100,11 +1101,41 @@ local function navRead()
       local n = (#s - 7) / 3
       local mid = 8 + 3 * math.floor((n - 1) / 2)
       seg = {s = require('ge/extensions/e2r/navigation').simplify(s), tiles = {}, x = s[mid], y = s[mid + 1]}
+      local box = {math.huge, math.huge, -math.huge, -math.huge}
+      for k = 8, #seg.s - 2, 3 do
+        local px, py = seg.s[k], seg.s[k + 1]
+        box[1], box[2], box[3], box[4] = math.min(box[1], px), math.min(box[2], py), math.max(box[3], px), math.max(box[4], py)
+      end
+      seg.box, seg.names = box, data.names and data.names[s[1]]
       S.nav[s[1]] = seg
       S.navDirty = true
     end
     seg.tiles[job.key] = true
   end
+end
+
+-- The line of where the car is (location.lua): looked up four times a second, drawn every frame
+-- from the strings it left. Off in the widget (settings/earthng.json).
+function M.locationStep()
+  if not M.location or S.locationOff or S.now < (S.locationAt or 0) then return end
+  S.locationAt = S.now + .25
+  local p, v = focus()
+  if not p then return end
+  local lat, lon = native.toGeo(p.x, p.y)
+  S.location = S.location or M.location.new()
+  S.locationEnv = S.locationEnv or {places = planetMap.settlements,
+    near = function(name) return string.format(L('поблизу %s', 'near %s'), name) end,
+    region = function()
+      local country, descriptor = native.at(S.locationEnv.lat, S.locationEnv.lon)
+      if country then
+        S.locationRegion = descriptor and descriptor.section == true and (descriptor.title or descriptor.id) or nil
+        S.locationCountry = planetMap.countryName(country.title, lang)
+      end
+      return S.locationRegion, S.locationCountry
+    end}
+  local env = S.locationEnv
+  env.segments, env.lat, env.lon, env.lang = S.nav, lat, lon, lang
+  M.location.step(S.location, S.now, p.x, p.y, v and v.x or 0, v and v.y or 0, env)
 end
 
 local function trafficRunning()
@@ -3471,6 +3502,9 @@ end
 
 local function drawWindow()
   if test and test.clean then return end   -- a clean screen for recorded video
+  if M.location and S.location and S.state == 'driving' and not S.locationOff then
+    M.location.draw(im, S.location, M.navigator and M.navigator.lines(L))
+  end
   if NATIVE then planetMap.update(S.status and S.status.countries) end
   pushTheme()
   if S.widgetHidden then
@@ -3533,6 +3567,14 @@ local function drawWindow()
     if im.CollapsingHeader1(L('Вигляд і трафік', 'Style and traffic')) then
       if S.packs then drawPacks() end
       drawTraffic()
+      S.locationShown = S.locationShown or im.BoolPtr(not S.locationOff)
+      if im.Checkbox(L('Рядок з назвою вулиці', 'Street name line'), S.locationShown) then
+        S.locationOff = not S.locationShown[0]
+        local ok, cfg = pcall(jsonReadFile, LANG_FILE)
+        cfg = ok and type(cfg) == 'table' and cfg or {}
+        cfg.locationOff = S.locationOff
+        pcall(jsonWriteFile, LANG_FILE, cfg, true)
+      end
     end
     if im.CollapsingHeader1(L('Статистика', 'Statistics')) then drawStats(st, p, v) end
     if im.CollapsingHeader1(L('Якість світу', 'World quality'), im.TreeNodeFlags_DefaultOpen) then drawTune() end
@@ -4391,6 +4433,7 @@ function M.tick(dt)
     if S.state == 'driving' then
       navStep()
       if M.navigator then M.navigator.step(focus, S.now, lang) end
+      M.locationStep()
     end
     updateParking()
     local tNav = timer:stopAndReset()
