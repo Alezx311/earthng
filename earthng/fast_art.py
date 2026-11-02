@@ -416,6 +416,8 @@ def pack_fields(pack, base):
                 f['baseColorFactor'] = colour(SYNTH.get(kind, (30, 20, 50)))
         else:
             f['baseColorFactor'] = colour(FLAT.get(kind, ((200, 200, 200), (230, 230, 230)))[0 if pack == 'toon' else 1])
+        if kind in style.LENS:
+            f['emissiveFactor'] = ' '.join(str(c * 4) for c in style.LENS[kind])
         if kind in ('brand_sign', 'brand_photo', 'storefront'):
             f['baseColorMap'] = f'{base}/real/{kind}.color.png'
             f['baseColorFactor'] = '1 1 1 1'

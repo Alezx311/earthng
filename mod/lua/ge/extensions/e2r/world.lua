@@ -26,6 +26,8 @@ M.brandStyles = NATIVE and require('ge/extensions/e2r/generator').BRANDS or {}
 -- the route to a point picked on the map (docs/NAVIGATION.md); on M for the same reason
 M.navigator = NATIVE and require('ge/extensions/e2r/navigator') or nil
 M.location = NATIVE and require('ge/extensions/e2r/location') or nil
+M.signals = NATIVE and require('ge/extensions/e2r/signals') or nil
+if M.signals and not M.signals.step then M.signals = nil end
 if M.navigator then M.navigator.source = native end
 M.gc = require('ge/extensions/e2r/gc')   -- the collector's step while in the level (gc.lua)
 local detailStream
@@ -260,6 +262,8 @@ local function land()
   if not S.marker then return end
   if NATIVE and not native.at(S.marker.lat, S.marker.lon) then return end
   if M.navigator then M.navigator.clear() end   -- the old route is in the old region's frame
+  if M.signals then M.signals.clear() end
+  S.location = nil
   S.landSeq = request({type = 'land', lat = S.marker.lat, lon = S.marker.lon})
   S.landAt = S.now
   S.landTimer = hptimer()
@@ -633,6 +637,7 @@ local function spawnItem(it, group, pause, tile, layer)
       S.coll = S.coll or collision.new()
       S.coll:track(tile, obj:getID(), not (tile.far or tile.horizon) and collision.quiet(meshes, layer))
     end
+    if it.lens and M.signals then M.signals.addMesh(obj:getID(), it.lens, it.colour) end
     local ms = t:stop()
     if ms > (result.createMeshMs or 0) then result.createMeshMs, result.createMeshItem = ms, it.name end
   else
@@ -1071,6 +1076,7 @@ local function startScene(key, tile)
   tile.brandPOIs = manifest.brandPOIs
   tile.sceneGroup = tileGroup('E2RS_' .. key)
   tile.sceneLeft = queueItems(manifest.items, tile, key, 'scene')
+  if M.signals then M.signals.addTile(key, manifest.lights) end
   tile.sceneComplete = tile.sceneLeft == 0
   tile.left = tile.left + tile.sceneLeft
   if NATIVE and tile.refreshScene then native.release(key, 'road'); tile.refreshScene = nil end
@@ -1208,6 +1214,7 @@ local function navBuild()
   local m = map.getMap()
   local keep = m.nodes
   map.reset(nodes)
+  if M.signals then M.signals.navgraph(nodes, S.nav, p.x, p.y, trafficRunning(), vec3) end
   m = map.getMap()
   if keep and m.nodes ~= keep then
     table.clear(keep)
@@ -1334,6 +1341,7 @@ local function updateTiles()
     if not held and (d > unloadR or behind(cx, cy, d)) then
       retireForest(tile)
       dropGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
+      if M.signals then M.signals.dropTile(key) end
       S.tiles[key] = nil
       S.navDirty = true
       if NATIVE then native.unload(key) end
@@ -4434,6 +4442,7 @@ function M.tick(dt)
       navStep()
       if M.navigator then M.navigator.step(focus, S.now, lang) end
       M.locationStep()
+      if M.signals then M.signals.step(S.now, trafficRunning()) end
     end
     updateParking()
     local tNav = timer:stopAndReset()

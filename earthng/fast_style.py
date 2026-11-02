@@ -307,6 +307,11 @@ KINDS['plate'] = (None, [.08, .18, .40, 1], 'METAL', 1.0, 'wall')
 KINDS['paint_red'] = (None, [.72, .10, .08, 1], 'METAL', 1.0, 'wall')
 # a shop's sign board under its real name (generator.lua BLD.storeFront)
 KINDS['fascia'] = (None, [.11, .12, .13, 1], 'METAL', 1.0, 'wall')
+# a traffic light's lenses (generator.lua SIGNS.lamp): the dark glass, and what signals.lua shows lit
+KINDS['lens_dark'] = (None, [.05, .05, .055, 1], 'METAL', 1.0, 'wall')
+LENS = {'lens_red': (1., .09, .05), 'lens_yellow': (1., .62, .05), 'lens_green': (.1, 1., .42)}
+for _kind, _glow in LENS.items():
+    KINDS[_kind] = (None, [*_glow, 1], 'METAL', 1.0, 'wall')
 EXTRA['glyphs'] = {'alphaTest': True, 'alphaRef': 110, 'castShadows': False}
 # covers in the asphalt (generator.lua ROADS.covers): the Italy manhole sheet and the grid
 # drain, cut by their opacity like the lines; drawn only where the game has these maps
