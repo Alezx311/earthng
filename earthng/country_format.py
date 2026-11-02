@@ -85,11 +85,22 @@ def encode_cell(cell, origin):
             raise ValueError('too few source coordinates')
         w.u(len(points))
         px, py, pz = ox, oy, 0
+        out = w.out
+        # _cm and _Writer.s by hand: a country's every coordinate passes here
         for p in points:
-            if len(p) not in (2, 3):
+            n = len(p)
+            if n != 2 and n != 3:
                 raise ValueError('source points need two or three coordinates')
-            x, y, z = _cm(p[0]), _cm(p[1]), _cm(p[2] if len(p) == 3 else 0.)
-            w.s(x - px); w.s(y - py); w.s(z - pz)
+            try:
+                x, y, z = round(p[0] * SCALE), round(p[1] * SCALE), round(p[2] * SCALE) if n == 3 else 0
+            except (OverflowError, ValueError):
+                raise ValueError('non-finite source number') from None
+            for value in (x - px, y - py, z - pz):
+                value = value * 2 if value >= 0 else -value * 2 - 1
+                while value >= 0x80:
+                    out.append((value & 0x7f) | 0x80)
+                    value >>= 7
+                out.append(value)
             px, py, pz = x, y, z
 
     def rings(value):

@@ -71,7 +71,15 @@ _LOOKUP = {_key(alias): brand for brand, aliases in ALIASES.items() for alias in
 FUEL = frozenset(('okko', 'wog', 'ukrnafta', 'avias', 'brsm', 'shell', 'socar', 'upg', 'k_lo', 'motto', 'amic', 'parallel', 'vst', 'bvs'))
 
 
+NAMES = ('brand', 'brand:uk', 'brand:en', 'name', 'name:uk', 'name:en', 'name:ru',
+         'operator', 'operator:uk', 'operator:en', 'operator:ru')
+_SAYS = frozenset(('brand:wikidata', 'operator:wikidata') + NAMES)
+
+
 def _recognized(tags):
+    # a million times a country, and most of it is houses that have no name
+    if isinstance(tags, dict) and tags.keys().isdisjoint(_SAYS):
+        return None
     # Wikidata is useful when a localized name or brand tag is missing.
     for field in ('brand:wikidata', 'operator:wikidata'):
         if tags.get(field) == 'Q38076':
@@ -80,8 +88,7 @@ def _recognized(tags):
             return 'nova_poshta'
         if tags.get(field) in WIKIDATA:
             return WIKIDATA[tags[field]]
-    for field in ('brand', 'brand:uk', 'brand:en', 'name', 'name:uk', 'name:en', 'name:ru',
-                  'operator', 'operator:uk', 'operator:en', 'operator:ru'):
+    for field in NAMES:
         found = _named(tags.get(field))
         if found:
             return found

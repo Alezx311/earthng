@@ -818,8 +818,9 @@ class Store:
         x0,y0,x1,y1=rect
         rows = self.db.execute('''SELECT f.id,f.kind,f.data,f.geom FROM bounds b JOIN features f ON f.id=b.id
             WHERE b.x1>=? AND b.x0<=? AND b.y1>=? AND b.y0<=? ORDER BY f.id''',(x0,x1,y0,y1))
-        return [(fid,kind,json.loads(data),shapely.from_wkb(geom)) for fid,kind,data,geom in rows
-                if kinds is None or kind in kinds]
+        rows = [row for row in rows if kinds is None or row[1] in kinds]
+        return [(fid,kind,json.loads(data),geometry) for (fid,kind,data,_),geometry
+                in zip(rows,shapely.from_wkb([row[3] for row in rows]).tolist())]
 
     def node(self, nid):
         return json.loads(self.db.execute('SELECT data FROM nodes WHERE id=?',(nid,)).fetchone()[0])
