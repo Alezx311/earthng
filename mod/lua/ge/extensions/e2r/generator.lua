@@ -2059,6 +2059,21 @@ local SPEED = {motorway = 110, trunk = 90, primary = 60, secondary = 60, tertiar
 local DRIVE = {motorway = 1, trunk = 1, primary = 1, secondary = 1, tertiary = .9,
   unclassified = .7, residential = .7, living_street = .4}
 local NAV_MIN = .5     -- m: the shortest navgraph edge
+-- Who drives on the left, by the words of a pack's id; a British look does too. A build sets
+-- ROADS.leftHand from it: lanes of the navgraph, signs, stop lines.
+ROADS.LEFT = {'united-kingdom', 'great-britain', 'england', 'scotland', 'wales', 'ireland', 'isle-of-man', 'guernsey',
+  'jersey', 'malta', 'cyprus', 'japan', 'australia', 'new-zealand', 'south-africa', 'india', 'pakistan', 'bangladesh',
+  'sri-lanka', 'nepal', 'bhutan', 'thailand', 'malaysia', 'singapore', 'indonesia', 'hong-kong', 'macau', 'brunei',
+  'kenya', 'tanzania', 'zanzibar', 'uganda', 'zambia', 'zimbabwe', 'mozambique', 'namibia', 'botswana', 'lesotho',
+  'eswatini', 'swaziland', 'malawi', 'mauritius', 'seychelles', 'jamaica', 'barbados', 'trinidad', 'bahamas', 'fiji'}
+function ROADS.keepsLeft(country, look)
+  if type(look) == 'table' and look.block == 'british' then return true end
+  country = tostring(country or '')
+  for _, word in ipairs(ROADS.LEFT) do
+    if country:find(word, 1, true) then return true end
+  end
+  return false
+end
 -- a street's names and limit for the line of where the car is (location.lua): nil when it has none
 local function navNames(road)
   local tags = road.tags or {}
@@ -2079,6 +2094,7 @@ local function navSegment(road)
     local back = number(tags['lanes:backward'], math.max(1, math.floor(total / 2)))
     local forward = number(tags['lanes:forward'], math.max(1, total - back))
     lanes = string.rep('-', math.min(4, back)) .. string.rep('+', math.min(4, forward))
+    if ROADS.leftHand then lanes = lanes:reverse() end
   end
   local speedText = tostring(tags.maxspeed or ''):lower()
   local speed = number(speedText, SPEED[highway])
@@ -2323,10 +2339,10 @@ function DETAIL.paint(ctx)
           local sx, sy = forward and tx or -tx, forward and ty or -ty   -- the travel direction
           local oneway = ROADS.oneway(rtags)
           local mid = (lo + hi) / 2
-          -- right-hand traffic: the approach lanes are right of the travel direction
+          -- the approach lanes are on the side of the road the country drives on
           local a, b = lo, hi
           if not oneway then
-            if forward then a, b = lo, mid else a, b = mid, hi end
+            if forward == not ROADS.leftHand then a, b = lo, mid else a, b = mid, hi end
           end
           local z = (c[3] or 0) + ctx.z
           if point.kind == 'stop_sign' then
@@ -2691,7 +2707,7 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
           local forward
           if direction == 'forward' then forward = true
           elseif direction == 'backward' then forward = false
-          elseif beside ~= nil then forward = beside
+          elseif beside ~= nil then forward = beside ~= (ROADS.leftHand or false)
           else forward = (length - s) <= s end
           if (forward and fwd) or (not forward and back) then
             -- at the line: by a junction the strip stops at its mouth (DETAIL.paint)
@@ -2900,7 +2916,7 @@ function SIGNS.phases(requests)
   end
 end
 
--- A request's place: the street's edge on the right of travel, 0.7 m into a sidewalk or 1.2 m
+-- A request's place: the street's edge on the driver's side of travel, 0.7 m into a sidewalk or 1.2 m
 -- onto the verge, then off the drawn asphalt half a metre at a time (a turning lane, a
 -- junction's corner). Not on a deck or in a tunnel, nor where another street is. A sign within
 -- a metre of one already standing moves 1.5 m back against travel. The tile holding the final
@@ -2912,12 +2928,13 @@ function SIGNS.place(requests, env, pause)
     local road, tags = r.road, r.road.tags or NONE
     if not ROADS.bridge(tags) and not ROADS.tunnel(tags) and
         (not r.model or not FS or FS:fileExists(r.model)) then
-      local side = -r.dir
+      local kerb = ROADS.leftHand and -1 or 1
+      local side = -r.dir * kerb
       local s = r.s
       for _ = 1, 3 do
         local c, tx, ty = alongLine(road.points, r.dist, s)
         local sx, sy = tx * r.dir, ty * r.dir
-        local rx, ry = sy, -sx
+        local rx, ry = sy * kerb, -sx * kerb
         local walk = env.walkAt(road, c[1], c[2], side)
         local off = math.max(.5, math.min(80, road.width or 7)) / 2 + (walk > 0 and .7 or 1.2)
         local x, y = c[1] + rx * off, c[2] + ry * off
@@ -8670,6 +8687,7 @@ ROADS.trimLine, ROADS.simplify, ROADS.densifyWear = trimLine, simplify, densifyW
 ROADS.liftDecks, ROADS.walkSides = liftDecks, walkSides
 
 local function build(cells, i, j, options)
+  ROADS.leftHand = options.leftHand == true
   options = options or {}
   local pause = options.pause or options.yield or function() end
   local size = options.tileSize or 500
@@ -12244,6 +12262,7 @@ local function build(cells, i, j, options)
 end
 
 M.build = build
+M.keepsLeft = ROADS.keepsLeft
 M.YARD = YARD
 M.BRANDS = SOLID.BRANDS
 M.shopFlat = BLD.shopFlat

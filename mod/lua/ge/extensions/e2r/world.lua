@@ -1213,6 +1213,8 @@ local function navBuild()
   -- (traffic.lua:1252 "attempt to index a nil value", traffic-03). The old table keeps its place.
   local m = map.getMap()
   local keep = m.nodes
+  local rules = map.getRoadRules and map.getRoadRules()
+  if rules and native.keepsLeft then rules.rightHandDrive = native.keepsLeft() end
   map.reset(nodes)
   if M.signals then M.signals.navgraph(nodes, S.nav, p.x, p.y, trafficRunning(), vec3) end
   m = map.getMap()

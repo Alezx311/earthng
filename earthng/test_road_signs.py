@@ -152,6 +152,21 @@ class RoadSignTests(unittest.TestCase):
         self.assertEqual(kinds.count('speed_30'), 1)
         self.assertEqual(kinds.count('speed_50'), 0)
 
+    def test_on_the_left_of_the_road_a_sign_stands_on_the_left(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential', 'oneway': 'yes'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        node = {'id': 's', 'kind': 'give_way', 'tags': {'direction': 'forward'}, 'pos': [250, 250, 10]}
+        self.assertLess(self.signs([road], [node])[0][2], 250)
+        self.assertGreater(self.signs([road], [node], leftHand=True)[0][2], 250)
+
+    def test_who_drives_on_the_left(self):
+        left = lambda id, block: self.h.generator.keepsLeft(id, self.h.table({'block': block}))
+        self.assertTrue(left('spot-london', 'british'))
+        self.assertTrue(left('zanzibar', 'general'))
+        self.assertTrue(left('new-zealand', 'general'))
+        self.assertFalse(left('ukraine', 'postsoviet'))
+        self.assertFalse(left('california', 'general'))
+
     def test_a_road_with_no_overtaking_says_so(self):
         road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'tertiary', 'overtaking': 'no'},
                 'points': [[100, 250, 10], [400, 250, 10]]}
