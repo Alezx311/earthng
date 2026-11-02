@@ -1165,6 +1165,17 @@ function ROADS.wet(x, y)
   end
   return false
 end
+-- The height of the water at a point of it, base there: the DEM's 30 m blur climbs a quay from
+-- inside the river (the Seine stood at 48 m with 56 m by its banks), so the lowest ground round the
+-- point counts. 38 m: a tile has its cells 40 m past its edge, neighbours agree on what they see.
+ROADS.reach = {{38, 0}, {27, 27}, {0, 38}, {-27, 27}, {-38, 0}, {-27, -27}, {0, -38}, {27, -27}}
+function ROADS.level(x, y, base, demAt)
+  for _, step in ipairs(ROADS.reach) do
+    local z = demAt(x + step[1], y + step[2])
+    if z and z < base then base = z end
+  end
+  return base
+end
 -- a deck's concrete: its edge face reaches depth under the road, a parapet height over it.
 -- Piers: a wall every `every` m of a bridge at least `min` long, `across` of the half width,
 -- `thick` along the road, kept `clear` m off any road under it; abutments `thick` deep.
@@ -8959,7 +8970,8 @@ local function build(cells, i, j, options)
       heightOperations = heightOperations + 1
       if heightOperations % 512 == 0 then pause() end
     end
-    if sa > 0 and not (near > tune.shoulder and ROADS.wet(x, y)) then return base + (sz / sa - base) * pull end
+    if near > tune.shoulder and ROADS.wet(x, y) then return ROADS.level(x, y, base, demAt) end
+    if sa > 0 then return base + (sz / sa - base) * pull end
     return base
   end
 

@@ -2347,6 +2347,17 @@ class GeneratorTests(unittest.TestCase):
                   for p in t if 320 <= p[1] <= 355]
         self.assertGreater(max(ground), 12, 'land between two roads is pulled to them')
 
+    def test_a_river_stays_low_where_the_dem_blurs_its_bank(self):
+        size = 41
+        # 25 m cells: the bed at 10, a slope of blur up to the quay's 16 inside the water
+        heights = [10. + max(0, y - 13) * 3 for y in range(size) for x in range(size)]
+        grid = {'rect': [0, 0, 1000, 1000], 'nx': size, 'ny': size, 'heights': heights}
+        water = {'id': 'river', 'kind': 'water', 'tags': {}, 'rings': [[[0, 200], [1000, 200], [1000, 380], [0, 380], [0, 200]]]}
+        road = self.build([{'roads': [], 'terrain': grid, 'areas': [water]}], 0, 0, maxTrees=0, maxGrass=0)[0]
+        wet = [p[2] for t in self.triangles(road, 'e2rf_water') for p in t if 240 <= p[1] <= 340]
+        self.assertTrue(wet)
+        self.assertLess(max(wet), 14)
+
     def test_sea_below_zero_gets_a_water_plane_only_where_ground_dips(self):
         def cell(heights):
             return {'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 2, 'ny': 2, 'heights': heights}}
