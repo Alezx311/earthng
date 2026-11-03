@@ -4250,13 +4250,16 @@ end
 -- its own UVs: u across, v along) lies `lift` m over the drawn ground and two steel rails stand
 -- `height` m on it. On a carriageway at grade (a level crossing, a tram in the street) only the
 -- rail heads are drawn, `flush` m over the asphalt the car drives on. A knot every `step` m of
--- open track, every `fine` m within `near` m of a road, so a crossing's edge falls within a metre
--- of the curb; each OSM segment is cut on its own, so two tiles cut it alike. A track on a bridge
--- keeps only the part over a road deck. Decoration without collision (collision.lua QUIET): the
--- ground under the bed is what a car feels. ctx: rect, ground(x, y), polygon(kind, poly, up),
+-- open track, every `fine` m where a step goes on or off the asphalt, so a crossing's edge falls
+-- within a metre of the curb; each OSM segment is cut on its own, so two tiles cut it alike. A
+-- track on a bridge keeps only the part over a road deck. The rails of a station's tracks
+-- (service=yard/siding/spur) have their sides only within `seen` m of a road: a yard of thirty
+-- sidings was 77k triangles a tile, two thirds of them rail sides nobody comes near. Decoration
+-- without collision (collision.lua QUIET): the ground under the bed is what a car feels.
+-- ctx: rect, ground(x, y), polygon(kind, poly, up),
 -- road(x, y, reach, deck) -> the carriageway's (or a deck's) surface z within reach m of its
 -- edge (negative: that far inside it) or nil, postsoviet, pause.
-local RAIL = {step = 6, fine = 1, near = 6, inside = -.15, shoulder = 1.25, lift = .05, height = .15, head = .072,
+local RAIL = {step = 8, fine = 1, seen = 30, inside = -.15, shoulder = 1.25, lift = .05, height = .15, head = .072,
   flush = .012, sleepers = 4 * .545}
 function RAIL.gauge(tags, postsoviet)
   local mm = tonumber(tostring(tags.gauge or ''):match('^%s*(%d+)'))
@@ -4283,9 +4286,9 @@ function RAIL.lay(ctx, lines)
 end
 
 -- The knots of one track: {x, y, nx, ny (the mitred normal), s (m along), z (flush) or zl, zr
--- (the drawn ground at the bed's edges), skip (on a bridge over no deck)}, only the OSM segments
--- that reach the tile
-function RAIL.knots(ctx, pts, hw, deck)
+-- (the drawn ground at the bed's edges), skip (on a bridge over no deck), near (a road within
+-- `seen` m, when `sides` asks)}, only the OSM segments that reach the tile
+function RAIL.knots(ctx, pts, hw, deck, sides)
   local R, rect, out = RAIL, ctx.rect, {}
   local dirs = {}
   for k = 1, #pts - 1 do
@@ -4301,7 +4304,7 @@ function RAIL.knots(ctx, pts, hw, deck)
     local m = math.min(2, 2 / l)
     return -ty / l * m, tx / l * m
   end
-  local function near(x, y) return ctx.road(x, y, R.near, deck) ~= nil end
+  local function on(t, a, d) return ctx.road(a[1] + d[1] * d[3] * t, a[2] + d[2] * d[3] * t, deck and .3 or R.inside, deck) ~= nil end
   local along = 0
   for k = 1, #pts - 1 do
     local d = dirs[k]
@@ -4312,8 +4315,8 @@ function RAIL.knots(ctx, pts, hw, deck)
         local ts, n = {0}, math.ceil(d[3] / R.step)
         for i = 0, n - 1 do
           local t0, t1 = i / n, (i + 1) / n
-          local fine = near(a[1] + d[1] * d[3] * t0, a[2] + d[2] * d[3] * t0) or near(a[1] + d[1] * d[3] * t1, a[2] + d[2] * d[3] * t1)
-            or near(a[1] + d[1] * d[3] * (t0 + t1) / 2, a[2] + d[2] * d[3] * (t0 + t1) / 2)
+          local o0 = on(t0, a, d)
+          local fine = on(t1, a, d) ~= o0 or on((t0 + t1) / 2, a, d) ~= o0
           local m = fine and math.ceil(d[3] / n / R.fine) or 1
           for j = 1, m do ts[#ts + 1] = t0 + (t1 - t0) * j / m end
         end
@@ -4333,6 +4336,7 @@ function RAIL.knots(ctx, pts, hw, deck)
               knot.skip = true
             else
               knot.zl, knot.zr = ctx.ground(x - nx * hw, y - ny * hw), ctx.ground(x + nx * hw, y + ny * hw)
+              knot.near = sides == 'near' and ctx.road(x, y, R.seen, false) ~= nil
             end
             out[#out + 1] = knot
           end
@@ -4352,7 +4356,8 @@ function RAIL.track(ctx, line)
   local hw, o, head = gauge / 2 + R.shoulder, gauge / 2 + R.head / 2, R.head / 2
   -- beds of tracks side by side or through a switch overlap: each its own few mm, no flicker
   local lift = R.lift + (hash(tostring(line.id or '')) % 5) * .004
-  local knots = RAIL.knots(ctx, line.points, hw, ROADS.bridge(tags))
+  local station = tags.service == 'yard' or tags.service == 'siding' or tags.service == 'spur'
+  local knots = RAIL.knots(ctx, line.points, hw, ROADS.bridge(tags), station and 'near')
   local polygon = ctx.polygon
   -- the top of the rail at side s (-1 / 1) of knot p, and its foot
   local function top(p, s)
@@ -4375,7 +4380,7 @@ function RAIL.track(ctx, line)
         local ta, fa = top(a, s)
         local tb, fb = top(b, s)
         polygon('rail', {at(a, s, -head, ta), at(b, s, -head, tb), at(b, s, head, tb), at(a, s, head, ta)}, true)
-        if not (a.z and b.z) then
+        if not (a.z and b.z) and (not station or a.near or b.near or a.z or b.z) then
           polygon('rail_side', {at(b, s, head, fb), at(a, s, head, fa), at(a, s, head, ta), at(b, s, head, tb)}, false)
           polygon('rail_side', {at(a, s, -head, fa), at(b, s, -head, fb), at(b, s, -head, tb), at(a, s, -head, ta)}, false)
         end

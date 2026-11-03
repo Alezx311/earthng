@@ -148,8 +148,15 @@ class GeneratorTests(unittest.TestCase):
     def test_a_kilometre_of_open_track_stays_cheap(self):
         layers = self.build(lines=[self.track([[0, 300], [500, 300]])])
         tris = sum(len(self.corners(layers, 'e2rf_' + k)) // 3 for k in ('track', 'rail', 'rail_side'))
-        # 6 m knots: a bed quad and two rails of three quads, 14 triangles: ~2.3 k a kilometre
-        self.assertLess(tris * 2, 2500)
+        # 8 m knots: a bed quad and two rails of three quads, 14 triangles: ~1.75 k a kilometre
+        self.assertLess(tris * 2, 1900)
+
+    def test_a_siding_has_rail_sides_only_near_a_road(self):
+        far = self.build(lines=[self.track([[50, 300], [450, 300]], {**BROAD, 'service': 'siding'})])
+        self.assertTrue(self.corners(far, 'e2rf_rail'))
+        self.assertFalse(self.corners(far, 'e2rf_rail_side'))
+        near = self.build(lines=[self.track([[50, 110], [450, 110]], {**BROAD, 'service': 'siding'})])
+        self.assertTrue(self.corners(near, 'e2rf_rail_side'))
 
     def test_two_tiles_meet_on_the_same_edge(self):
         line = self.track([[300, 300], [555, 340], [700, 345]])
