@@ -39,6 +39,10 @@
   Export: scene tiles through WKB and plain dicts, shop names remembered, nameless houses skip the
   lookup, `nature.partition` cuts by what is near, coordinates written by hand. London, 16 cells: 62.5 -> 44.4 s. All 7113 areas of
   the sample keep their shapes; only the numbers of cut parts and the start of a ring moved.
+  The road solve keeps its buffers between multiplications: 161.6 -> 147.3 s in Paris, the same heights. Starting
+  each pass from the last was 5x faster and is not in: at this tolerance it moved heights up to 9 m and left 1286
+  edges over their grade against 774.
+- Routing members of a pack had the clock in their zip header, so two builds differed: a fixed date now.
 - Blades: letters of 22 cm on a 30 cm board, read from the road. The game test records the game's window by title: since the widget has an OS window of its own, the
   clip was of that. It also counts AI cars at red lights (`signalWatch`).
 
