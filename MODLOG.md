@@ -51,9 +51,16 @@ piers over the water (`out/night-paris-04`). London: left-hand signs, the wheel,
 from Maidan down Khreshchatyk and Velyka Vasylkivska at 9 m/s, Normal, Balanced 50, 1280x720: the location
 line reads `вулиця Хрещатик`, `Центр, Київ`, a 50 roundel, red lenses lit, the autopilot that ignores lights was
 hit by a car on its green (`out/night-kyiv-22`), `signalWatch` with 20 AI cars: 24 samples waiting at red, 4
-crossing, 1 crossing at red. No traffic: mean 18.2 ms, p99 38; 20 AI cars: mean 40.8 ms, p99 84. `frame_over_100ms`
-fails in every run: the hitch when traffic and tiles spawn (worst 0.6-1.1 s, not new). Unit suite: 705 tests, 4 skipped. Packs
-need a rebuild for level crossings, cameras and bank ends; the road rules work on old packs. BeamNG 0.39 not run.
+crossing, 1 crossing at red. Level crossings and speed cameras stand where mapped (`out/night-kyiv-27`), but
+packs have no tracks, so a crossing has no rails. 20 AI cars: mean 40.8 ms, p99 84.
+
+Signs and lights cost no frames: the same drive with `SIGNS.plan` on and off, two runs each, no traffic. Khreshchatyk:
+mean 17.2/18.2 ms on, 17.8/17.8 off; p99 36.5/38, 38/38.5; frames over 33 ms 149/160, 179/177; Lua garbage 72/80,
+78/76 KB a frame. Embankment, 2.2 km at 15 m/s on average: mean 15.5/15.5, 15.4/15.4; p99 34/33.5, 32.5/33.5. Time per
+tile was not measured. `frame_over_100ms` fails in every run with or without signs: the worst frame (0.4-0.7 s) is
+the first one after the camera cut at touch-down, and the 2-10 frames over 100 ms are that and `reloadCollision`.
+Unit suite: 705 tests, 4 skipped. Packs need a rebuild for level crossings, cameras and bank ends; the road rules
+work on old packs. BeamNG 0.39 not run.
 
 ## 2026-11-02: after the 0.7.0 release, domes over Hagia Sophia's tombs
 
