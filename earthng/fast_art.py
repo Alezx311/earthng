@@ -106,6 +106,8 @@ FLAT = {   # kind: (toon colour, model colour)
     'hw_siding': ((206, 196, 166), (230, 230, 230)), 'hw_wood': ((112, 88, 66), (210, 210, 210)),
     'win_pvc': ((70, 96, 120), (180, 190, 200)), 'win_wood': ((96, 74, 56), (176, 176, 176)),
     'door_house': ((110, 76, 54), (190, 190, 190)), 'plinth_brown': ((120, 74, 60), (206, 206, 206)),
+    'track': ((132, 124, 116), (204, 204, 204)), 'ballast': ((150, 144, 136), (214, 214, 214)),
+    'rail': ((196, 198, 206), (240, 240, 240)), 'rail_side': ((118, 86, 68), (208, 208, 208)),
 }
 FLAT.update({k: (tuple(round(c * 255) for c in style.KINDS[k][1][:3]), (222, 222, 222)) for k in style.SHEET_KINDS})
 BASE_PACKS = ('real', 'toon', 'model', 'synth')
@@ -368,6 +370,8 @@ def stylised_decal(kind, f):
     wider than the paint), the edge decals are hidden (a flat band over the asphalt edge)."""
     if kind in ('mark', 'mark_yellow'):
         f['opacityMap'] = style.TEXTURES['line_worn']['opacityMap']
+    elif kind == 'track':
+        f['opacityMap'] = style.TEXTURES['track']['opacityMap']    # the ragged shoulders
     elif kind in style.EDGES:
         f['opacityFactor'] = 0
 
@@ -528,6 +532,10 @@ def prebuild(distributable=False):
         if not (shared / 'real' / 'railing_o.data.dds').exists():
             yard_art(shared / 'real')
             to_dds(shared / 'real')
+        # and the track bed (generator.lua RAIL)
+        if not (shared / 'real' / 'track_o.data.dds').exists():
+            rail_art(shared / 'real')
+            to_dds(shared / 'real')
         stamp = shared / 'real' / 'brand_sign.version'
         if not (shared / 'real' / 'brand_photo.glow.dds').exists() or not stamp.exists() or stamp.read_text() != BRAND_ART_VERSION:
             brand_art(shared / 'real')
@@ -585,6 +593,7 @@ def build(r, game_assets=True):
         d.rectangle([32 * k, 0, 32 * k + 31, 31], fill=rgb)
     cars.save(r / 'real' / 'cars.color.png')
     yard_art(r / 'real')
+    rail_art(r / 'real')
     brand_art(r / 'real')
     glyph_art(r / 'real')
     # the PO-2 concrete fence: one 2.5 m x 2 m slab... laid over a 2.5 m repeat, the slab in the
@@ -646,7 +655,8 @@ def facade_art(r):
 
 # alphaRef per opacity map whose mips keep its coverage (fast_dds.keep_coverage)
 MIP_REFS = {'chainlink_o.data.png': style.CHAINLINK_MIP_REF, 'line_o.data.png': style.EXTRA['mark']['alphaRef'],
-            'railing_o.data.png': style.RAILING_MIP_REF, 'fence_boards_o.data.png': style.FENCE_BOARDS_MIP_REF}
+            'railing_o.data.png': style.RAILING_MIP_REF, 'fence_boards_o.data.png': style.FENCE_BOARDS_MIP_REF,
+            'track_o.data.png': style.TRACK_MIP_REF}
 # The yard atlas (generator.lua YARD.cell keeps the same order): playground paint, wood, metal,
 # sand, container screens and the yellow of the hemisphere bollards.
 YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (228, 118, 40), (146, 104, 62),
@@ -998,6 +1008,64 @@ def yard_art(r):
     for v0, v1 in ((8, 24), (232, 248)):
         d.rectangle([0, v0, 255, v1], fill=(255, 255, 255))
     bars.save(r / 'railing_o.data.png')
+
+
+# A track bed (generator.lua RAIL, fast_style 'track'): u across the bed, v along it, four
+# concrete sleepers to a repeat. The sleepers fill the middle TRACK_SLEEPER of the width; the
+# rails are geometry, only their pads and rust are drawn.
+TRACK_SLEEPERS, TRACK_SLEEPER, TRACK_RAILS = 4, .68, (.30, .70)
+
+
+def rail_art(r):
+    """track.color/normal and its opacity (the ballast shoulders ragged): grey stones, the
+    concrete sleepers with dark pads under the rails, rust down the ballast beside them."""
+    import random
+    import numpy as np
+    rng = random.Random(1520)
+    size = PX
+    colour = Image.new('RGB', (size, size), (104, 99, 92))
+    height = Image.new('L', (size, size), 90)
+    dc, dh = ImageDraw.Draw(colour), ImageDraw.Draw(height)
+    for _ in range(9000):
+        x, y, s = rng.uniform(0, size), rng.uniform(0, size), rng.uniform(4, 11)
+        g = rng.randint(78, 158)
+        box = (x - s, y - s * rng.uniform(.6, 1), x + s, y + s * rng.uniform(.6, 1))
+        dc.ellipse(box, fill=(g + rng.randint(-6, 8), g - rng.randint(0, 6), g - rng.randint(2, 12)))
+        dh.ellipse(box, fill=rng.randint(110, 200))
+    a = np.asarray(colour).astype(float)
+    u = (np.arange(size) + .5) / size
+    for rail in TRACK_RAILS:
+        rust = np.exp(-((u - rail) / .045) ** 2)[None, :, None]
+        a = a * (1 - .35 * rust) + np.array([96, 62, 40]) * .35 * rust
+    h = np.asarray(height).astype(float)
+    u0, u1 = (1 - TRACK_SLEEPER) / 2 * size, (1 + TRACK_SLEEPER) / 2 * size
+    cell = size / TRACK_SLEEPERS
+    for k in range(TRACK_SLEEPERS):
+        v0, v1 = int(k * cell + cell * .22), int(k * cell + cell * .78)
+        x0, x1 = int(u0 + rng.uniform(-6, 6)), int(u1 + rng.uniform(-6, 6))
+        grey = rng.randint(148, 170)
+        tone = np.array([grey, grey - 2, grey - 8], dtype=float)
+        block = tone + np.asarray([[rng.uniform(-7, 7)] for _ in range(v1 - v0)])[:, :, None]
+        a[v0:v1, x0:x1] = block
+        a[v0:v1, x0:x0 + 5] *= .8; a[v0:v1, x1 - 5:x1] *= .8
+        a[v0:v0 + 4, x0:x1] *= .85; a[v1 - 4:v1, x0:x1] *= .7
+        for rail in TRACK_RAILS:
+            c = int(rail * size)
+            a[v0 + 3:v1 - 3, c - 20:c + 20] = (58, 52, 48)
+        h[v0:v1, x0:x1] = 230
+    colour = Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
+    gy, gx = np.gradient(h / 255 * 6)
+    n = np.dstack([-gx, gy, np.ones_like(h)])
+    n /= np.linalg.norm(n, axis=2, keepdims=True)
+    normal = Image.fromarray(((n * .5 + .5) * 255).astype(np.uint8))
+    # the shoulders: the bed ends 3-8 % in from each side, ragged stone by stone
+    alpha = np.full((size, size), 255, dtype=np.uint8)
+    edge = np.cumsum([rng.uniform(-1, 1) for _ in range(size)])
+    edge = .055 + .025 * np.sin(edge / 9) + np.array([rng.uniform(-.01, .01) for _ in range(size)])
+    alpha[(u[None, :] < edge[:, None]) | (1 - u[None, :] < edge[::-1, None])] = 0
+    colour.save(r / 'track.color.png')
+    normal.save(r / 'track.normal.png')
+    Image.fromarray(alpha).convert('RGB').save(r / 'track_o.data.png')
 
 
 def to_dds(r):

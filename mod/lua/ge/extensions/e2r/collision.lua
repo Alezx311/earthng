@@ -7,7 +7,8 @@
 --   - near tiles out of that reach too: they are rebuilt with collision as the car comes;
 --   - markings and edge decals (mm to cm over the road and verge), roofs, and the scene's ground covers: areas and paths
 --     are drapes 2.5-4 cm over the ground mesh, which collides. The road layer's ground
---     takes those same cover materials where a cover fills a cell, so they stay solid there.
+--     takes those same cover materials where a cover fills a cell, so they stay solid there;
+--   - railway tracks (generator.lua RAIL): flush on a carriageway, 20 cm over the ground beside it.
 -- Hiding and showing ~1000 meshes costs ~1.5 ms; rendering does not see it (one Lua call).
 local M = {}
 
@@ -19,7 +20,7 @@ for _, kind in ipairs({'roof', 'roof_tile', 'roof_metal', 'roof_sheet', 'roof_mt
     'win_pvc', 'win_wood', 'door_house', 'door_garage', 'door_rust', 'chimney', 'pipe', 'ac_unit', 'dish', 'plate', 'glyphs', 'paint_red', 'fascia',
     'roof_mtile_green', 'footway', 'footway_asphalt', 'trodden', 'ground',
     'paved', 'water', 'glacier', 'bare_rock', 'scree', 'beach', 'wetland', 'orchard', 'vineyard', 'farmland',
-    'meadow', 'heath', 'scrub', 'forest', 'park', 'bare_ground'}) do
+    'meadow', 'heath', 'scrub', 'forest', 'park', 'bare_ground', 'ballast', 'track', 'rail', 'rail_side'}) do
   QUIET.scene['e2rf_' .. kind] = true
 end
 M.QUIET = QUIET

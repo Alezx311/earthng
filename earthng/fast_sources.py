@@ -20,7 +20,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point, shape
 from shapely.ops import transform
 
-VERSION = 'fast-20'         # source index cache; 14: full clearance and abutments; 15: widths, shoulders, rails, raceways; 16: both, clearance matches a 1.5 m deck; 17: deck and road share the clearance (no runaway hills); 18: only crossing centre lines are overpasses; 19: a bridge split over water keeps its deck; 20: a dome on a building leaves the building standing
+VERSION = 'fast-21'        # source index cache; 14: full clearance and abutments; 15: widths, shoulders, rails, raceways; 16: both, clearance matches a 1.5 m deck; 17: deck and road share the clearance (no runaway hills); 18: only crossing centre lines are overpasses; 19: a bridge split over water keeps its deck; 20: a dome on a building leaves the building standing; 21: railway and tram tracks as lines
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -780,7 +780,8 @@ class Store:
                         except osmium.InvalidLocationError:
                             return
                         if len(coords)>=2:
-                            lines[-w.id]=(kind,dict(w.tags),LineString(coords))
+                            tags=fast_style.rail_tags(w.tags) if kind=='rail' else dict(w.tags)
+                            lines[-w.id]=(kind,tags,LineString(coords))
             # Only nodes that can be points reach Python (Kyiv tile: 21 k of 218 k, 0.57 -> 0.25 s);
             # the location index still sees every node, so ways and areas keep their geometry.
             Reader().apply_file(str(Path(self.meta['source'])/entry['file']),locations=True,

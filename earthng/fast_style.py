@@ -347,6 +347,16 @@ KINDS['storefront'] = ('storefront', [1, 1, 1, 1], 'METAL', 1.0, 'wall')
 # a low-voltage line's wires (generator.lua BLD.powerLines): thin upright ribbons, seen from both sides
 KINDS['wire'] = (None, [.05, .05, .05, 1], 'METAL', 1.0, 'wall')
 EXTRA['wire'] = {'doubleSided': True, 'castShadows': False}
+# Railway tracks (generator.lua RAIL): the bed is concrete sleepers on ballast drawn at art build
+# (fast_art.rail_art), u across it and v along it, its stony shoulders cut by opacity. The rails
+# are steel boxes, worn bright on top and rusty down the sides.
+TEXTURES['track'] = {'baseColorMap': f'{ART}/real/track.color.png', 'normalMap': f'{ART}/real/track.normal.png',
+                     'opacityMap': f'{ART}/real/track_o.data.png', 'roughnessFactor': .95}
+KINDS['track'] = ('track', [.44, .42, .39, 1], 'GRAVEL', 1.0, 'strip')
+EXTRA['track'] = {'alphaTest': True, 'alphaRef': 60, 'castShadows': False}
+TRACK_MIP_REF = 80
+KINDS['rail'] = (None, [.58, .58, .59, 1], 'METAL', 1.0, 'wall')
+KINDS['rail_side'] = (None, [.31, .23, .18, 1], 'METAL', 1.0, 'wall')
 # gilded domes (generator.lua BLD.dome)
 KINDS['roof_gold'] = (None, [.83, .66, .22, 1], 'METAL', 2.0, 'roof')
 TEXTURES['railing'] = {'baseColorMap': f'{ART}/real/railing.color.png', 'opacityMap': f'{ART}/real/railing_o.data.png'}
@@ -432,6 +442,10 @@ for _kind, _tex, _tint, _ground, _scale in (
 ):
     KINDS[_kind] = (_tex, _tint, _ground, _scale, 'plan')
     TINT[_kind] = _tint
+# A station's or a yard's ground (landuse=railway, a 'paved' area: generator.lua draws it in
+# this): grey ballast, not the concrete of a car park
+KINDS['ballast'] = ('scree', [.60, .58, .55, 1], 'GRAVEL', 4, 'plan')
+TINT['ballast'] = KINDS['ballast'][1]
 
 # Country carriageways, worst last. groundType is what the tyres feel.
 for _kind, _tex, _tint, _ground, _scale in (
@@ -496,12 +510,28 @@ PATHS = {'footway': 2.0, 'path': 1.2, 'pedestrian': 4.0, 'cycleway': 2.0, 'steps
 UNPAVED = {'unpaved', 'dirt', 'ground', 'earth', 'grass', 'sand', 'gravel', 'fine_gravel', 'compacted', 'mud', 'wood'}
 
 
+# Railway tracks the generator lays (generator.lua RAIL): rails on a ballast bed, flush with the
+# carriageway where they cross or run along a road. A track in a tunnel stays off the map, and a
+# metro (railway=subway) runs in tunnels nearly everywhere.
+RAILS = ('rail', 'light_rail', 'tram', 'narrow_gauge')
+# the tags of a track the generator reads: the rest (names, operators, voltages) only grow the pack
+RAIL_TAGS = ('railway', 'gauge', 'usage', 'service', 'electrified', 'embedded', 'bridge', 'layer')
+
+
+def rail_tags(tags):
+    """The RAIL_TAGS of a track way, as a plain dict."""
+    return {k: tags.get(k) for k in RAIL_TAGS if tags.get(k) is not None}
+
+
 def line_kind(tags):
-    """'path', 'fence', 'guard_rail', 'gantry' (an overhead sign frame across a road) or 'tree_row' for
-    an OSM way drawn as a line, 'coastline' for the shore the exporter fixes the DEM with (never
-    drawn), else None."""
+    """'path', 'fence', 'guard_rail', 'gantry' (an overhead sign frame across a road), 'tree_row' or 'rail'
+    (a railway or tram track) for an OSM way drawn as a line, 'coastline' for the shore the exporter
+    fixes the DEM with (never drawn), else None."""
     if tags.get('natural') == 'coastline':
         return 'coastline'
+    if (tags.get('railway') in RAILS and tags.get('tunnel') in (None, 'no') and tags.get('covered') in (None, 'no')
+            and tags.get('area') != 'yes'):
+        return 'rail'
     if tags.get('man_made') == 'gantry':
         return 'gantry'
     h = tags.get('highway')
