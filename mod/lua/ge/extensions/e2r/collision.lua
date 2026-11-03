@@ -43,9 +43,12 @@ local function reach(owner, x, y, size)
   return math.sqrt(dx * dx + dy * dy)
 end
 
--- points: {x, y, want, keep} for the car or the camera, a parked car and every vehicle. A tile
--- without collision within `want` of one asks for a rebuild; a rebuild keeps the tiles within
--- `keep`, so the next one is due only after the car has covered keep - want.
+-- points: {x, y, want, keep, sceneWant, sceneKeep} for the car or the camera, a parked car and
+-- every vehicle. A tile without collision within `want` of one asks for a rebuild; a rebuild keeps
+-- the tiles within `keep`, so the next one is due only after the car has covered keep - want.
+-- The solid scene of a near tile (walls, fences: tracked with layer 'scene') has its own pair, slots
+-- 5 and 6 (keep when a point has none; below 0: none): at speed the car reaches buildings only on
+-- its own tile and the next, and they were 2/3 of a city rebuild's triangles.
 function M.within(owner, points, size, slot)
   for _, q in ipairs(points) do
     local d = reach(owner, q[1], q[2], size)
@@ -60,17 +63,35 @@ function M.solid(owner, points, size)
   return #points == 0 or M.within(owner, points, size, 4)
 end
 
+-- does the owner's solid scene stay as well
+function M.sceneSolid(owner, points, size)
+  if not M.solid(owner, points, size) then return false end
+  if #points == 0 then return true end
+  for _, q in ipairs(points) do
+    local d = reach(owner, q[1], q[2], size)
+    if d ~= nil and d <= (q[6] or q[4]) then return true end
+  end
+  return false
+end
+
 function M.new()
-  local self = {owners = {}, lastHidden = 0, lastSolid = 0}
+  local self = {owners = {}, lastHidden = 0, lastSolid = 0, lastScenes = 0}
 
   -- owner: a near tile {i, j}, a far tile {i, j, far = true} or a horizon block {horizon = true};
   -- dropped owners (owner.dropped) are graves until the engine has deleted their objects
-  function self:track(owner, id, quiet)
-    local key = quiet and 'quietIds' or 'solidIds'
+  -- triangles, layer (optional): what a rebuild keeps, for the automation report (lastKept)
+  function self:track(owner, id, quiet, triangles, layer)
+    local key = quiet and 'quietIds' or (layer == 'scene' and 'sceneIds') or 'solidIds'
     local list = owner[key]
     if not list then list = {}; owner[key] = list end
     list[#list + 1] = id
     self.owners[owner] = true
+    if not quiet and triangles then
+      local kept = owner.solidTris or {}
+      owner.solidTris = kept
+      local slot = layer or (owner.horizon and 'horizon') or (owner.far and 'far') or 'other'
+      kept[slot] = (kept[slot] or 0) + triangles
+    end
   end
 
   local function hide(ids, find, hidden)
@@ -91,20 +112,33 @@ function M.new()
   -- find(id) -> object or nil; reload() runs the engine rebuild. Everything hidden here is
   -- shown again even when reload() fails, so a failed rebuild cannot blank the world.
   function self:rebuild(points, size, find, reload)
-    local hidden, solid = {}, 0
+    local hidden, solid, scenes, kept = {}, 0, 0, {}
     for owner in pairs(self.owners) do
       local live = hide(owner.quietIds, find, hidden)
+      local tris = owner.solidTris or {}
       if M.solid(owner, points, size) then
         solid = solid + 1
         live = live + #(owner.solidIds or {})
+        for slot, n in pairs(tris) do
+          if slot ~= 'scene' then kept[slot] = (kept[slot] or 0) + n end
+        end
       else
         live = live + hide(owner.solidIds, find, hidden)
+      end
+      if owner.sceneIds then
+        if M.sceneSolid(owner, points, size) then
+          scenes = scenes + 1
+          live = live + #owner.sceneIds
+          kept.scene = (kept.scene or 0) + (tris.scene or 0)
+        else
+          live = live + hide(owner.sceneIds, find, hidden)
+        end
       end
       if owner.dropped and live == 0 then self.owners[owner] = nil end
     end
     local ok, err = pcall(reload)
     for k = 1, #hidden do hidden[k]:setHidden(false) end
-    self.lastHidden, self.lastSolid = #hidden, solid
+    self.lastHidden, self.lastSolid, self.lastScenes, self.lastKept = #hidden, solid, scenes, kept
     if not ok then error(err, 0) end
     return #hidden
   end

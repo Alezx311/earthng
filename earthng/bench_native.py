@@ -192,7 +192,8 @@ for f = 1, frames do
   -- the renderer at once (world.lua takes a layer and releases it once spawned): a layer left
   -- in the generator counts against its triangle budget and is evicted
   if readyFrame then
-    for _, layer in ipairs({{'road', st.stream.ready}, {'scene', st.stream.scenes}, {'far', st.stream.far}, {'horizon', st.stream.horizon}}) do
+    for _, layer in ipairs({{'road', st.stream.ready}, {'scene', st.stream.scenes}, {'grass', st.stream.grass or {}},
+        {'far', st.stream.far}, {'horizon', st.stream.horizon}}) do
       local name, seen = layer[1], released[layer[1]] or {}
       released[name] = seen
       for key, token in pairs(layer[2]) do
@@ -216,17 +217,25 @@ for f = 1, frames do
   end
   -- the road ahead (driving along +x): metres from the car to the first tile of its row whose road
   -- the generator has not delivered (0: the car is on such a tile); the game adds spawn and collision
-  local ahead
+  -- the same for the scene (buildings, trees, props) of the car's row and the rows beside it
+  local ahead, sceneAhead
   if readyFrame and speed > 0 and f > readyFrame + 1 then
     local t = st.stream.tile
     local i, j = math.floor(x / t), math.floor(y / t)
-    ahead = 20 * t
+    ahead, sceneAhead = 20 * t, 20 * t
     for k = 0, 20 do
       if not st.stream.ready[i + k .. '_' .. j] then ahead = k == 0 and 0 or (i + k) * t - x; break end
     end
+    for k = 0, 20 do
+      local key = i + k .. '_' .. j
+      if not (st.stream.scenes[key] and st.stream.scenes[i + k .. '_' .. (j - 1)] and st.stream.scenes[i + k .. '_' .. (j + 1)]) then
+        sceneAhead = k == 0 and 0 or (i + k) * t - x; break
+      end
+    end
   end
   log[f] = {ms = ms, resumeMax = resumeMax, resumes = resumes, kb = collectgarbage('count') - kb0,
-    built = st.stream.built, queued = st.stream.queued, ready = st.stream.readyCount, ahead = ahead}
+    built = st.stream.built, queued = st.stream.queued, ready = st.stream.readyCount, ahead = ahead,
+    sceneAhead = sceneAhead}
 end
 coroutine.resume = realResume
 return {frames = log, readyFrame = readyFrame, long = long}
@@ -306,6 +315,15 @@ def main():
                           'leadP5': pct(lead, .05), 'leadP50': pct(lead, .5), 'leadMin': min(lead)}
         print(f'  road ahead at {a.speed:.0f} m/s over {len(drive)} frames: on a tile without road {report["road"]["holeFrames"]}, '
               f'lead s min {min(lead):.1f} p5 {pct(lead, .05):.1f} p50 {pct(lead, .5):.1f}')
+        scene = [f['sceneAhead'] / a.speed for f in frames if f.get('sceneAhead') is not None]
+        report['scene'] = {'holeFrames': sum(m <= 0 for m in scene), 'leadP5': pct(scene, .05), 'leadP50': pct(scene, .5),
+                           'leadMin': min(scene)}
+        print(f'  scenes of the row and both rows beside it: frames on a tile without them {report["scene"]["holeFrames"]}, '
+              f'lead s min {min(scene):.1f} p5 {pct(scene, .05):.1f} p50 {pct(scene, .5):.1f}')
+    st = native.status().stream
+    spent, lost = dict(st.spentMs), dict(st.lost)
+    print('  generator ms by layer:', {k: round(v) for k, v in spent.items()}, 'parked builds given up:', lost)
+    report['spentMs'], report['lost'] = spent, lost
     for line in list(out.long.values())[:25]:
         print('  long:', line)
     report['stream'] = {'ready': ready, 'built': built, 'frames': len(frames), 'meanMs': sum(ms) / len(ms),

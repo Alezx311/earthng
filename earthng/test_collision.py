@@ -74,6 +74,86 @@ class CollisionTests(unittest.TestCase):
           assert(not seen[awayRoad] and seen[mark] and seen[horizon])
         ''')
 
+    def test_the_scene_keeps_to_its_own_window(self):
+        lua = self.make()
+        lua.execute('''
+          function makeLayer(owner, layer)
+            serial = serial + 1
+            objects[serial] = {id = serial, hidden = false,
+              isHidden = function(self) return self.hidden end,
+              setHidden = function(self, h) self.hidden = h end}
+            coll:track(owner, serial, false, 1000, layer)
+            return serial
+          end
+          local here, ahead, beside = {i = 0, j = 0}, {i = 1, j = 0}, {i = 0, j = 1}
+          local road, wall = makeLayer(here, 'road'), makeLayer(here, 'scene')
+          local aheadRoad, aheadWall = makeLayer(ahead, 'road'), makeLayer(ahead, 'scene')
+          local besideRoad, besideWall = makeLayer(beside, 'road'), makeLayer(beside, 'scene')
+          -- at speed: the car at (250, 250) heading +x keeps the ground of all three tiles, its own
+          -- walls (slot 5/6 of the car: 0, 100) and those round a point 100 m ahead (150 + 50 m):
+          -- tile 1_0 is 150 m from it, tile 0_1 250 m
+          local points = {{250, 250, 400, 600, 0, 100}, {350, 250, -1, -1, 150, 200}}
+          coll:rebuild(points, 500, find, reload)
+          assert(not seen[road] and not seen[aheadRoad] and not seen[besideRoad])
+          assert(not seen[wall] and not seen[aheadWall] and seen[besideWall])
+          assert(coll.lastScenes == 2 and coll.lastKept.scene == 2000 and coll.lastKept.road == 3000)
+          assert(collision.sceneSolid(ahead, points, 500) and not collision.sceneSolid(beside, points, 500))
+          -- the scene asks only within its own reach (slot 5)
+          assert(collision.within(ahead, points, 500, 5) and not collision.within(beside, points, 500, 5))
+          -- a point without scene slots keeps walls with the ground; with none at all, everything
+          coll:rebuild({{250, 250, 400, 600}}, 500, find, reload)
+          assert(not seen[besideWall])
+          -- walls never stay where the ground goes
+          coll:rebuild({{250, 250, 100, 200, 1000, 1000}}, 500, find, reload)
+          assert(seen[besideRoad] and seen[besideWall] and not seen[wall])
+        ''')
+
+    def test_at_speed_the_world_keeps_a_lane_ahead(self):
+        # world.lua's collisionPoints with the real policy: Kyiv tiles (500 m), the car in the
+        # middle of tile 0_0 at 69 m/s along +x
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_widget import load_world
+        lua = self.make()
+        lua.execute('''
+          ui_imgui = setmetatable({ArrayChar=function() return {} end}, {__index=function() return function() end end})
+          realRequire, require = require, function() return {} end
+          hptimer=function() return {stopAndReset=function() return 1 end, stop=function() return 1 end} end''')
+        src = (ROOT / 'world.lua').read_text(encoding='utf8')
+        lua.globals().mod = load_world(lua, src)
+        lua.execute('''
+          local function up(fn, name)
+            for i = 1, 200 do local n, v = debug.getupvalue(fn, i); if not n then return end; if n == name then return v end end
+          end
+          local points = up(up(mod.tick, 'updateCollision'), 'collisionPoints')
+          local S = up(mod.tick, 'S')
+          local function at(speed)
+            local v = {x = speed, y = 0}
+            function v:length() return speed end
+            return points({x = 250, y = 250}, v)
+          end
+          local function kept(pts, slot)
+            local out = {}
+            for i = -2, 3 do for j = -2, 2 do
+              local tile = {i = i, j = j}
+              local keep = slot == 6 and collision.sceneSolid(tile, pts, 500) or collision.solid(tile, pts, 500)
+              if keep then out[#out + 1] = i .. '_' .. j end
+            end end
+            return table.concat(out, ' ')
+          end
+          S.state = 'driving'
+          local fast = at(69)
+          -- ground: the car's tile and the lane ahead (376 m + 200 m); not the tiles beside or behind
+          assert(kept(fast, 4) == '0_0 1_0', kept(fast, 4))
+          -- the next tile asks for its ground before the car is there (want 376 m along the lane)
+          assert(collision.within({i = 1, j = 0}, fast, 500, 3) and not collision.within({i = 0, j = 1}, fast, 500, 3))
+          -- walls: the car's tile and the next
+          assert(kept(fast, 6) == '0_0 1_0', kept(fast, 6))
+          -- slow: the disc round the car as before (want 200, keep 400)
+          local slow = at(5)
+          assert(kept(slow, 4) == '-1_-1 -1_0 -1_1 0_-1 0_0 0_1 1_-1 1_0 1_1', kept(slow, 4))
+          assert(kept(slow, 6) == kept(slow, 4))
+        ''')
+
     def test_graves_stay_out_until_deleted_and_failures_show_the_world(self):
         lua = self.make()
         lua.execute('''

@@ -102,6 +102,13 @@ class NativeTests(unittest.TestCase):
             if options.roadReady then options.roadReady(road, nav) end
             for n=1,5 do options.pause() end
             local far=options.far and {items=fakeFarTriangles>0 and {{triangles=fakeFarTriangles,meshes={}}} or {},mats={}} or nil
+            -- and the scene before its grass
+            if options.sceneReady then
+              local scene={items={},mats={}}
+              options.sceneReady(scene)
+              for n=1,5 do options.pause() end
+              return road,scene,far,nav,{items={},mats={}}
+            end
             return road,{items={},mats={}},far,nav
           end}
         ''')
@@ -775,6 +782,39 @@ class NativeV2Tests(NativeTests.__base__):
         self.assertEqual(stream.parked, 0)
         self.assertEqual(len(list(stream.failed.keys())), 0)
         self.assertGreater(stream.built, built)
+
+    def test_while_driving_the_grass_goes_out_after_its_scene(self):
+        _, mod, cv = self.make(fixture(10))
+        lat, lon = geographic(1250, 4750)
+        mod.land(cv(dict(seq=14, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        x, waiting, parked, lost = 1250.0, set(), 0, 0
+        for frame in range(1500):
+            x += 60 / 60
+            mod.pose(cv(dict(x=x, y=4750, vx=60, vy=0, state='driving')))
+            mod.update(.016, 4)
+            stream = mod.status().stream
+            for key in stream.scenes.keys():
+                if stream.grass[key] is None:
+                    waiting.add(key)
+            parked = max(parked, stream.parkedGrass or 0)
+            lost = max(lost, stream.grassLost or 0)
+        # the scene goes out first; a grass build waits in one of two slots, the latest is let go
+        self.assertTrue(waiting)
+        self.assertLessEqual(parked, 2)
+        got = {key for key in mod.status().stream.grass.keys()}
+        self.assertTrue(got)
+        # stopped, a near tile that lost its grass is built again for it (its road and scene stay)
+        mod.pose(cv(dict(x=x, y=4750, vx=0, vy=0, state='driving')))
+        for _ in range(4000):
+            mod.update(.016, 4)
+        stream = mod.status().stream
+        self.assertEqual(stream.grassLost, 0)
+        self.assertEqual(stream.parkedGrass, 0)
+        self.assertEqual(len(list(stream.failed.keys())), 0)
+        for key, due in stream.wanted.items():
+            if due < 1e6 and stream.grass[key] is not None:
+                self.assertTrue(stream.scenes[key], key)
 
     def test_terrain_only_decoder_reads_the_grid_of_a_full_cell(self):
         lua, _, _ = self.make()

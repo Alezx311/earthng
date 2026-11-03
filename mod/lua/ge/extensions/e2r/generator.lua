@@ -10947,6 +10947,32 @@ local function build(cells, i, j, options)
       YARD.reserve(scene.streetReservations, {p[1] - .001, p[2]}, {p[1] + .001, p[2]}, 2.6)
     end
   end
+  -- The scene as the renderer takes it: everything collected so far, the parked cars and the
+  -- shops and venues with a sign of their own. (one table: build() is at LuaJIT's 200 locals)
+  local SPLIT = {}
+  function SPLIT.out()
+    local out = manifest(scene, 'scene')
+    out.parking = parking
+    if not distant then
+      out.brandPOIs = {}
+      for _, poi in ipairs(lists.points) do
+        local p, tags = poi.pos, poi.tags or NONE
+        if p and BLD.SHOP.kinds[poi.kind] and SOLID.BRANDS[tags.e2r_brand]
+            and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
+          out.brandPOIs[#out.brandPOIs + 1] =
+            {id = poi.id, kind = poi.kind, x = p[1], y = p[2], brand = tags.e2r_brand, postType = tags.e2r_post_type}
+        elseif p and poi.kind == 'venue' and BLD.VENUE.types[tags.e2r_venue]
+            and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
+          out.brandPOIs[#out.brandPOIs + 1] =
+            {id = poi.id, kind = poi.kind, x = p[1], y = p[2], label = tags.name, rgb = BLD.VENUE.types[tags.e2r_venue].rgb}
+        end
+      end
+    end
+    return out
+  end
+  -- options.sceneReady(scene) (native.lua, while driving): the buildings, trees and props go out
+  -- before the grass, flowers and loose stones, which are ~40% of a central Kyiv tile and drawn
+  -- only within ~100 m of the car. The rest of the build collects them into a 'grass' layer.
   if decor then
     local WALL = 3
     local blockers = {}
@@ -10962,12 +10988,50 @@ local function build(cells, i, j, options)
       end
     end
     local blockedOps = 0
+    -- Blockers by 50 m bin, each in every bin its bounds reach plus BIN.blockPad (more than any
+    -- wall clearance asked below): every scattered point used to test every building of the
+    -- tile, a quarter of a central Kyiv tile's time. A wider wall reads them all, as before.
+    -- (one table: build() is at LuaJIT's 200 locals)
+    local BIN = {blockPad = 5, segmentPad = 4, blockers = {}, segments = {}}
+    for _, blocker in ipairs(blockers) do
+      local b = blocker.bounds
+      for gx = floor((math.max(b[1], rect[1] - 50) - BIN.blockPad) / 50), floor((math.min(b[3], rect[3] + 50) + BIN.blockPad) / 50) do
+        for gy = floor((math.max(b[2], rect[2] - 50) - BIN.blockPad) / 50), floor((math.min(b[4], rect[4] + 50) + BIN.blockPad) / 50) do
+          local k = (gx + 32768) * 65536 + gy + 32768
+          local bin = BIN.blockers[k]
+          if not bin then bin = {}; BIN.blockers[k] = bin end
+          bin[#bin + 1] = blocker
+        end
+      end
+    end
+    -- Road segments by 10 m bin, each where it can come within its half width plus a pad
+    -- (BIN.segmentPad, the widest pad asked below). segmentBins (50 m, half width plus pullZero >= 15 m) gives
+    -- the same answer, with a few dozen segments a bin in a city centre.
+    for _, segment in ipairs(segments) do
+      local a, b = segment.a, segment.b
+      local margin = segment.width / 2 + BIN.segmentPad
+      for gx = floor((math.max(math.min(a[1], b[1]), rect[1] - 60) - margin) / 10), floor((math.min(math.max(a[1], b[1]), rect[3] + 60) + margin) / 10) do
+        for gy = floor((math.max(math.min(a[2], b[2]), rect[2] - 60) - margin) / 10), floor((math.min(math.max(a[2], b[2]), rect[4] + 60) + margin) / 10) do
+          local k = (gx + 32768) * 65536 + gy + 32768
+          local bin = BIN.segments[k]
+          if not bin then bin = {}; BIN.segments[k] = bin end
+          bin[#bin + 1] = segment
+        end
+      end
+    end
     -- wall: clearance from building walls (a crown), 0 for grass and stones. paved: a mapped
     -- tree may stand in a square or a car park (a grate in the paving), a lattice one may not.
     local function blocked(x, y, pad, wall, paved)
       pad, wall = pad or 3.5, wall or 0
       if scene.streetReservations and VEG.streetBlocked(scene.streetReservations, x, y) then return true end
-      local nearby = segmentBins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE
+      local bin = (floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768
+      local inRect = x >= rect[1] - 50 and x <= rect[3] + 50 and y >= rect[2] - 50 and y <= rect[4] + 50
+      local nearby
+      if pad <= BIN.segmentPad and inRect and tune.pullZero >= BIN.segmentPad then
+        nearby = BIN.segments[(floor(x / 10) + 32768) * 65536 + floor(y / 10) + 32768] or NONE
+      else
+        nearby = segmentBins[bin] or NONE
+      end
       for _, segment in ipairs(nearby) do
         local a = segment.a
         local t = math.max(0, math.min(1, ((x - a[1]) * segment.dx + (y - a[2]) * segment.dy) / segment.len2))
@@ -10975,7 +11039,7 @@ local function build(cells, i, j, options)
         blockedOps = blockedOps + 1
         if blockedOps % 512 == 0 then pause() end
       end
-      for _, blocker in ipairs(blockers) do
+      for _, blocker in ipairs((wall <= BIN.blockPad and inRect) and (BIN.blockers[bin] or NONE) or blockers) do
         local b = blocker.bounds
         local m = blocker.wall and wall or 0
         if not (paved and blocker.paved) and x >= b[1] - m and y >= b[2] - m and x <= b[3] + m and y <= b[4] + m
@@ -11659,6 +11723,11 @@ local function build(cells, i, j, options)
         pause()
       end
     end
+    if options.sceneReady and not distant then
+      SPLIT.scene = SPLIT.out()
+      scene.items = {}
+      options.sceneReady(SPLIT.scene)
+    end
     -- Forest floor and mapped fields stay a thin scatter. Lawn kinds are absent here,
     -- so a town tile does not plant a second tuft on the carpet.
     scatter('grass', {farmland = 8, heath = 7, forest = 12, orchard = 5, vineyard = 9},
@@ -11739,23 +11808,11 @@ local function build(cells, i, j, options)
     bio.layers(math.floor(maxGrass * .6), math.min(600, maxRocks * 3), spread)
   end
   mark('trees')
-  local sceneManifest = manifest(scene, 'scene')
-  sceneManifest.parking = parking
-  if not distant then
-    sceneManifest.brandPOIs = {}
-    for _, poi in ipairs(lists.points) do
-      local p, tags = poi.pos, poi.tags or NONE
-      if p and BLD.SHOP.kinds[poi.kind] and SOLID.BRANDS[tags.e2r_brand]
-          and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
-        sceneManifest.brandPOIs[#sceneManifest.brandPOIs + 1] =
-          {id = poi.id, kind = poi.kind, x = p[1], y = p[2], brand = tags.e2r_brand, postType = tags.e2r_post_type}
-      elseif p and poi.kind == 'venue' and BLD.VENUE.types[tags.e2r_venue]
-          and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
-        sceneManifest.brandPOIs[#sceneManifest.brandPOIs + 1] =
-          {id = poi.id, kind = poi.kind, x = p[1], y = p[2], label = tags.name, rgb = BLD.VENUE.types[tags.e2r_venue].rgb}
-      end
-    end
+  if SPLIT.scene then
+    -- the scene went out at sceneReady; what was collected since is the grass layer
+    return roadManifest, SPLIT.scene, nil, nav, manifest({used = {}, items = scene.items}, 'grass')
   end
+  local sceneManifest = SPLIT.out()
   if distant then
     sceneManifest.layer = layerName
     for _, item in ipairs(sceneManifest.items) do

@@ -49,7 +49,10 @@ M.DETAILS = {crossing = true, give_way = true, stop_sign = true, mini_roundabout
 -- keep (optional {x0, y0, x1, y1}): only features whose bounds reach it (with the margins above)
 -- become tables; the rest are read past. A tile needs a quarter of a 1 km cell, and decoded
 -- points are what the game's collector walks, so a tile's cell is not decoded whole.
-function M.cell(data, first, last, ox, oy, rect, pause, keep)
+-- grid (optional table): empty, it is filled with the cell's elevation grid; filled by an earlier
+-- call for the same cell, that grid is shared instead of decoded again (up to 66k numbers, read by
+-- four tiles and their edges). The generator only reads the grid.
+function M.cell(data, first, last, ox, oy, rect, pause, keep, grid)
   pause = pause or function() end
   local pos = first
   local function u()
@@ -79,9 +82,16 @@ function M.cell(data, first, last, ox, oy, rect, pause, keep)
     if v == nil then error('invalid source string reference') end
     return v
   end
-  local function tags()
+  -- tags and node ids are read into scratch, and become tables only for a kept feature
+  local tagBuf, nodeBuf = {}, {}
+  local function readTags()
+    local n = u()
+    for k = 1, 2 * n do tagBuf[k] = ref() end
+    return n
+  end
+  local function tags(n)
     local out = {}
-    for _ = 1, u() do local key = ref(); out[key] = ref() end
+    for k = 1, n do out[tagBuf[2 * k - 1]] = tagBuf[2 * k] end
     return out
   end
   local ocx, ocy = floor(ox * 100 + .5), floor(oy * 100 + .5)
@@ -129,57 +139,90 @@ function M.cell(data, first, last, ox, oy, rect, pause, keep)
     for k = 1, #counts do out[k] = points(at, counts[k]); at = at + 3 * counts[k] end
     return out
   end
-  local nx, ny = u(), u()
-  if nx < 2 or ny < 2 or nx > 257 or ny > 257 then error('invalid source elevation grid') end
-  local heights, h = {}, 0
-  for k = 1, nx * ny do
-    h = h + s(); heights[k] = h / 10
-    if k % 8192 == 0 then pause() end
+  local nx, ny, heights
+  if grid and grid.heights then
+    nx, ny, heights, pos = grid.nx, grid.ny, grid.heights, grid.after
+  else
+    nx, ny = u(), u()
+    if nx < 2 or ny < 2 or nx > 257 or ny > 257 then error('invalid source elevation grid') end
+    local h = 0
+    heights = {}
+    for k = 1, nx * ny do
+      h = h + s(); heights[k] = h / 10
+      if k % 8192 == 0 then pause() end
+    end
+    if grid then grid.nx, grid.ny, grid.heights, grid.after = nx, ny, heights, pos end
   end
   local cell = {terrain = {rect = rect, nx = nx, ny = ny, heights = heights}}
   local done = 0
+  -- a feature's fields are set in the order the tables always had (pairs() order is unchanged)
   for _, kind in ipairs(KINDS) do
     local list = {}
     for _ = 1, u() do
-      local f = {id = ref()}
+      local id = ref()
       start()
-      local keepIt
+      local f
       if kind == 'roads' then
-        f.width = u() / 100; f.tags = tags()
-        local nodes = {}
-        for n = 1, u() do nodes[n] = ref() end
-        f.nodes = nodes
+        local width = u() / 100
+        local nt = readTags()
+        local nn = u()
+        for n = 1, nn do nodeBuf[n] = ref() end
         local n = read(2)
-        keepIt = wanted(M.ROAD_MARGIN)
-        if keepIt then f.points = points(0, n) end
+        if wanted(M.ROAD_MARGIN) then
+          f = {id = id}
+          f.width = width; f.tags = tags(nt)
+          local nodes = {}
+          for k = 1, nn do nodes[k] = nodeBuf[k] end
+          f.nodes = nodes
+          f.points = points(0, n)
+        end
       elseif kind == 'junctions' then
-        f.height = s() / 100
+        local height = s() / 100
         local counts = rings()
-        keepIt = wanted(M.MARGIN)
-        if keepIt then f.rings = ringTables(counts) end
+        if wanted(M.MARGIN) then
+          f = {id = id}
+          f.height = height
+          f.rings = ringTables(counts)
+        end
       elseif kind == 'buildings' then
-        f.kind = ref(); f.height = u() / 100; f.minHeight = u() / 100
-        f.tags = tags()
+        local bkind, height, minHeight = ref(), u() / 100, u() / 100
+        local nt = readTags()
         local counts = rings()
-        keepIt = wanted(M.MARGIN)
-        if keepIt then f.rings = ringTables(counts) end
+        if wanted(M.MARGIN) then
+          f = {id = id}
+          f.kind = bkind; f.height = height; f.minHeight = minHeight
+          f.tags = tags(nt)
+          f.rings = ringTables(counts)
+        end
       elseif kind == 'areas' then
-        f.kind = ref(); f.tags = tags()
+        local akind = ref()
+        local nt = readTags()
         local counts = rings()
-        keepIt = wanted(M.MARGIN)
-        if keepIt then f.rings = ringTables(counts) end
+        if wanted(M.MARGIN) then
+          f = {id = id}
+          f.kind = akind; f.tags = tags(nt)
+          f.rings = ringTables(counts)
+        end
       elseif kind == 'lines' then
-        f.kind = ref(); f.tags = tags()
+        local lkind = ref()
+        local nt = readTags()
         local n = read(2)
-        keepIt = wanted(M.MARGIN)
-        if keepIt then f.points = points(0, n) end
+        if wanted(M.MARGIN) then
+          f = {id = id}
+          f.kind = lkind; f.tags = tags(nt)
+          f.points = points(0, n)
+        end
       else
-        f.kind = ref(); f.tags = tags()
+        local pkind = ref()
+        local nt = readTags()
         read(1)
-        keepIt = wanted(M.DETAILS[f.kind] and M.DETAIL_MARGIN or M.MARGIN)
-        if keepIt then f.pos = points(0, 1)[1] end
+        if wanted(M.DETAILS[pkind] and M.DETAIL_MARGIN or M.MARGIN) then
+          f = {id = id}
+          f.kind = pkind; f.tags = tags(nt)
+          f.pos = points(0, 1)[1]
+        end
       end
-      if keepIt then list[#list + 1] = f end
+      if f then list[#list + 1] = f end
       done = done + 1
       if done % 128 == 0 then pause() end
     end

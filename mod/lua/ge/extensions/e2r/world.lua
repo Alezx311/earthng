@@ -48,7 +48,6 @@ local W, H = 720, 440          -- map picture size, px
 local BUDGET_MS = 4            -- spawn work per frame
 local CAM_HIGH, CAM_LOW = 350, 28
 local LOAD_R, UNLOAD_R = 800, 1250   -- tile centre distance from the car, m
-local SCENE_LAG = 3            -- s: a scene item queues as the road of a tile reached this much later
 local COLLISION_EVERY = 2.0          -- s between batched reloadCollision calls
 local LAMP_SHAPE = '/art/shapes/objects/lamp1.dae'   -- fast_style.LAMP
 local PRESETS = {
@@ -141,9 +140,12 @@ local coordBuf = im.ArrayChar(64)
 local test, result = nil, {status = 'waiting', shots = {}}
 local frameTimer = hptimer()
 -- Streaming limits; see the comments where each is used.
-local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128,
+-- sceneLag: s, a scene item queues as the road of a tile reached this much later (its grass 3x)
+local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128, sceneLag = 3,
   forestStep = 0.12, forestKind = 1.5, forestMax = 2500, propMax = 600,
-  collisionWant = 200, collisionLead = 6, collisionMargin = 200, vehicleCollision = {100, 300},
+  collisionWant = 200, collisionLead = 4, collisionSceneLead = 2.5, collisionMargin = 200, vehicleCollision = {100, 300}, otherCars = {80, 160},
+  collisionScene = {fast = 15, ahead = 1.5, want = 1, side = 100, margin = 100,
+    roadSide = 120, roadKeep = 200, roadLane = 120, roadStep = 100},
   roadAhead = 15, roadUrgent = 8, roadFloorMs = 2.5}
 -- Read-only view for the development probe (earthng/probe.py); nothing in the mod calls it.
 function M.dbg() return {S = S, result = result, native = native, detail = detailStream, test = test} end
@@ -630,7 +632,7 @@ local function spawnItem(it, group, pause, tile, layer)
     obj:setPosition(vec3(it.pos[1], it.pos[2], it.pos[3]))
     if NATIVE and tile then
       S.coll = S.coll or collision.new()
-      S.coll:track(tile, obj:getID(), not (tile.far or tile.horizon) and collision.quiet(meshes, layer))
+      S.coll:track(tile, obj:getID(), not (tile.far or tile.horizon) and collision.quiet(meshes, layer), it.triangles, layer)
     end
     local ms = t:stop()
     if ms > (result.createMeshMs or 0) then result.createMeshMs, result.createMeshItem = ms, it.name end
@@ -707,12 +709,12 @@ local function queueItems(items, tile, key, layer)
       if it.kind ~= 'proc' and (it.prop or vegetationShape(it.shape)) then
         if not batch or #batch.items >= LIMIT.plantBatch then
           batch = {kind='plants', name='plants_' .. key, decor=true, items={}}
-          S.queue[#S.queue+1] = {tile=tile, key=key, item=batch, scene=layer=='scene', far=layer=='far'}
+          S.queue[#S.queue+1] = {tile=tile, key=key, item=batch, scene=layer=='scene', far=layer=='far', grass=layer=='grass'}
           count = count + 1
         end
         batch.items[#batch.items+1] = it
       else
-        S.queue[#S.queue+1] = {tile=tile, key=key, item=it, scene=layer=='scene', far=layer=='far'}
+        S.queue[#S.queue+1] = {tile=tile, key=key, item=it, scene=layer=='scene', far=layer=='far', grass=layer=='grass'}
         count = count + 1
       end
     end
@@ -1076,6 +1078,18 @@ local function startScene(key, tile)
   if NATIVE and tile.sceneComplete then native.release(key, 'scene') end
 end
 
+-- A tile's grass, flowers and loose stones, built after its scene while driving (native.lua
+-- sceneReady). Nearly all of it goes to the detail stream round the car; the odd bush is a job.
+local function startGrass(key, tile)
+  tile.grassStarted = true
+  local manifest = native.manifest(key, 'grass')
+  if type(manifest) ~= 'table' or manifest.source ~= S.stream.region then return end
+  loadNewMaterials(nil, manifest.stockMaterials)
+  tile.grassLeft = queueItems(manifest.items, tile, key, 'grass')
+  tile.left = tile.left + tile.grassLeft
+  if tile.grassLeft == 0 then native.release(key, 'grass') end
+end
+
 -- --- traffic -----------------------------------------------------------------------------------
 -- The game's AI drives on a navgraph built from DecalRoads; ours are ProceduralMesh, so the graph
 -- comes from the tiles (<key>.nav.json, fast.nav_segments) and goes to map.reset(nodes). Built
@@ -1349,6 +1363,11 @@ local function updateTiles()
     end
     if bestS and (not best or bestSD < bestD) then startScene(bestS[1], bestS[2]) end
   end
+  if NATIVE and st.grass then
+    for key, tile in pairs(S.tiles) do
+      if st.grass[key] and tile.sceneStarted and not tile.grassStarted then startGrass(key, tile); break end
+    end
+  end
   if fast then
     -- the far city (earthng/fast_far.py): a tile without its own scene, within farRadius, gets
     -- its far layer; the far layer goes when the scene is in or the car is far away
@@ -1470,11 +1489,11 @@ local function updateTiles()
     -- tile come before any plant: a nearer tile's crowns used to sit ahead of
     -- the next tile's road and the bubble painted at the forest cap.
     -- Among meshes, roads and scenes go by the car's arrival (wanted, s), a
-    -- scene SCENE_LAG s after its road: the buildings by the car come before
+    -- scene LIMIT.sceneLag s after its road: the buildings by the car come before
     -- the roads of a tile a kilometre ahead.
     local wanted = st.wanted or {}
     local function rank(job) return job.horizon and 2 or (job.far and 1 or 0) end
-    local function due(job) return (wanted[job.key] or 1e6) + (job.scene and SCENE_LAG or 0) end
+    local function due(job) return (wanted[job.key] or 1e6) + (job.scene and LIMIT.sceneLag or 0) + (job.grass and 3 * LIMIT.sceneLag or 0) end
     -- Ground, then grass and rocks, then trees. A tile of 1800 crowns used to
     -- fill the frame budget before a single tuft or stone was spawned.
     local function decorRank(job)
@@ -1505,7 +1524,7 @@ local function stepQueue()
   -- A road due within LIMIT.roadUrgent s at the head of the queue (updateTiles sorts it) gets
   -- LIMIT.roadFloorMs however much the generator took: at 0.5 ms it spawned a piece a frame.
   local head, wanted = S.queue[1], S.status and S.status.stream and S.status.stream.wanted
-  local urgent = NATIVE and head and not (head.scene or head.far or head.horizon) and wanted
+  local urgent = NATIVE and head and not (head.scene or head.grass or head.far or head.horizon) and wanted
     and (wanted[head.key] or 1e6) < LIMIT.roadUrgent
   local budget = test and test.genBudget or math.max(urgent and LIMIT.roadFloorMs or .5, BUDGET_MS - (S.nativeMs or 0))
   local function over() return frame:stop() >= budget end
@@ -1520,7 +1539,7 @@ local function stepQueue()
       S.job = job
       local group = ((job.far or job.horizon) and job.tile.group) or (job.item.decor and job.tile.decor)
         or (job.scene and job.tile.sceneGroup) or job.tile.group
-      local layer = not (job.far or job.horizon) and (job.scene and 'scene' or 'road') or nil
+      local layer = not (job.far or job.horizon) and ((job.scene or job.grass) and 'scene' or 'road') or nil
       S.co = coroutine.create(function(p) spawnItem(job.item, group, p, job.tile, layer) end)
     end
     -- a resume far over the budget: is it the collector (Lua heap shrinks inside it)?
@@ -1550,7 +1569,10 @@ local function stepQueue()
       S.co = nil
       local tile = S.job.tile
       tile.left = tile.left - 1
-      if not S.job.scene then tile.roadLeft = tile.roadLeft - 1 end
+      if S.job.grass then
+        tile.grassLeft = tile.grassLeft - 1
+        if NATIVE and tile.grassLeft == 0 and not tile.dropped then native.release(S.job.key, 'grass') end
+      elseif not S.job.scene then tile.roadLeft = tile.roadLeft - 1 end
       if S.job.scene then
         tile.sceneLeft = tile.sceneLeft - 1
         tile.sceneComplete = tile.sceneLeft == 0 and not tile.failed
@@ -1599,18 +1621,44 @@ local function collisionPoints(p, v)
   if not p then return points end
   local speed = v and v:length() or 0
   local want = math.min(1600, math.max(LIMIT.collisionWant, speed * LIMIT.collisionLead + 100))
+  -- a scene spawned since the last rebuild asks for one only nearer: at 250 km/h a road, then its
+  -- scene, then the rows beside it each asked within 6 s and the rebuilds came every 2 s
+  local sceneWant = math.min(want, math.max(LIMIT.collisionWant, speed * LIMIT.collisionSceneLead + 100))
   -- the descent waits for collision on every tile within 500 m of the spawn (tick)
-  if S.state ~= 'driving' then want = math.max(want, 750) end
-  points[1] = {p.x, p.y, want, want + LIMIT.collisionMargin}
+  if S.state ~= 'driving' then want, sceneWant = math.max(want, 750), math.max(want, 750) end
+  local C = LIMIT.collisionScene
+  if S.state == 'driving' and speed >= C.fast then
+    -- At speed the buildings and fences of a tile join only round a point `ahead` s in front of
+    -- the car (`want` s of the car's travel round it, kept `margin` m further), and the car's own
+    -- tile and those within `side` m: Kyiv at 69 m/s kept 8-10 tiles' walls (150-270k triangles)
+    -- in every rebuild, 2/3 of its 50-130 ms.
+    -- The ground and roads the same way: within `roadSide` m of the car (kept to `roadKeep`) and
+    -- `roadLane` m either side of its heading out to `want` (kept a margin further): the tiles
+    -- behind and beside the car were half of the 55-100k road triangles a rebuild kept.
+    local dx, dy = v.x / speed, v.y / speed
+    local lead, around = speed * C.ahead, speed * C.want + 50
+    points[1] = {p.x, p.y, C.roadSide, C.roadKeep, 0, C.side}
+    points[2] = {p.x + dx * lead, p.y + dy * lead, -1, -1, around, around + C.margin}
+    local reach = want + LIMIT.collisionMargin
+    for k = 1, math.ceil(reach / C.roadStep) do
+      local d = math.min(k * C.roadStep, reach)
+      points[#points + 1] = {p.x + dx * d, p.y + dy * d, d <= want and C.roadLane or -1, C.roadLane + C.roadStep / 2, -1, -1}
+    end
+  else
+    points[1] = {p.x, p.y, want, want + LIMIT.collisionMargin, sceneWant, want + LIMIT.collisionMargin}
+  end
   local vw, vk = LIMIT.vehicleCollision[1], LIMIT.vehicleCollision[2]
-  if S.heldCar then points[2] = {S.heldCar[1], S.heldCar[2], vw, vk} end
+  -- the player's car while the camera is elsewhere keeps its buildings; other cars only the ground
+  if S.heldCar then points[#points + 1] = {S.heldCar[1], S.heldCar[2], vw, vk, vw, vk} end
   pcall(function()
     for k = 0, be:getObjectCount() - 1 do
       -- a car the parking pool has hidden needs no ground where it was left
       local obj = be:getObject(k)
       if obj:getActive() then
+        -- parked cars and traffic: ground under them and a couple of seconds round them (a 300 m
+        -- disc each kept 3x3 city tiles in every rebuild); the player's car is points[1]
         local q = obj:getPosition()
-        points[#points + 1] = {q.x, q.y, vw, vk}
+        points[#points + 1] = {q.x, q.y, LIMIT.otherCars[1], LIMIT.otherCars[2], -1, -1}
       end
     end
   end)
@@ -1632,8 +1680,10 @@ local function updateCollision()
   for _, tile in pairs(S.tiles) do
     local empty = tile.manifest.empty or itemCount(tile.manifest) == 0
     if NATIVE then
-      if (tile.state == 'loaded' and not tile.collided and not empty) or (tile.sceneDirty and fast) then
+      if tile.state == 'loaded' and not tile.collided and not empty then
         if #points == 0 or collision.within(tile, points, size, 3) then near = true; break end
+      elseif fast and tile.sceneIds and #tile.sceneIds > 0 and (tile.sceneDirty or not tile.sceneCollided) then
+        if #points == 0 or collision.within(tile, points, size, 5) then near = true; break end
       end
     else
       if tile.state == 'loaded' and not tile.collided and not empty then
@@ -1658,6 +1708,15 @@ local function updateCollision()
     be:reloadCollision()
   end
   local ms = timer:stop()
+  if NATIVE and S.state == 'driving' then
+    -- each rebuild while driving: s, ms, tiles kept, objects hidden, kilo-triangles kept by layer
+    result.collisionLog = result.collisionLog or {}
+    if #result.collisionLog < 80 then
+      local k = {}
+      for slot, n in pairs(S.coll.lastKept or {}) do k[slot] = math.floor(n / 1000) end
+      table.insert(result.collisionLog, {math.floor(S.now * 10) / 10, math.floor(ms), S.coll.lastSolid, S.coll.lastHidden, k})
+    end
+  end
   result.reloadCollisionMs = math.max(result.reloadCollisionMs or 0, ms)
   result.collisionReloads = (result.collisionReloads or 0) + 1
   result.collisionMsSum = (result.collisionMsSum or 0) + ms
@@ -1668,6 +1727,8 @@ local function updateCollision()
       left = left or not tile.collided
     end
     tile.sceneDirty = false
+    tile.sceneCollided = not NATIVE or collision.sceneSolid(tile, points, size)
+    left = left or (fast and tile.sceneIds and #tile.sceneIds > 0 and not tile.sceneCollided)
   end
   -- natively the tiles left out keep the check running as the car moves
   S.collisionDirty, S.collisionAt = NATIVE and left, S.now
@@ -3728,7 +3789,7 @@ local function runTest()
       job = {state = job.state, progress = job.progress, message = job.message, stage = job.stage},
       built = stream.built, ready = stream.readyCount, error = S.lastError,
       cachedTiles = stream.cachedTiles, cachedCells = stream.cachedCells, rebuilds = stream.rebuilds,
-      slowResumes = stream.slowResumes}
+      slowResumes = stream.slowResumes, spentMs = stream.spentMs, stageMs = stream.stageMs, lost = stream.lost}
     if M.live and M.live.status then
       local liveState = M.live.status()
       if liveState then result.live = {message_en = liveState.message_en, message_uk = liveState.message_uk} end
@@ -4232,6 +4293,38 @@ local function replayStep(dt)
       left=t and t.left, ready=st.ready and st.ready[key]~=nil, wanted=st.wanted and st.wanted[key],
       failed=st.failed and st.failed[key], queue=#S.queue, collisionAgo=S.now-S.collisionAt, dirty=S.collisionDirty})
     S.lastMiss = key
+  end
+  -- the scene (buildings, trees, props) of the tile under the car: not spawned yet, or not even generated
+  if here and not here.sceneComplete then
+    result.sceneMissFrames = (result.sceneMissFrames or 0) + 1
+    if S.lastSceneMiss ~= key then
+      result.sceneMisses = result.sceneMisses or {}
+      table.insert(result.sceneMisses, {seconds = S.now - S.testDriving, tile = key, started = here.sceneStarted or false,
+        left = here.sceneLeft})
+      S.lastSceneMiss = key
+    end
+  end
+  -- the car's tile has walls the collision does not hold yet (collision.lua: the scene's window)
+  if here and here.sceneIds and #here.sceneIds > 0 and not here.sceneCollided then
+    result.wallMissFrames = (result.wallMissFrames or 0) + 1
+  end
+  -- the same for what the camera sees: tiles within 250 m of the car and the tile 400 m ahead
+  local size = S.stream and S.stream.tile or 500
+  local seen, bare = {}, nil
+  for _, q in ipairs({{p.x, p.y, 250}, {p.x + d.x * 400, p.y + d.y * 400, 0}}) do
+    for ti = math.floor((q[1] - q[3]) / size), math.floor((q[1] + q[3]) / size) do
+      for tj = math.floor((q[2] - q[3]) / size), math.floor((q[2] + q[3]) / size) do
+        local k = ti .. '_' .. tj
+        local t = S.tiles[k]
+        if not seen[k] and not (t and (t.sceneComplete or t.failed)) then bare = bare or k end
+        seen[k] = true
+      end
+    end
+  end
+  if bare then
+    result.sceneViewMissFrames = (result.sceneViewMissFrames or 0) + 1
+    result.sceneViewMissTiles = result.sceneViewMissTiles or {}
+    if not result.sceneViewMissTiles[bare] then result.sceneViewMissTiles[bare] = math.floor((S.now - S.testDriving) * 10) / 10 end
   end
   result.replayDistanceM = r.distance
 end

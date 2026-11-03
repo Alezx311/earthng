@@ -32,9 +32,14 @@ local VISTA_RADIUS, VISTA_BLOCK, VISTA_STEP, VISTA_RELIEF, VISTA_SPEED = 24000, 
 -- `reach` m at most) are near too. A tile's road goes out before its scene (generator.lua
 -- roadReady): its scene waits `lag` s plus `lagPerMs` s for every m/s over `slow`, in at most
 -- `parked` suspended builds. Under `urgent` s from a missing road the frame gives the generator
--- `urgentMs`.
+-- `urgentMs`. A scene goes out before its grass, flowers and loose stones (generator sceneReady):
+-- they wait `grassLag` s more, in at most `grassParked` builds; a tile that lost its grass that
+-- way is built again for it only when the car is under `slow` m/s.
 local AHEAD = {across = 3, back = 3, slow = 10, fast = 30, corridor = 15, half = 150, reach = 2000,
-  lag = 3, lagPerMs = .1, parked = 3, urgent = 6, urgentMs = 6}
+  lag = 3, lagPerMs = .1, parked = 3, urgent = 6, urgentMs = 6, grassLag = 10, grassParked = 2}
+local GRASS = {}   -- buildTile's yield once the scene is out (AHEAD marks the road)
+-- the generator stage each build last finished (status().stream.stageMs: where streaming time goes)
+local STAGE = setmetatable({}, {__mode = 'k'})
 local FORMATS = {['earthng-features-v1'] = 1, ['earthng-features-v2'] = 2}
 -- the climate under the vista's far plane (generator.lua loads the same module)
 local okBiome, biomeModule = pcall(require, 'ge/extensions/e2r/biome')
@@ -610,8 +615,16 @@ local function loadCell(key, i, j, keep, memo)
     local loaded = loadBlock(blockKey, block)
     local range = loaded.slots[i % b + (j % b) * b]
     if not range then error('source block lacks cell: ' .. key) end
+    -- the cell's elevation grid, decoded once for the tiles that share it; 16 grids of up to
+    -- 66k numbers, which the collector walks too
+    local grid = active.grids[key]
+    if grid then grid.used = touch() else
+      grid = {data = {}, used = touch()}
+      active.grids[key] = grid
+      evict(active.grids, 16)
+    end
     local cell = cellformat.cell(loaded.data, range[1], range[2], i * s, j * s,
-      {i * s, j * s, (i + 1) * s, (j + 1) * s}, active.pause, keep)
+      {i * s, j * s, (i + 1) * s, (j + 1) * s}, active.pause, keep, grid.data)
     if not active.lows[key] then
       local low = math.huge
       for _, h in ipairs(cell.terrain.heights) do if h < low then low = h end end
@@ -771,8 +784,9 @@ local function land(req)
   state.job = {seq = req.seq, lat = req.lat, lon = req.lon, state = 'working', stage = 'source', progress = 0}
   local country, descriptor, x, y, r = at(req.lat, req.lon)
   if not r then fail('no_data: this point has no complete mounted source neighbourhood'); return state.job end
-  active = {region = r, cells = {}, blocks = {}, tiles = {}, horizon = {}, failed = {}, clock = 0, everBuilt = {}, desired = {}, evicted = {}, epoch = 1,
+  active = {region = r, cells = {}, grids = {}, blocks = {}, tiles = {}, horizon = {}, failed = {}, clock = 0, everBuilt = {}, desired = {}, evicted = {}, epoch = 1,
     parked = {},   -- tile key -> {co}: a near tile whose road is out and whose scene waits (update)
+    parkedGrass = {},   -- tile key -> {co}: the scene is out too, its grass waits
     lows = {},   -- cell key -> its lowest ground (world z), for the vista's relief
     foreign = {}, foreignNew = 0,   -- cells from neighbour regions (foreignOf)
     epochPoint = {x, y}, prioritiesDirty = true, startupPinned = true,
@@ -790,9 +804,11 @@ local function land(req)
   end
   state.stream = {region = descriptor.id, country = country.id, live = country.id == 'live' or nil,
     tile = r.data.tileSize, generator = 'earthng-lua-v1',
-    geo = affineAt(r, x, y), bounds = r.data.bounds, ready = {}, scenes = {}, far = {}, horizon = {}, wanted = {}, readyCount = 0,
+    geo = affineAt(r, x, y), bounds = r.data.bounds, ready = {}, scenes = {}, grass = {}, far = {}, horizon = {}, wanted = {}, readyCount = 0,
     building = 0, queued = 0, failed = active.failed, built = 0, rebuilds = 0, horizonBuilt = 0, horizonRebuilds = 0,
     meanBuildSeconds = 0, loadRadius = 1000, farRadius = 3000, farFast = 25,
+    -- where the generator's time went (ms) and the parked builds given up, for the reports
+    spentMs = {road = 0, scene = 0, grass = 0, far = 0, horizon = 0}, stageMs = {}, lost = {scene = 0, grass = 0},
     horizonRadius = HORIZON_RADIUS, horizonDem = true}
   if pendingTune then
     active.tune = pendingTune
@@ -1024,7 +1040,8 @@ local function trimTiles()
       -- and at 9 m/s the car drove through a city of bare roads (rebuilds 17 of 37 builds).
       if want and not want.far and not want.horizon and not anyEntry then helps = false end
       -- a tile whose road is out and whose scene is being built or parked (update) stays
-      local building = (a.parked and a.parked[key]) or (a.work and a.workKey == key and not a.workFar and not a.workHorizon)
+      local building = (a.parked and a.parked[key]) or (a.parkedGrass and a.parkedGrass[key])
+        or (a.work and a.workKey == key and not a.workFar and not a.workHorizon)
       if helps and not required and not selected and not building and not inRenderer(entry) and (not worst or priority > worstPriority or (priority == worstPriority and entry.used < oldest)) then
         worst, worstPriority, oldest = key, priority, entry.used
       end
@@ -1035,7 +1052,7 @@ local function trimTiles()
     a.tiles[worst] = nil
     if removed.road then a.evicted[worst .. ':road'] = a.epoch end
     if removed.far then a.evicted[worst .. ':far'] = a.epoch end
-    st.ready[worst], st.scenes[worst], st.far[worst] = nil, nil, nil
+    st.ready[worst], st.scenes[worst], st.grass[worst], st.far[worst] = nil, nil, nil, nil
   end
   local readyCount = 0
   for _, entry in pairs(a.tiles) do if entry.road then readyCount = readyCount + 1 end end
@@ -1128,6 +1145,7 @@ local function buildTile(key, wanted)
   for i = math.floor((x0 - pad) / s), math.ceil((x0 + size + pad) / s) - 1 do
     for j = math.floor((y0 - pad) / s), math.ceil((y0 + size + pad) / s) - 1 do addCell(i, j, false) end
   end
+  STAGE[coroutine.running()] = 'cells'
   -- At a seam both regions have the roads crossing it, under different ids: the landing
   -- region's copy stays, a neighbour's road with the same two OSM end nodes goes.
   local anyForeign, anyOwn = false, false
@@ -1173,9 +1191,10 @@ local function buildTile(key, wanted)
   local early
   local roadReady = not wanted.far and not wanted.horizon and not active.startupPinned and function(road, nav)
     local entry = active.tiles[key] or {}
-    if entry.road and entry.sceneLost then
-      -- a rebuild for the scene alone: the renderer has this road already
+    if entry.road and (entry.sceneLost or entry.grassLost) then
+      -- a rebuild for the scene or the grass alone: the renderer has this road already
       entry.sceneLost = nil
+      if entry.grassLost then entry.grassLost, entry.grassAgain = nil, true end
     else
       stamp(road, nav)
       entry.road, entry.nav, entry.scene = road, nav, nil
@@ -1191,10 +1210,36 @@ local function buildTile(key, wanted)
     early = true
     coroutine.yield(AHEAD)
   end
-  local road, scene, far, nav = generator.build(cells, wanted.i, wanted.j,
+  -- At speed the scene goes out the same way before its grass (generator sceneReady), and the
+  -- build yields GRASS to update(), which parks it behind every road and scene due before it.
+  -- Slower, a tile is built whole as before, unless this build is for grass it lost.
+  local split
+  local p, before = active.pose, active.tiles[key]
+  local fast = (p.vx or 0) ^ 2 + (p.vy or 0) ^ 2 >= AHEAD.slow ^ 2
+  local sceneReady = roadReady and (fast or (before and before.grassLost)) and function(scene)
+    local entry = active.tiles[key] or {}
+    if entry.scene and entry.grassAgain then
+      -- a rebuild for the grass alone: the renderer has this scene already
+      entry.grassAgain = nil
+    else
+      scene.source, scene.materials = r.descriptor.id, '/earthng/planet/materials.json'
+      entry.scene, entry.sceneTaken, entry.sceneDelivered = scene, nil, nil
+      entry.grass, entry.grassTaken, entry.grassDelivered, entry.grassLost, entry.grassAgain = nil, nil, nil, nil, nil
+      active.manifests[key .. ':scene'] = scene
+      entry.used = touch()
+      entry.triangles, entry.vertices = entrySize(entry)
+      active.tiles[key] = entry
+      st.scenes[key], st.grass[key] = entry.road and true or nil, nil
+      trimTiles()
+    end
+    split = true
+    coroutine.yield(GRASS)
+  end
+  local road, scene, far, nav, grass = generator.build(cells, wanted.i, wanted.j,
     {tileSize = size, regionId = r.descriptor.id, center = center, pause = active.pause,
       materials = '/earthng/planet/materials.json', packs = '/e2r_stream/fast-art/v10/packs.json',
       far = wanted.far, horizon = wanted.horizon, vista = wanted.vista, farDecor = wanted.decor and true or false,
+      mark = function(stage) STAGE[coroutine.running()] = stage end,
       -- a vista block's edge at 100 m (4x faster, its skirts hide the seam with the 25 m horizon)
       terrainStep = wanted.vista and 100 or nil,
       farStep = 100, horizonStep = wanted.step or 100,
@@ -1204,7 +1249,7 @@ local function buildTile(key, wanted)
       maxTrees = tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = tune.maxGrass,
       maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
       groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = tune.propSpacing,
-      detail = tune.detail, roadReady = roadReady or nil,
+      detail = tune.detail, roadReady = roadReady or nil, sceneReady = sceneReady or nil,
       -- the storefront experiment: only a pack whose data asks for it (docs/BILYCHI_EXPERIMENT.md)
       experimentalShopfront = type(r.data.experiments) == 'table' and r.data.experiments.shopfront == true or nil,
       experimentalDetail = type(r.data.experiments) == 'table' and r.data.experiments.detail == true or nil,
@@ -1212,7 +1257,24 @@ local function buildTile(key, wanted)
   if type(road) ~= 'table' or type(road.items) ~= 'table' or type(road.mats) ~= 'table'
     or type(scene) ~= 'table' or type(scene.items) ~= 'table' then error('generator returned an invalid tile manifest') end
   if wanted.far and (type(far) ~= 'table' or type(far.items) ~= 'table') then error('generator returned an invalid far manifest') end
+  if split and (type(grass) ~= 'table' or type(grass.items) ~= 'table') then error('generator returned an invalid grass manifest') end
   if not early then stamp(road, nav) end
+  if split then
+    -- road and scene are out already: only the grass is new
+    local entry = active.tiles[key] or {}
+    grass.source, grass.materials = r.descriptor.id, '/earthng/planet/materials.json'
+    entry.grass, entry.grassTaken, entry.grassDelivered = grass, nil, nil
+    active.manifests[key .. ':grass'] = grass
+    entry.used = touch()
+    active.tiles[key] = entry
+    st.grass[key] = entry.scene and true or nil
+    st.built = st.built + 1
+    local layerKey = key .. ':road'
+    if active.everBuilt[layerKey] then st.rebuilds = st.rebuilds + 1 end
+    active.everBuilt[layerKey] = true
+    trimTiles()
+    return
+  end
   scene.source, scene.materials = r.descriptor.id, '/earthng/planet/materials.json'
   if wanted.horizon then
     far.source, far.materials = r.descriptor.id, '/earthng/planet/materials.json'
@@ -1271,25 +1333,41 @@ local FAR_BUDGET_MS = 2
 -- and is near again; urgent: such a road due within AHEAD.urgent s
 local function nearPending(wanted)
   local pending, urgent = false, false
+  local p = active.pose
+  local slow = (p.vx or 0) ^ 2 + (p.vy or 0) ^ 2 < AHEAD.slow ^ 2
+  local grassLost = 0
   for key, entry in pairs(wanted) do
     if not entry.far and not entry.horizon and not active.failed[key] then
       local cached = active.tiles[key]
+      if cached and (cached.grassLost or cached.grassAgain) then grassLost = grassLost + 1 end
       if not (cached and cached.road) then
         pending, urgent = true, urgent or entry.priority < AHEAD.urgent
-      elseif cached.sceneLost then
+      elseif cached.sceneLost or (cached.grassLost and slow) then
         pending = true
       end
     end
   end
+  state.stream.grassLost = grassLost
   return pending, urgent
 end
 
 -- A parked scene build given up (the car has left its tile, or a road ahead needs the room): the
 -- road stays, and the tile is built again for its scene if it is wanted near once more.
 local function loseScene(key)
+  if active.parked[key] then state.stream.lost.scene = state.stream.lost.scene + 1 end
   active.parked[key] = nil
   local entry = active.tiles[key]
   if entry and not entry.scene then entry.sceneLost = true end
+  if entry and entry.grassAgain then entry.grassAgain, entry.grassLost = nil, true end
+end
+
+-- The same for a parked grass build: the tile keeps its road and scene, and is built again for
+-- its grass when the car is slow and near it once more.
+local function loseGrass(key)
+  if active.parkedGrass[key] then state.stream.lost.grass = state.stream.lost.grass + 1 end
+  active.parkedGrass[key] = nil
+  local entry = active.tiles[key]
+  if entry and not entry.grass then entry.grassLost = true end
 end
 
 local function update(dt, budgetMs, farBudgetMs)
@@ -1299,6 +1377,7 @@ local function update(dt, budgetMs, farBudgetMs)
     active.prioritiesDirty = true
   end
   active.parked, active.parkedFar = active.parked or {}, active.parkedFar or {}
+  active.parkedGrass = active.parkedGrass or {}
   -- neighbour cells left unlooked-at last frame (FOREIGN_NEW): the wanted set again
   active.foreignNew = 0
   if active.foreignShort then active.foreignShort, active.prioritiesDirty = false, true end
@@ -1312,7 +1391,7 @@ local function update(dt, budgetMs, farBudgetMs)
     active.nearWaiting, active.nearUrgent = nearPending(wanted)
     active.nearKnownAt = state.stream.built
   end
-  local nearWork = active.nearWaiting or next(active.parked) ~= nil
+  local nearWork = active.nearWaiting or next(active.parked) ~= nil or next(active.parkedGrass) ~= nil
     or (active.work and not active.workFar and not active.workHorizon)
   if not active.startupPinned and not nearWork then budgetMs = math.min(budgetMs, farBudgetMs or FAR_BUDGET_MS) end
   -- the road the car reaches within seconds is missing: the frame pays for it rather than the car
@@ -1322,6 +1401,7 @@ local function update(dt, budgetMs, farBudgetMs)
   local p = active.pose
   local speed = math.sqrt((p.vx or 0) ^ 2 + (p.vy or 0) ^ 2)
   local lag = AHEAD.lag + math.max(0, speed - AHEAD.slow) * AHEAD.lagPerMs
+  local slow = speed < AHEAD.slow
   local steps = 0
   repeat
     -- At the frame's first step a scene build (its road is out) goes back among the parked, and a
@@ -1330,6 +1410,9 @@ local function update(dt, budgetMs, farBudgetMs)
     if active.work and steps == 0 and not active.startupPinned then
       if active.workScene then
         active.parked[active.workKey] = {co = active.work}
+        active.work = nil
+      elseif active.workGrass then
+        active.parkedGrass[active.workKey] = {co = active.work}
         active.work = nil
       elseif (active.workFar or active.workHorizon) and active.nearUrgent then
         active.parkedFar[active.workKey] = {co = active.work, far = active.workFar, horizon = active.workHorizon}
@@ -1361,7 +1444,9 @@ local function update(dt, budgetMs, farBudgetMs)
         if entry.horizon then ready = cached and cached.horizon
         elseif entry.far then ready = cached and cached.far and (not entry.decor or cached.decor)
         else
+          -- a tile that lost its grass is built again for it one at a time, the car slow
           ready = cached and cached.road and not cached.sceneLost
+            and not (cached.grassLost and slow and next(active.parkedGrass) == nil)
           -- a scene owed comes after the roads due before it, as a parked one does
           if cached and cached.road then priority = priority + lag end
         end
@@ -1389,6 +1474,18 @@ local function update(dt, budgetMs, farBudgetMs)
           if not worstPriority or priority > worstPriority then worstKey, worstPriority = key, priority end
         end
       end
+      -- Parked grass builds (road and scene are out): after the roads and scenes due before them
+      local grassKey, grassPriority, grassCount = nil, nil, 0
+      for key in pairs(active.parkedGrass) do
+        local want = wanted[key]
+        if not want or want.far or want.horizon then
+          loseGrass(key)
+        else
+          local priority = want.priority + lag + AHEAD.grassLag
+          grassCount = grassCount + 1
+          if not grassPriority or priority < grassPriority then grassKey, grassPriority = key, priority end
+        end
+      end
       local farKey, farPriority
       for key, slot in pairs(active.parkedFar) do
         local want = wanted[key]
@@ -1398,16 +1495,23 @@ local function update(dt, budgetMs, farBudgetMs)
           farKey, farPriority = key, want.priority
         end
       end
-      state.stream.queued, state.stream.parked = queued, parkedCount
-      if farKey and (not best or farPriority < bestPriority) and (not parkedKey or farPriority < parkedPriority) then
+      state.stream.queued, state.stream.parked, state.stream.parkedGrass = queued, parkedCount, grassCount
+      if farKey and (not best or farPriority < bestPriority) and (not parkedKey or farPriority < parkedPriority)
+          and (not grassKey or farPriority < grassPriority) then
         local slot = active.parkedFar[farKey]
         active.parkedFar[farKey] = nil
-        active.work, active.workKey, active.workScene = slot.co, farKey, false
+        active.work, active.workKey, active.workScene, active.workGrass = slot.co, farKey, false, false
         active.workFar, active.workHorizon = slot.far, slot.horizon
-      elseif parkedKey and (not best or parkedPriority <= bestPriority) then
+      elseif parkedKey and (not best or parkedPriority <= bestPriority) and (not grassKey or parkedPriority <= grassPriority) then
         active.work = active.parked[parkedKey].co
         active.parked[parkedKey] = nil
         active.workKey, active.workFar, active.workHorizon, active.workScene = parkedKey, false, false, true
+        active.workGrass = false
+      elseif grassKey and (not best or grassPriority <= bestPriority) then
+        active.work = active.parkedGrass[grassKey].co
+        active.parkedGrass[grassKey] = nil
+        active.workKey, active.workFar, active.workHorizon, active.workScene = grassKey, false, false, false
+        active.workGrass = true
       elseif best then
         -- a road due before every parked scene, and no room for one more: the latest scene goes
         if parkedCount >= AHEAD.parked and not best.far and not best.horizon then loseScene(worstKey) end
@@ -1415,7 +1519,7 @@ local function update(dt, budgetMs, farBudgetMs)
         active.workKey = key
         active.workFar = entry.far and not entry.horizon or false
         active.workHorizon = entry.horizon and true or false
-        active.workScene = false
+        active.workScene, active.workGrass = false, false
         active.work = coroutine.create(function() buildTile(key, entry) end)
       else
         break
@@ -1424,8 +1528,13 @@ local function update(dt, budgetMs, farBudgetMs)
       if state.job and state.job.state == 'working' then state.job.stage = 'Generating roads and scenery in Lua' end
     end
     local resumeTimer = hptimer()
+    local kind = active.workHorizon and 'horizon' or (active.workFar and 'far')
+      or (active.workGrass and 'grass') or (active.workScene and 'scene') or 'road'
+    local stage = kind .. ' after ' .. (STAGE[active.work] or 'start')
     local ok, message = coroutine.resume(active.work)
     local resumeMs = resumeTimer:stop()
+    state.stream.spentMs[kind] = state.stream.spentMs[kind] + resumeMs
+    state.stream.stageMs[stage] = (state.stream.stageMs[stage] or 0) + resumeMs
     -- a resume far over the budget (a block read, a big sort) for the automation report
     if resumeMs > 30 then
       local slow = state.stream.slowResumes or {}
@@ -1441,6 +1550,21 @@ local function update(dt, budgetMs, farBudgetMs)
       -- the road is out (buildTile's roadReady): the scene waits for its turn
       active.parked[active.workKey] = {co = active.work}
       active.work = nil
+    elseif message == GRASS and coroutine.status(active.work) == 'suspended' then
+      -- the scene is out (sceneReady): the grass waits for its turn; of a full set and this one,
+      -- the one due latest goes
+      local key = active.workKey
+      active.parkedGrass[key] = {co = active.work}
+      active.work = nil
+      local count, worstKey, worstPriority = 0, nil, nil
+      for parkedKey in pairs(active.parkedGrass) do
+        count = count + 1
+        local priority = wanted[parkedKey] and wanted[parkedKey].priority or 1e20
+        if not worstPriority or priority > worstPriority or (priority == worstPriority and parkedKey == key) then
+          worstKey, worstPriority = parkedKey, priority
+        end
+      end
+      if count > AHEAD.grassParked then loseGrass(worstKey) end
     elseif coroutine.status(active.work) == 'dead' then
       active.work = nil
       completeLanding()
@@ -1537,7 +1661,7 @@ end
 -- after the entire layer has spawned, so its queue can no longer need the tables.
 local function release(key, layer)
   layer = layer or 'road'
-  if layer ~= 'road' and layer ~= 'scene' and layer ~= 'far' and layer ~= 'horizon' then return false end
+  if layer ~= 'road' and layer ~= 'scene' and layer ~= 'grass' and layer ~= 'far' and layer ~= 'horizon' then return false end
   local entry = layerEntry(key)
   local data = entry and entry[layer] or active and active.manifests[key .. ':' .. layer]
   if not data then return false end
@@ -1581,12 +1705,14 @@ local function unload(key, layer)
     active.manifests[key .. ':far'] = nil
   else
     if active.parked then active.parked[key] = nil end
+    if active.parkedGrass then active.parkedGrass[key] = nil end
     if entry then
       entry.road, entry.scene, entry.nav, entry.sceneLost = nil, nil, nil, nil
       entry.roadDelivered, entry.sceneDelivered, entry.roadTaken, entry.sceneTaken = nil, nil, nil, nil
+      entry.grass, entry.grassTaken, entry.grassDelivered, entry.grassLost, entry.grassAgain = nil, nil, nil, nil, nil
     end
-    st.ready[key], st.scenes[key], active.evicted[key .. ':road'] = nil, nil, nil
-    active.manifests[key .. ':road'], active.manifests[key .. ':scene'] = nil, nil
+    st.ready[key], st.scenes[key], st.grass[key], active.evicted[key .. ':road'] = nil, nil, nil, nil
+    active.manifests[key .. ':road'], active.manifests[key .. ':scene'], active.manifests[key .. ':grass'] = nil, nil, nil
   end
   active.failed[key] = nil
   if entry then
