@@ -7,6 +7,8 @@
 --   - A flow car right by the player's car (CLEAR_R) or by another real car is not swapped: the
 --     teleport would put two cars in one place.
 --   - A real car the player has wrecked stays real until it is out of LEAVE_R.
+--   - The game's AI does not see the flow's traffic lights: a real car on a lit approach is held
+--     (api.hold, a speed limit of 0) while its light is red, as the flow car in its place would be.
 -- The game calls go through `api` (H.gameApi below), so earthng/test_flow.py runs this in lupa.
 local M = {}
 
@@ -45,6 +47,23 @@ end
 
 -- one step at time now; (fx, fy) the player's car; flow the flow module, F its state
 function M.step(H, flow, F, fx, fy, now, api)
+  -- a smaller pool (the widget's setting): parked cars go first, a driving one back into the flow
+  while #H.pool > H.size do
+    local k = #H.pool
+    for i = #H.pool, 1, -1 do if not H.pool[i].active then k = i; break end end
+    local e = table.remove(H.pool, k)
+    if e.active and api.alive(e.id) then
+      local x, y, vx, vy, hx, hy = api.pose(e.id)
+      if flow.put(F, x, y, hx, hy, math.sqrt(vx * vx + vy * vy), e.paint) then
+        H.stats.demoted = H.stats.demoted + 1
+      else
+        H.stats.dropped = H.stats.dropped + 1
+      end
+    elseif e.active then
+      flow.forget(F)
+    end
+    api.delete(e.id)
+  end
   -- the pool fills one car at a time
   if #H.pool < H.size and now >= H.spawnAt then
     H.spawnAt = now + SPAWN_EVERY
@@ -70,6 +89,13 @@ function M.step(H, flow, F, fx, fy, now, api)
         e.active = false
       else
         active[#active + 1] = {x, y}
+        local v = math.sqrt(vx * vx + vy * vy)
+        local hold = flow.holdAt and flow.holdAt(F, x, y, hx, hy, v) or false
+        if hold ~= (e.held or false) then
+          api.hold(e.id, hold)
+          e.held = hold
+          H.stats.held = (H.stats.held or 0) + (hold and 1 or 0)
+        end
       end
     end
   end
@@ -86,7 +112,11 @@ function M.step(H, flow, F, fx, fy, now, api)
       local v = c.car.v
       flow.take(F, c.car)
       api.activate(e.id, c.x, c.y, c.z, c.yaw, v)
-      e.active = true
+      e.active, e.held = true, false
+      if flow.holdAt and flow.holdAt(F, c.x, c.y, math.cos(c.yaw), math.sin(c.yaw), v) then
+        api.hold(e.id, true)
+        e.held = true
+      end
       active[#active + 1] = {c.x, c.y}
       H.stats.promoted = H.stats.promoted + 1
     end
@@ -150,10 +180,23 @@ function M.gameApi(rgb, group)
     obj:queueLuaCommand('ai.setMode("traffic")')
     obj:queueLuaCommand('ai.setAggression(0.3)')
     obj:queueLuaCommand('ai.setSpeedMode("legal")')
+    obj:queueLuaCommand('ai.setSpeed()')
     obj:queueLuaCommand('ai.driveInLane("on")')
     obj:queueLuaCommand('ai.reset()')
     if v > 1 then
       obj:queueLuaCommand(string.format('thrusters.applyVelocity(obj:getDirectionVector() * %.2f, 0.25)', v))
+    end
+  end
+  -- stand for a red light (on) or drive on: a speed limit of 0 brakes on the AI's own plan
+  function api.hold(id, on)
+    local obj = getObjectByID(id)
+    if not obj then return end
+    if on then
+      obj:queueLuaCommand('ai.setSpeedMode("limit")')
+      obj:queueLuaCommand('ai.setSpeed(0)')
+    else
+      obj:queueLuaCommand('ai.setSpeedMode("legal")')
+      obj:queueLuaCommand('ai.setSpeed()')
     end
   end
   function api.deactivate(id)

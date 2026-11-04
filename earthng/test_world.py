@@ -120,6 +120,7 @@ def main():
     p.add_argument('--replay', action='store_true', help='camera/pose replay at constant speed; not a physics test')
     p.add_argument('--traffic', type=int, help="after landing: the game's AI traffic, this many cars")
     p.add_argument('--flow', type=int, help='after landing: this many flow cars without physics (flow.lua)')
+    p.add_argument('--flow-real', type=int, help='of them round the player this many real cars (handoff.lua, default 8)')
     p.add_argument('--traffic-kind', choices=('simple', 'full', 'agent'), default='simple',
                    help="--traffic cars: the game's simple_traffic, its full vehicles, or Agent Traffic's")
     p.add_argument('--rain', type=int, help="after landing: the game's own rain (core_environment numOfDrops)")
@@ -232,6 +233,8 @@ def main():
         test['recordDrive'] = True
     if a.flow:
         test['flow'] = a.flow
+    if a.flow_real is not None:
+        test['flowReal'] = a.flow_real
     if a.traffic:
         test['traffic'] = a.traffic
         test['trafficKind'] = a.traffic_kind

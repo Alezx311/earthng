@@ -252,6 +252,8 @@ class FlowTests(unittest.TestCase):
       end
       function api.deactivate(id) real[id].active = false end
       function api.delete(id) real[id] = nil end
+      holds = 0
+      function api.hold(id, on) real[id].held = on; if on then holds = holds + 1 end end
       function api.pose(id)
         local r = real[id]
         return r.x, r.y, r.hx * r.v, r.hy * r.v, r.hx, r.hy
@@ -301,6 +303,52 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(promoted_after, 0)
         self.assertEqual(back, promoted)
 
+    def test_the_pool_shrinks_and_grows_with_the_setting(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        out = lua.execute('''
+          local s = {'r', 'A', 'B', '--++', 13.9, 7, 1, 0, 0, 0, 1000, 0, 0, 2000, 0, 0}
+          local F = flow.new{seed = 4, paints = {1, 1, 1, 1, 1, 1, 1, 1}}
+          flow.sync(F, {r = {s = s, x = 1000, y = 0}})
+          F.target = 60
+          local H = handoff.new{size = 8, paints = 8}
+          handoff.prewarm(H, api, 1000, 0)
+          local now = 0
+          local function run(steps)
+            local most = 0
+            for t = 1, steps do
+              now = now + 1 / 30
+              flow.step(F, 1 / 30, 1000, 0, handoff.obstacles(H, api, {}))
+              handoff.step(H, flow, F, 1000, 0, now, api)
+              drive(1 / 30)
+              most = math.max(most, handoff.activeCount(H))
+            end
+            return most
+          end
+          local out = {run(300)}
+          H.size = 2
+          out[#out + 1] = run(30)
+          out[#out + 1] = #H.pool
+          local alive = 0
+          for _ in pairs(real) do alive = alive + 1 end
+          out[#out + 1] = alive
+          out[#out + 1] = F.count
+          H.size = 0
+          run(30)
+          out[#out + 1] = #H.pool
+          out[#out + 1] = F.promoted
+          H.size = 4
+          handoff.prewarm(H, api, 1000, 0)
+          out[#out + 1] = run(300)
+          return out
+        ''')
+        full, after_shrink, pool, alive, count, pool_zero, promoted_zero, regrown = list(out.values())
+        self.assertEqual(full, 8)
+        self.assertLessEqual(after_shrink, 8)
+        self.assertEqual((pool, alive, count), (2, 2, 60))   # the extra real cars went back into the flow
+        self.assertEqual((pool_zero, promoted_zero), (0, 0))
+        self.assertEqual(regrown, 4)
+
     def test_a_real_car_comes_back_on_its_lane_with_its_paint_and_speed(self):
         lua = self.lua()
         lua.execute(self.HANDOFF_API)
@@ -320,6 +368,146 @@ class FlowTests(unittest.TestCase):
         self.assertAlmostEqual(s, 600, delta=1)
         self.assertEqual((v, paint, promoted), (11, 6, 0))
         self.assertTrue(wrong_way_dropped)
+
+    # a crossing of two two-way streets at C (0, 0), arms 300 m; `extra` adds segments
+    CROSS = '''
+      function crossing(extra)
+        local segs = {}
+        local function road(id, a, b, x0, y0, x1, y1, lanes, speed)
+          local s = {id, a, b, lanes or '-+', speed or 13.9, 3.5, 1, x0, y0, 0, (x0 + x1) / 2, (y0 + y1) / 2, 0, x1, y1, 0}
+          segs[id] = {s = s, x = (x0 + x1) / 2, y = (y0 + y1) / 2}
+        end
+        road('w', 'W', 'C', -300, 0, 0, 0, '--++', 16.7)
+        road('e', 'C', 'E', 0, 0, 300, 0, '--++', 16.7)
+        road('s', 'S', 'C', 0, -300, 0, 0)
+        road('n', 'C', 'N', 0, 0, 0, 300)
+        if extra then extra(road) end
+        return segs
+      end
+    '''
+
+    def test_a_lit_crossing_lets_its_two_roads_take_turns(self):
+        lua = self.lua()
+        lua.execute(self.CROSS)
+        out = lua.execute('''
+          local F = flow.new{seed = 6}
+          flow.sync(F, crossing(), nil, nil, {{2, 3}})
+          local inbound = {['w+'] = 'main', ['e-'] = 'main', ['s+'] = 'side', ['n-'] = 'side'}
+          local was, through, wrong, axes = {}, {main = 0, side = 0}, 0, {}
+          for id in pairs(inbound) do axes[id] = F.links[id].light.axis end
+          for t = 1, 30 * 240 do
+            for id in pairs(inbound) do flow.spawn(F, F.links[id], 3, nil, 10) end
+            flow.step(F, 1 / 30)
+            for id, car in pairs(F.cars) do
+              local from = was[id]
+              if from and inbound[from.id] and car.link ~= from then
+                through[inbound[from.id]] = through[inbound[from.id]] + 1
+                -- never while the other road has green
+                local other = flow.colour(from.light.c.offset, 1 - from.light.axis, F.now)
+                if other == 'green' then wrong = wrong + 1 end
+              end
+              was[id] = car.link
+            end
+          end
+          local waiting = 0
+          for id in pairs(inbound) do waiting = waiting + #F.links[id].cars[1] end
+          return {F.crossings, axes['w+'], axes['e-'], axes['s+'], axes['n-'], through.main, through.side, wrong, overlaps(F)}
+        ''')
+        crossings, w, e, s, n, main, side, wrong, bad = list(out.values())
+        self.assertEqual(crossings, 1)
+        self.assertEqual(w, e)                 # the street's two ways share a phase
+        self.assertEqual(s, n)
+        self.assertNotEqual(w, s)
+        # 240 s is four cycles of 24 s green a road: both roads get through, in turns
+        self.assertGreater(main, 40)
+        self.assertGreater(side, 20)
+        self.assertEqual(wrong, 0)
+        self.assertEqual(bad, 0)
+
+    def test_lights_light_the_junction_they_stand_at(self):
+        lua = self.lua()
+        lua.execute(self.CROSS)
+        out = lua.execute('''
+          local function lit(lights, extra)
+            local F = flow.new{}
+            flow.sync(F, crossing(extra), nil, nil, lights)
+            return F.crossings
+          end
+          -- a dual carriageway: a second junction D 20 m east, joined to C by a short road
+          local function dual(road)
+            road('cd', 'C', 'D', 0, 0, 20, 0)
+            road('d', 'D', 'X', 20, 0, 20, -300)
+            road('d2', 'D', 'Y', 20, 0, 20, 300)
+          end
+          local F = flow.new{}
+          flow.sync(F, crossing(dual), nil, nil, {{0, 4}, {22, -3}})
+          return {
+            lit({{-30, -4}}),          -- on the approach, 30 m before the junction
+            lit({{-120, -4}}),         -- too far up the road
+            lit({{-150, 0}}),          -- in the middle of a road: no junction there
+            F.crossings, F.links['cd+'].light == true, F.links['w+'].light ~= true and F.links['w+'].light ~= nil,
+          }
+        ''')
+        approach, far, middle, dual_crossings, inner_free, outer_lit = list(out.values())
+        self.assertEqual((approach, far, middle), (1, 0, 0))
+        self.assertEqual(dual_crossings, 1)
+        self.assertTrue(inner_free)
+        self.assertTrue(outer_lit)
+
+    def test_a_real_car_is_held_at_a_red_light(self):
+        lua = self.lua()
+        lua.execute(self.CROSS)
+        out = lua.execute('''
+          local F = flow.new{}
+          flow.sync(F, crossing(), nil, nil, {{2, 3}})
+          local link = F.links['w+']
+          local light = link.light
+          local function at(colour)
+            -- a moment of the cycle with this colour for the western approach
+            for t = 0, flow.CYCLE, .5 do
+              if flow.colour(light.c.offset, light.axis, t) == colour then return t end
+            end
+          end
+          local lane = flow.laneOffset(F, link, 1)
+          local out = {}
+          for _, c in ipairs({'red', 'green'}) do
+            F.now = at(c)
+            out[#out + 1] = flow.holdAt(F, -20, -lane, 1, 0, 8)      -- 20 m before the line at 8 m/s
+            out[#out + 1] = flow.holdAt(F, -200, -lane, 1, 0, 8)     -- still far
+          end
+          F.now = at('red')
+          out[#out + 1] = flow.holdAt(F, -20, lane, -1, 0, 8)        -- the other way, away from C
+          return out
+        ''')
+        self.assertEqual(list(out.values()), [True, False, False, False, False])
+
+    def test_real_cars_at_a_red_light_stand_and_go_on_green(self):
+        lua = self.lua()
+        lua.execute(self.CROSS)
+        lua.execute(self.HANDOFF_API)
+        out = lua.execute('''
+          local F = flow.new{seed = 8}
+          flow.sync(F, crossing(), nil, nil, {{2, 3}})
+          F.target = 40
+          local H = handoff.new{size = 8, paints = 1}
+          -- the player stands by the crossing; a held real car does not move
+          local now, heldMoved, released = 0, 0, 0
+          for t = 1, 30 * 120 do
+            now = now + 1 / 30
+            flow.step(F, 1 / 30, -40, 10, handoff.obstacles(H, api, {}))
+            handoff.step(H, flow, F, -40, 10, now, api)
+            for _, r in pairs(real) do
+              if r.active and not r.held then r.x, r.y = r.x + r.hx * r.v / 30, r.y + r.hy * r.v / 30 end
+              if r.wasHeld and not r.held then released = released + 1 end
+              r.wasHeld = r.held
+            end
+          end
+          return {holds, released, H.stats.promoted}
+        ''')
+        holds, released, promoted = list(out.values())
+        self.assertGreater(promoted, 0)
+        self.assertGreater(holds, 0)       # real cars on a red approach were held
+        self.assertGreater(released, 0)    # and let go when it turned green
 
 if __name__ == '__main__':
     unittest.main()

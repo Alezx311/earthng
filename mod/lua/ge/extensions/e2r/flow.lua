@@ -7,6 +7,10 @@
 --     a link follows the first one of its next link, or waits at the stop line.
 --   - A node where three or more roads meet lets one car in at a time, HEADWAY s apart, first come
 --     first served: that is the capacity a junction has, and queues grow behind it.
+--   - A junction with mapped traffic lights (OSM highway=traffic_signals on it or on the last
+--     LIGHT_APPROACH m of a road into it) runs on a clock instead: the approaches along its
+--     biggest road and those across take turns, GREEN, YELLOW, then CLEAR s all red. The
+--     junctions within CLUSTER m of each other (a dual carriageway's two halves) are one crossing.
 --   - The player's car (and the game's AI cars) are obstacles on the lane they are on.
 --   - Cars keep to the graph round the focus: a car whose link has gone, that left the graph or
 --     drove out of KEEP_R is taken away, and a new one starts at least HIDE_R from the focus.
@@ -24,6 +28,14 @@ local KEEP_R, HIDE_R, SPAWN_R = 1100, 280, 950
 local WAIT_GIVE_UP = 90  -- s: a car stuck that long (a gridlock on the edge of the graph) is taken away
 local MAX_DT = 0.1
 local FILL_PER_STEP = 25
+-- traffic lights: the timing of the lights of issue #23 (signals.lua there), slot * CYCLE / SLOTS
+-- the offset of a crossing, so that the two can share one clock later
+local GREEN, YELLOW, CLEAR, SLOTS = 24, 3, 2, 3
+local CYCLE = 2 * (GREEN + YELLOW + CLEAR)
+local LIGHT_NODE_R = 14     -- m: a light this near a junction is its light
+local LIGHT_APPROACH = 45   -- m: a light on the last of a road into a junction is that junction's
+local LIGHT_SIDE = 12       -- m off the road's line a light of it may stand
+local CLUSTER = 40          -- m: lit junctions this near each other are one crossing
 
 M.LEN = LEN
 -- the shapes' paints (earthng/flow_art.py PAINTS) and their shares among the cars
@@ -41,6 +53,15 @@ function M.leftHand(country)
   for _, pattern in ipairs(LEFT) do if country:find(pattern) then return true end end
   return false
 end
+
+-- the colour of an approach of axis 0/1 at a crossing with this offset (s), now
+function M.colour(offset, axis, now)
+  local at = (now + offset + axis * CYCLE / 2) % CYCLE
+  if at < GREEN then return 'green' end
+  if at < GREEN + YELLOW then return 'yellow' end
+  return 'red'
+end
+M.CYCLE = CYCLE
 
 local function hashRandom(seed)
   local state = seed or 12345
@@ -218,8 +239,24 @@ end
 -- main road goes on unless a side road car is crossing it or there is no room on the way out
 local room
 local function mustStop(F, car)
-  if car.granted or not gated(F, car.link) then return false end
-  local n = F.nodes[car.link.to]
+  if car.granted then return false end
+  local link = car.link
+  local light = link.light
+  if light then
+    -- a lit crossing: red stops, yellow stops a car that can, green goes when there is room;
+    -- the roads inside a crossing (between its two halves) go on when there is room
+    if light ~= true then
+      local c = M.colour(light.c.offset, light.axis, F.now)
+      if c == 'red' then return true end
+      if c == 'yellow' then
+        if link.len - car.s - STOP_GAP < car.v * car.v / (2 * BRAKE) then car.granted = true; return false end
+        return true
+      end
+    end
+    return not room(car)
+  end
+  if not gated(F, link) then return false end
+  local n = F.nodes[link.to]
   local main = mainRoad(F, n)
   if main and main[car.link.sid] then
     return F.now < (n.sideUntil or -1) or not room(car)
@@ -229,7 +266,8 @@ end
 
 -- segments: sid -> seg (seg.s the nav array, seg.x/seg.y its middle). Links within KEEP_R of
 -- (fx, fy) come and go with the segments; a car on a link that went is taken away.
-function M.sync(F, segments, fx, fy)
+local planLights
+function M.sync(F, segments, fx, fy, lights)
   local want = {}
   for sid, seg in pairs(segments) do
     local s = seg.s or seg
@@ -289,7 +327,120 @@ function M.sync(F, segments, fx, fy)
       end
     end
   end
+  if lights then F.lights = lights end
+  if changed or lights then planLights(F) end
   return changed
+end
+
+-- where a link ends, and its heading there
+local function linkEnd(link)
+  local p = link.pts
+  local j = #p - 5
+  local dx, dy = p[j + 3] - p[j], p[j + 4] - p[j + 1]
+  local h = math.sqrt(dx * dx + dy * dy)
+  return p[j + 3], p[j + 4], h > 0 and dx / h or 1, h > 0 and dy / h or 0
+end
+
+-- whether light (x, y) stands on the last LIGHT_APPROACH m of link, beside its line
+local function onApproach(link, x, y)
+  local pts, cum = link.pts, link.cum
+  for k = #cum - 1, 1, -1 do
+    if link.len - cum[k + 1] > LIGHT_APPROACH then break end
+    local j = 3 * (k - 1) + 1
+    local dx, dy = pts[j + 3] - pts[j], pts[j + 4] - pts[j + 1]
+    local l2 = dx * dx + dy * dy
+    if l2 > 0 then
+      local f = math.max(0, math.min(1, ((x - pts[j]) * dx + (y - pts[j + 1]) * dy) / l2))
+      local ex, ey = pts[j] + f * dx - x, pts[j + 1] + f * dy - y
+      if ex * ex + ey * ey < LIGHT_SIDE * LIGHT_SIDE and link.len - (cum[k] + f * math.sqrt(l2)) <= LIGHT_APPROACH then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- The lit junctions of the graph from F.lights. Only a junction of three or more roads is lit:
+-- the flow has no stop line in the middle of a road (a lit pedestrian crossing).
+function planLights(F)
+  for _, n in pairs(F.nodes) do n.signal = nil end
+  for _, link in pairs(F.links) do link.light = nil end
+  local lit = {}
+  for _, q in ipairs(F.lights or {}) do
+    local x, y = q[1] or q.x, q[2] or q.y
+    local seen = {}
+    for gx = -2, 2 do
+      for gy = -2, 2 do
+        for link in pairs(F.grid[cellKey(F, x + gx * F.gridCell, y + gy * F.gridCell)] or {}) do
+          if not seen[link] then
+            seen[link] = true
+            local n = F.nodes[link.to]
+            if n and n.segs >= 3 and not lit[n] then
+              local ex, ey = linkEnd(link)
+              if (ex - x) ^ 2 + (ey - y) ^ 2 < LIGHT_NODE_R * LIGHT_NODE_R or onApproach(link, x, y) then
+                lit[n] = {x = ex, y = ey}
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  -- a fixed order: two syncs of one graph light it the same way
+  local order = {}
+  for n in pairs(lit) do order[#order + 1] = n end
+  table.sort(order, function(a, b) return a.id < b.id end)
+  local crossings = 0
+  for _, seed in ipairs(order) do
+    if not seed.signal then
+      -- the crossing: lit junctions within CLUSTER of each other
+      local members, head, c = {seed}, 1, {nodes = {}}
+      seed.signal, c.nodes[seed.id] = c, true
+      while members[head] do
+        local pa = lit[members[head]]
+        head = head + 1
+        for _, b in ipairs(order) do
+          local pb = lit[b]
+          if not b.signal and (pa.x - pb.x) ^ 2 + (pa.y - pb.y) ^ 2 < CLUSTER * CLUSTER then
+            b.signal, c.nodes[b.id] = c, true
+            members[#members + 1] = b
+          end
+        end
+      end
+      -- its axis is the heading of its biggest road in; its slot is fixed by its smallest node id
+      local lead
+      for _, n in ipairs(members) do
+        for _, link in ipairs(n.inn) do
+          if not c.nodes[link.from] and (not lead or link.weight > lead.weight or
+              (link.weight == lead.weight and link.id < lead.id)) then lead = link end
+        end
+      end
+      local slot = 0
+      for k = 1, #seed.id do slot = slot + seed.id:byte(k) end
+      c.offset = (slot % SLOTS) * CYCLE / SLOTS
+      local _, _, lx, ly = linkEnd(lead or members[1].inn[1])
+      for _, n in ipairs(members) do
+        for _, link in ipairs(n.inn) do
+          if c.nodes[link.from] then
+            link.light = true
+          else
+            local _, _, hx, hy = linkEnd(link)
+            link.light = {c = c, axis = math.abs(hx * lx + hy * ly) >= .7071 and 0 or 1}
+          end
+        end
+      end
+      crossings = crossings + 1
+    end
+  end
+  F.crossings = crossings
+end
+
+-- the colour a link's cars see at its end: 'green', 'yellow', 'red'; nil when it has no light
+function M.lightOf(F, link)
+  local light = link.light
+  if not light then return nil end
+  if light == true then return 'green' end
+  return M.colour(light.c.offset, light.axis, F.now)
 end
 
 -- position, heading and pitch of a car (or of link, s, lane)
@@ -353,8 +504,17 @@ end
 -- every lane under (x, y) heading along (hx, hy) (a unit vector; nil: any heading): fn(link,
 -- lane, s, along, miss) with miss the distance from the lane's middle (under 0.6 of a lane)
 local function locate(F, x, y, hx, hy, fn)
-  local cell = F.grid[cellKey(F, x, y)]
-  for link in pairs(cell or {}) do
+  -- the cells hold a link's centre line; a lane lies up to a few metres off it, maybe in the next
+  -- cell: the 3 x 3 cells round the point
+  local seen, list, c = {}, {}, F.gridCell
+  for gx = -1, 1 do
+    for gy = -1, 1 do
+      for link in pairs(F.grid[cellKey(F, x + gx * c, y + gy * c)] or {}) do
+        if not seen[link] then seen[link] = true; list[#list + 1] = link end
+      end
+    end
+  end
+  for _, link in ipairs(list) do
     local pts, cum = link.pts, link.cum
     for k = 1, #cum - 1 do
       local j = 3 * (k - 1) + 1
@@ -394,6 +554,22 @@ local function placeObstacles(F, list)
 end
 
 -- --- hand-off to real cars (handoff.lua) --------------------------------------------------------
+-- whether a real car at (x, y) heading (hx, hy) at v m/s must stand for a light: it is on a lit
+-- approach within its braking reach of a red one, or of a yellow one it can stop for
+function M.holdAt(F, x, y, hx, hy, v)
+  local hold = false
+  locate(F, x, y, hx, hy, function(link, lane, s)
+    local light = link.light
+    if light and light ~= true then
+      local c = M.colour(light.c.offset, light.axis, F.now)
+      local toEnd = link.len - s
+      local brake = v * v / (2 * BRAKE)
+      if toEnd > .5 and toEnd < brake + 8 and (c == 'red' or (c == 'yellow' and toEnd > brake)) then hold = true end
+    end
+  end)
+  return hold
+end
+
 -- flow cars within r of (fx, fy), nearest first, each {car, x, y, z, yaw, d}
 function M.near(F, fx, fy, r)
   local out = {}
@@ -518,7 +694,9 @@ local function serveNodes(F)
       local c = q[k]
       if c.dead or c.granted or c.link.to ~= n.id then table.remove(q, k) end
     end
-    if #q > 0 then
+    if n.signal then
+      for k = #q, 1, -1 do q[k] = nil end
+    elseif #q > 0 then
       local main = mainRoad(F, n)
       if not main then
         -- equal roads: one car at a time, first come first served
@@ -562,7 +740,7 @@ local function advance(F, car, dt, list, k)
   if gap then car.v = math.min(car.v, math.max(0, gap - .3) / math.max(dt, .016)) end
   car.s = car.s + car.v * dt
   car.wait = car.v < .5 and car.wait + dt or 0
-  if car.next and gated(F, link) and not car.granted then
+  if car.next and gated(F, link) and not car.granted and not link.light then
     local reach = math.max(20, car.v * car.v / (2 * BRAKE) + 12)
     if link.len - car.s < reach then
       local main = mainRoad(F, F.nodes[link.to])
@@ -650,8 +828,12 @@ function M.step(F, dt, fx, fy, obstacles)
   local count = 0
   -- the distance check once a second: a car moves 30 m in it at most
   local keep = fx and F.now - (F.keepAt or -1) >= 1
+  local atRed = 0
   if keep then F.keepAt = F.now end
   for _, car in pairs(F.cars) do
+    -- the cars standing at lights that are not green, once a second (result.flow.atRed)
+    local light = keep and car.v < .5 and car.link.light
+    if light and light ~= true and M.colour(light.c.offset, light.axis, F.now) ~= 'green' then atRed = atRed + 1 end
     if car.s >= car.link.len then cross(F, car) end
     if not car.dead then
       if car.wait > WAIT_GIVE_UP then removeCar(F, car, 'gaveUp')
@@ -664,6 +846,7 @@ function M.step(F, dt, fx, fy, obstacles)
       end
     end
   end
+  if keep then F.atRed = atRed end
   count = count + (F.promoted or 0)
   -- fill up to the target: the first fill anywhere, later ones out of sight; a few a frame (each
   -- new car is a TSStatic, and 200 at once were a 78 ms frame, flow-01)

@@ -791,6 +791,8 @@ end
 local function newAcc() return {n = 0, total = 0, worst = 0, over33 = 0, over100 = 0, bins = {}, worstAt = 0} end
 
 local function accFrame(acc, ms, now)
+  -- the frames that carried a one-time wait (the flow's pool spawn) are left out
+  if (acc.skip or 0) > 0 then acc.skip = acc.skip - 1; return end
   acc.n, acc.total = acc.n + 1, acc.total + ms
   if ms > acc.worst then acc.worst, acc.worstAt = ms, now end
   if ms > 33.3 then acc.over33 = acc.over33 + 1 end
@@ -1057,7 +1059,9 @@ local function startTile(key, i, j)
                 left = #manifest.items, roadLeft = #manifest.items, startedAt = S.now}
   S.tiles[key] = tile
   if manifest.nav then table.insert(S.navPending, {key = key, path = manifest.nav}) end
-  if manifest.navSegments then table.insert(S.navPending, {key = key, data = {segments = manifest.navSegments}}) end
+  if manifest.navSegments then
+    table.insert(S.navPending, {key = key, data = {segments = manifest.navSegments, signals = manifest.navSignals}})
+  end
   for _, it in ipairs(manifest.items) do table.insert(S.queue, {tile = tile, key = key, item = it}) end
   if #manifest.items == 0 then tile.state = 'loaded'; tile.roadComplete = true end
 end
@@ -1137,7 +1141,9 @@ local TRAFFIC_KINDS = {
   -- real cars stay the near layer, a crowd needs cars without physics (docs/NATIVE_MODS.md)
   amounts = {{0, 'Вимк', 'Off'}, {4, '4', '4'}, {8, '8', '8'}, {16, '16', '16'}, {24, '24', '24'}},
   -- the flow's cars (flow.lua): no physics, no collision
-  flow = {{0, 'Вимк', 'Off'}, {100, '100', '100'}, {200, '200', '200'}, {400, '400', '400'}}}
+  flow = {{0, 'Вимк', 'Off'}, {100, '100', '100'}, {200, '200', '200'}, {400, '400', '400'}},
+  -- how many of them round the player are real cars one can hit (handoff.lua), ~1.5 ms each
+  real = {{0, 'Вимк', 'Off'}, {4, '4', '4'}, {8, '8', '8'}, {12, '12', '12'}, {16, '16', '16'}}}
 
 local function navRead()
   local job = table.remove(S.navPending, 1)
@@ -1145,6 +1151,9 @@ local function navRead()
   local ok, data = true, job.data
   if not data then ok, data = pcall(jsonReadFile, job.path) end
   if not ok or type(data) ~= 'table' or not data.segments then return end
+  -- the tile's traffic lights {x, y} for the flow (flow.lua), while the tile is loaded
+  S.navLights = S.navLights or {}
+  if data.signals and #data.signals > 0 then S.navLights[job.key] = data.signals; S.navLightsAt = S.now end
   for _, s in ipairs(data.segments) do
     local seg = S.nav[s[1]]
     if not seg then
@@ -1299,7 +1308,8 @@ function M.flowSet(n)
       return group and group[(k - 1) % #group + 1]
     end)
     api.ms.group = t:stop()
-    S.flow = {F = F, V = fs.view(F, shapes, tileGroup('E2R_flow', true)), H = hs.new{paints = #fs.PAINTS}, api = api}
+    S.flow = {F = F, V = fs.view(F, shapes, tileGroup('E2R_flow', true)), H = hs.new{paints = #fs.PAINTS,
+      size = S.flowReal or hs.SIZE}, api = api}
     local veh = getPlayerVehicle(0)
     local q = veh and veh:getPosition() or focus()
     if q then hs.prewarm(S.flow.H, api, q.x, q.y) end
@@ -1313,6 +1323,20 @@ function M.flowSet(n)
   result.flowTarget = n
 end
 
+-- the real cars round the player: a bigger pool is spawned now (one wait, ~0.5 s a car), a
+-- smaller one hands its extra cars back to the flow (handoff.lua)
+function M.flowReal(n)
+  S.flowReal = n
+  local fl = S.flow
+  if fl then
+    fl.H.size = n
+    local veh = getPlayerVehicle(0)
+    local q = veh and veh:getPosition() or focus()
+    if q and #fl.H.pool < n then M.handoffSim.prewarm(fl.H, fl.api, q.x, q.y) end
+  end
+  result.flowReal = n
+end
+
 function M.flowStep()
   local fs, fl = M.flowSim, S.flow
   local p = focus()
@@ -1321,7 +1345,15 @@ function M.flowStep()
   -- the graph follows navBuild (new tiles, 250 m of driving)
   if fl.syncAt ~= S.navAt then
     fl.syncAt = S.navAt
-    fs.sync(fl.F, S.nav, p.x, p.y)
+    local lights = {}
+    for key, list in pairs(S.navLights or {}) do
+      if S.tiles[key] then
+        for _, q in ipairs(list) do lights[#lights + 1] = q end
+      else
+        S.navLights[key] = nil
+      end
+    end
+    fs.sync(fl.F, S.nav, p.x, p.y, lights)
     fl.syncMs = t:stopAndReset()
   end
   local obs = {}
@@ -1355,6 +1387,7 @@ function M.flowStep()
   r.stats = fl.F.stats
   r.real, r.pool, r.handoff, r.handoffMs = M.handoffSim.activeCount(fl.H), #fl.H.pool, fl.H.stats, fl.api.ms
   r.handoffSpawns = fl.api.spawns
+  r.crossings, r.lights, r.atRed = fl.F.crossings or 0, fl.F.lights and #fl.F.lights or 0, fl.F.atRed or 0
 end
 
 local function drawTraffic()
@@ -1399,6 +1432,19 @@ local function drawTraffic()
       im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
     end
     if im.Button(L(a[2], a[3]) .. '##flow_' .. a[1], im.ImVec2(width, 0)) and not active then M.flowSet(a[1]) end
+    if active then im.PopStyleColor(2) end
+  end
+  im.Text(L('Справжні машини біля гравця:', 'Real cars round the player:'))
+  local realN = S.flowReal or M.handoffSim.SIZE
+  width = math.floor((im.GetContentRegionAvailWidth() - (#TRAFFIC_KINDS.real - 1) * spacing) / #TRAFFIC_KINDS.real)
+  for k, a in ipairs(TRAFFIC_KINDS.real) do
+    if k > 1 then im.SameLine() end
+    local active = realN == a[1]
+    if active then
+      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
+      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
+    end
+    if im.Button(L(a[2], a[3]) .. '##flowReal_' .. a[1], im.ImVec2(width, 0)) and not active then M.flowReal(a[1]) end
     if active then im.PopStyleColor(2) end
   end
   im.Text(L('Припарковані машини:', 'Parked cars:'))
@@ -3131,6 +3177,8 @@ local function drawStats(st, p, v)
     im.Text(string.format(L('Потік: авто %d (справжніх %d), рух %.2f мс, показ %.2f мс',
       'Flow: cars %d (real %d), sim %.2f ms, draw %.2f ms'),
       S.flow.F.count or 0, M.handoffSim.activeCount(S.flow.H), S.flow.simMs or 0, S.flow.drawMs or 0))
+    im.Text(string.format(L('Світлофорні перехрестя: %d, стоять на червоному: %d', 'Lit crossings: %d, waiting at red: %d'),
+      S.flow.F.crossings or 0, S.flow.F.atRed or 0))
   end
   if st and not NATIVE then
     local nFailed = 0
@@ -4069,10 +4117,11 @@ local function runTest()
       end)
     end
     if test.traffic then setTraffic(test.traffic, test.trafficKind) end
+    if test.flowReal then S.flowReal = test.flowReal end
     if test.flow then
       M.flowSet(test.flow)
       -- the pool spawn is a one-time wait at switch-on (result.flow.handoffSpawns), not a drive frame
-      if S.driveAcc then S.driveAcc = newAcc() end
+      if S.driveAcc then S.driveAcc = newAcc(); S.driveAcc.skip = 2 end
     end
     if test.recordDrive then
       -- the drive itself is the clip: no game HUD, the driver records until 'stop'

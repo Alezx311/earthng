@@ -1185,6 +1185,7 @@ local function buildTile(key, wanted)
     road.materials = '/earthng/planet/materials.json'
     road.packs = '/e2r_stream/fast-art/v10/packs.json'
     road.navSegments = type(nav) == 'table' and nav.segments or {}
+    road.navSignals = type(nav) == 'table' and nav.signals or nil
   end
   -- While driving a near tile's road goes out as soon as it is built (AHEAD), and the build
   -- yields AHEAD to update(), which parks it until the scene's turn. The landing builds whole.

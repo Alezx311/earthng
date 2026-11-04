@@ -8349,6 +8349,16 @@ local function build(cells, i, j, options)
     if navigation then nav.segments[#nav.segments + 1] = navigation end
     pause()
   end
+  -- the mapped traffic lights of the tile (half-open rect): the flow's junctions run on them (flow.lua)
+  if visualRoads then
+    nav.signals = {}
+    for _, point in ipairs(lists.points) do
+      local p = point.pos
+      if point.kind == 'signal' and p and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
+        nav.signals[#nav.signals + 1] = {p[1], p[2]}
+      end
+    end
+  end
 
   -- One world-space sample. No grids: 0, so a near tile without a DEM stays the flat
   -- lattice the roads already sit on. Grids that miss the point: nil, so a distant mesh

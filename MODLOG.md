@@ -1,5 +1,19 @@
 # EarthNG native mod migration
 
+## 2026-11-04: traffic lights in the flow, and how many real cars
+
+- The generator hands a tile's OSM `traffic_signals` points to the navgraph (`nav.signals`). The flow
+  lights a junction of three or more roads with a light within 14 m, or on the last 45 m of a road
+  into it. Lit junctions within 40 m are one crossing. The approaches along and across its biggest
+  road take turns: 24 s green, 3 yellow, 2 all red (the #23 timing). Green goes only with room on the
+  way out. The game's AI does not see these lights, so a real car on a red approach is held by a
+  speed limit of 0. The lenses stay unlit: #23 is not merged. Old packs (before 1.11) have no lights.
+- The widget sets the real cars round the player: Off/4/8/12/16 (default 8). Fewer hands the extra
+  cars back to the flow.
+- Kyiv centre, 400 flow cars, 8 real, new Ukraine pack: 25 lit crossings, up to 56 cars at red, 43
+  holds, mean frame 22.9 ms, worst 87 ms. The one-time pool spawn is left out of the drive frames.
+  Planet only.
+
 ## 2026-11-04: real cars round the player in place of flow cars
 
 - `e2r/handoff.lua`: a flow car within 90 m of the player's car becomes one of 8 real
