@@ -1,5 +1,15 @@
 # EarthNG native mod migration
 
+## 2026-11-04: real cars round the player in place of flow cars
+
+- `e2r/handoff.lua`: a flow car within 90 m of the player's car becomes one of 8 real
+  `simple_traffic` cars under the game's AI, so it can be hit. Past 130 m it goes back into the flow
+  on the lane under it, at its speed and paint. The 8 are a pool, spawned once when the flow is
+  switched on and parked inactive. A swap is `setActive` plus `safeTeleport`, ~1.5 ms.
+- A game spawn is 0.4-0.67 s of the frame, so the pool is spawned at once (one ~4 s wait) instead of
+  one car every 0.5 s while driving (613 ms frames). 60 s drive with 200 flow cars: 32 promoted, 25
+  back, 3 dropped, mean frame 24.3 ms. Hitting one by hand is not checked yet. Planet only.
+
 ## 2026-11-04: traffic flow without physics
 
 - `e2r/flow.lua`: hundreds of cars on the navgraph of the loaded tiles, IDM car following, main

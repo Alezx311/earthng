@@ -7,6 +7,7 @@ from pathlib import Path
 from lupa.luajit21 import LuaRuntime
 
 FLOW = Path(__file__).resolve().parents[1] / 'mod/lua/ge/extensions/e2r/flow.lua'
+HANDOFF = FLOW.with_name('handoff.lua')
 
 # a grid of two-way streets, `n` x `n` crossings `step` m apart; segment ids 'h<i>_<j>' / 'v<i>_<j>'
 GRID = '''
@@ -48,6 +49,7 @@ class FlowTests(unittest.TestCase):
     def lua(self):
         lua = LuaRuntime()
         lua.globals().flow = lua.execute(FLOW.read_text(encoding='utf8'))
+        lua.globals().handoff = lua.execute(HANDOFF.read_text(encoding='utf8'))
         lua.execute(GRID)
         return lua
 
@@ -237,6 +239,87 @@ class FlowTests(unittest.TestCase):
             self.assertTrue(left(country), country)
         for country in ('ukraine', 'kyiv-oblast', 'new-york', 'germany-berlin', None):
             self.assertFalse(left(country), country)
+
+    HANDOFF_API = '''
+      -- a fake game: real cars keep the pose they were given and drive straight on
+      real = {}
+      api = {nextId = 100}
+      function api.spawn(paint) api.nextId = api.nextId + 1; real[api.nextId] = {paint = paint, active = false}; return api.nextId end
+      function api.alive(id) return real[id] ~= nil end
+      function api.activate(id, x, y, z, yaw, v)
+        local r = real[id]
+        r.active, r.x, r.y, r.hx, r.hy, r.v = true, x, y, math.cos(yaw), math.sin(yaw), v
+      end
+      function api.deactivate(id) real[id].active = false end
+      function api.delete(id) real[id] = nil end
+      function api.pose(id)
+        local r = real[id]
+        return r.x, r.y, r.hx * r.v, r.hy * r.v, r.hx, r.hy
+      end
+      function drive(dt)
+        for _, r in pairs(real) do if r.active then r.x, r.y = r.x + r.hx * r.v * dt, r.y + r.hy * r.v * dt end end
+      end
+    '''
+
+    def test_flow_cars_near_the_player_become_real_and_come_back(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        out = lua.execute('''
+          local s = {'r', 'A', 'B', '--++', 13.9, 7, 1, 0, 0, 0, 1000, 0, 0, 2000, 0, 0}
+          local F = flow.new{seed = 4, paints = {1, 1, 1, 1, 1, 1, 1, 1}}
+          flow.sync(F, {r = {s = s, x = 1000, y = 0}})
+          F.target = 60
+          local H = handoff.new{size = 8, paints = 8}
+          local now, maxReal, minCount = 0, 0, 1e9
+          for t = 1, 600 do
+            now = now + 1 / 30
+            local obs = handoff.obstacles(H, api, {})
+            flow.step(F, 1 / 30, 1000, 0, obs)
+            handoff.step(H, flow, F, 1000, 0, now, api)
+            drive(1 / 30)
+            maxReal = math.max(maxReal, handoff.activeCount(H))
+            if t > 60 then minCount = math.min(minCount, F.count) end
+          end
+          local pool, near = #H.pool, 0
+          for _, c in ipairs(flow.near(F, 1000, 0, handoff.ENTER_R - 5)) do if c.d > 12 then near = near + 1 end end
+          local promoted = H.stats.promoted
+          -- the player leaves: every real car goes back into the flow
+          for t = 1, 60 do
+            now = now + 1 / 30
+            flow.step(F, 1 / 30, 1000, 3000, {})
+            handoff.step(H, flow, F, 1000, 3000, now, api)
+          end
+          return {pool, maxReal, promoted, near, minCount, handoff.activeCount(H), F.promoted, H.stats.demoted + H.stats.dropped}
+        ''')
+        pool, max_real, promoted, near, min_count, real_after, promoted_after, back = list(out.values())
+        self.assertEqual(pool, 8)
+        self.assertEqual(max_real, 8)          # never more than the pool
+        self.assertGreaterEqual(promoted, 8)
+        self.assertLessEqual(near, 2)          # only flow cars by a real car (CLEAR_R) stay in the zone
+        self.assertEqual(min_count, 60)        # real cars count towards the target
+        self.assertEqual(real_after, 0)
+        self.assertEqual(promoted_after, 0)
+        self.assertEqual(back, promoted)
+
+    def test_a_real_car_comes_back_on_its_lane_with_its_paint_and_speed(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        out = lua.execute('''
+          local s = {'r', 'A', 'B', '-+', 13.9, 3.5, 1, 0, 0, 0, 1000, 0, 0}
+          local F = flow.new{seed = 2}
+          flow.sync(F, {r = {s = s, x = 500, y = 0}})
+          local lane = flow.laneOffset(F, F.links['r-'], 1)
+          F.promoted = 1
+          -- westbound at 400 m, on the north half of the road
+          local car = flow.put(F, 400, lane, -1, 0, 11, 6)
+          local wrongWay = flow.put(F, 300, lane, 1, 0, 11, 6)
+          return {car.link.id, car.lane, car.s, car.v, car.paint, F.promoted, wrongWay == nil}
+        ''')
+        link, lane, s, v, paint, promoted, wrong_way_dropped = list(out.values())
+        self.assertEqual(link, 'r-')
+        self.assertAlmostEqual(s, 600, delta=1)
+        self.assertEqual((v, paint, promoted), (11, 6, 0))
+        self.assertTrue(wrong_way_dropped)
 
 if __name__ == '__main__':
     unittest.main()

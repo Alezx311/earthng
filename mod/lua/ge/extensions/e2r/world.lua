@@ -28,6 +28,7 @@ M.navigator = NATIVE and require('ge/extensions/e2r/navigator') or nil
 if M.navigator then M.navigator.source = native end
 M.gc = require('ge/extensions/e2r/gc')   -- the collector's step while in the level (gc.lua)
 M.flowSim = require('ge/extensions/e2r/flow')   -- cars without physics, hundreds of them (flow.lua)
+M.handoffSim = require('ge/extensions/e2r/handoff')   -- real cars in their place round the player
 local detailStream
 -- the UI language: the package's LANG until the player switches it (settings/earthng.json)
 local LANG_FILE = 'settings/earthng.json'
@@ -1281,19 +1282,31 @@ local function setTraffic(amount, kind)
 end
 
 -- The flow (flow.lua): hundreds of cars without physics on the graph of the tiles (S.nav), one
--- TSStatic each in a group outside the MissionGroup (no collision). The player's car and the
--- game's AI cars are its obstacles; it is not theirs yet (no collision with them).
+-- TSStatic each in a group outside the MissionGroup (no collision). Round the player's car the
+-- nearest of them are real simple_traffic cars (handoff.lua), so the cars one can hit are real.
+-- The player's car, those real cars and the game's AI traffic are the flow's obstacles.
 function M.flowSet(n)
-  local fs = M.flowSim
+  local fs, hs = M.flowSim, M.handoffSim
   if n > 0 and not S.flow then
     local F = fs.new{leftHand = fs.leftHand(S.stream and S.stream.country), seed = math.floor(S.now * 1000) % 100000 + 1,
       paints = fs.SHARE}
     local shapes = {}
     for k, paint in ipairs(fs.PAINTS) do shapes[k] = '/levels/e2r_world/art/flow/car_' .. paint .. '.dae' end
-    S.flow = {F = F, V = fs.view(F, shapes, tileGroup('E2R_flow', true))}
+    -- the game's simple cars, picked once (a group scans every config)
+    local t, group, k = hptimer(), TRAFFIC_KINDS[1].group(hs.SIZE), 0
+    local api = hs.gameApi(fs.PAINT_RGB, function()
+      k = k + 1
+      return group and group[(k - 1) % #group + 1]
+    end)
+    api.ms.group = t:stop()
+    S.flow = {F = F, V = fs.view(F, shapes, tileGroup('E2R_flow', true)), H = hs.new{paints = #fs.PAINTS}, api = api}
+    local veh = getPlayerVehicle(0)
+    local q = veh and veh:getPosition() or focus()
+    if q then hs.prewarm(S.flow.H, api, q.x, q.y) end
   end
   if S.flow then fs.setTarget(S.flow.F, n) end
   if n == 0 and S.flow then
+    hs.clear(S.flow.H, S.flow.api)
     dropGroup('E2R_flow')
     S.flow = nil
   end
@@ -1313,10 +1326,12 @@ function M.flowStep()
   end
   local obs = {}
   local veh = getPlayerVehicle(0)
+  local car = veh and veh:getPosition()
   if veh then
-    local q, v = veh:getPosition(), veh:getVelocity()
-    obs[1] = {x = q.x, y = q.y, vx = v.x, vy = v.y}
+    local v = veh:getVelocity()
+    obs[1] = {x = car.x, y = car.y, vx = v.x, vy = v.y}
   end
+  M.handoffSim.obstacles(fl.H, fl.api, obs)
   if trafficRunning() then
     for _, id in ipairs(gameplay_traffic.getTrafficList() or {}) do
       local o = be:getObjectByID(id)
@@ -1327,6 +1342,8 @@ function M.flowStep()
     end
   end
   fs.step(fl.F, S.dt or 1 / 60, p.x, p.y, obs)
+  -- the swap follows the player's car, not a free camera: the cars one can hit are round it
+  if car then M.handoffSim.step(fl.H, fs, fl.F, car.x, car.y, S.now, fl.api) end
   fl.simMs = t:stopAndReset()
   fl.moved = fs.draw(fl.F, fl.V, p.x, p.y)
   fl.drawMs = t:stop()
@@ -1336,6 +1353,8 @@ function M.flowStep()
   r.simMax, r.drawMax = math.max(r.simMax or 0, fl.simMs), math.max(r.drawMax or 0, fl.drawMs)
   r.syncMax = math.max(r.syncMax or 0, fl.syncMs or 0)
   r.stats = fl.F.stats
+  r.real, r.pool, r.handoff, r.handoffMs = M.handoffSim.activeCount(fl.H), #fl.H.pool, fl.H.stats, fl.api.ms
+  r.handoffSpawns = fl.api.spawns
 end
 
 local function drawTraffic()
@@ -3109,8 +3128,9 @@ local function drawStats(st, p, v)
       gameplay_traffic.getTrafficAmount(), nav.nodes or 0, nav.ms or 0))
   end
   if S.flow then
-    im.Text(string.format(L('Потік: авто %d, рух %.2f мс, показ %.2f мс', 'Flow: cars %d, sim %.2f ms, draw %.2f ms'),
-      S.flow.F.count or 0, S.flow.simMs or 0, S.flow.drawMs or 0))
+    im.Text(string.format(L('Потік: авто %d (справжніх %d), рух %.2f мс, показ %.2f мс',
+      'Flow: cars %d (real %d), sim %.2f ms, draw %.2f ms'),
+      S.flow.F.count or 0, M.handoffSim.activeCount(S.flow.H), S.flow.simMs or 0, S.flow.drawMs or 0))
   end
   if st and not NATIVE then
     local nFailed = 0
@@ -4049,7 +4069,11 @@ local function runTest()
       end)
     end
     if test.traffic then setTraffic(test.traffic, test.trafficKind) end
-    if test.flow then M.flowSet(test.flow) end
+    if test.flow then
+      M.flowSet(test.flow)
+      -- the pool spawn is a one-time wait at switch-on (result.flow.handoffSpawns), not a drive frame
+      if S.driveAcc then S.driveAcc = newAcc() end
+    end
     if test.recordDrive then
       -- the drive itself is the clip: no game HUD, the driver records until 'stop'
       pcall(function() extensions.ui_visibility.setCef(false) end)
