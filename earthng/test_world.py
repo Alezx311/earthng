@@ -119,6 +119,7 @@ def main():
     p.add_argument('--picker-hold', type=float, default=4, help='--picker-only: seconds the picker stays open')
     p.add_argument('--replay', action='store_true', help='camera/pose replay at constant speed; not a physics test')
     p.add_argument('--traffic', type=int, help="after landing: the game's AI traffic, this many cars")
+    p.add_argument('--flow', type=int, help='after landing: this many flow cars without physics (flow.lua)')
     p.add_argument('--traffic-kind', choices=('simple', 'full', 'agent'), default='simple',
                    help="--traffic cars: the game's simple_traffic, its full vehicles, or Agent Traffic's")
     p.add_argument('--rain', type=int, help="after landing: the game's own rain (core_environment numOfDrops)")
@@ -229,6 +230,8 @@ def main():
                           'clip': plan.get('clip', a.flight.stem)}
     if a.record_drive:
         test['recordDrive'] = True
+    if a.flow:
+        test['flow'] = a.flow
     if a.traffic:
         test['traffic'] = a.traffic
         test['trafficKind'] = a.traffic_kind

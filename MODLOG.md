@@ -1,5 +1,16 @@
 # EarthNG native mod migration
 
+## 2026-11-04: traffic flow without physics
+
+- `e2r/flow.lua`: hundreds of cars on the navgraph of the loaded tiles, IDM car following, main
+  roads through junctions with side roads waiting for 4 s gaps, all-way stops between equal roads,
+  no entry without room on the way out, so queues spill back. The player's car and the game's AI
+  cars are obstacles. Each car is a TSStatic without collision (`earthng/flow_art.py`, 128
+  triangles, 8 paints, built into the planet). Widget: "Flow (no physics)" 0/100/200/400.
+- Parked in Kyiv: 400 flow cars 15.3 ms mean (no traffic 13-16), sim 1.45 + draw 1.24 ms; 800 cars
+  17.6 ms, 225 of them queued at junctions. Not yet: collision (hand-off to real cars near the
+  player), traffic lights, lane changes, night lamps. Planet only, no pack rebuild.
+
 ## 2026-11-04: traffic kinds and the ceiling of physics cars
 
 - The user wants hundreds of cars, enough for real jams. Step one measured the game's own cars. The

@@ -27,6 +27,7 @@ M.brandStyles = NATIVE and require('ge/extensions/e2r/generator').BRANDS or {}
 M.navigator = NATIVE and require('ge/extensions/e2r/navigator') or nil
 if M.navigator then M.navigator.source = native end
 M.gc = require('ge/extensions/e2r/gc')   -- the collector's step while in the level (gc.lua)
+M.flowSim = require('ge/extensions/e2r/flow')   -- cars without physics, hundreds of them (flow.lua)
 local detailStream
 -- the UI language: the package's LANG until the player switches it (settings/earthng.json)
 local LANG_FILE = 'settings/earthng.json'
@@ -1133,7 +1134,9 @@ local TRAFFIC_KINDS = {
   end},
   -- parked in Kyiv each simple car is ~1.5 ms of the frame (16: 34 ms, 32: 62, 48: 95; traffic-07):
   -- real cars stay the near layer, a crowd needs cars without physics (docs/NATIVE_MODS.md)
-  amounts = {{0, 'Вимк', 'Off'}, {4, '4', '4'}, {8, '8', '8'}, {16, '16', '16'}, {24, '24', '24'}}}
+  amounts = {{0, 'Вимк', 'Off'}, {4, '4', '4'}, {8, '8', '8'}, {16, '16', '16'}, {24, '24', '24'}},
+  -- the flow's cars (flow.lua): no physics, no collision
+  flow = {{0, 'Вимк', 'Off'}, {100, '100', '100'}, {200, '200', '200'}, {400, '400', '400'}}}
 
 local function navRead()
   local job = table.remove(S.navPending, 1)
@@ -1277,6 +1280,64 @@ local function setTraffic(amount, kind)
   gameplay_traffic.setupTraffic(amount, options)
 end
 
+-- The flow (flow.lua): hundreds of cars without physics on the graph of the tiles (S.nav), one
+-- TSStatic each in a group outside the MissionGroup (no collision). The player's car and the
+-- game's AI cars are its obstacles; it is not theirs yet (no collision with them).
+function M.flowSet(n)
+  local fs = M.flowSim
+  if n > 0 and not S.flow then
+    local F = fs.new{leftHand = fs.leftHand(S.stream and S.stream.country), seed = math.floor(S.now * 1000) % 100000 + 1,
+      paints = fs.SHARE}
+    local shapes = {}
+    for k, paint in ipairs(fs.PAINTS) do shapes[k] = '/levels/e2r_world/art/flow/car_' .. paint .. '.dae' end
+    S.flow = {F = F, V = fs.view(F, shapes, tileGroup('E2R_flow', true))}
+  end
+  if S.flow then fs.setTarget(S.flow.F, n) end
+  if n == 0 and S.flow then
+    dropGroup('E2R_flow')
+    S.flow = nil
+  end
+  result.flowTarget = n
+end
+
+function M.flowStep()
+  local fs, fl = M.flowSim, S.flow
+  local p = focus()
+  if not p then return end
+  local t = hptimer()
+  -- the graph follows navBuild (new tiles, 250 m of driving)
+  if fl.syncAt ~= S.navAt then
+    fl.syncAt = S.navAt
+    fs.sync(fl.F, S.nav, p.x, p.y)
+    fl.syncMs = t:stopAndReset()
+  end
+  local obs = {}
+  local veh = getPlayerVehicle(0)
+  if veh then
+    local q, v = veh:getPosition(), veh:getVelocity()
+    obs[1] = {x = q.x, y = q.y, vx = v.x, vy = v.y}
+  end
+  if trafficRunning() then
+    for _, id in ipairs(gameplay_traffic.getTrafficList() or {}) do
+      local o = be:getObjectByID(id)
+      if o then
+        local q, v = o:getPosition(), o:getVelocity()
+        obs[#obs + 1] = {x = q.x, y = q.y, vx = v.x, vy = v.y}
+      end
+    end
+  end
+  fs.step(fl.F, S.dt or 1 / 60, p.x, p.y, obs)
+  fl.simMs = t:stopAndReset()
+  fl.moved = fs.draw(fl.F, fl.V, p.x, p.y)
+  fl.drawMs = t:stop()
+  local r = result.flow or {}
+  result.flow = r
+  r.cars, r.links, r.simMs, r.drawMs, r.syncMs = fl.F.count, fl.F.linkList and #fl.F.linkList or 0, fl.simMs, fl.drawMs, fl.syncMs
+  r.simMax, r.drawMax = math.max(r.simMax or 0, fl.simMs), math.max(r.drawMax or 0, fl.drawMs)
+  r.syncMax = math.max(r.syncMax or 0, fl.syncMs or 0)
+  r.stats = fl.F.stats
+end
+
 local function drawTraffic()
   local amount = trafficRunning() and (S.trafficAmount or -1) or 0
   local kind = S.trafficKind or 'simple'
@@ -1306,6 +1367,19 @@ local function drawTraffic()
       im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
     end
     if im.Button(L(a[2], a[3]) .. '##traffic_' .. a[1], im.ImVec2(width, 0)) and not active then setTraffic(a[1], kind) end
+    if active then im.PopStyleColor(2) end
+  end
+  im.Text(L('Потік (без фізики):', 'Flow (no physics):'))
+  local flowN = S.flow and S.flow.F.target or 0
+  width = math.floor((im.GetContentRegionAvailWidth() - (#TRAFFIC_KINDS.flow - 1) * spacing) / #TRAFFIC_KINDS.flow)
+  for k, a in ipairs(TRAFFIC_KINDS.flow) do
+    if k > 1 then im.SameLine() end
+    local active = flowN == a[1]
+    if active then
+      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
+      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
+    end
+    if im.Button(L(a[2], a[3]) .. '##flow_' .. a[1], im.ImVec2(width, 0)) and not active then M.flowSet(a[1]) end
     if active then im.PopStyleColor(2) end
   end
   im.Text(L('Припарковані машини:', 'Parked cars:'))
@@ -2156,6 +2230,7 @@ local function beginArrival(job)
   S.tiles, S.far, S.horizon, S.queue, S.co = {}, {}, {}, {}, nil
   -- traffic and parked cars of the old place have no roads here
   if trafficRunning() then gameplay_traffic.deleteVehicles() end
+  if S.flow then M.flowSet(0) end
   if S.park then parking.clear(S.park) end
   S.nav, S.navPending, S.navDirty, S.trafficWanted = {}, {}, false, nil
   S.navAt, S.navPos, S.navSerial = nil, nil, nil
@@ -3033,6 +3108,10 @@ local function drawStats(st, p, v)
       'Traffic (%s): cars %d, graph %d nodes, build %.0f ms'), S.trafficSource == 'game cars' and L('машини гри', 'game cars') or S.trafficSource == 'simple' and L('прості', 'simple') or S.trafficSource == 'full' and L('повні', 'full') or S.trafficSource or L('гра', 'game'),
       gameplay_traffic.getTrafficAmount(), nav.nodes or 0, nav.ms or 0))
   end
+  if S.flow then
+    im.Text(string.format(L('Потік: авто %d, рух %.2f мс, показ %.2f мс', 'Flow: cars %d, sim %.2f ms, draw %.2f ms'),
+      S.flow.F.count or 0, S.flow.simMs or 0, S.flow.drawMs or 0))
+  end
   if st and not NATIVE then
     local nFailed = 0
     for _ in pairs(st.failed or {}) do nFailed = nFailed + 1 end
@@ -3708,6 +3787,7 @@ local function refreshCountries()
     pcall(VISTA.plane, nil)
     dropLights()
     if trafficRunning() then gameplay_traffic.deleteVehicles() end
+    if S.flow then M.flowSet(0) end
     map.reset({})
     if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
     S.navAt, S.navPos, S.navSerial = nil, nil, nil
@@ -3969,6 +4049,7 @@ local function runTest()
       end)
     end
     if test.traffic then setTraffic(test.traffic, test.trafficKind) end
+    if test.flow then M.flowSet(test.flow) end
     if test.recordDrive then
       -- the drive itself is the clip: no game HUD, the driver records until 'stop'
       pcall(function() extensions.ui_visibility.setCef(false) end)
@@ -4530,6 +4611,7 @@ function M.tick(dt)
     if S.state == 'driving' then
       navStep()
       if M.navigator then M.navigator.step(focus, S.now, lang) end
+      if S.flow then M.flowStep() end
     end
     updateParking()
     local tNav = timer:stopAndReset()
