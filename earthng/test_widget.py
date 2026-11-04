@@ -287,6 +287,61 @@ class WidgetTests(unittest.TestCase):
           assert(resets==3 and next(graph.nodes)==nil)
         ''')
 
+    def test_traffic_kind_picks_its_cars(self):
+        # simple: the game's simple_traffic (PropTraffic, never the PropParked ones); full: its
+        # soft-body cars and trucks without police, whatever trafficSimpleVehicles says; a kind whose
+        # cars are missing falls back to the game's own group
+        lua = self.native_widget(basemap=False)
+        lua.execute('''
+          local seen = {}
+          local function find(fn, name)
+            if seen[fn] then return end
+            seen[fn] = true
+            for i=1,200 do
+              local n,v=debug.getupvalue(fn,i)
+              if not n then break end
+              if n==name then return v end
+              if type(v)=='function' then local r=find(v,name); if r then return r end end
+            end
+          end
+          set=find(mod.onUpdate,'setTraffic') or find(mod.tick,'setTraffic')
+          assert(set, 'setTraffic')
+          local function replace(fn, name, value)
+            for i=1,200 do local n=debug.getupvalue(fn,i)
+              if n==name then debug.setupvalue(fn,i,value); return end
+            end
+          end
+          replace(set,'navBuild',function() end)
+          map={getMap=function() return {nodes={a={}}} end}
+          setups={}
+          gameplay_traffic={setupTraffic=function(amount, options) setups[#setups+1]={amount, options} end,
+            deleteVehicles=function() end}
+          gameplay_traffic_trafficUtils={getBaseGroupParams=function()
+            return {filters={Type={car=1, truck=0.6}}, country='default', maxYear=0, minPop=50} end}
+          core_multiSpawn={createGroup=function(amount, params)
+            spawnParams[#spawnParams+1]=params; local g={} for k=1,amount do g[k]={model='simple_traffic'} end; return g end}
+          FS={fileExists=function() return false end}
+          spawnParams={}
+          set(16, 'simple')
+          set(8, 'full')
+          set(8, 'agent')
+          core_multiSpawn.createGroup=function() return {} end
+          set(8, 'simple')
+        ''')
+        g = lua.globals()
+        self.assertEqual(g.setups[1][1], 16)
+        self.assertEqual(len(list(g.setups[1][2].vehGroup.values())), 16)
+        simple, full = g.spawnParams[1], g.spawnParams[2]
+        self.assertEqual(dict(simple.filters.Type), {'proptraffic': 1})
+        self.assertIsNone(simple.maxYear)
+        self.assertEqual(dict(full.filters.Type), {'car': 1, 'truck': 0.6})
+        self.assertEqual(full.filters['Config Type'].Police, 0)
+        self.assertEqual(full.minPop, 50)
+        self.assertEqual(len(list(g.setups[2][2].vehGroup.values())), 8)
+        for k in (3, 4):
+            self.assertIsNone(g.setups[k][2].vehGroup)
+        self.assertEqual(lua.eval("up(mod.tick,'S').trafficSource"), 'game cars')
+
     def map_ui_flow(self, lang, labels):
         lua = LuaRuntime()
         lua.execute('''
@@ -308,6 +363,7 @@ class WidgetTests(unittest.TestCase):
             {__index=function() return function() end end})
           require=function() return {} end
           FS={fileExists=function() return false end}
+          spawnParams={}
           maptileRequests=0
           jsonWriteFile=function(path, tbl) if tbl.type=='maptiles' then maptileRequests=maptileRequests+1 end end
           hptimer=function() return {stopAndReset=function() return 1 end} end

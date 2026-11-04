@@ -1096,11 +1096,44 @@ end
 -- also for the stock minimap, from the segments within NAV_R of the car, again once the car has gone
 -- NAV_MOVE m from the last build (a rebuild is one frame of ~30 us a node).
 local NAV_R, NAV_MOVE = 1000, 250
--- Agent Traffic mod (if installed): its light EU cars instead of the game's full vehicles
-local AGENT_GROUP = '/vehicleGroups/agentTraffic/agent_traffic_eu.vehGroup.json'
--- 8 cars doubled the mean frame (12.7 -> 24.5 ms, traffic-05): each is a full soft-body vehicle
-local TRAFFIC_AMOUNTS = {{0, 'Вимк', 'Off'}, {4, 'Мало', 'Light'}, {8, 'Середньо', 'Medium'},
-  {14, 'Багато', 'Heavy'}}
+-- Which cars drive: the game's light 'simple_traffic' (Type PropTraffic; the parked ones are
+-- PropParked), its full soft-body vehicles, or the Agent Traffic mod's EU cars (full too). The
+-- game's own group follows its setting trafficSimpleVehicles (true by default in 0.40), so both
+-- of ours are built here. The road AI and the navgraph are the same for all three. group(amount)
+-- is the vehicle group, nil when the kind is not installed (the game's own group then). Kinds and
+-- amounts share one table: world.lua is at LuaJIT's 200 chunk locals.
+local function stockGroup(amount, filters)
+  if not core_multiSpawn then extensions.load('core_multiSpawn') end
+  local utils = gameplay_traffic_trafficUtils
+  if not (core_multiSpawn and utils and utils.getBaseGroupParams) then return end
+  local ok, group = pcall(function()
+    local params = utils.getBaseGroupParams()
+    params.allConfigs = true
+    if filters.Type.proptraffic then params.minPop, params.maxYear = 0, nil end
+    for k, v in pairs(filters) do params.filters[k] = v end
+    return core_multiSpawn.createGroup(amount, params)
+  end)
+  if ok and type(group) == 'table' and #group > 0 then return group end
+end
+local TRAFFIC_KINDS = {
+  {'simple', 'Прості', 'Simple', source = 'simple', group = function(amount)
+    return stockGroup(amount, {Type = {proptraffic = 1}})
+  end},
+  {'full', 'Повні', 'Full', source = 'full', group = function(amount)
+    return stockGroup(amount, {Type = {car = 1, truck = 0.6}, ['Config Type'] = {Police = 0, other = 1}})
+  end},
+  {'agent', 'Agent Traffic', 'Agent Traffic', source = 'Agent Traffic EU', group = function(amount)
+    local file = '/vehicleGroups/agentTraffic/agent_traffic_eu.vehGroup.json'
+    if not FS:fileExists(file) then return end
+    local ok, g = pcall(jsonReadFile, file)
+    if not (ok and g and g.data and #g.data > 0) then return end
+    local group = {}
+    for k = 1, amount do group[k] = deepcopy(g.data[math.random(#g.data)]) end
+    return group
+  end},
+  -- parked in Kyiv each simple car is ~1.5 ms of the frame (16: 34 ms, 32: 62, 48: 95; traffic-07):
+  -- real cars stay the near layer, a crowd needs cars without physics (docs/NATIVE_MODS.md)
+  amounts = {{0, 'Вимк', 'Off'}, {4, '4', '4'}, {8, '8', '8'}, {16, '16', '16'}, {24, '24', '24'}}}
 
 local function navRead()
   local job = table.remove(S.navPending, 1)
@@ -1217,10 +1250,11 @@ local function navStep()
   if (foreign or moved or S.navDirty) and S.now - (S.navAt or -10) >= 2 then navBuild() end
 end
 
-local function setTraffic(amount)
+local function setTraffic(amount, kind)
   if not gameplay_traffic then extensions.load('gameplay_traffic') end
   if not gameplay_traffic then S.lastError = L('gameplay_traffic недоступний', 'gameplay_traffic is not available'); return end
   S.trafficAmount = amount
+  S.trafficKind = kind or S.trafficKind or 'simple'
   if amount == 0 then
     S.trafficWanted = nil
     gameplay_traffic.deleteVehicles()
@@ -1233,33 +1267,45 @@ local function setTraffic(amount)
     return
   end
   local options = {}
-  if FS:fileExists(AGENT_GROUP) then
-    local ok, g = pcall(jsonReadFile, AGENT_GROUP)
-    if ok and g and g.data and #g.data > 0 then
-      local group = {}
-      for k = 1, amount do group[k] = deepcopy(g.data[math.random(#g.data)]) end
-      options.vehGroup = group
-      S.trafficSource = 'Agent Traffic EU'
-    end
+  for _, k in ipairs(TRAFFIC_KINDS) do
+    if k[1] == S.trafficKind then options.vehGroup = k.group(amount); S.trafficSource = k.source end
   end
+  -- full, or the chosen kind is not installed: the game's own group
   if not options.vehGroup then S.trafficSource = 'game cars' end
   result.trafficSource = S.trafficSource
+  result.trafficKind = S.trafficKind
   gameplay_traffic.setupTraffic(amount, options)
 end
 
 local function drawTraffic()
   local amount = trafficRunning() and (S.trafficAmount or -1) or 0
+  local kind = S.trafficKind or 'simple'
   im.Text(L('Трафік:', 'Traffic:'))
   local spacing = im.GetStyle().ItemSpacing.x
-  local width = math.floor((im.GetContentRegionAvailWidth() - 3 * spacing) / 4)
-  for k, a in ipairs(TRAFFIC_AMOUNTS) do
+  local width = math.floor((im.GetContentRegionAvailWidth() - (#TRAFFIC_KINDS - 1) * spacing) / #TRAFFIC_KINDS)
+  for k, a in ipairs(TRAFFIC_KINDS) do
+    if k > 1 then im.SameLine() end
+    local active = kind == a[1]
+    if active then
+      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
+      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
+    end
+    -- a new kind respawns the running traffic with it
+    if im.Button(L(a[2], a[3]) .. '##trafficKind_' .. a[1], im.ImVec2(width, 0)) and not active then
+      S.trafficKind = a[1]
+      if amount > 0 then setTraffic(amount, a[1]) end
+    end
+    if active then im.PopStyleColor(2) end
+  end
+  width = math.floor((im.GetContentRegionAvailWidth() - (#TRAFFIC_KINDS.amounts - 1) * spacing) / #TRAFFIC_KINDS.amounts)
+  for k, a in ipairs(TRAFFIC_KINDS.amounts) do
     if k > 1 then im.SameLine() end
     local active = amount == a[1]
     if active then
       im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
       im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
     end
-    if im.Button(L(a[2], a[3]) .. '##traffic_' .. a[1], im.ImVec2(width, 0)) and not active then setTraffic(a[1]) end
+    if im.Button(L(a[2], a[3]) .. '##traffic_' .. a[1], im.ImVec2(width, 0)) and not active then setTraffic(a[1], kind) end
     if active then im.PopStyleColor(2) end
   end
   im.Text(L('Припарковані машини:', 'Parked cars:'))
@@ -2984,7 +3030,7 @@ local function drawStats(st, p, v)
   if trafficRunning() and gameplay_traffic.getTrafficAmount then
     local nav = S.navStats or {}
     im.Text(string.format(L('Трафік (%s): авто %d, граф %d вузлів, збірка %.0f мс',
-      'Traffic (%s): cars %d, graph %d nodes, build %.0f ms'), S.trafficSource == 'game cars' and L('машини гри', 'game cars') or S.trafficSource or L('гра', 'game'),
+      'Traffic (%s): cars %d, graph %d nodes, build %.0f ms'), S.trafficSource == 'game cars' and L('машини гри', 'game cars') or S.trafficSource == 'simple' and L('прості', 'simple') or S.trafficSource == 'full' and L('повні', 'full') or S.trafficSource or L('гра', 'game'),
       gameplay_traffic.getTrafficAmount(), nav.nodes or 0, nav.ms or 0))
   end
   if st and not NATIVE then
@@ -3922,7 +3968,7 @@ local function runTest()
         info:postApply()
       end)
     end
-    if test.traffic then setTraffic(test.traffic) end
+    if test.traffic then setTraffic(test.traffic, test.trafficKind) end
     if test.recordDrive then
       -- the drive itself is the clip: no game HUD, the driver records until 'stop'
       pcall(function() extensions.ui_visibility.setCef(false) end)

@@ -1,5 +1,15 @@
 # EarthNG native mod migration
 
+## 2026-11-04: traffic kinds and the ceiling of physics cars
+
+- The user wants hundreds of cars, enough for real jams. Step one measured the game's own cars. The
+  widget picks simple (`simple_traffic`, PropTraffic), full (soft-body, no police) or Agent Traffic;
+  `world.lua` builds the group itself, because the game's own one follows `trafficSimpleVehicles`
+  (true by default in 0.40). Before, an installed Agent Traffic always won with its full cars.
+- Parked in Kyiv: 0 cars 13-16 ms, 8 simple 23, 16 simple 35, 32 simple 62, 48 simple 95, 64 simple
+  127; 16 full 65. A simple car is ~1.5 ms of the frame, linear. Buttons are 0/4/8/16/24 now; a crowd
+  needs cars without physics on our navgraph (docs/NATIVE_MODS.md). Planet only, no pack rebuild.
+
 ## 2026-11-02: after the 0.7.0 release, domes over Hagia Sophia's tombs
 
 - A still from the south of Hagia Sophia showed its tombs as flats with balconies, and a dome hanging in

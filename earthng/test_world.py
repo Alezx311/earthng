@@ -119,6 +119,8 @@ def main():
     p.add_argument('--picker-hold', type=float, default=4, help='--picker-only: seconds the picker stays open')
     p.add_argument('--replay', action='store_true', help='camera/pose replay at constant speed; not a physics test')
     p.add_argument('--traffic', type=int, help="after landing: the game's AI traffic, this many cars")
+    p.add_argument('--traffic-kind', choices=('simple', 'full', 'agent'), default='simple',
+                   help="--traffic cars: the game's simple_traffic, its full vehicles, or Agent Traffic's")
     p.add_argument('--rain', type=int, help="after landing: the game's own rain (core_environment numOfDrops)")
     p.add_argument('--mod', action='append', default=[], type=Path, help='another mod ZIP for the test profile (e.g. Agent Traffic)')
     p.add_argument('--stream-cache', type=Path, help='copy an earlier e2r_stream folder in (warm tiles)')
@@ -229,6 +231,7 @@ def main():
         test['recordDrive'] = True
     if a.traffic:
         test['traffic'] = a.traffic
+        test['trafficKind'] = a.traffic_kind
     if a.rain:
         test['rain'] = a.rain
     if a.manual:
