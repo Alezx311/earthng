@@ -16,6 +16,7 @@ M.SIZE, M.ENTER_R, M.LEAVE_R = 8, 90, 130
 local CLEAR_R = 12        -- m from the player's car (and between real cars) a swap needs
 local EVERY = .25         -- s between hand-off checks
 local SPAWN_EVERY = .5    -- s between two pool spawns
+local SWAPS = 2           -- flow cars made real a check: a woken car's first physics frames cost (flow-10)
 
 function M.new(opts)
   opts = opts or {}
@@ -54,7 +55,7 @@ function M.step(H, flow, F, fx, fy, now, api)
     local e = table.remove(H.pool, k)
     if e.active and api.alive(e.id) then
       local x, y, vx, vy, hx, hy = api.pose(e.id)
-      if flow.put(F, x, y, hx, hy, math.sqrt(vx * vx + vy * vy), e.paint) then
+      if flow.put(F, x, y, hx, hy, math.sqrt(vx * vx + vy * vy), e.paint, e.body) then
         H.stats.demoted = H.stats.demoted + 1
       else
         H.stats.dropped = H.stats.dropped + 1
@@ -83,7 +84,7 @@ function M.step(H, flow, F, fx, fy, now, api)
     elseif e.active then
       local x, y, vx, vy, hx, hy = api.pose(e.id)
       if (x - fx) ^ 2 + (y - fy) ^ 2 > M.LEAVE_R * M.LEAVE_R then
-        local car = flow.put(F, x, y, hx, hy, math.sqrt(vx * vx + vy * vy), e.paint)
+        local car = flow.put(F, x, y, hx, hy, math.sqrt(vx * vx + vy * vy), e.paint, e.body)
         if car then H.stats.demoted = H.stats.demoted + 1 else H.stats.dropped = H.stats.dropped + 1 end
         api.deactivate(e.id)
         e.active = false
@@ -101,15 +102,17 @@ function M.step(H, flow, F, fx, fy, now, api)
   end
   -- flow cars that came near become real ones while the pool has cars
   if not free(H) then return end
+  local swaps = 0
   for _, c in ipairs(flow.near(F, fx, fy, M.ENTER_R)) do
     local e = free(H, c.car.paint)
-    if not e then break end
+    if not e or swaps >= SWAPS then break end
     local clear = c.d > CLEAR_R
     for _, a in ipairs(active) do
       if clear and (a[1] - c.x) ^ 2 + (a[2] - c.y) ^ 2 < CLEAR_R * CLEAR_R then clear = false end
     end
     if clear then
       local v = c.car.v
+      e.body = c.car.body   -- the flow car it comes back as
       flow.take(F, c.car)
       api.activate(e.id, c.x, c.y, c.z, c.yaw, v)
       e.active, e.held = true, false
@@ -119,6 +122,7 @@ function M.step(H, flow, F, fx, fy, now, api)
       end
       active[#active + 1] = {c.x, c.y}
       H.stats.promoted = H.stats.promoted + 1
+      swaps = swaps + 1
     end
   end
 end

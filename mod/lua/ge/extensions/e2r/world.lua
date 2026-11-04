@@ -1298,9 +1298,12 @@ function M.flowSet(n)
   local fs, hs = M.flowSim, M.handoffSim
   if n > 0 and not S.flow then
     local F = fs.new{leftHand = fs.leftHand(S.stream and S.stream.country), seed = math.floor(S.now * 1000) % 100000 + 1,
-      paints = fs.SHARE}
+      paints = fs.SHARE, bodies = fs.BODY_SHARE}
     local shapes = {}
-    for k, paint in ipairs(fs.PAINTS) do shapes[k] = '/levels/e2r_world/art/flow/car_' .. paint .. '.dae' end
+    for b, body in ipairs(fs.BODIES) do
+      shapes[b] = {}
+      for k, paint in ipairs(fs.PAINTS) do shapes[b][k] = '/levels/e2r_world/art/flow/car_' .. body .. '_' .. paint .. '.dae' end
+    end
     -- the game's simple cars, picked once (a group scans every config)
     local t, group, k = hptimer(), TRAFFIC_KINDS[1].group(hs.SIZE), 0
     local api = hs.gameApi(fs.PAINT_RGB, function()
@@ -1388,6 +1391,18 @@ function M.flowStep()
   r.real, r.pool, r.handoff, r.handoffMs = M.handoffSim.activeCount(fl.H), #fl.H.pool, fl.H.stats, fl.api.ms
   r.handoffSpawns = fl.api.spawns
   r.crossings, r.lights, r.atRed = fl.F.crossings or 0, fl.F.lights and #fl.F.lights or 0, fl.F.atRed or 0
+  -- once a second the shapes as drawn against their lanes (flow.poseCheck)
+  if test and S.now - (fl.poseAt or -1) >= 1 then
+    fl.poseAt = S.now
+    local ok, yawErr, noseErr, n = pcall(fs.poseCheck, fl.F, fl.V, 40)
+    if ok and n > 0 then
+      r.poseErr = r.poseErr or {yaw = 0, nose = 0, cars = 0}
+      r.poseErr.yaw, r.poseErr.nose = math.max(r.poseErr.yaw, yawErr), math.max(r.poseErr.nose, noseErr)
+      r.poseErr.cars = r.poseErr.cars + n
+    elseif not ok then
+      r.poseErr = {error = tostring(yawErr)}
+    end
+  end
 end
 
 local function drawTraffic()

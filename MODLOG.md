@@ -1,5 +1,19 @@
 # EarthNG native mod migration
 
+## 2026-11-04: flow cars point along their lanes, four bodies
+
+- The user saw flow cars slide sideways. BeamNG's quaternions turn the other way round
+  (mathlib.lua setRotate is v - w t + q x t), so a car on a diagonal street stood at -yaw.
+  `flow.quat` is the conjugate now. The game test reads each shape's +x back from the scene
+  (`result.flow.poseErr`): 0.00001 degrees over 2104 cars.
+- `flow_art.py`: sedan, hatchback, crossover and minibus, 8 paints each, ~470 triangles. Lofted
+  lower body with rounded corners and dark sills, glass with a painted pillar, bumpers, grille,
+  plates, lamps, mirrors, rimmed wheels proud of dark arches, smoothed normals. The 32 shapes are
+  warmed at switch-on: the first fill was a 261 ms step, now 7.6 ms.
+- Only a car faster than 3 m/s runs a yellow. A car creeping to the line crossed into the other
+  road's green. At most two flow cars become real a check, because eight woken at once made a
+  120 ms frame.
+
 ## 2026-11-04: traffic lights in the flow, and how many real cars
 
 - The generator hands a tile's OSM `traffic_signals` points to the navgraph (`nav.signals`). The flow

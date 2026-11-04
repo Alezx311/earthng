@@ -41,6 +41,9 @@ M.LEN = LEN
 -- the shapes' paints (earthng/flow_art.py PAINTS) and their shares among the cars
 M.PAINTS = {'white', 'black', 'silver', 'grey', 'blue', 'red', 'beige', 'green'}
 M.SHARE = {24, 20, 18, 14, 8, 7, 5, 4}
+-- the shapes' bodies (flow_art.py BODIES) and their shares
+M.BODIES = {'sedan', 'hatch', 'suv', 'van'}
+M.BODY_SHARE = {40, 30, 22, 8}
 -- their sRGB, for the real cars that take a flow car's place (handoff.lua)
 M.PAINT_RGB = {{.86, .86, .84}, {.05, .05, .06}, {.62, .63, .65}, {.33, .34, .36}, {.10, .17, .35}, {.55, .07, .06},
   {.70, .64, .52}, {.12, .24, .16}}
@@ -77,7 +80,7 @@ end
 function M.new(opts)
   opts = opts or {}
   return {links = {}, nodes = {}, segs = {}, cars = {}, nextId = 1, now = 0, target = 0, version = 0,
-    leftHand = opts.leftHand, random = hashRandom(opts.seed), paints = opts.paints or {1},
+    leftHand = opts.leftHand, random = hashRandom(opts.seed), paints = opts.paints or {1}, bodies = opts.bodies or {1},
     obstacles = {}, grid = {}, gridCell = 30, stats = {spawned = 0, removed = 0, gaveUp = 0}}
 end
 
@@ -249,7 +252,9 @@ local function mustStop(F, car)
       local c = M.colour(light.c.offset, light.axis, F.now)
       if c == 'red' then return true end
       if c == 'yellow' then
-        if link.len - car.s - STOP_GAP < car.v * car.v / (2 * BRAKE) then car.granted = true; return false end
+        -- only a car at speed runs a yellow: one creeping up to the line would crawl across into
+        -- the other road's green
+        if car.v > 3 and link.len - car.s - STOP_GAP < car.v * car.v / (2 * BRAKE) then car.granted = true; return false end
         return true
       end
     end
@@ -466,11 +471,12 @@ local function insertCar(list, car)
   table.insert(list, k, car)
 end
 
-local function paintOf(F)
+-- an index into weights, picked by them
+local function pick(F, weights)
   local total = 0
-  for _, w in ipairs(F.paints) do total = total + w end
+  for _, w in ipairs(weights) do total = total + w end
   local r = F.random() * total
-  for k, w in ipairs(F.paints) do
+  for k, w in ipairs(weights) do
     r = r - w
     if r <= 0 then return k end
   end
@@ -479,7 +485,7 @@ end
 
 -- a new car on link at s (nil: a free place picked at random); returns it or nil when another car
 -- is within room m (default the length, the jam gap and 3 m)
-function M.spawn(F, link, s, lane, v, paint, room)
+function M.spawn(F, link, s, lane, v, paint, room, body)
   lane = lane or F.random(1, link.lanes)
   local list = link.cars[lane]
   if not s then
@@ -490,7 +496,7 @@ function M.spawn(F, link, s, lane, v, paint, room)
     if math.abs(other.s - s) < room then return end
   end
   local car = {id = F.nextId, link = link, lane = lane, s = s, v = v or link.speed * .6,
-    want = .85 + F.random() * .3, paint = paint or paintOf(F), wait = 0}
+    want = .85 + F.random() * .3, paint = paint or pick(F, F.paints), body = body or pick(F, F.bodies), wait = 0}
   F.nextId = F.nextId + 1
   car.next = pickNext(F, link)
   car.nextLane = car.next and math.min(car.next.lanes, F.random(1, car.next.lanes))
@@ -597,14 +603,14 @@ end
 -- a real car comes back: onto the lane under (x, y) along its heading (hx, hy), at speed v, with
 -- paint. Returns the flow car, or nil when no lane is there or it has no room (it is dropped then;
 -- the fill puts another one out of sight).
-function M.put(F, x, y, hx, hy, v, paint)
+function M.put(F, x, y, hx, hy, v, paint, body)
   F.promoted = math.max(0, (F.promoted or 0) - 1)
   local best
   locate(F, x, y, hx, hy, function(link, lane, s, along, miss)
     if along > .7 and (not best or miss < best.miss) then best = {link = link, lane = lane, s = s, miss = miss} end
   end)
   if not best then F.stats.dropped = (F.stats.dropped or 0) + 1; return end
-  local car = M.spawn(F, best.link, math.min(best.s, best.link.len - .1), best.lane, v, paint, LEN)
+  local car = M.spawn(F, best.link, math.min(best.s, best.link.len - .1), best.lane, v, paint, LEN, body)
   if not car then F.stats.dropped = (F.stats.dropped or 0) + 1 end
   return car
 end
@@ -888,17 +894,47 @@ end
 -- shapes: list of shape paths by paint. Cars within NEAR_R move every frame, the rest every
 -- FAR_EVERY frames (a car at 500 m moves a pixel a frame).
 local NEAR_R, FAR_EVERY = 250, 3
+-- The rotation of a car shape (forward +x) heading yaw about z, its nose pitch up, as setPosRot
+-- takes it. BeamNG's quaternions turn the other way round from the textbook (mathlib.lua
+-- LuaVec3:setRotate is v - w t + q x t), so this is the conjugate of Rz(yaw) Ry(-pitch). The
+-- textbook one put a car on a diagonal street at -yaw: across its lane, sliding sideways.
+function M.quat(yaw, pitch)
+  local cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
+  local ca, sa = math.cos(-(pitch or 0) / 2), math.sin(-(pitch or 0) / 2)
+  return sy * sa, -cy * sa, -sy * ca, cy * ca
+end
+
 function M.view(F, shapes, group)
-  local V = {objs = {}, frame = 0, shapes = shapes}
+  local V = {objs = {}, frame = 0, shapes = shapes, warm = {}}
+  -- one hidden copy of every shape while the flow runs: the first car of a shape no longer
+  -- loads it in a driving frame (32 shapes in the first fill were a 261 ms step, flow-08)
+  for _, byPaint in ipairs(shapes) do
+    for _, path in ipairs(byPaint) do
+      local obj = createObject('TSStatic')
+      obj:setField('shapeName', 0, path)
+      obj:setField('collisionType', 0, 'None')
+      obj:setField('decalType', 0, 'None')
+      obj.canSave = false
+      obj:setPosRot(0, 0, -5000, 0, 0, 0, 1)
+      obj:registerObject('')
+      obj:setHidden(true)
+      if group then group:addObject(obj) end
+      V.warm[#V.warm + 1] = obj
+    end
+  end
   F.onSpawn = function(car)
     local obj = createObject('TSStatic')
-    obj:setField('shapeName', 0, shapes[car.paint] or shapes[1])
+    -- shapes[body][paint]
+    local byPaint = shapes[car.body or 1] or shapes[1]
+    obj:setField('shapeName', 0, byPaint[car.paint] or byPaint[1])
     obj:setField('collisionType', 0, 'None')
     obj:setField('decalType', 0, 'None')
     obj.useInstanceRenderData = true
     obj.canSave = false
-    local x, y, z, yaw = M.pose(F, car.link, car.s, car.lane)
-    obj:setPosRot(x, y, z, 0, 0, math.sin(yaw / 2), math.cos(yaw / 2))
+    local x, y, z, yaw, pitch = M.pose(F, car.link, car.s, car.lane)
+    local qx, qy, qz, qw = M.quat(yaw, pitch)
+    obj:setPosRot(x, y, z, qx, qy, qz, qw)
+    car.drawnYaw, car.drawnPitch = yaw, pitch
     obj:registerObject('')
     if group then group:addObject(obj) end
     V.objs[car.id] = obj
@@ -921,14 +957,36 @@ function M.draw(F, V, fx, fy)
       car.hint = hint
       local near = not fx or (x - fx) ^ 2 + (y - fy) ^ 2 < NEAR_R * NEAR_R
       if near or (id + V.frame) % FAR_EVERY == 0 then
-        -- yaw about z, then pitch about the car's own y (nose up is a negative turn about y)
-        local cy, sy, cp, sp = math.cos(yaw / 2), math.sin(yaw / 2), math.cos(-pitch / 2), math.sin(-pitch / 2)
-        obj:setPosRot(x, y, z, -sy * sp, cy * sp, sy * cp, cy * cp)
+        local qx, qy, qz, qw = M.quat(yaw, pitch)
+        obj:setPosRot(x, y, z, qx, qy, qz, qw)
+        car.drawnYaw, car.drawnPitch = yaw, pitch
         moved = moved + 1
       end
     end
   end
   return moved
+end
+
+-- The game test's look at the shapes: for up to n cars, the angle (deg) between the shape's +x as
+-- the scene has it and the heading it was last drawn with (a far car is drawn every third frame,
+-- and may have turned a corner since), and the same for its nose up. The largest of each
+-- (result.flow.poseErr).
+function M.poseCheck(F, V, n)
+  local worst, nose, seen = 0, 0, 0
+  for id, car in pairs(F.cars) do
+    local obj = V.objs[id]
+    if obj and car.drawnYaw then
+      local yaw, pitch = car.drawnYaw, car.drawnPitch
+      local ax = obj:getTransform():getColumn(0)
+      local h = math.sqrt(ax.x * ax.x + ax.y * ax.y)
+      local d = math.abs(math.atan2(ax.y, ax.x) - yaw) % (2 * math.pi)
+      worst = math.max(worst, math.deg(math.min(d, 2 * math.pi - d)))
+      nose = math.max(nose, math.abs(math.deg(math.atan2(ax.z, h) - (pitch or 0))))
+      seen = seen + 1
+      if seen >= n then break end
+    end
+  end
+  return worst, nose, seen
 end
 
 return M

@@ -227,6 +227,30 @@ class FlowTests(unittest.TestCase):
         self.assertLess(ms, 2.0)
 
 
+    def test_a_shape_points_along_its_lane_as_the_game_turns_it(self):
+        lua = self.lua()
+        out = lua.execute('''
+          -- the game's rotation of a vector by a quaternion (lua/common/mathlib.lua LuaVec3:setRotate)
+          local function rotate(qx, qy, qz, qw, x, y, z)
+            local tx, ty, tz = 2 * (qy * z - qz * y), 2 * (qz * x - qx * z), 2 * (qx * y - qy * x)
+            return x - tx * qw + (qy * tz - qz * ty), y - ty * qw + (qz * tx - qx * tz), z - tz * qw + (qx * ty - qy * tx)
+          end
+          local worst = 0
+          for _, yaw in ipairs({0, .5, 1.2, 2.4, -.8, -2.9}) do
+            for _, pitch in ipairs({0, .08, -.12}) do
+              local qx, qy, qz, qw = flow.quat(yaw, pitch)
+              local x, y, z = rotate(qx, qy, qz, qw, 1, 0, 0)
+              local ex, ey, ez = math.cos(yaw) * math.cos(pitch), math.sin(yaw) * math.cos(pitch), math.sin(pitch)
+              worst = math.max(worst, math.abs(x - ex), math.abs(y - ey), math.abs(z - ez))
+              -- the roof stays up
+              local _, _, uz = rotate(qx, qy, qz, qw, 0, 0, 1)
+              if uz < .9 then worst = 9 end
+            end
+          end
+          return worst
+        ''')
+        self.assertLess(out, 1e-9)
+
     def test_paints_match_the_shapes_and_left_hand_countries(self):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -234,6 +258,8 @@ class FlowTests(unittest.TestCase):
         lua = self.lua()
         self.assertEqual(list(lua.eval('flow.PAINTS').values()), [name for name, _ in flow_art.PAINTS])
         self.assertEqual(list(lua.eval('flow.SHARE').values()), flow_art.PAINT_SHARE)
+        self.assertEqual(list(lua.eval('flow.BODIES').values()), [name for name, _ in flow_art.BODIES])
+        self.assertEqual(list(lua.eval('flow.BODY_SHARE').values()), flow_art.BODY_SHARE)
         left = lua.eval('flow.leftHand')
         for country in ('uk-london-south-east', 'uk-northern-ireland', 'zanzibar'):
             self.assertTrue(left(country), country)
@@ -283,7 +309,18 @@ class FlowTests(unittest.TestCase):
             if t > 60 then minCount = math.min(minCount, F.count) end
           end
           local pool, near = #H.pool, 0
-          for _, c in ipairs(flow.near(F, 1000, 0, handoff.ENTER_R - 5)) do if c.d > 12 then near = near + 1 end end
+          -- a flow car left in the zone away from the player: only by a real car, or with the pool all out
+          local full = handoff.activeCount(H) == #H.pool
+          for _, c in ipairs(flow.near(F, 1000, 0, handoff.ENTER_R - 5)) do
+            local byReal = false
+            for _, e in ipairs(H.pool) do
+              if e.active then
+                local x, y = api.pose(e.id)
+                if (x - c.x) ^ 2 + (y - c.y) ^ 2 < 144 then byReal = true end
+              end
+            end
+            if c.d > 12 and not byReal and not full then near = near + 1 end
+          end
           local promoted = H.stats.promoted
           -- the player leaves: every real car goes back into the flow
           for t = 1, 60 do
@@ -297,7 +334,7 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(pool, 8)
         self.assertEqual(max_real, 8)          # never more than the pool
         self.assertGreaterEqual(promoted, 8)
-        self.assertLessEqual(near, 2)          # only flow cars by a real car (CLEAR_R) stay in the zone
+        self.assertEqual(near, 0)              # only flow cars by a real car (CLEAR_R) stay in the zone
         self.assertEqual(min_count, 60)        # real cars count towards the target
         self.assertEqual(real_after, 0)
         self.assertEqual(promoted_after, 0)
