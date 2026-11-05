@@ -21,6 +21,9 @@
 
 `earthng/native_tool.py` знаходить exe і dll: спершу в `bin/` (реліз), потім у `rust/target/release`
 (checkout, `cargo build --release` у `rust/`).
+`prepare_release.py` кладе їх у `bin/` ZIP-а MapBuilder: збирає `cargo build --release --locked` з чистого
+`rust/` тієї ж ревізії й додає `bin/THIRD_PARTY_RUST.txt` (ліцензії крейтів). `--no-native` залишає
+реліз лише на Python.
 
 ## Що вже нативне
 

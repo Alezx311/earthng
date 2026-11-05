@@ -109,7 +109,55 @@ def builder_files(files):
     return {name: files[name] for name in sorted(selected)}
 
 
-def prepare(planet, countries, out, ref='HEAD', release_url=RELEASE_URL):
+NATIVE = ('earthng-mapbuilder.exe', 'earthng_native.dll')
+
+
+def _cargo():
+    found = shutil.which('cargo')
+    home = Path.home() / '.cargo' / 'bin' / 'cargo.exe'
+    return found or (str(home) if home.is_file() else None)
+
+
+def rust_notices(lock_text):
+    """Name, version and licence of every crate rust/Cargo.lock pulls from crates.io, from the
+    registry sources cargo unpacked when it built them."""
+    import tomllib
+    lock = tomllib.loads(lock_text)
+    registry = Path.home() / '.cargo' / 'registry' / 'src'
+    lines = ['Rust crates compiled into bin/earthng-mapbuilder.exe and bin/earthng_native.dll', '']
+    for package in sorted(lock.get('package', []), key=lambda p: (p['name'], p['version'])):
+        if 'source' not in package:
+            continue           # the workspace's own crates: MIT, LICENSE
+        licence = 'see crates.io'
+        for manifest in registry.glob(f"*/{package['name']}-{package['version']}/Cargo.toml"):
+            meta = tomllib.loads(manifest.read_text(encoding='utf-8')).get('package', {})
+            licence = meta.get('license') or (f"file {meta['license-file']}" if meta.get('license-file') else licence)
+            break
+        lines.append(f"{package['name']} {package['version']}: {licence} (https://crates.io/crates/{package['name']})")
+    return ('\n'.join(lines) + '\n').encode('utf-8')
+
+
+def native_files(commit, source):
+    """bin/ of the Map Builder: the Rust tools (docs/MAPBUILDER_RS.md) built from the snapshot's own
+    rust/, or {} for a snapshot without it. The build runs in this checkout, so it must be that
+    commit with rust/ unchanged; Python falls back to its own steps where bin/ is absent."""
+    if 'rust/Cargo.lock' not in source:
+        return {}
+    head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+    dirty = subprocess.check_output(['git', 'status', '--porcelain', '--', 'rust'], cwd=ROOT, text=True).strip()
+    if head != commit or dirty:
+        raise ValueError('the native tools are built from this checkout: check out the release ref with rust/ '
+                         'unchanged, or pass --no-native')
+    cargo = _cargo()
+    if cargo is None:
+        raise ValueError('cargo not found (https://rustup.rs), or pass --no-native')
+    subprocess.run([cargo, 'build', '--release', '--locked'], cwd=ROOT / 'rust', check=True)
+    files = {f'bin/{name}': (ROOT / 'rust' / 'target' / 'release' / name).read_bytes() for name in NATIVE}
+    files['bin/THIRD_PARTY_RUST.txt'] = rust_notices(source['rust/Cargo.lock'].decode('utf-8'))
+    return files
+
+
+def prepare(planet, countries, out, ref='HEAD', release_url=RELEASE_URL, native=True):
     out = Path(out)
     if out.exists() and any(out.iterdir()):
         raise ValueError('use an empty output directory so old assets cannot enter the release')
@@ -136,9 +184,14 @@ def prepare(planet, countries, out, ref='HEAD', release_url=RELEASE_URL):
             packs.append({'id': manifest['id'], 'title': manifest['title'],
                           'url': release_url.rstrip('/') + '/' + Path(country).name})
     files = builder_files(source)
+    if native:
+        files.update(native_files(commit, source))
     files['README.txt'] = BUILDER_README.encode('utf-8')
     files['earthng/ready_packs.json'] = json.dumps({'packs': packs}, indent=2).encode('utf-8')
-    files['BUILD_INFO.json'] = json.dumps({'sourceCommit': commit}, indent=2).encode('utf-8')
+    info = {'sourceCommit': commit}
+    if any(name.startswith('bin/') for name in files):
+        info['native'] = {name: hashlib.sha256(files[f'bin/{name}']).hexdigest() for name in NATIVE}
+    files['BUILD_INFO.json'] = json.dumps(info, indent=2).encode('utf-8')
     out.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out / 'EarthNG-MapBuilder.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
         for name, data in sorted(files.items()):
@@ -159,8 +212,9 @@ def main():
     parser.add_argument('--country', type=Path, action='append', required=True)
     parser.add_argument('--ref', default='HEAD', help='committed source snapshot for Map Builder')
     parser.add_argument('--release-url', default=RELEASE_URL, help='download URL prefix for ready packs')
+    parser.add_argument('--no-native', action='store_true', help='leave out bin/ (the Rust tools): every step in Python')
     args = parser.parse_args()
-    prepare(args.planet, args.country, args.out, args.ref, args.release_url)
+    prepare(args.planet, args.country, args.out, args.ref, args.release_url, native=not args.no_native)
 
 
 if __name__ == '__main__':

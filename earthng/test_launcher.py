@@ -147,6 +147,20 @@ class BundleTests(unittest.TestCase):
                     if script and f'earthng/{script}.py' in files:
                         self.assertIn(f'earthng/{script}.py', selected, f'{name} starts {node.value}')
 
+    def test_release_bundle_carries_the_native_tools_built_from_its_commit(self):
+        from unittest.mock import patch
+        names = subprocess.check_output(['git', 'ls-files'], cwd=ROOT, text=True).splitlines()
+        files = {n: (ROOT / n).read_bytes() for n in names if (ROOT / n).is_file()}
+        self.assertIn('earthng/native_tool.py', prepare_release.builder_files(files))
+        self.assertEqual(prepare_release.native_files('abc', {'earthng/x.py': b''}), {})   # a ref before rust/
+        head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+        with self.assertRaisesRegex(ValueError, 'check out the release ref'):
+            prepare_release.native_files('0' * 40, {'rust/Cargo.lock': b''})
+        outputs = {('git', 'rev-parse', 'HEAD'): head + '\n', ('git', 'status', '--porcelain', '--', 'rust'): ' M rust/x\n'}
+        with patch.object(prepare_release.subprocess, 'check_output', lambda cmd, **kw: outputs[tuple(cmd)]), \
+                self.assertRaisesRegex(ValueError, 'unchanged'):
+            prepare_release.native_files(head, {'rust/Cargo.lock': b''})
+
 
 if __name__ == '__main__':
     unittest.main()
