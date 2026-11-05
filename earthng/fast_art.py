@@ -512,6 +512,45 @@ def ensure(user):
     return r
 
 
+def repair_pixel_cache(shared):
+    """Add pixel maps introduced since a shared cache was first built."""
+    base = '/e2r_stream/fast-art/' + VERSION
+    prefix = base + '/pixel/'
+    fields = pack_fields('pixel', base)
+    missing = set()
+    for material in fields.values():
+        for value in material.values():
+            if isinstance(value, str) and value.startswith(prefix):
+                name = Path(value[len(prefix):]).with_suffix('.dds').name
+                if not (shared / 'pixel' / name).is_file():
+                    missing.add(name)
+    if missing:
+        fast_pixel.build(shared, only=missing)
+        to_dds(shared / 'pixel')
+
+
+def missing_art(shared):
+    """Check every local map in the generated manifest, including warmed materials."""
+    prefix = '/e2r_stream/fast-art/' + VERSION + '/'
+    manifest = json.loads((shared / 'packs.json').read_text(encoding='utf8'))
+    missing = set()
+
+    def visit(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+        elif isinstance(value, str) and value.startswith(prefix):
+            path = Path(value[len(prefix):]).with_suffix('.dds')
+            if not (shared / path).is_file():
+                missing.add(path.as_posix())
+
+    visit(manifest)
+    return missing
+
+
 def prebuild(distributable=False):
     """The shared art build (data/art/<VERSION>), written when missing; returns its path."""
     import paths
@@ -550,7 +589,11 @@ def prebuild(distributable=False):
         if not stamp.exists() or stamp.read_text() != FACADE_ART_VERSION:
             facade_art(shared)
             to_dds(shared)
+        repair_pixel_cache(shared)
         write_manifest(shared)  # environment/fields are code, not a texture cache
+    missing = missing_art(shared)
+    if missing:
+        raise FileNotFoundError('Shared EarthNG art is incomplete: ' + ', '.join(sorted(missing)))
     return shared
 
 

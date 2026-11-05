@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -316,6 +317,45 @@ class DrawnArtTests(unittest.TestCase):
 
 
 class BuildingStyleTests(unittest.TestCase):
+    def test_pixel_cache_repairs_only_missing_referenced_maps(self):
+        base = '/e2r_stream/fast-art/' + art.VERSION
+        fields = {'old': {'baseColorMap': base + '/pixel/road.color.dds'},
+                  'new': {'baseColorMap': base + '/pixel/track.color.dds'},
+                  'shared': {'opacityMap': base + '/real/track_o.data.dds'}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'pixel').mkdir()
+            old = root / 'pixel' / 'road.color.dds'
+            old.write_bytes(b'old pixel art')
+
+            def fake_dds(folder):
+                for png in folder.glob('*.png'):
+                    png.with_suffix('.dds').write_bytes(b'new pixel art')
+                    png.unlink()
+
+            with patch.object(art, 'pack_fields', return_value=fields), \
+                    patch.object(art, 'to_dds', side_effect=fake_dds) as convert, \
+                    patch.object(pixel, 'surface', return_value=Image.new('RGB', (2, 2))):
+                art.repair_pixel_cache(root)
+                self.assertEqual((root / 'pixel' / 'track.color.dds').read_bytes(), b'new pixel art')
+                self.assertEqual(old.read_bytes(), b'old pixel art')
+                art.repair_pixel_cache(root)
+                self.assertEqual(convert.call_count, 1)
+
+    def test_manifest_check_finds_missing_maps_in_any_pack(self):
+        import json
+        base = '/e2r_stream/fast-art/' + art.VERSION
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'real').mkdir()
+            (root / 'real' / 'road.color.dds').write_bytes(b'present')
+            manifest = {'fields': {'real': {'road': {'baseColorMap': base + '/real/road.color.dds'}},
+                                   'pixel': {'rail': {'baseColorMap': base + '/pixel/rail.color.dds'}}},
+                        'extra': [{'opacityMap': base + '/real/missing.data.dds'},
+                                  {'baseColorMap': '/assets/game-owned.dds'}]}
+            (root / 'packs.json').write_text(json.dumps(manifest), encoding='utf8')
+            self.assertEqual(art.missing_art(root), {'pixel/rail.color.dds', 'real/missing.data.dds'})
+
     def test_lua_post_soviet_countries_match_the_look_block(self):
         import re
         import looks

@@ -564,7 +564,7 @@ local function foreignCell(f, key, i, j, keep, memo, terrainOnly)
         moveFeatures(cell, f, active.pause)
         memo[base] = cell
       else
-        cell = cellformat.terrain(loaded.data, range[1], range[2], rect)
+        cell = cellformat.terrain(loaded.data, range[1], range[2], rect, active.pause)
         memo[base .. ':t'] = cell
       end
     end
@@ -1116,7 +1116,7 @@ local function loadTerrain(key, i, j, memo)
   local loaded = loadBlock(blockKey, block)
   local range = loaded.slots[i % b + (j % b) * b]
   if not range then error('source block lacks cell: ' .. key) end
-  local cell = cellformat.terrain(loaded.data, range[1], range[2], {i * s, j * s, (i + 1) * s, (j + 1) * s})
+  local cell = cellformat.terrain(loaded.data, range[1], range[2], {i * s, j * s, (i + 1) * s, (j + 1) * s}, active.pause)
   active.lows[key] = active.lows[key] or cell.low
   return cell
 end
@@ -1671,7 +1671,11 @@ local function release(key, layer)
   -- Delivered: the engine holds the meshes, the Forest commit and the grass cells keep
   -- what they still need. These item tables were most of the Lua heap that the game's
   -- collector walks (the far ring's crowns alone were ~78k tables), so only the count stays.
-  data.itemCount = #(data.items or {})
+  local items = data.items or {}
+  data.itemCount = #items
+  -- The suspended generator's collector may still hold this same array. Replacing only
+  -- the manifest field leaves the delivered meshes alive until that coroutine resumes.
+  for i = #items, 1, -1 do items[i] = nil end
   data.items = {}
   if entry then
     entry[layer .. 'Delivered'] = true

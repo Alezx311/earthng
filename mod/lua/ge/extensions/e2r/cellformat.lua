@@ -234,7 +234,7 @@ end
 
 -- Only the elevation grid of a cell, for the distant vista ring: {terrain = .., roads = {}, ...}.
 -- The strings are skipped by length and nothing after the grid is read.
-function M.terrain(data, first, last, rect)
+function M.terrain(data, first, last, rect, pause)
   local pos = first
   local function u()
     local value, mul = 0, 1
@@ -255,6 +255,9 @@ function M.terrain(data, first, last, rect)
     h = h + (v % 2 == 0 and v / 2 or -(v + 1) / 2)
     heights[k] = h / 10
     if heights[k] < low then low = heights[k] end
+    -- Terrain-only cells can have the same 257×257 grid as full cells. Yield at the
+    -- same interval so one vista or foreign cell cannot monopolise a frame.
+    if pause and k % 8192 == 0 then pause() end
   end
   local cell = {terrain = {rect = rect, nx = nx, ny = ny, heights = heights}, low = low}
   for _, kind in ipairs(KINDS) do cell[kind] = {} end

@@ -442,6 +442,79 @@ class NativeTests(unittest.TestCase):
                 break
         self.assertIsNotNone(mod.manifest(key, 'road')['items'][1].meshes)
 
+    def test_release_while_real_generator_is_suspended_keeps_scene_and_grass(self):
+        lua, mod, cv = self.make(real_generator=True)
+        lat, lon = geographic(1750, 1750)
+        mod.land(cv(dict(seq=6, lat=lat, lon=lon)))
+        lua.globals().native = mod
+        run = lua.eval('''function(cells, release)
+          local function upvalue(f, key)
+            for i = 1, 200 do
+              local name, value = debug.getupvalue(f, i)
+              if not name then break end
+              if name == key then return value end
+            end
+          end
+          local function copy(value)
+            if type(value) ~= 'table' then return value end
+            local out = {}
+            for k, v in pairs(value) do out[k] = copy(v) end
+            return out
+          end
+          local active = upvalue(native.update, 'active')
+          local sceneCopy, roadCopy
+          local co = coroutine.create(function()
+            return stubGenerator.build(cells, 0, 0, {
+              tileSize=500, maxTrees=15, maxGrass=30, maxRocks=4,
+              roadReady=function(road) coroutine.yield('road', road) end,
+              sceneReady=function(scene) coroutine.yield('scene', scene) end,
+            })
+          end)
+          local ok, phase, road = coroutine.resume(co)
+          assert(ok and phase == 'road', tostring(phase))
+          roadCopy = copy(road)
+          assert(#road.items > 0)
+          local weak = setmetatable({}, {__mode='v'})
+          for _, item in ipairs(road.items) do
+            if item.kind == 'proc' and not item.decor then weak[1] = item; break end
+          end
+          assert(weak[1])
+          active.tiles['test'] = {road=road}
+          if release then
+            local oldItems = road.items
+            assert(native.release('test', 'road'))
+            assert(#oldItems == 0 and #road.items == 0)
+            collectgarbage('collect')
+            assert(weak[1] == nil, 'delivered road mesh remains held by a collector')
+          end
+          local ok2, nextPhase, scene = coroutine.resume(co)
+          assert(ok2 and nextPhase == 'scene', tostring(nextPhase))
+          sceneCopy = copy(scene)
+          active.tiles['test'].scene = scene
+          if release then assert(native.release('test', 'scene')) end
+          local ok3, finalRoad, finalScene, far, nav, grass = coroutine.resume(co)
+          assert(ok3, tostring(finalRoad))
+          assert(coroutine.status(co) == 'dead' and grass)
+          return roadCopy, sceneCopy, copy(grass)
+        end''')
+        cell = dict(roads=[dict(id='r', nodes=['a', 'b'], width=8,
+                                points=[[0, 250, 0], [500, 250, 0]],
+                                tags={'highway': 'residential', 'sidewalk': 'no'})],
+                    buildings=[dict(id='b', height=9, kind='building', tags={'building': 'yes'},
+                                    rings=[[[100, 100, 0], [120, 100, 0], [120, 120, 0], [100, 120, 0]]])],
+                    junctions=[], areas=[], lines=[], points=[],
+                    terrain=dict(rect=[0, 0, 500, 500], nx=2, ny=2, heights=[0] * 4))
+
+        def plain(value):
+            if hasattr(value, 'items'):
+                entries = dict(value.items())
+                return {key: plain(item) for key, item in entries.items()}
+            return value
+
+        before = run(cv([cell]), False)
+        after = run(cv([cell]), True)
+        self.assertEqual([plain(value) for value in before], [plain(value) for value in after])
+
     def test_a_near_tile_over_the_geometry_budget_waits_for_the_renderer(self):
         # A tile of central Kyiv alone is over the budget: evicted before the renderer took it, it
         # was built again at the next epoch and the city along the road never came up.
@@ -828,6 +901,35 @@ class NativeV2Tests(NativeTests.__base__):
         self.assertEqual(list(got.terrain.heights.values()), [1, 2.0, 3, -4, 5, 6.7])
         self.assertEqual(got.low, -4)
         self.assertEqual(len(got.roads), 0)
+
+    def test_terrain_only_decoder_yields_and_preserves_large_grid(self):
+        lua, _, _ = self.make()
+        heights = [((i * 17) % 101 - 50) / 10 for i in range(257 * 257)]
+        cell = dict(roads=[], junctions=[], buildings=[], areas=[], lines=[], points=[],
+                    terrain=dict(rect=[0, 0, 1000, 1000], nx=257, ny=257, heights=heights))
+        data, _ = binary.encode_block({0: binary.encode_cell(cell, (0, 0))})
+        first, last = binary.decode_block(data)[0]
+        check = lua.eval('''function(data, first, last)
+          local rect = {0, 0, 1000, 1000}
+          local expected = cellformat.terrain(data, first, last, rect)
+          local co = coroutine.create(function()
+            return cellformat.terrain(data, first, last, rect, function() coroutine.yield() end)
+          end)
+          local yields, got = 0, nil
+          repeat
+            local ok, result = coroutine.resume(co)
+            assert(ok, result)
+            if coroutine.status(co) == 'dead' then got = result else yields = yields + 1 end
+          until got
+          assert(got.low == expected.low)
+          assert(got.terrain.nx == 257 and got.terrain.ny == 257)
+          assert(#got.terrain.heights == #expected.terrain.heights)
+          for i = 1, #expected.terrain.heights do
+            assert(got.terrain.heights[i] == expected.terrain.heights[i])
+          end
+          return yields
+        end''')
+        self.assertEqual(check(data, first + 1, last), (257 * 257) // 8192)
 
     def test_vista_runs_on_from_a_summit_but_not_while_driving_or_on_the_plain(self):
         _, mod, cv = self.make(fixture(40))

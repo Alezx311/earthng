@@ -147,25 +147,29 @@ def pixel_source(kind):
     return source if source in SURFACES else 'ground'
 
 
-def build(root):
+def build(root, only=None):
+    """Build all pixel textures, or only the named DDS files missing from an older cache."""
     import car_art
     out = root / 'pixel'
     out.mkdir(parents=True, exist_ok=True)
     for kind in style.KINDS:
         if kind in style.SHEET_KINDS or kind.startswith('wall_') and fast_facade.like(kind[5:]) != kind[5:]:
             continue                                # fields() points them at an older kind's art
+        if only is not None and f'{kind}.color.dds' not in only:
+            continue
         if kind.startswith('wall_'):
             facade(kind[5:]).save(out / f'{kind}.color.png')
         else:
             surface(pixel_source(kind)).save(out / f'{kind}.color.png')
     # The decorative cars share an atlas: preserve its cells and glass/tyre indices.
-    cars = Image.new('RGB', (32 * car_art.CAR_ATLAS, 32), INK)
-    d = ImageDraw.Draw(cars)
-    for k in range(len(car_art.CAR_COLOURS)):
-        d.rectangle((32 * k, 0, 32 * k + 31, 31), fill=PALETTE[2 + k % 7])
-    k = len(car_art.CAR_COLOURS)
-    d.rectangle((32 * k, 0, 32 * k + 31, 31), fill=SLATE)
-    cars.save(out / 'car.color.png')
+    if only is None or 'car.color.dds' in only:
+        cars = Image.new('RGB', (32 * car_art.CAR_ATLAS, 32), INK)
+        d = ImageDraw.Draw(cars)
+        for k in range(len(car_art.CAR_COLOURS)):
+            d.rectangle((32 * k, 0, 32 * k + 31, 31), fill=PALETTE[2 + k % 7])
+        k = len(car_art.CAR_COLOURS)
+        d.rectangle((32 * k, 0, 32 * k + 31, 31), fill=SLATE)
+        cars.save(out / 'car.color.png')
 
 
 def fields(base):
