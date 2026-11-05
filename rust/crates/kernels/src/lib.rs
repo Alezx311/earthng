@@ -11,6 +11,8 @@ use std::slice;
 
 use rayon::prelude::*;
 
+pub mod terrain;
+
 const BLOCK: usize = 4096;
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
@@ -236,6 +238,112 @@ pub extern "C" fn earthng_threads(n: i64) -> i32 {
         Ok(()) => 0,
         Err(_) => 1,
     }
+}
+
+/// A DEM reader (terrain::Dem) whose last error message stays readable after a failed call.
+pub struct DemHandle {
+    dem: terrain::Dem,
+    error: String,
+}
+
+fn dem_result(h: &mut DemHandle, r: Result<(), terrain::DemError>) -> i32 {
+    match r {
+        Ok(()) => 0,
+        Err(e) => {
+            h.error = e.message();
+            e.code()
+        }
+    }
+}
+
+/// A Terrain over the DEM cache folder `cache` (UTF-8, `len` bytes) at `zoom` (12, or 13 over
+/// z12), in the frame `epsg` (a UTM zone) with origin (cx, cy); null for another CRS.
+///
+/// # Safety
+/// `cache` holds `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_dem_open(cache: *const u8, len: usize, zoom: i32, epsg: u32, cx: f64, cy: f64,
+                                          lift: f64) -> *mut DemHandle {
+    let Some(utm) = terrain::Dem::epsg(epsg) else { return std::ptr::null_mut() };
+    if zoom != 12 && zoom != 13 {
+        return std::ptr::null_mut();
+    }
+    let Ok(path) = std::str::from_utf8(unsafe { slice::from_raw_parts(cache, len) }) else {
+        return std::ptr::null_mut();
+    };
+    let frame = geo::tm::Frame { utm, origin: (cx, cy) };
+    let dem = terrain::Dem::new(path.into(), zoom as u32, frame, lift);
+    Box::into_raw(Box::new(DemHandle { dem, error: String::new() }))
+}
+
+/// # Safety
+/// `handle` comes from earthng_dem_open and is not used again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_dem_close(handle: *mut DemHandle) {
+    if !handle.is_null() {
+        drop(unsafe { Box::from_raw(handle) });
+    }
+}
+
+/// Copies the last error message into buf (at most cap bytes); returns its full length.
+///
+/// # Safety
+/// `buf` holds `cap` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_dem_error(handle: *mut DemHandle, buf: *mut u8, cap: usize) -> usize {
+    let h = unsafe { &*handle };
+    let bytes = h.error.as_bytes();
+    let n = bytes.len().min(cap);
+    unsafe { slice::from_raw_parts_mut(buf, n) }.copy_from_slice(&bytes[..n]);
+    bytes.len()
+}
+
+fn points<'a>(xy: *const f64, n: usize) -> &'a [[f64; 2]] {
+    if n == 0 { &[] } else { unsafe { slice::from_raw_parts(xy as *const [f64; 2], n) } }
+}
+
+fn values<'a>(out: *mut f64, n: usize) -> &'a mut [f64] {
+    if n == 0 { &mut [] } else { unsafe { slice::from_raw_parts_mut(out, n) } }
+}
+
+/// Terrain.sample of n points (x, y interleaved) into out. 0, or 1 no_dem, 2 non-finite, 3 image.
+///
+/// # Safety
+/// `xy` holds 2n values, `out` n.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_dem_sample(handle: *mut DemHandle, xy: *const f64, n: usize, smooth: i32,
+                                            out: *mut f64) -> i32 {
+    let h = unsafe { &mut *handle };
+    let r = h.dem.sample(points(xy, n), smooth != 0, values(out, n));
+    dem_result(h, r)
+}
+
+/// Despiked.sample of n points into out.
+///
+/// # Safety
+/// As earthng_dem_sample.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_dem_despiked(handle: *mut DemHandle, xy: *const f64, n: usize, spacing: f64,
+                                              spike: f64, out: *mut f64) -> i32 {
+    let h = unsafe { &mut *handle };
+    let r = h.dem.despiked(points(xy, n), spacing, spike, values(out, n));
+    dem_result(h, r)
+}
+
+/// Despiked.grid of the lattice ys x xs into out (ny * nx, row-major).
+///
+/// # Safety
+/// `xs` holds nx values, `ys` ny, `out` nx * ny.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_dem_grid(handle: *mut DemHandle, xs: *const f64, nx: usize, ys: *const f64, ny: usize,
+                                          spacing: f64, spike: f64, out: *mut f64) -> i32 {
+    let h = unsafe { &mut *handle };
+    if nx == 0 || ny == 0 {
+        return 0;
+    }
+    let (xs, ys) = unsafe { (slice::from_raw_parts(xs, nx), slice::from_raw_parts(ys, ny)) };
+    let r = h.dem.grid(xs, ys, spacing, spike, values(out, nx * ny));
+    dem_result(h, r)
 }
 
 #[cfg(test)]

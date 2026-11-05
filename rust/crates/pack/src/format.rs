@@ -445,3 +445,128 @@ mod tests {
         assert_eq!(slot(-1, -1), 63);
     }
 }
+
+/// A road as decode_roads reads it back from a cell.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedRoad {
+    pub id: String,
+    pub width: f64,
+    pub tags: Tags,
+    pub nodes: Vec<String>,
+    pub points: Vec<P3>,
+}
+
+struct Reader<'a> {
+    data: &'a [u8],
+    at: usize,
+    end: usize,
+}
+
+impl Reader<'_> {
+    fn u(&mut self) -> Result<u64> {
+        let (mut value, mut shift) = (0u64, 0u32);
+        loop {
+            if self.at >= self.end || shift > 56 {
+                return Err(FormatError("truncated or invalid source varint"));
+            }
+            let b = self.data[self.at];
+            self.at += 1;
+            value |= u64::from(b & 0x7f) << shift;
+            if b < 0x80 {
+                return Ok(value);
+            }
+            shift += 7;
+        }
+    }
+
+    fn s(&mut self) -> Result<i64> {
+        let v = self.u()?;
+        Ok(if v % 2 == 0 { (v >> 1) as i64 } else { -(((v + 1) >> 1) as i64) })
+    }
+
+    fn skip(&mut self, mut count: u64) -> Result<()> {
+        while count > 0 {
+            if self.at >= self.end {
+                return Err(FormatError("truncated or invalid source varint"));
+            }
+            if self.data[self.at] < 0x80 {
+                count -= 1;
+            }
+            self.at += 1;
+        }
+        Ok(())
+    }
+}
+
+/// decode_block: {slot: (start, end)} of a block file, in slot order.
+pub fn decode_block(data: &[u8]) -> Result<Vec<(u32, usize, usize)>> {
+    if data.len() < 4 || &data[..4] != MAGIC {
+        return Err(FormatError("not an EarthNG source block"));
+    }
+    let mut r = Reader { data, at: 4, end: data.len() };
+    let n = r.u()?;
+    let mut entries = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        entries.push((r.u()? as u32, r.u()? as usize));
+    }
+    let mut at = r.at;
+    let mut out = Vec::with_capacity(entries.len());
+    for (k, len) in entries {
+        out.push((k, at, at + len));
+        at += len;
+    }
+    if at != data.len() {
+        return Err(FormatError("source block size mismatch"));
+    }
+    Ok(out)
+}
+
+/// decode_roads without the `seen` filter: every road of the cell data[at..end], in order.
+pub fn decode_roads(data: &[u8], origin: [f64; 2], at: usize, end: usize) -> Result<Vec<DecodedRoad>> {
+    let mut r = Reader { data, at, end };
+    let n = r.u()?;
+    let mut strings = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        let len = r.u()? as usize;
+        if r.at + len > r.end {
+            return Err(FormatError("truncated source string"));
+        }
+        strings.push(std::str::from_utf8(&data[r.at..r.at + len]).map_err(|_| FormatError("source string not UTF-8"))?);
+        r.at += len;
+    }
+    let text = |r: &mut Reader| -> Result<String> {
+        let k = r.u()? as usize;
+        strings.get(k).map(|s| s.to_string()).ok_or(FormatError("source string index out of range"))
+    };
+    let (nx, ny) = (r.u()?, r.u()?);
+    r.skip(nx * ny)?;
+    let (ox, oy) = (scaled(origin[0], SCALE)?, scaled(origin[1], SCALE)?);
+    let count = r.u()?;
+    let mut out = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let id = text(&mut r)?;
+        let width = r.u()? as f64 / SCALE;
+        let ntags = r.u()?;
+        let mut tags = Vec::with_capacity(ntags as usize);
+        for _ in 0..ntags {
+            let k = text(&mut r)?;
+            tags.push((k, text(&mut r)?));
+        }
+        let nnodes = r.u()?;
+        let mut nodes = Vec::with_capacity(nnodes as usize);
+        for _ in 0..nnodes {
+            nodes.push(text(&mut r)?);
+        }
+        let npoints = r.u()?;
+        let mut points = Vec::with_capacity(npoints as usize);
+        let (mut px, mut py, mut pz) = (ox, oy, 0i64);
+        for _ in 0..npoints {
+            px += r.s()?;
+            py += r.s()?;
+            pz += r.s()?;
+            points.push([px as f64 / SCALE, py as f64 / SCALE, pz as f64 / SCALE]);
+        }
+        out.push(DecodedRoad { id, width, tags, nodes, points });
+    }
+    Ok(out)
+}

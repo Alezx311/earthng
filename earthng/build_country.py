@@ -153,10 +153,17 @@ class Despiked:
     def __init__(self, terrain):
         self.terrain = terrain
 
+    def native(self):
+        native = getattr(self.terrain, 'native', None)
+        return native() if native is not None else None
+
     def sample(self, xy):
         xy = np.asarray(xy, dtype=float).reshape(-1, 2)
         if not len(xy):
             return np.array([])
+        native = self.native()
+        if native is not None:
+            return native.despiked(xy, GRID, self.SPIKE)
         around = (xy[:, None, :] + self.OFFSETS[None, :, :]).reshape(-1, 2)
         heights = np.asarray(self.terrain.sample(around), dtype=float).reshape(len(xy), len(self.OFFSETS))
         centre, median = heights[:, len(self.OFFSETS) // 2], np.median(heights, axis=1)
@@ -165,6 +172,9 @@ class Despiked:
     def grid(self, xs, ys):
         """sample() of the lattice ys x xs (GRID steps, row-major), each raw height read once:
         the 5 x 5 neighbourhoods of lattice points are lattice points too."""
+        native = self.native()
+        if native is not None:
+            return native.grid(xs, ys, GRID, self.SPIKE)
         step = xs[1] - xs[0] if len(xs) > 1 else GRID
         ex = np.r_[xs[0] - 2*step, xs[0] - step, xs, xs[-1] + step, xs[-1] + 2*step]
         ey = np.r_[ys[0] - 2*step, ys[0] - step, ys, ys[-1] + step, ys[-1] + 2*step]
@@ -438,16 +448,32 @@ def _deflate(data, level=9):
     return zlib.crc32(data) & 0xffffffff, len(data), blob
 
 
-def _write_deflated(archive, path, crc, size, blob):
+def _write_map(archive, directory, prefix):
+    """build_map.write_archive with the PNGs deflated side by side (zlib lets go of the GIL):
+    a city's 64 MB of map tiles took 3 s on one thread. Same members, same compression level."""
+    from concurrent.futures import ThreadPoolExecutor
+    paths = [p for p in sorted(Path(directory).iterdir()) if p.suffix in ('.json', '.png')]
+
+    def deflate(path):
+        return _deflate(path.read_bytes(), zlib.Z_DEFAULT_COMPRESSION)
+    with ThreadPoolExecutor(8) as threads:
+        for path, (crc, size, blob) in zip(paths, threads.map(deflate, paths)):
+            info = zipfile.ZipInfo.from_file(path, prefix.rstrip('/') + '/' + path.name)
+            _write_deflated(archive, info.filename, crc, size, blob, info=info, level=zlib.Z_DEFAULT_COMPRESSION)
+
+
+def _write_deflated(archive, path, crc, size, blob, info=None, level=9):
     """Append a member that is already deflated. ZipFile.writestr compresses on the calling
-    thread; a country is hundreds of thousands of blocks, and that one thread was the export."""
-    info = zipfile.ZipInfo(path, date_time=(2020, 1, 1, 0, 0, 0))
+    thread; a country is hundreds of thousands of blocks, and that one thread was the export.
+    info: the member's own ZipInfo (date and mode), else a fixed date."""
+    if info is None:
+        info = zipfile.ZipInfo(path, date_time=(2020, 1, 1, 0, 0, 0))
+        info.external_attr = 0o600 << 16
     info.compress_type = zipfile.ZIP_DEFLATED
-    info.compress_level = 9
+    info.compress_level = level
     info.CRC = crc
     info.file_size = size
     info.compress_size = len(blob)
-    info.external_attr = 0o600 << 16
     archive._writecheck(info)
     archive._didModify = True
     if archive._seekable:
@@ -553,8 +579,39 @@ def _worker_block(task):
 
 def _worker_part(task):
     """Part of a block, not yet packed: a city has too few blocks to keep every worker busy."""
-    directory, key, cells = task
-    return key, compile_block(_worker_store(directory), cells, _WORKER.get('include'))
+    directory, key, cells, scenes = task
+    store = _worker_store(directory)
+    store.scene_dir = scenes
+    return key, compile_block(store, cells, _WORKER.get('include'))
+
+
+def _worker_scene(task):
+    directory, key, scenes = task
+    store = _worker_store(directory)
+    store.scene_dir = scenes
+    store.save_scene(key)
+    return key
+
+
+def _shared_scenes(executor, store, directory, parts, emit=print):
+    """Read every raw OSM tile the parts' cells need once, side by side, into a new folder
+    (Store.scene_dir): split between all workers, a city's tiles were each read by most of them."""
+    import osm_tiles
+    keys = set()
+    for _key, cells in parts:
+        for i, j in cells:
+            padded = [i*CELL-HALO, j*CELL-HALO, (i+1)*CELL+HALO, (j+1)*CELL+HALO]
+            hit = osm_tiles.tile_for(store.source_index, store.frame.geo_bbox(padded))
+            if hit:
+                keys.add(hit[0])
+    import time
+    start = time.perf_counter()
+    folder = tempfile.mkdtemp(prefix='earthng-scenes-')
+    tiles = store.source_index['tiles']
+    order = sorted(keys, key=lambda k: -tiles[k].get('bytes', 0))     # the heaviest first
+    list(executor.map(_worker_scene, [(str(directory), k, folder) for k in order]))
+    emit(f'scenes: {len(order)} OSM tiles read in {time.perf_counter() - start:.1f} s')
+    return folder
 
 
 def _block_parts(tasks, workers):
@@ -705,10 +762,12 @@ def _region_begin(country_id, region, bbox, emit, landcover=(), include=None, ca
         parts = None
         if executor is not None:
             parts = _block_parts(tasks, getattr(executor, '_max_workers', 1))
+        scenes = None
         if parts is not None:
+            scenes = _shared_scenes(executor, store, directory, parts, emit)
             futures = []
             for key, cells in parts:
-                futures.append(executor.submit(_worker_part, (str(directory), key, cells)))
+                futures.append(executor.submit(_worker_part, (str(directory), key, cells, scenes)))
                 futures[-1].block = key
         elif executor is not None:
             # four neighbouring blocks to a worker at a time: they share raw OSM tiles (SCENES)
@@ -719,7 +778,8 @@ def _region_begin(country_id, region, bbox, emit, landcover=(), include=None, ca
         ok = True
         return {'store': store, 'directory': directory, 'core': core, 'region_id': region_id, 'meta': meta,
                 'provenance': provenance, 'frame': frame, 'base': base, 'blocks': blocks, 'total': total,
-                'tasks': tasks, 'futures': futures, 'parts': parts is not None, 'include': include}
+                'tasks': tasks, 'futures': futures, 'parts': parts is not None, 'scenes': scenes,
+                'include': include}
     finally:
         if not ok:
             if getattr(store, 'landcover', None) is not None:
@@ -822,6 +882,8 @@ def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None,
         if getattr(store, 'landcover', None) is not None:
             store.landcover.close()
         store.db.close()
+        if ctx.get('scenes'):
+            shutil.rmtree(ctx['scenes'], ignore_errors=True)
 
 
 # What a finished region of an export depends on besides its source index: the exporter's own code.
@@ -1052,8 +1114,7 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
                 _write_json(archive, f'{folder}/venues.json', places)
             # the offline map is the country's: a section's zip leaves it to the country pack
             if map_data is not None and section is None:
-                from build_map import write_archive
-                write_archive(archive, map_data, f'earthng/countries/{country_id}/map')
+                _write_map(archive, map_data, f'earthng/countries/{country_id}/map')
         _add_routing(temporary, jobs, emit, cancel)
         os.replace(temporary, target)
         shutil.rmtree(output / f'.{target.stem}.parts', ignore_errors=True)
@@ -1072,7 +1133,13 @@ def _add_routing(pack, jobs, emit, cancel=None):
     tasks = [(str(pack), region, prefix) for region, prefix in sorted(regions.items())]
     if not tasks:
         return
-    built, workers = [], min(jobs or 1, len(tasks))
+    import native_tool
+    built = native_tool.routing(pack, emit, cancel)
+    if built is not None:
+        tasks = []
+    else:
+        built = []
+    workers = min(jobs or 1, len(tasks))
     pool = ProcessPoolExecutor(workers) if workers > 1 else None
     try:
         for done, (region, data, info) in enumerate((pool.map if pool else map)(build_routing.build_region, tasks), 1):

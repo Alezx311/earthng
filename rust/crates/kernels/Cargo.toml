@@ -9,3 +9,5 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rayon = "1.12.0"
+geo = { path = "../geo" }
+png = "0.17"

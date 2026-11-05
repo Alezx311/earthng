@@ -28,6 +28,16 @@ enum Command {
         #[arg(long, num_args = 4, allow_negative_numbers = true, value_names = ["W", "S", "E", "N"])]
         package_box: Option<Vec<f64>>,
     },
+    /// Routing graphs of every region of a pack ZIP (earthng/build_routing.py's files):
+    /// <out>/<region>.bin, one JSON line per region on stdout
+    Routing {
+        pack: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// only these region ids
+        #[arg(long)]
+        region: Vec<String>,
+    },
     /// Encode cells dumped as JSON lines ({"origin": [x, y], "cell": {...}}) into hex lines
     /// (a check against earthng/country_format.py)
     #[command(hide = true)]
@@ -46,6 +56,7 @@ fn main() -> Result<()> {
             osm::cut::cut(&pbf, &out, package_box, &emit)?;
         }
         Command::EncodeCells { input, output } => encode_cells(&input, &output)?,
+        Command::Routing { pack, out, region } => routing(&pack, &out, &region)?,
     }
     Ok(())
 }
@@ -71,5 +82,96 @@ fn encode_cells(input: &std::path::Path, output: &std::path::Path) -> Result<()>
         writeln!(out)?;
     }
     println!("{n} cells, {bytes} bytes in {:.3} s", t.elapsed().as_secs_f64());
+    Ok(())
+}
+
+/// "<bi>_<bj>.bin" at the end of a block member's name.
+fn block_of(name: &str) -> Option<(i64, i64)> {
+    let file = name.rsplit('/').next()?.strip_suffix(".bin")?;
+    let (a, b) = file.split_once('_')?;
+    // build_routing.BLOCK_NAME: -?\d+ each
+    let ok = |t: &str| {
+        let digits = t.strip_prefix('-').unwrap_or(t);
+        !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit())
+    };
+    if !ok(a) || !ok(b) {
+        return None;
+    }
+    Some((a.parse().ok()?, b.parse().ok()?))
+}
+
+fn routing(pack: &std::path::Path, out: &std::path::Path, only: &[String]) -> Result<()> {
+    use anyhow::Context;
+    use rayon::prelude::*;
+    use std::io::Read;
+    let file = std::fs::File::open(pack).with_context(|| format!("open {}", pack.display()))?;
+    let archive = zip::ZipArchive::new(file)?;
+    // central directory order, as Python's namelist(): the roads keep the order Python reads them
+    let names: Vec<String> = (0..archive.len()).filter_map(|k| archive.name_for_index(k).map(str::to_string)).collect();
+    let mut regions = Vec::new();
+    for name in &names {
+        if let Some(rest) = name.strip_prefix("earthng/countries/")
+            && let Some(prefix_end) = rest.find("/regions/")
+        {
+            let tail = &rest[prefix_end + "/regions/".len()..];
+            if let Some(region) = tail.strip_suffix("/manifest.json")
+                && !region.is_empty() && !region.contains('/')
+                && !rest[..prefix_end].contains('/')
+            {
+                let prefix = name[..name.len() - "manifest.json".len()].to_string();
+                if only.is_empty() || only.iter().any(|r| r == region) {
+                    regions.push((region.to_string(), prefix));
+                }
+            }
+        }
+    }
+    regions.sort();
+    std::fs::create_dir_all(out)?;
+    let read = |name: &str| -> Result<Vec<u8>> {
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(pack)?)?;
+        let mut entry = archive.by_name(name)?;
+        let mut data = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut data)?;
+        Ok(data)
+    };
+    let results: Vec<Result<String>> = regions
+        .par_iter()
+        .map(|(region, prefix)| -> Result<String> {
+            let t = std::time::Instant::now();
+            let manifest: serde_json::Value = serde_json::from_slice(&read(&format!("{prefix}manifest.json"))?)?;
+            let cell = manifest.get("cellSize").and_then(|v| v.as_f64()).unwrap_or(1000.0);
+            let block = manifest.get("blockCells").and_then(|v| v.as_i64()).unwrap_or(pack::format::BLOCK);
+            let blocks: Vec<(&String, (i64, i64))> = names
+                .iter()
+                .filter(|n| n.starts_with(&format!("{prefix}blocks/")))
+                .filter_map(|n| block_of(n).map(|b| (n, b)))
+                .collect();
+            let decoded: Vec<Result<Vec<pack::format::DecodedRoad>>> = blocks
+                .par_iter()
+                .map(|(name, (bi, bj))| -> Result<Vec<pack::format::DecodedRoad>> {
+                    let data = read(name)?;
+                    let mut roads = Vec::new();
+                    for (slot, start, end) in pack::format::decode_block(&data)? {
+                        let (i, j) = (bi * block + slot as i64 % block, bj * block + slot as i64 / block);
+                        roads.extend(pack::format::decode_roads(&data, [i as f64 * cell, j as f64 * cell], start, end)?);
+                    }
+                    Ok(roads)
+                })
+                .collect();
+            let mut all = Vec::new();
+            for d in decoded {
+                all.push(d?);
+            }
+            let g = pack::routing::graph(all.iter().flatten())?;
+            let data = pack::routing::encode(&g)?;
+            std::fs::write(out.join(format!("{region}.bin")), &data)?;
+            Ok(serde_json::json!({"region": region, "nodes": g.nodes.len(), "edges": g.edges.len(),
+                                  "bytes": data.len(), "seconds": (t.elapsed().as_secs_f64() * 10.0).round() / 10.0})
+                .to_string())
+        })
+        .collect();
+    for r in results {
+        println!("{}", r?);
+    }
     Ok(())
 }

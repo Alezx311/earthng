@@ -43,6 +43,26 @@ fn series() -> (f64, [f64; 6], [f64; 6]) {
     (big_a, alpha, beta)
 }
 
+/// sum_j c_j sin(2j zeta) for zeta = xi + i eta, as (real, imaginary): the series
+/// sum c_j sin(2j xi) cosh(2j eta) and sum c_j cos(2j xi) sinh(2j eta) by Clenshaw's recurrence
+/// in complex numbers, four transcendental calls instead of four a term.
+#[inline]
+fn clenshaw(c: &[f64; 6], xi: f64, eta: f64) -> (f64, f64) {
+    let (s2, c2) = (2.0 * xi).sin_cos();
+    let (sh2, ch2) = ((2.0 * eta).sinh(), (2.0 * eta).cosh());
+    // a = 2 cos(2 zeta) = 2 (cos 2xi cosh 2eta - i sin 2xi sinh 2eta)
+    let (ar, ai) = (2.0 * c2 * ch2, -2.0 * s2 * sh2);
+    // y_k = a y_{k+1} - y_{k+2} + c_k, from k = 6 down to 1
+    let (mut y1r, mut y1i, mut y2r, mut y2i) = (0.0, 0.0, 0.0, 0.0);
+    for &ck in c.iter().rev() {
+        let (yr, yi) = (ar * y1r - ai * y1i - y2r + ck, ar * y1i + ai * y1r - y2i);
+        (y2r, y2i, y1r, y1i) = (y1r, y1i, yr, yi);
+    }
+    // S = y_1 sin(2 zeta), sin(2 zeta) = sin 2xi cosh 2eta + i cos 2xi sinh 2eta
+    let (zr, zi) = (s2 * ch2, c2 * sh2);
+    (y1r * zr - y1i * zi, y1r * zi + y1i * zr)
+}
+
 /// fast_sources.utm_crs: the zone and hemisphere of a point.
 pub fn zone_of(lon: f64, lat: f64) -> (u32, bool) {
     let zone = ((((lon + 180.0) / 6.0).floor() as i64).rem_euclid(60) + 1) as u32;
@@ -77,12 +97,8 @@ impl Utm {
         let t = (s.atanh() - self.e * (self.e * s).atanh()).sinh();
         let xi1 = t.atan2(lam.cos());
         let eta1 = (lam.sin() / (t * t + lam.cos() * lam.cos()).sqrt()).asinh();
-        let (mut xi, mut eta) = (xi1, eta1);
-        for (j, a) in self.alpha.iter().enumerate() {
-            let k = 2.0 * (j as f64 + 1.0);
-            xi += a * (k * xi1).sin() * (k * eta1).cosh();
-            eta += a * (k * xi1).cos() * (k * eta1).sinh();
-        }
+        let (sx, sy) = clenshaw(&self.alpha, xi1, eta1);
+        let (xi, eta) = (xi1 + sx, eta1 + sy);
         let x = FALSE_EASTING + self.a_k0 * eta;
         let y = self.a_k0 * xi + if self.north { 0.0 } else { FALSE_NORTHING_SOUTH };
         (x, y)
@@ -92,14 +108,11 @@ impl Utm {
     pub fn inverse(&self, x: f64, y: f64) -> (f64, f64) {
         let xi = (y - if self.north { 0.0 } else { FALSE_NORTHING_SOUTH }) / self.a_k0;
         let eta = (x - FALSE_EASTING) / self.a_k0;
-        let (mut xi1, mut eta1) = (xi, eta);
-        for (j, b) in self.beta.iter().enumerate() {
-            let k = 2.0 * (j as f64 + 1.0);
-            xi1 -= b * (k * xi).sin() * (k * eta).cosh();
-            eta1 -= b * (k * xi).cos() * (k * eta).sinh();
-        }
-        let tau1 = xi1.sin() / (eta1.sinh().powi(2) + xi1.cos().powi(2)).sqrt();
-        let lam = eta1.sinh().atan2(xi1.cos());
+        let (sx, sy) = clenshaw(&self.beta, xi, eta);
+        let (xi1, eta1) = (xi - sx, eta - sy);
+        let (sin1, cos1, sinh1) = (xi1.sin(), xi1.cos(), eta1.sinh());
+        let tau1 = sin1 / (sinh1 * sinh1 + cos1 * cos1).sqrt();
+        let lam = sinh1.atan2(cos1);
         // conformal tangent tau1 -> geodetic tangent tau (Newton, Karney eq. 19-21)
         let e2 = self.e * self.e;
         let mut tau = tau1;

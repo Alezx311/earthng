@@ -93,3 +93,73 @@ class NativeToolTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NativeDemTests(unittest.TestCase):
+    @unittest.skipUnless(native_tool.kernels(), 'earthng_native.dll not built (cargo build --release in rust/)')
+    def test_dem_matches_numpy_and_reports_missing_tiles(self):
+        import numpy as np
+        from PIL import Image
+        import build_country
+        import fast_sources
+        frame = fast_sources.Frame.at(30.52, 50.45)
+        rng = np.random.default_rng(7)
+        with tempfile.TemporaryDirectory() as tmp:
+            scale = 256 * 2 ** 12
+            lon, lat = frame.geographic(np.array([-3000., 3000.]), np.array([-3000., 3000.]))
+            xs = ((np.array(lon) + 180) / 360 * scale // 256).astype(int)
+            ys = ((1 - np.arcsinh(np.tan(np.radians(lat))) / np.pi) / 2 * scale // 256).astype(int)
+            for a in range(min(xs) - 1, max(xs) + 2):
+                for b in range(min(ys) - 1, max(ys) + 2):
+                    folder = Path(tmp) / 'terrain' / '12' / str(a)
+                    folder.mkdir(parents=True, exist_ok=True)
+                    rgb = rng.integers(0, 256, (256, 256, 3), dtype=np.uint8)
+                    rgb[:, :, 0] = 128          # ~0..255 m with a fine fraction
+                    Image.fromarray(rgb, 'RGB').save(folder / f'{b}.png')
+            terrain = fast_sources.Terrain(tmp, frame)
+            self.assertIsNotNone(terrain.native())
+            xy = rng.uniform(-2500, 2500, (5000, 2))
+            fast = terrain.sample(xy), terrain.sample(xy, smooth=True)
+            despiked = build_country.Despiked(terrain)
+            grid_axes = np.arange(0., 250., 25.), np.arange(100., 300., 25.)
+            fast_d = despiked.sample(xy[:500]), despiked.grid(*grid_axes)
+            terrain._native = False
+            slow = terrain.sample(xy), terrain.sample(xy, smooth=True)
+            slow_d = despiked.sample(xy[:500]), despiked.grid(*grid_axes)
+            for a, b in zip(fast + fast_d, slow + slow_d):
+                self.assertLess(np.abs(a - b).max(), 1e-6)
+            terrain._native = None
+            with self.assertRaisesRegex(FileNotFoundError, 'no_dem'):
+                terrain.sample([[5e6, 0.]])
+
+
+class NativeRoutingTests(unittest.TestCase):
+    @unittest.skipUnless(native_tool.tool(), 'native Map Builder not built (cargo build --release in rust/)')
+    def test_routing_files_match_build_routing(self):
+        import zipfile
+        import build_routing
+        import country_format as binary
+
+        def road(rid, nodes, points, **tags):
+            return {'id': str(rid), 'width': 6.0, 'tags': tags, 'nodes': [str(n) for n in nodes],
+                    'points': [[x, y, 1.25] for x, y in points]}
+        roads = [road(1, [10, 11], [(5, 5), (60.004, 5.5), (120, 5)], highway='primary', name='Хрещатик', maxspeed='30 mph'),
+                 road(2, [11, 12], [(120, 5), (120, 300)], highway='residential', oneway='-1', **{'name:uk': 'Бічна'}),
+                 road(3, [12, 13], [(120, 300), (400, 320), (700, 300)], highway='motorway_link', ref='M06'),
+                 road(4, [13, 10], [(700, 300), (5, 5)], highway='tertiary', junction='roundabout', maxspeed='RU:urban'),
+                 road(5, [12, 14], [(120, 300), (130, 900)], highway='service'),            # not routable
+                 road(6, [14, 15], [(130, 900), (900, 990)], highway='residential', access='private'),
+                 road(7, [15, 16], [(900, 990), (980, 980)], highway='unclassified', maxspeed='5_0')]
+        cell = lambda rs: {'terrain': {'nx': 2, 'ny': 2, 'heights': [1., 2., 3., 4.]}, 'roads': rs}
+        with tempfile.TemporaryDirectory() as tmp:
+            pack = Path(tmp) / 'pack.zip'
+            prefix = 'earthng/countries/xx/regions/r1/'
+            with zipfile.ZipFile(pack, 'w', zipfile.ZIP_DEFLATED) as z:
+                z.writestr(prefix + 'manifest.json', json.dumps({'cellSize': 1000, 'blockCells': 8}))
+                # the same road stored in two cells, as a road crossing a cell border is
+                payloads = {binary.slot(0, 0): binary.encode_cell(cell(roads), (0, 0)),
+                            binary.slot(1, 0): binary.encode_cell(cell(roads[2:4]), (1000, 0))}
+                z.writestr(prefix + 'blocks/0_0.bin', binary.encode_block(payloads)[0])
+            expected = build_routing.build_region((str(pack), 'r1', prefix))[1]
+            built = native_tool.routing(pack, emit=lambda line: None)
+        self.assertEqual(built, [('r1', expected)])

@@ -48,6 +48,31 @@ class Kernels:
                                                 P, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(ctypes.c_double)]
         self.lib.earthng_profile_cg.restype = ctypes.c_int32
 
+        D = ctypes.c_void_p
+        lib = self.lib
+        lib.earthng_dem_open.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int32, ctypes.c_uint32,
+                                         ctypes.c_double, ctypes.c_double, ctypes.c_double]
+        lib.earthng_dem_open.restype = D
+        lib.earthng_dem_close.argtypes = [D]
+        lib.earthng_dem_close.restype = None
+        lib.earthng_dem_error.argtypes = [D, ctypes.c_char_p, ctypes.c_size_t]
+        lib.earthng_dem_error.restype = ctypes.c_size_t
+        lib.earthng_dem_sample.argtypes = [D, P, ctypes.c_size_t, ctypes.c_int32, P]
+        lib.earthng_dem_despiked.argtypes = [D, P, ctypes.c_size_t, ctypes.c_double, ctypes.c_double, P]
+        lib.earthng_dem_grid.argtypes = [D, P, ctypes.c_size_t, P, ctypes.c_size_t, ctypes.c_double, ctypes.c_double, P]
+        for name in ('earthng_dem_sample', 'earthng_dem_despiked', 'earthng_dem_grid'):
+            getattr(lib, name).restype = ctypes.c_int32
+
+    def dem(self, cache, zoom, crs, cx, cy, lift):
+        """A native fast_sources.Terrain (and Despiked) of the frame crs, or None for a CRS
+        that is not a UTM zone."""
+        code = str(crs).upper()
+        if not code.startswith('EPSG:') or not code[5:].isdigit():
+            return None
+        path = str(cache).encode('utf-8')
+        handle = self.lib.earthng_dem_open(path, len(path), int(zoom), int(code[5:]), float(cx), float(cy), float(lift))
+        return Dem(self, handle) if handle else None
+
     def system(self, ptr, col, data, diag0, xv, xc, active, clear_weight):
         """The C view of a solve; the returned tuple keeps its arrays alive."""
         import numpy as np
@@ -80,6 +105,57 @@ class Kernels:
         return x, its.value, residual.value
 
 
+class Dem:
+    """Terrain.sample, Despiked.sample and Despiked.grid in earthng_native.dll (rust/crates/kernels
+    terrain.rs). Errors as the Python ones: FileNotFoundError('no_dem: ...') for a tile the cache
+    lacks, ValueError('non-finite DEM')."""
+
+    def __init__(self, kernels, handle):
+        self.kernels, self.lib, self.handle = kernels, kernels.lib, handle
+
+    def __del__(self):
+        if self.handle:
+            self.lib.earthng_dem_close(self.handle)
+            self.handle = None
+
+    def _check(self, code):
+        if code == 0:
+            return
+        buf = self.kernels.ctypes.create_string_buffer(4096)
+        n = self.lib.earthng_dem_error(self.handle, buf, len(buf))
+        message = buf.raw[:min(n, len(buf))].decode('utf-8', 'replace')
+        if code == 1:
+            raise FileNotFoundError(message)
+        raise ValueError(message)
+
+    def sample(self, xy, smooth=False):
+        import numpy as np
+        xy = np.ascontiguousarray(np.asarray(xy, dtype=float).reshape(-1, 2))
+        out = np.empty(len(xy))
+        if len(xy):
+            self._check(self.lib.earthng_dem_sample(self.handle, xy.ctypes.data, len(xy), int(bool(smooth)),
+                                                    out.ctypes.data))
+        return out
+
+    def despiked(self, xy, spacing, spike):
+        import numpy as np
+        xy = np.ascontiguousarray(np.asarray(xy, dtype=float).reshape(-1, 2))
+        out = np.empty(len(xy))
+        if len(xy):
+            self._check(self.lib.earthng_dem_despiked(self.handle, xy.ctypes.data, len(xy), float(spacing),
+                                                      float(spike), out.ctypes.data))
+        return out
+
+    def grid(self, xs, ys, spacing, spike):
+        import numpy as np
+        xs, ys = np.ascontiguousarray(xs, dtype=float), np.ascontiguousarray(ys, dtype=float)
+        out = np.empty(len(xs) * len(ys))
+        if len(out):
+            self._check(self.lib.earthng_dem_grid(self.handle, xs.ctypes.data, len(xs), ys.ctypes.data, len(ys),
+                                                  float(spacing), float(spike), out.ctypes.data))
+        return out
+
+
 def kernels():
     """The loaded Kernels, or None (no library, or EARTHNG_NATIVE=0)."""
     if os.environ.get('EARTHNG_NATIVE', '1').strip() in ('0', 'no', 'off', 'false'):
@@ -108,3 +184,35 @@ def cut_command(pbf, out, box=None, threads=None):
     if box:
         command += ['--package-box', *(repr(float(v)) for v in box)]
     return command
+
+
+def routing(pack, emit=print, cancel=None):
+    """[(region, routing file bytes)] of every region of a pack (build_routing.build_region's files,
+    byte for byte), or None without the native tool."""
+    import json
+    import subprocess
+    import tempfile
+    exe = tool()
+    if exe is None:
+        return None
+    with tempfile.TemporaryDirectory(prefix='earthng-routing-') as folder:
+        process = subprocess.Popen([str(exe), 'routing', str(pack), '--out', folder], stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, encoding='utf-8',
+                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        lines = []
+        try:
+            for done, line in enumerate(process.stdout, 1):
+                info = json.loads(line)
+                lines.append(info)
+                emit(f"routing {done}: {info['region']}, {info['nodes']} nodes")
+                if cancel is not None and cancel.is_set():
+                    process.kill()
+                    raise InterruptedError('build stopped')
+            error = process.stderr.read()
+        finally:
+            if process.poll() is None:
+                process.wait()
+        if process.returncode:
+            raise RuntimeError(f'native routing failed: {error.strip()[-2000:]}')
+        return [(info['region'], (Path(folder) / f"{info['region']}.bin").read_bytes())
+                for info in sorted(lines, key=lambda i: i['region'])]

@@ -286,6 +286,19 @@ class Terrain:
         self.cache, self.frame, self.zoom = Path(cache), frame or Frame(), zoom
         self.images = OrderedDict()
         self.coarse = Terrain(cache, self.frame) if zoom == 13 else None
+        self._native = None
+
+    def __getstate__(self):
+        return {**self.__dict__, '_native': None}
+
+    def native(self):
+        """The same sampler in earthng_native.dll (native_tool.Dem), or None."""
+        if self._native is None:
+            import native_tool
+            kernels = native_tool.kernels()
+            self._native = (kernels and kernels.dem(self.cache, self.zoom, self.frame.crs, self.frame.cx,
+                                                    self.frame.cy, LIFT)) or False
+        return self._native or None
 
     def has(self, a, b):
         if (self.cache / 'terrain' / str(self.zoom) / str(a) / f'{b}.png').exists():
@@ -334,6 +347,9 @@ class Terrain:
         xy = np.asarray(xy, dtype=float).reshape(-1, 2)
         if not len(xy):
             return np.array([])
+        native = self.native()
+        if native is not None:
+            return native.sample(xy, smooth)
         lon, lat = self.frame.geographic(xy[:,0], xy[:,1])
         scale = 256 * 2**self.zoom
         x = (lon+180)/360*scale
@@ -864,81 +880,119 @@ class Store:
             raise ValueError(f'no_osm scenery coverage: {bbox}')
         key,entry=hit
         if key not in self.scenes:
-            found={}; lines={}; retail_areas={}; marks=[]; factory=osmium.geom.WKBFactory()
-            import fast_style
-            import retail
-            import venues
-            class Reader(osmium.SimpleHandler):
-                def area(self,a):
-                    tags = retail.enriched(a.tags)
-                    point_kind = retail.kind(tags)
-                    kind='building' if tags.get('building') not in (None,'no') else (
-                        'water' if tags.get('natural')=='water' or tags.get('waterway')=='riverbank' else None)
-                    if kind is None and tags.get('building:part') not in (None,'no'):
-                        kind='building'; tags['e2r_part']='1'
-                    if kind is None:
-                        kind=fast_style.ground_kind(tags)
-                    if (kind and a.id not in found) or point_kind:
-                        try:
-                            geometry=shapely.from_wkb(factory.create_multipolygon(a))
-                        except RuntimeError:
-                            return      # broken OSM ring (e.g. area 29961653): skip that area alone
-                        if kind:
-                            found[a.id]=(kind,tags,geometry)
-                        # A mapped site/building is still useful as a point even if it has no
-                        # recognized ground kind. A representative point stays inside the area.
-                        if point_kind and not geometry.is_empty:
-                            retail_areas[-(2*10**12+a.id)]=(point_kind,tags,geometry)
-                            found[-(3*10**12+a.id)]=(point_kind + '_site',tags,geometry)
-                def node(self,n):
-                    # bus stops and traffic signals where OSM has them (way nodes keep their tags
-                    # in the source tiles); keyed apart from areas and ways
-                    tags=dict(n.tags)
-                    kind=fast_style.point_kind(tags)
-                    if kind and n.location.valid():
-                        marks.append((-(10**12+n.id),kind,retail.enriched(tags),n.location.lon,n.location.lat))
-                def way(self,w):
-                    # footpaths, fences, tree rows: lines, not areas (an area id is 2 x way id,
-                    # so a line keys as -way id to stay apart)
-                    kind=fast_style.line_kind(w.tags)
-                    if kind and -w.id not in lines:
-                        try:
-                            coords=[(n.lon,n.lat) for n in w.nodes]
-                        except osmium.InvalidLocationError:
-                            return
-                        if len(coords)>=2:
-                            tags=fast_style.rail_tags(w.tags) if kind=='rail' else dict(w.tags)
-                            lines[-w.id]=(kind,tags,LineString(coords))
-            # Only nodes that can be points reach Python (Kyiv tile: 21 k of 218 k, 0.57 -> 0.25 s);
-            # the location index still sees every node, so ways and areas keep their geometry.
-            Reader().apply_file(str(Path(self.meta['source'])/entry['file']),locations=True,
-                                filters=[osmium.filter.KeyFilter(*fast_style.point_keys()).enable_for(osmium.osm.NODE)])
-            for (ident,kind,tags,*_),geometry in zip(marks,shapely.points([m[3:] for m in marks] or np.empty((0,2)))):
-                lines[ident]=(kind,tags,geometry)
-            # OSM often maps a business both as a node and a containing site/building.
-            # Keep the surveyed node when category and known brand match; unknown names
-            # or neighbouring businesses are never guessed to be duplicates.
-            nodes = [(kind, tags.get('e2r_brand'), geom, tags.get('e2r_post_type')) for kind, tags, geom in lines.values()
-                     if kind in ('fuel', 'grocery', 'fast_food', 'post', 'service') and tags.get('e2r_brand')]
-            tree = shapely.STRtree([entry[2] for entry in nodes]) if nodes else None
-            for ident, (kind, tags, geometry) in retail_areas.items():
-                brand = tags.get('e2r_brand')
-                duplicate = bool(brand and tree and any(
-                    nodes[int(i)][0] == kind and nodes[int(i)][1] == brand and
-                    nodes[int(i)][3] == tags.get('e2r_post_type') and geometry.covers(nodes[int(i)][2]) for i in tree.query(geometry)))
-                if not duplicate:
-                    lines[ident] = (kind, tags, geometry.representative_point())
-            link_parts(found)
-            # places from a register (venues.py): every scene holds them, a query takes those it covers
-            for n,(venue,record) in enumerate(venues.located()):
-                lines[-(4*10**12+n)]=('venue',venues.point_tags(venue,record),Point(record['lon'],record['lat']))
-            found.update(lines)
-            ordered=sorted(found.items())
-            geoms=shapely.make_valid(shapely.transform([v[1][2] for v in ordered],self.frame.local,interleaved=False))
-            records=[(fid,kind,{'tags':tags},geom) for (fid,(kind,tags,_)),geom in zip(ordered,geoms)]
-            self.scenes[key]=(records,shapely.STRtree(geoms))
+            records = self.load_scene(key)
+            if records is None:
+                records = self.build_scene(entry)
+            self.scenes[key]=(records,shapely.STRtree([r[3] for r in records]))
             if len(self.scenes)>SCENES: self.scenes.popitem(last=False)
         self.scenes.move_to_end(key)
         records,tree=self.scenes[key]
         from shapely.geometry import box
         return [records[int(k)] for k in sorted(tree.query(box(*rect)))]
+
+    # A city export splits its blocks between all workers, and each would read the same raw OSM
+    # tiles again (half of a dense cell's time): the tiles are read once beforehand
+    # (build_country._shared_scenes) and kept as WKB in scene_dir for this build.
+    scene_dir = None
+
+    def scene_path(self, key):
+        return Path(self.scene_dir) / f'{key}.scene' if self.scene_dir else None
+
+    def load_scene(self, key):
+        import pickle
+        path = self.scene_path(key)
+        if path is None or not path.is_file():
+            return None
+        with path.open('rb') as stream:
+            data = pickle.load(stream)
+        return list(zip(data['fid'], data['kind'], ({'tags': t} for t in data['tags']), shapely.from_wkb(data['wkb'])))
+
+    def save_scene(self, key):
+        """Read raw tile key into scene_dir (once; a concurrent writer of the same key is harmless)."""
+        import pickle
+        path = self.scene_path(key)
+        if path.is_file():
+            return
+        records = self.build_scene(self.source_index['tiles'][key])
+        data = {'fid': [r[0] for r in records], 'kind': [r[1] for r in records],
+                'tags': [r[2]['tags'] for r in records], 'wkb': shapely.to_wkb([r[3] for r in records])}
+        part = path.with_suffix(f'.{os.getpid()}.part')
+        with part.open('wb') as stream:
+            pickle.dump(data, stream, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(part, path)
+
+    def build_scene(self, entry):
+        """Records (fid, kind, {'tags'}, local geometry) of one raw OSM tile, sorted by fid."""
+        import osmium
+        found={}; lines={}; retail_areas={}; marks=[]; factory=osmium.geom.WKBFactory()
+        import fast_style
+        import retail
+        import venues
+        class Reader(osmium.SimpleHandler):
+            def area(self,a):
+                tags = retail.enriched(a.tags)
+                point_kind = retail.kind(tags)
+                kind='building' if tags.get('building') not in (None,'no') else (
+                    'water' if tags.get('natural')=='water' or tags.get('waterway')=='riverbank' else None)
+                if kind is None and tags.get('building:part') not in (None,'no'):
+                    kind='building'; tags['e2r_part']='1'
+                if kind is None:
+                    kind=fast_style.ground_kind(tags)
+                if (kind and a.id not in found) or point_kind:
+                    try:
+                        geometry=shapely.from_wkb(factory.create_multipolygon(a))
+                    except RuntimeError:
+                        return      # broken OSM ring (e.g. area 29961653): skip that area alone
+                    if kind:
+                        found[a.id]=(kind,tags,geometry)
+                    # A mapped site/building is still useful as a point even if it has no
+                    # recognized ground kind. A representative point stays inside the area.
+                    if point_kind and not geometry.is_empty:
+                        retail_areas[-(2*10**12+a.id)]=(point_kind,tags,geometry)
+                        found[-(3*10**12+a.id)]=(point_kind + '_site',tags,geometry)
+            def node(self,n):
+                # bus stops and traffic signals where OSM has them (way nodes keep their tags
+                # in the source tiles); keyed apart from areas and ways
+                tags=dict(n.tags)
+                kind=fast_style.point_kind(tags)
+                if kind and n.location.valid():
+                    marks.append((-(10**12+n.id),kind,retail.enriched(tags),n.location.lon,n.location.lat))
+            def way(self,w):
+                # footpaths, fences, tree rows: lines, not areas (an area id is 2 x way id,
+                # so a line keys as -way id to stay apart)
+                kind=fast_style.line_kind(w.tags)
+                if kind and -w.id not in lines:
+                    try:
+                        coords=[(n.lon,n.lat) for n in w.nodes]
+                    except osmium.InvalidLocationError:
+                        return
+                    if len(coords)>=2:
+                        tags=fast_style.rail_tags(w.tags) if kind=='rail' else dict(w.tags)
+                        lines[-w.id]=(kind,tags,LineString(coords))
+        # Only nodes that can be points reach Python (Kyiv tile: 21 k of 218 k, 0.57 -> 0.25 s);
+        # the location index still sees every node, so ways and areas keep their geometry.
+        Reader().apply_file(str(Path(self.meta['source'])/entry['file']),locations=True,
+                            filters=[osmium.filter.KeyFilter(*fast_style.point_keys()).enable_for(osmium.osm.NODE)])
+        for (ident,kind,tags,*_),geometry in zip(marks,shapely.points([m[3:] for m in marks] or np.empty((0,2)))):
+            lines[ident]=(kind,tags,geometry)
+        # OSM often maps a business both as a node and a containing site/building.
+        # Keep the surveyed node when category and known brand match; unknown names
+        # or neighbouring businesses are never guessed to be duplicates.
+        nodes = [(kind, tags.get('e2r_brand'), geom, tags.get('e2r_post_type')) for kind, tags, geom in lines.values()
+                 if kind in ('fuel', 'grocery', 'fast_food', 'post', 'service') and tags.get('e2r_brand')]
+        tree = shapely.STRtree([entry[2] for entry in nodes]) if nodes else None
+        for ident, (kind, tags, geometry) in retail_areas.items():
+            brand = tags.get('e2r_brand')
+            duplicate = bool(brand and tree and any(
+                nodes[int(i)][0] == kind and nodes[int(i)][1] == brand and
+                nodes[int(i)][3] == tags.get('e2r_post_type') and geometry.covers(nodes[int(i)][2]) for i in tree.query(geometry)))
+            if not duplicate:
+                lines[ident] = (kind, tags, geometry.representative_point())
+        link_parts(found)
+        # places from a register (venues.py): every scene holds them, a query takes those it covers
+        for n,(venue,record) in enumerate(venues.located()):
+            lines[-(4*10**12+n)]=('venue',venues.point_tags(venue,record),Point(record['lon'],record['lat']))
+        found.update(lines)
+        ordered=sorted(found.items())
+        geoms=shapely.make_valid(shapely.transform([v[1][2] for v in ordered],self.frame.local,interleaved=False))
+        return [(fid,kind,{'tags':tags},geom) for (fid,(kind,tags,_)),geom in zip(ordered,geoms)]
