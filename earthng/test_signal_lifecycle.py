@@ -55,14 +55,106 @@ class SignalLifecycleTests(unittest.TestCase):
           local tile = {left=0}
           manifest = {source='region',items={},lights={{group=1}}}
           start('0_0', tile)
-          assert(S.navDirty and S.flowLightVersion == 1)
+          assert(S.signalDirty and not S.navDirty and S.flowLightVersion == 1)
           -- Replacing a lit scene with an unlit one must request a graph refresh as well.
-          S.navDirty = false; manifest.lights = {}
+          S.signalDirty = false; manifest.lights = {}
           start('0_0', tile)
-          assert(S.navDirty and S.flowLightVersion == 2)
-          -- Scenes with no signals must not trigger extra graph rebuilds.
-          S.navDirty = false; start('0_0', tile)
-          assert(not S.navDirty and S.flowLightVersion == 2)
+          assert(S.signalDirty and not S.navDirty and S.flowLightVersion == 2)
+          -- Scenes with no signals must not trigger extra signal refreshes.
+          S.signalDirty = false; start('0_0', tile)
+          assert(not S.signalDirty and not S.navDirty and S.flowLightVersion == 2)
+        ''')
+
+    def test_signal_refresh_batches_without_resetting_road_graph(self):
+        self.lua.execute('''
+          local step = assert(findUp(world.tick, 'navStep'))
+          replaceUp(step, 'focus', function() return {x=50,y=60} end)
+          local m = {buildSerial=123,nodes={n={links={}}}}
+          local calls, resets = 0, 0
+          map = {getMap=function() return m end, reset=function() resets=resets+1 end}
+          world.signals = {navgraph=function(nodes, nav, x, y, traffic, makePos)
+            assert(nodes == m.nodes and nav == S.nav and x == 50 and y == 60)
+            calls=calls+1
+          end}
+          S.stream, S.navPending, S.nav = {}, {}, {}
+          S.navSerial, S.navPos, S.navAt, S.navDirty = 123, {50,60}, 9, false
+          S.signalDirty, S.signalAt = true, nil
+          step()
+          assert(calls == 1 and resets == 0 and not S.signalDirty and S.signalAt == 10)
+          assert(S.navAt == 9 and S.navSerial == 123)
+          -- Several arriving scenes within the next two seconds share a single refresh.
+          S.signalDirty, S.now = true, 11
+          step(); step(); assert(calls == 1 and S.signalDirty)
+          S.now = 12; step()
+          assert(calls == 2 and resets == 0 and not S.signalDirty)
+        ''')
+
+    def test_pending_road_or_foreign_rebuild_takes_precedence(self):
+        self.lua.execute('''
+          local step = assert(findUp(world.tick, 'navStep'))
+          replaceUp(step, 'focus', function() return {x=1,y=2} end)
+          local m = {buildSerial=1,nodes={n={links={}}}}
+          local builds, updates = 0, 0
+          map = {getMap=function() return m end}
+          world.signals = {navgraph=function() updates=updates+1 end}
+          replaceUp(step, 'navBuild', function()
+            builds=builds+1; S.navDirty=false; S.signalDirty=false; S.navSerial=m.buildSerial
+            S.navAt=S.now
+          end)
+          S.stream, S.navPending, S.nav = {}, {}, {}
+          S.navSerial, S.navPos, S.navAt = 1, {1,2}, 9
+          S.navDirty, S.signalDirty, S.now = true, true, 10
+          step(); assert(builds == 0 and updates == 0 and S.signalDirty)
+          S.now=11; step(); assert(builds == 1 and updates == 0 and not S.signalDirty)
+          -- A foreign reset likewise wins, even when the signal batch is ready.
+          m.buildSerial=2; S.signalDirty=true; S.now=13
+          step(); assert(builds == 2 and updates == 0 and not S.signalDirty)
+        ''')
+
+    def test_signal_refresh_waits_for_focus_module_and_owned_graph(self):
+        self.lua.execute('''
+          local step = assert(findUp(world.tick, 'navStep'))
+          local focus = {x=1,y=2}
+          replaceUp(step, 'focus', function() return focus end)
+          local m = {buildSerial=1,nodes={n={links={}}}}
+          map = {getMap=function() return m end}
+          local updates = 0
+          local signals = {navgraph=function() updates=updates+1 end}
+          S.stream, S.navPending, S.nav = {}, {}, {}
+          S.navSerial, S.navPos, S.navAt, S.navDirty = 1, {1,2}, 10, false
+          S.signalDirty, S.now = true, 10
+          focus=nil; world.signals=signals; step()
+          assert(S.signalDirty and updates == 0)
+          focus={x=1,y=2}; world.signals=nil; step()
+          assert(S.signalDirty and updates == 0)
+          world.signals=signals; S.navSerial=nil; step()
+          assert(S.signalDirty and updates == 0)
+          S.navSerial=1; m.nodes={}; step()
+          assert(S.signalDirty and updates == 0)
+          m.nodes={n={links={}}}; step()
+          assert(not S.signalDirty and updates == 1)
+        ''')
+
+    def test_real_nav_build_absorbs_pending_signal_refresh(self):
+        self.lua.execute('''
+          local build = assert(findUp(world.tick, 'navBuild'))
+          replaceUp(build, 'focus', function() return {x=1,y=2} end)
+          table.clear = function(t) for k in pairs(t) do t[k]=nil end end
+          local m = {buildSerial=1, nodes={}}
+          map = {getMap=function() return m end, reset=function(nodes)
+            m.nodes=nodes; m.buildSerial=m.buildSerial+1
+          end}
+          local updates = 0
+          world.signals = {navgraph=function(nodes, nav, x, y)
+            assert(nodes == m.nodes and nav == S.nav and x == 1 and y == 2)
+            updates=updates+1
+          end}
+          S.nav, S.tiles, S.signalDirty, S.now = {}, {}, true, 10
+          build()
+          assert(updates == 1 and not S.signalDirty and S.signalAt == 10)
+          -- If the signal module is not ready, do not lose a pending scene update.
+          world.signals=nil; S.signalDirty=true; S.now=20; build()
+          assert(S.signalDirty and S.signalAt == 10)
         ''')
 
     def test_nav_read_removes_lights_when_same_tile_has_none(self):
@@ -82,8 +174,9 @@ class SignalLifecycleTests(unittest.TestCase):
           local arrive = assert(findUp(world.tick, 'beginArrival'))
           S.tiles, S.far, S.horizon, S.queue = {}, {}, {}, {}
           S.navLights = {key={{1,2}}}; S.nav = {}; S.navPending = {}
+          S.signalDirty, S.signalAt = true, 5
           map = {reset=function()
-            assert(next(S.navLights) == nil)
+            assert(next(S.navLights) == nil and S.signalDirty == nil and S.signalAt == nil)
             error('reset reached')
           end}
           local ok, err = pcall(arrive, {manifest={}})
@@ -97,9 +190,9 @@ class SignalLifecycleTests(unittest.TestCase):
           replaceUp(world.onClientEndMission, 'dropLights', function() end)
           local native = assert(findUp(world.onClientEndMission, 'native'))
           native.refresh = function() end
-          S.navLights = {key={{1,2}}}
+          S.navLights = {key={{1,2}}}; S.signalDirty=true; S.signalAt=5
           world.onClientEndMission()
-          assert(next(S.navLights) == nil)
+          assert(next(S.navLights) == nil and S.signalDirty == nil and S.signalAt == nil)
         ''')
 
     def test_pack_refresh_clears_lights_with_the_world(self):
@@ -113,9 +206,9 @@ class SignalLifecycleTests(unittest.TestCase):
           map = {reset=function() end}
           S.stream = {region='old'}
           S.tiles, S.far, S.horizon, S.queue = {}, {}, {}, {}
-          S.navLights = {key={{1,2}}}
+          S.navLights = {key={{1,2}}}; S.signalDirty=true; S.signalAt=5
           world.onModActivated()
-          assert(next(S.navLights) == nil and S.stream == nil)
+          assert(next(S.navLights) == nil and S.stream == nil and S.signalDirty == nil and S.signalAt == nil)
         ''')
 
 

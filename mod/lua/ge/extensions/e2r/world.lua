@@ -1088,9 +1088,9 @@ local function startScene(key, tile)
   if M.signals then M.signals.addTile(key, manifest.lights) end
   if (tile.flowLights and #tile.flowLights > 0) or (manifest.lights and #manifest.lights > 0) then
     S.flowLightVersion = (S.flowLightVersion or 0) + 1
-    -- The road graph can have been built before its scene finished. Rebuild in navStep's
-    -- normal batch so physical AI sees newly loaded (or replaced) scene signals too.
-    S.navDirty = true
+    -- Roads may already be in the graph. Refresh just its signal edges in a batch; a scene
+    -- arriving does not require another expensive map.reset of the road graph.
+    S.signalDirty = true
   end
   tile.flowLights = manifest.lights
   tile.sceneComplete = tile.sceneLeft == 0
@@ -1287,7 +1287,10 @@ local function navBuild()
   local rules = map.getRoadRules and map.getRoadRules()
   if rules and native.keepsLeft then rules.rightHandDrive = native.keepsLeft() end
   map.reset(nodes)
-  if M.signals then M.signals.navgraph(nodes, S.nav, p.x, p.y, trafficRunning(), vec3) end
+  if M.signals then
+    M.signals.navgraph(nodes, S.nav, p.x, p.y, trafficRunning(), vec3)
+    S.signalDirty, S.signalAt = false, S.now
+  end
   m = map.getMap()
   if keep and m.nodes ~= keep then
     table.clear(keep)
@@ -1307,11 +1310,22 @@ local function navStep()
   if #S.navPending > 0 then navRead() end
   if not S.stream or not map or not map.getMap then return end
   -- someone else (an editor tool, a mission) rebuilt the graph from the empty level: ours again
-  local foreign = S.navSerial and map.getMap().buildSerial ~= S.navSerial
+  local current = map.getMap()
+  local foreign = S.navSerial and current.buildSerial ~= S.navSerial
   local p = focus()
   local moved = p and (not S.navPos or (p.x - S.navPos[1]) ^ 2 + (p.y - S.navPos[2]) ^ 2 > NAV_MOVE * NAV_MOVE)
   -- New tiles must appear even while parked. Batch updates instead of resetting per tile.
-  if (foreign or moved or S.navDirty) and S.now - (S.navAt or -10) >= 2 then navBuild() end
+  if foreign or moved or S.navDirty then
+    if S.now - (S.navAt or -10) >= 2 then navBuild() end
+    return
+  end
+  -- A late scene changes lights, not roads. Use only our current graph and let a pending
+  -- road rebuild take precedence, so signals never attach to a stale or foreign graph.
+  if S.signalDirty and p and M.signals and S.navSerial and current.buildSerial == S.navSerial
+    and current.nodes and next(current.nodes) and S.now - (S.signalAt or -10) >= 2 then
+    M.signals.navgraph(current.nodes, S.nav, p.x, p.y, trafficRunning(), vec3)
+    S.signalDirty, S.signalAt = false, S.now
+  end
 end
 
 local function setTraffic(amount, kind)
@@ -2376,7 +2390,7 @@ local function beginArrival(job)
   if S.flow then M.flowSet(0) end
   if S.park then parking.clear(S.park) end
   S.nav, S.navPending, S.navLights, S.navDirty, S.trafficWanted = {}, {}, {}, false, nil
-  S.navAt, S.navPos, S.navSerial = nil, nil, nil
+  S.navAt, S.navPos, S.navSerial, S.signalDirty, S.signalAt = nil, nil, nil, nil, nil
   map.reset({})
   if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
   S.stream = {region = job.region, country = job.country, tile = job.tileSize, generator = job.generator}
@@ -3947,7 +3961,7 @@ local function refreshCountries()
     if S.flow then M.flowSet(0) end
     map.reset({})
     if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
-    S.navAt, S.navPos, S.navSerial = nil, nil, nil
+    S.navAt, S.navPos, S.navSerial, S.signalDirty, S.signalAt = nil, nil, nil, nil, nil
     S.stream, S.co, S.job, S.landing = nil, nil, nil, nil
     S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending, S.navLights = {}, {}, {}, {}, {}, {}, {}
     S.collisionDirty, S.state, S.coll = true, 'off', nil
@@ -4002,6 +4016,7 @@ function M.onClientEndMission()
   if NATIVE then native.refresh() end
   S.stream, S.co, S.job, S.landing, S.state = nil, nil, nil, nil, 'off'
   S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending, S.navLights = {}, {}, {}, {}, {}, {}, {}
+  S.signalDirty, S.signalAt = nil, nil
   S.knownMats, S.coverage, S.centredOnPackage = {}, nil, nil
   dropLights()
 end
