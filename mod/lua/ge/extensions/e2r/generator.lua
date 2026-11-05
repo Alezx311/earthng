@@ -1155,7 +1155,20 @@ end
 -- Piers: a wall every `every` m of a bridge at least `min` long, `across` of the half width,
 -- `thick` along the road, kept `clear` m off any road under it; abutments `thick` deep.
 ROADS.deck = {depth = 1, parapet = .9, thick = .3, repeatU = 2.5,
-  pier = {every = 25, min = 16, across = .85, thick = 1.6, clear = 1.5, gap = 1, sink = .5}}
+  pier = {every = 25, min = 16, across = .85, thick = 1.6, clear = 1.5, gap = 1, sink = .5, span = 1.5, tall = 30}}
+-- How many spans a bridge strip `length` m long is split into by its piers. heightAt(f) is the
+-- soffit's height over the ground at fraction f of the strip. A pier every `every` m stood as a
+-- wall under a deck high over a bay (the Golden Gate read as a fence 70 m tall): past `tall` m
+-- the spans grow to `span` times the height, and a strip shorter than one such span has none.
+function ROADS.pierSpans(length, heightAt)
+  local pier = ROADS.deck.pier
+  local hs = {}
+  for i = 1, 7 do hs[i] = heightAt(i / 8) end
+  table.sort(hs)
+  local h = hs[4]
+  if h <= pier.tall then return math.max(2, math.ceil(length / pier.every)) end
+  return math.ceil(length / math.max(pier.every, h * pier.span) - 1e-9)
+end
 -- A deck's ends: OSM draws many decks barely longer than the road under them, and on the 10 m
 -- lattice the ground between the approach's bank and that road stood at 60-70 degrees, a wall
 -- of grass by the abutment (Pärnu mnt over Järvevana tee, Tartu mnt at Pildiküla). Ground and
@@ -1596,7 +1609,10 @@ function ROADS.substructure(ctx)
       end
       local first, length = dist[1], dist[n] - dist[1]
       if length >= pier.min then
-        local count = math.max(2, math.ceil(length / pier.every))
+        local count = ROADS.pierSpans(length, function(f)
+          local x, y, z = at(first + length * f)
+          return z - ground(x, y)
+        end)
         for i = 1, count - 1 do
           local x, y, z, tx, ty, k = at(first + length * i / count)
           if owns(x, y) then
@@ -1839,7 +1855,10 @@ function ROADS.unitedDecks(ctx)
         end
       end
       if length >= pier.min then
-        local count = math.max(2, math.ceil(length / pier.every))
+        local count = ROADS.pierSpans(length, function(f)
+          local sample = frame(host.dist[1] + length * f)
+          return sample.z + lift - depth - ctx.ground(sample.x, sample.y)
+        end)
         for i = 1, count - 1 do
           local sample = frame(host.dist[1] + length * i / count)
           local across = (sample.left - sample.right) / 2 * pier.across

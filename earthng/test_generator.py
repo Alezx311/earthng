@@ -606,6 +606,21 @@ class GeneratorTests(unittest.TestCase):
         self.assertNotIn(250, crossed)
         self.assertEqual(set(alone) - set(crossed), {250})
 
+    def test_a_deck_high_over_the_ground_gets_long_spans_not_a_wall_of_piers(self):
+        # the Golden Gate drew a pier every 25 m, 70 m tall: a fence across the bay
+        def piers(length, z):
+            bridge = {'id': 'b', 'nodes': ['a', 'b'], 'width': 8, 'points': [[0, 250, z], [length, 250, z]],
+                      'tags': {'highway': 'trunk', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'}}
+            walls = self.triangles(self.build([{'roads': [bridge]}])[1], 'e2rf_fence_wall')
+            low = [t for t in walls if min(p[2] for p in t) < z - 5]   # under the soffit
+            return sorted({round(sum(p[0] for p in t) / 3 / 5) * 5 for t in low} - {0, round(length / 5) * 5})
+        high = piers(500, 80)
+        self.assertTrue(high)
+        self.assertLessEqual(len(high), 4)                            # spans 1.5 times the height
+        self.assertGreaterEqual(min(b - a for a, b in zip([0] + high, high + [500])), 95)
+        self.assertEqual(piers(100, 80), [])                          # shorter than one span: none
+        self.assertEqual(len(piers(500, 20)), 19)                     # low decks keep a pier every 25 m
+
     def test_main_road_approaches_to_a_bridge_get_guard_rails(self):
         def rails(highway, lines=(), register=False):
             bridge = {'id': 'b', 'nodes': ['a', 'b'], 'width': 8, 'points': [[250, 250, 10], [500, 250, 10]],
