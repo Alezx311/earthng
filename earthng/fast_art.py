@@ -91,7 +91,7 @@ FLAT = {   # kind: (toon colour, model colour)
     'pipe': ((150, 152, 156), (220, 220, 220)), 'ac_unit': ((222, 222, 216), (236, 236, 236)),
     'dish': ((228, 228, 224), (238, 238, 238)),
     'manhole': ((110, 108, 104), (200, 200, 200)), 'drain': ((80, 78, 74), (190, 190, 190)),
-    'plate': ((28, 54, 120), (200, 200, 200)), 'glyphs': ((240, 240, 236), (240, 240, 236)),
+    'plate': ((28, 54, 120), (200, 200, 200)), 'glyphs': ((240, 240, 236), (240, 240, 236)), 'glyphs_dark': ((10, 10, 12), (10, 10, 12)), 'sign_white': ((232, 232, 228), (232, 232, 228)),
     'paint_red': ((184, 30, 24), (220, 220, 220)), 'fascia': ((30, 32, 35), (200, 200, 200)),
     'patch': ((52, 52, 54), (180, 180, 180)),
     'wire': ((40, 40, 42), (190, 190, 190)), 'roof_gold': ((212, 170, 60), (230, 230, 230)),
@@ -420,6 +420,8 @@ def pack_fields(pack, base):
                 f['baseColorFactor'] = colour(SYNTH.get(kind, (30, 20, 50)))
         else:
             f['baseColorFactor'] = colour(FLAT.get(kind, ((200, 200, 200), (230, 230, 230)))[0 if pack == 'toon' else 1])
+        if kind in style.LENS:
+            f['emissiveFactor'] = ' '.join(str(c * 4) for c in style.LENS[kind])
         if kind in ('brand_sign', 'brand_photo', 'storefront'):
             f['baseColorMap'] = f'{base}/real/{kind}.color.png'
             f['baseColorFactor'] = '1 1 1 1'

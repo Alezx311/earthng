@@ -35,6 +35,13 @@ class StreetParkingTests(unittest.TestCase):
         xs = sorted(b[0] for b in bays)
         self.assertAlmostEqual(xs[1] - xs[0], 6, places=3)
 
+    def test_where_traffic_keeps_left_the_cars_face_the_traffic_of_their_side(self):
+        bays = self.bays({'parking:left': 'lane'}, leftHand=True)
+        self.assertTrue(bays)
+        self.assertTrue(all(math.cos(yaw) > .99 for *_, yaw in bays), 'the left of the point order runs with it')
+        bays = self.bays({'parking:right': 'lane'}, leftHand=True)
+        self.assertTrue(all(math.cos(yaw) < -.99 for *_, yaw in bays))
+
     def test_astride_the_curb_where_the_moving_lanes_need_the_width(self):
         narrow = self.bays({'parking:both': 'lane'}, width=7)
         self.assertEqual(sorted({round(b[1], 2) for b in narrow}), [246.45, 253.55])

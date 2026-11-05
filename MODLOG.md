@@ -83,6 +83,67 @@
   apart, with no bed. Both runs passed functionally; performance failed on `frame_over_100ms` (2
   frames each, worst 319 and 577 ms, means 22.9 and 26.9 ms), as the Kyiv run of 27.10 did before
   tracks. Not done: embankments and cuttings, catenary, rail bridges without a road deck.
+## 2026-11-03: issues #23 and #24: lights that change, signs, the line of where the car is; MapBuilder
+
+- Where the car is (#24, `location.lua`): top centre, the street or the road's number, what it is in
+  (part of town, town, region, country), a limit roundel, a road number chip, the next turn of a route.
+  Town names come from `map/places.json`, already in packs. Off in "Вигляд і трафік". A pack named
+  after its town no longer says it twice.
+- Traffic lights (#23, `signals.lua`): one clock for the world (green 24, yellow 3, all red 2 s), six
+  groups: a lit lens mesh per group and colour, so a phase change is a few `setHidden`. Lights within
+  45 m are one crossing, opposite ways share a phase. The game's AI gets the same colours through
+  `mapmgr.setSignals` and the `trafficSignalUpdates` mailbox; `core_trafficSignals` is not used, its timer
+  restarts on every `map.reset`. An edge stays in the table until the car is 3 km off: `ai.lua` indexes
+  it unguarded.
+- Signs: every kind the game has a model of, read off mapped nodes (country codes in `SIGNS.codes`)
+  and off the roads: limits where they change and every 2 km, bends, slopes, narrow and rough road, no
+  overtaking, dead ends, town limits; limits with no model are drawn, mph as a US board; street blades on
+  a corner. New nodes, so packs need a rebuild (index fast-22): level crossings (a Saint Andrew's cross,
+  a warning 120 m ahead out of town) and speed cameras.
+- Left-hand countries (`ROADS.keepsLeft`): navgraph lanes, `rightHandDrive`, signs, stop lines, lane arrows,
+  bus stops, parked cars.
+- Foot bridges: a path with `bridge=yes` had no deck, so Pont Saint-Louis was lamps over the Seine.
+  `fast_profile.foot_decks` lifts them; Paris pack: 1722 of 2507 foot ways, 572 over roads. Index fast-21.
+  Their ends come level with the bank's street, 6 m over the DEM at most (`banks`, fast-22). The deck
+  still lay under water: the quays of both banks pulled the ground, and the water drawn on it, 4 m up
+  over the river. A lattice node under water no longer follows roads unless one runs on it (a causeway),
+  and it takes the lowest DEM within 38 m (`ROADS.level`): the DEM's blur put 56 m by the banks of a river
+  at 48 m. The strip where the water's edge meets a bank still climbs: its vertices lie on the ground.
+- A city along the road never came up while driving. A near tile of central Kyiv is 100-140k triangles
+  against `TRIANGLE_LIMIT` 80k, so `trimTiles` evicted built tiles before the renderer took them, and they
+  were built again at the next epoch: 17 of 37 builds in a 200 s drive, 2 scenes of 13 round the car. A
+  near tile the car still wants now stays. The same drive at 9 m/s: buildings on both sides all the way.
+  It never showed in landings and stills, where the set is pinned.
+- The London Eye's "white block on a leg" was no such thing: the camera stood inside St Thomas' South
+  Wing (building 1644754826), and the leg was Centre Point. The real fault was 256 `building:part`s in
+  slab 204068874: `link_parts` and `clad_metal` take them as one structure.
+- MapBuilder: routing decoded every cell whole and used 5 % of it. `country_format.decode_roads` reads
+  the roads alone, once each: a Paris region 71 -> 13 s, the file byte for byte the same. All of Ukraine (101 regions): ~40 -> 3.5 min at 3 jobs.
+  Export: scene tiles through WKB and plain dicts, shop names remembered, nameless houses skip the
+  lookup, `nature.partition` cuts by what is near, coordinates written by hand. London, 16 cells: 62.5 -> 44.4 s. All 7113 areas of
+  the sample keep their shapes; only the numbers of cut parts and the start of a ring moved.
+  The road solve keeps its buffers between multiplications: 161.6 -> 147.3 s in Paris, the same heights. Starting
+  each pass from the last was 5x faster and is not in: at this tolerance it moved heights up to 9 m and left 1286
+  edges over their grade against 774.
+- Routing members of a pack had the clock in their zip header, so two builds differed: a fixed date now.
+- Blades: letters of 22 cm on a 30 cm board, read from the road. The game test records the game's window by title: since the widget has an OS window of its own, the
+  clip was of that. It also counts AI cars at red lights (`signalWatch`).
+
+BeamNG 0.40.4, isolated profile. Paris (High, Balanced 50): Pont Saint-Louis, Pont des Arts with decks and
+piers over the water (`out/night-paris-04`). London: left-hand signs, the wheel, Parliament Square. Kyiv, 1.3 km
+from Maidan down Khreshchatyk and Velyka Vasylkivska at 9 m/s, Normal, Balanced 50, 1280x720: the location
+line reads `вулиця Хрещатик`, `Центр, Київ`, a 50 roundel, red lenses lit, the autopilot that ignores lights was
+hit by a car on its green (`out/night-kyiv-22`), `signalWatch` with 20 AI cars: 24 samples waiting at red, 4
+crossing, 1 crossing at red. Level crossings and speed cameras stand where mapped (`out/night-kyiv-27`), but
+packs have no tracks, so a crossing has no rails. 20 AI cars: mean 40.8 ms, p99 84.
+
+Signs and lights cost no frames: the same drive with `SIGNS.plan` on and off, two runs each, no traffic. Khreshchatyk:
+mean 17.2/18.2 ms on, 17.8/17.8 off; p99 36.5/38, 38/38.5; frames over 33 ms 149/160, 179/177; Lua garbage 72/80,
+78/76 KB a frame. Embankment, 2.2 km at 15 m/s on average: mean 15.5/15.5, 15.4/15.4; p99 34/33.5, 32.5/33.5. Time per
+tile was not measured. `frame_over_100ms` fails in every run with or without signs: the worst frame (0.4-0.7 s) is
+the first one after the camera cut at touch-down, and the 2-10 frames over 100 ms are that and `reloadCollision`.
+Unit suite: 705 tests, 4 skipped. Packs need a rebuild for level crossings, cameras and bank ends; the road rules
+work on old packs. BeamNG 0.39 not run.
 
 ## 2026-11-02: after the 0.7.0 release, domes over Hagia Sophia's tombs
 

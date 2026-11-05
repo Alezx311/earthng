@@ -67,6 +67,20 @@ class PartTests(unittest.TestCase):
         self.assertEqual(outline['height'], '17.0')
         self.assertEqual(dome['historic'], 'tomb')
 
+    def test_parts_inside_a_tall_slab_replace_it(self):
+        # the London Eye: a 136 m slab, its rim, spokes and capsules parts in the air inside it
+        outline = {'building': 'yes', 'height': '136.5', 'min_height': '1.5', 'building:cladding': 'metal'}
+        rim = {'e2r_part': '1', 'building:part': 'yes', 'min_height': '40', 'height': '44'}
+        sources.link_parts({7: ('building', outline, box(0, 0, 10, 10)), 8: ('building', rim, box(1, 1, 9, 9))})
+        self.assertEqual(outline['e2r_outline'], '1')
+        self.assertEqual(rim['building:cladding'], 'metal')
+
+    def test_a_dome_on_a_building_with_a_height_stands_on_it(self):
+        outline = {'building': 'yes', 'height': '20'}
+        dome = {'e2r_part': '1', 'building:part': 'roof', 'min_height': '20', 'roof:shape': 'dome'}
+        sources.link_parts({7: ('building', outline, box(0, 0, 10, 10)), 8: ('building', dome, box(1, 1, 9, 9))})
+        self.assertNotIn('e2r_outline', outline)
+
     def test_a_shop_inside_lends_its_part_no_sign(self):
         outline = {'building': 'retail', 'amenity': 'bank'}
         part = {'e2r_part': '1', 'building:part': 'yes'}
@@ -227,6 +241,12 @@ class GeneratorTests(unittest.TestCase):
         for building in (self.building(height=130, min_height='120'), self.building(height=150, min_height='20', e2r_part='1'),
                          self.building(height=150)):
             self.assertFalse(self.corners(self.build(buildings=[building]), 'e2rf_clad_metal'), building['tags'])
+
+    def test_metal_cladding_is_metal_unless_a_material_says_otherwise(self):
+        spoke = self.building(height=44, min_height='40', e2r_part='1', window='no', **{'building:cladding': 'metal'})
+        self.assertTrue(self.corners(self.build(buildings=[spoke]), 'e2rf_clad_metal'))
+        capsule = self.building(height=44, min_height='40', e2r_part='1', **{'building:cladding': 'metal', 'building:material': 'glass'})
+        self.assertFalse(self.corners(self.build(buildings=[capsule]), 'e2rf_clad_metal'))
 
     def test_a_dome_rises_from_the_walls(self):
         scene = self.build(buildings=[self.building(height=12, **{'roof:shape': 'dome'})])

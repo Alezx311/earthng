@@ -1151,10 +1151,35 @@ end
 function ROADS.tunnel(tags)
   return tags.tunnel ~= nil and tags.tunnel ~= 'no' and tags.tunnel ~= 'building_passage'
 end
+-- A foot bridge is the only foot way among the roads (fast_sources.foot_segments): a deck for
+-- people, with no sidewalks, no traffic and no say in the height of the roads round it.
+ROADS.feet = {footway = true, path = true, pedestrian = true, cycleway = true, steps = true, bridleway = true}
+function ROADS.foot(tags)
+  return ROADS.feet[tags.highway or ''] == true
+end
+-- Is (x, y) under the water of this tile's cells (ROADS.waters, set at the top of a build)?
+function ROADS.wet(x, y)
+  for _, water in ipairs(ROADS.waters) do
+    local b = water.bounds
+    if x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] and inside(water.rings, x, y) then return true end
+  end
+  return false
+end
+-- The height of the water at a point of it, base there: the DEM's 30 m blur climbs a quay from
+-- inside the river (the Seine stood at 48 m with 56 m by its banks), so the lowest ground round the
+-- point counts. 38 m: a tile has its cells 40 m past its edge, neighbours agree on what they see.
+ROADS.reach = {{38, 0}, {27, 27}, {0, 38}, {-27, 27}, {-38, 0}, {-27, -27}, {0, -38}, {27, -27}}
+function ROADS.level(x, y, base, demAt)
+  for _, step in ipairs(ROADS.reach) do
+    local z = demAt(x + step[1], y + step[2])
+    if z and z < base then base = z end
+  end
+  return base
+end
 -- a deck's concrete: its edge face reaches depth under the road, a parapet height over it.
 -- Piers: a wall every `every` m of a bridge at least `min` long, `across` of the half width,
 -- `thick` along the road, kept `clear` m off any road under it; abutments `thick` deep.
-ROADS.deck = {depth = 1, parapet = .9, thick = .3, repeatU = 2.5,
+ROADS.deck = {depth = 1, footDepth = .5, parapet = .9, thick = .3, repeatU = 2.5,
   pier = {every = 25, min = 16, across = .85, thick = 1.6, clear = 1.5, gap = 1, sink = .5, span = 1.5, tall = 30}}
 -- How many spans a bridge strip `length` m long is split into by its piers. heightAt(f) is the
 -- soffit's height over the ground at fraction f of the strip. A pier every `every` m stood as a
@@ -1182,6 +1207,7 @@ ROADS.wing = {steep = 55, reach = 15, material = 'fence_wall', decals = {edge_gr
 -- main roads' decks are girders deeper than a street's slab (fast_profile.CLEARANCE leaves
 -- 4.5 m under the deepest)
 function ROADS.deckDepth(tags)
+  if ROADS.foot(tags) then return ROADS.deck.footDepth end
   local rank = ROADS.rankOf(tags)
   return rank >= 4.5 and 1.5 or rank >= 2.5 and 1.2 or ROADS.deck.depth
 end
@@ -2071,6 +2097,28 @@ local SPEED = {motorway = 110, trunk = 90, primary = 60, secondary = 60, tertiar
 local DRIVE = {motorway = 1, trunk = 1, primary = 1, secondary = 1, tertiary = .9,
   unclassified = .7, residential = .7, living_street = .4}
 local NAV_MIN = .5     -- m: the shortest navgraph edge
+-- Who drives on the left, by the words of a pack's id; a British look does too. A build sets
+-- ROADS.leftHand from it: lanes of the navgraph, signs, stop lines.
+ROADS.LEFT = {'united-kingdom', 'great-britain', 'england', 'scotland', 'wales', 'ireland', 'isle-of-man', 'guernsey',
+  'jersey', 'malta', 'cyprus', 'japan', 'australia', 'new-zealand', 'south-africa', 'india', 'pakistan', 'bangladesh',
+  'sri-lanka', 'nepal', 'bhutan', 'thailand', 'malaysia', 'singapore', 'indonesia', 'hong-kong', 'macau', 'brunei',
+  'kenya', 'tanzania', 'zanzibar', 'uganda', 'zambia', 'zimbabwe', 'mozambique', 'namibia', 'botswana', 'lesotho',
+  'eswatini', 'swaziland', 'malawi', 'mauritius', 'seychelles', 'jamaica', 'barbados', 'trinidad', 'bahamas', 'fiji'}
+function ROADS.keepsLeft(country, look)
+  if type(look) == 'table' and look.block == 'british' then return true end
+  country = tostring(country or '')
+  for _, word in ipairs(ROADS.LEFT) do
+    if country:find(word, 1, true) then return true end
+  end
+  return false
+end
+-- a street's names and limit for the line of where the car is (location.lua): nil when it has none
+local function navNames(road)
+  local tags = road.tags or {}
+  local limit = tostring(tags.maxspeed or ''):match('^%d+')
+  local name, uk, en, ref = tags.name, tags['name:uk'], tags['name:en'], tags.ref
+  if name or uk or en or ref or limit then return {n = name, u = uk, e = en, r = ref, l = limit} end
+end
 local function navSegment(road)
   local tags, points = road.tags or {}, road.points or {}
   local highway = (tags.highway or 'residential'):gsub('_link$', '')
@@ -2084,6 +2132,7 @@ local function navSegment(road)
     local back = number(tags['lanes:backward'], math.max(1, math.floor(total / 2)))
     local forward = number(tags['lanes:forward'], math.max(1, total - back))
     lanes = string.rep('-', math.min(4, back)) .. string.rep('+', math.min(4, forward))
+    if ROADS.leftHand then lanes = lanes:reverse() end
   end
   local speedText = tostring(tags.maxspeed or ''):lower()
   local speed = number(speedText, SPEED[highway])
@@ -2328,10 +2377,10 @@ function DETAIL.paint(ctx)
           local sx, sy = forward and tx or -tx, forward and ty or -ty   -- the travel direction
           local oneway = ROADS.oneway(rtags)
           local mid = (lo + hi) / 2
-          -- right-hand traffic: the approach lanes are right of the travel direction
+          -- the approach lanes are on the side of the road the country drives on
           local a, b = lo, hi
           if not oneway then
-            if forward then a, b = lo, mid else a, b = mid, hi end
+            if forward == not ROADS.leftHand then a, b = lo, mid else a, b = mid, hi end
           end
           local z = (c[3] or 0) + ctx.z
           if point.kind == 'stop_sign' then
@@ -2367,12 +2416,42 @@ end
 -- what the pack already says at a node: road classes, oneway, maxspeed. Where the data says
 -- nothing (a speed with no model, a junction that may have lights) no sign stands.
 -- SIGNS.plan returns requests {kind, model, road, dist, s, dir, key}: the sign stands on the
--- right of travel along `road` in direction `dir` (+1 the point order) at arc length s.
+-- driver's side of travel along `road` in direction `dir` (+1 the point order) at arc length s.
 local SIGNS = {dir = GDC .. 'italy_traf_sign_', near = .5, mouth = 1.2, priority = 5, speedAt = 8,
   oneway = 3, noentry = 1, crossing = 2, minor = 2, top = 3, lights = 30,
+  lead = 45, pair = 30, cluster = 45, slots = 3, reach = 15, rail = 6,
   speeds = {[30] = true, [50] = true, [60] = true, [80] = true, [90] = true, [100] = true}}
 SIGNS.models = {give_way = 'give_way', stop_sign = 'stop', priority = 'priorityroad', crossing = 'zebra',
-  oneway = 'one_way', noentry = 'noentry', roundabout = 'roundabout'}
+  oneway = 'one_way', noentry = 'noentry', roundabout = 'roundabout', dead_end = 'dead_end',
+  curve_l = 'warn_bend_l', curve_r = 'warn_bend_r', twist_l = 'warn_doublebend_l', twist_r = 'warn_doublebend_r',
+  steep_up = 'warn_steep_up', steep_down = 'warn_steep_down', zebra_ahead = 'warn_zebra_warning',
+  ring_ahead = 'warn_roundabout_warning', rough = 'warn_uneven_road', rocks = 'warn_falling_rocks',
+  no_overtaking = 'no_overtaking', hump = 'warn_humps', danger = 'warn_other_danger', narrow = 'warn_road_narrows'}
+-- The road's own stretches. open: speed from which it is a road out of town (the class says so
+-- where no maxspeed does): warnings stand ahead of what they warn of only there.
+SIGNS.along = {open = 70, ahead = 120, again = 2000, ends = 40, span = 100, turn = math.rad(38), gap = 200,
+  steep = .08, steepSpan = 120, classes = {motorway = 110, trunk = 90, primary = 90, secondary = 90, tertiary = 70},
+  rough = {bad = true, very_bad = true, horrible = true, very_horrible = true}, shortDead = 90}
+-- traffic_sign= values, by name and by each country's code; speed marks a limit, its number in
+-- the code ('DE:274-50', 'UA:3.29[50]') or in the node's maxspeed
+SIGNS.codes = {stop = 'stop_sign', give_way = 'give_way', yield = 'give_way', priority_road = 'priority', city_limit = 'town',
+  maxspeed = 'speed', no_entry = 'noentry', overtaking = 'no_overtaking', roundabout = 'roundabout', hump = 'hump',
+  ['ua:2.1'] = 'give_way', ['ua:2.2'] = 'stop_sign', ['ua:2.3'] = 'priority', ['ua:3.21'] = 'noentry', ['ua:3.29'] = 'speed',
+  ['ua:5.45'] = 'town', ['ua:1.39'] = 'danger',
+  ['ru:2.4'] = 'give_way', ['ru:2.5'] = 'stop_sign', ['ru:2.1'] = 'priority', ['ru:3.1'] = 'noentry', ['ru:3.24'] = 'speed',
+  ['de:205'] = 'give_way', ['de:206'] = 'stop_sign', ['de:306'] = 'priority', ['de:267'] = 'noentry', ['de:274'] = 'speed',
+  ['de:310'] = 'town', ['de:101'] = 'danger',
+  ['pl:a-7'] = 'give_way', ['pl:b-20'] = 'stop_sign', ['pl:d-1'] = 'priority', ['pl:b-2'] = 'noentry', ['pl:b-33'] = 'speed',
+  ['pl:d-42'] = 'town', ['pl:a-30'] = 'danger',
+  ['cz:p4'] = 'give_way', ['cz:p6'] = 'stop_sign', ['cz:p2'] = 'priority', ['cz:b2'] = 'noentry', ['cz:b20a'] = 'speed',
+  ['sk:p1'] = 'give_way', ['sk:p2'] = 'stop_sign', ['sk:p3'] = 'priority', ['sk:b20'] = 'speed',
+  ['fr:ab3a'] = 'give_way', ['fr:ab4'] = 'stop_sign', ['fr:ab6'] = 'priority', ['fr:b1'] = 'noentry', ['fr:b14'] = 'speed',
+  ['fr:eb10'] = 'town', ['fr:a14'] = 'danger',
+  ['it:ii.36'] = 'give_way', ['it:ii.37'] = 'stop_sign', ['it:ii.47'] = 'noentry', ['it:ii.50'] = 'speed',
+  ['es:r1'] = 'give_way', ['es:r2'] = 'stop_sign', ['es:r101'] = 'noentry', ['es:r301'] = 'speed',
+  ['ro:b1'] = 'give_way', ['ro:b2'] = 'stop_sign', ['ro:c1'] = 'noentry',
+  ['gb:601.1'] = 'stop_sign', ['gb:602'] = 'give_way', ['gb:616'] = 'noentry', ['gb:670'] = 'speed',
+  ['us:r1-1'] = 'stop_sign', ['us:r1-2'] = 'give_way', ['us:r5-1'] = 'noentry', ['us:r2-1'] = 'speed'}
 
 -- the travel directions a road allows: forward (+1, the point order), backward (-1)
 function SIGNS.ways(tags)
@@ -2387,6 +2466,117 @@ local function signSpeed(tags)
   return tonumber(v)
 end
 
+-- a sign for a limit: the game's model where it has that number, else drawn (SIGNS.drawLimit);
+-- 'mph' is a US board
+local function limitOf(tags)
+  local v = tostring(tags.maxspeed or ''):lower()
+  local number, unit = v:match('^(%d+)%s*(%a*)$')
+  if not number or (unit ~= '' and unit ~= 'mph') or tonumber(number) <= 0 then return nil end
+  return tonumber(number), unit == 'mph'
+end
+
+-- The kinds a mapped traffic_sign says: each {kind, number of a limit}
+function SIGNS.decode(tags)
+  local out = {}
+  for part in tostring(tags.traffic_sign or ''):lower():gmatch('[^;,]+') do
+    local code = part:gsub('%s', '')
+    local kind = SIGNS.codes[code]
+    local number
+    if not kind then
+      local base, arg = code:match('^(.-)[%[%(%-](%d+)[%]%)]?$')
+      kind, number = base and SIGNS.codes[base], arg and tonumber(arg)
+      if kind ~= 'speed' then number = nil end
+    end
+    if kind == 'speed' then number = number or limitOf(tags) end
+    if kind and (kind ~= 'speed' or number) then out[#out + 1] = {kind, number} end
+  end
+  return out
+end
+
+-- the curves of a line in its own direction: {arc where it begins, +1 left / -1 right}
+function SIGNS.curves(points, dist)
+  local A, curves = SIGNS.along, {}
+  local n, k = #points, 2
+  local function turn(i)
+    local a, b, c = points[i - 1], points[i], points[i + 1]
+    local d = math.atan2(c[2] - b[2], c[1] - b[1]) - math.atan2(b[2] - a[2], b[1] - a[1])
+    return (d + math.pi) % (2 * math.pi) - math.pi
+  end
+  while k < n do
+    local sum, j = 0, k
+    while j < n and dist[j] - dist[k] <= A.span do sum = sum + turn(j); j = j + 1 end
+    if math.abs(sum) >= A.turn then
+      curves[#curves + 1] = {dist[k], sum > 0 and 1 or -1}
+      k = j
+    else
+      k = k + 1
+    end
+  end
+  return curves
+end
+
+-- Signs read off one road: repeats of its limit, its tags, what it does ahead on the open road.
+function SIGNS.stretch(road, dist, add)
+  local tags, A = road.tags or NONE, SIGNS.along
+  local length, id = dist[#dist], tostring(road.id)
+  local highway = tostring(tags.highway or ''):gsub('_link$', '')
+  if ROADS.ring(tags) or length < 2 * A.ends or ROADS.rankOf(tags) < SIGNS.minor then return end
+  local fwd, back = SIGNS.ways(tags)
+  local function both(kind, s, key, model, value)
+    if fwd then add(kind, road, s, 1, id .. ':' .. key .. ':f', model, value) end
+    if back then add(kind, road, length - s, -1, id .. ':' .. key .. ':b', model, value) end
+  end
+  local limit, mph = limitOf(tags)
+  local open = (limit or A.classes[highway] or 0) * (mph and 1.6 or 1) >= A.open
+  if limit and open then
+    local s = A.again
+    while s < length - A.ends do
+      both('limit', s, 'limit' .. s, nil, {limit, mph})
+      s = s + A.again
+    end
+  end
+  if tags.overtaking == 'no' then both('no_overtaking', A.ends / 2, 'pass') end
+  if tostring(tags.hazard or '') == 'rock_slide' or tostring(tags.hazard or '') == 'falling_rocks' then both('rocks', A.ends, 'rock') end
+  if A.rough[tags.smoothness or ''] and tags.surface ~= 'unpaved' and tags.surface ~= 'ground' then both('rough', A.ends, 'rough') end
+  if not open or length < A.ahead then return end
+  -- the bends, and two in a row one way then the other as one sign
+  local function warn(curves, total, forward)
+    local k = 1
+    while curves[k] do
+      local c, follow = curves[k], curves[k + 1]
+      local twist = follow and follow[2] ~= c[2] and follow[1] - c[1] < A.gap
+      local s = c[1] - A.ahead
+      if s > 5 then
+        local kind = (twist and 'twist_' or 'curve_') .. (c[2] > 0 and 'l' or 'r')
+        if forward then add(kind, road, s, 1, id .. ':bend' .. k .. ':f')
+        else add(kind, road, total - s, -1, id .. ':bend' .. k .. ':b') end
+      end
+      k = k + (twist and 2 or 1)
+    end
+  end
+  if fwd then warn(SIGNS.curves(road.points, dist), length, true) end
+  if back then
+    local reversed, arcs, n = {}, {}, #road.points
+    for k = 1, n do reversed[k], arcs[k] = road.points[n + 1 - k], length - dist[n + 1 - k] end
+    warn(SIGNS.curves(reversed, arcs), length, false)
+  end
+  -- a long steep stretch
+  local n, points = #road.points, road.points
+  local first, last = points[1], points[n]
+  if first[3] and last[3] then
+    local j = 1
+    for k = 2, n do
+      while dist[k] - dist[j] > A.steepSpan do j = j + 1 end
+      local span = dist[k] - dist[j]
+      local rise = span >= A.steepSpan * .7 and ((points[k][3] or 0) - (points[j][3] or 0)) / span or 0
+      if math.abs(rise) >= A.steep then
+        both(rise > 0 and 'steep_up' or 'steep_down', dist[j], 'steep')
+        break
+      end
+    end
+  end
+end
+
 function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
   local out, handled = {}, {}
   local function arc(road)
@@ -2398,19 +2588,69 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
     road.e2rDist = dist
     return dist
   end
-  local function add(kind, road, s, dir, key, model)
+  local function add(kind, road, s, dir, key, model, value)
     local dist = arc(road)
     local length = dist[#dist]
     if length < 2 then return end
     local shape = model or SIGNS.models[kind]
     out[#out + 1] = {kind = kind, model = shape and (SIGNS.dir .. shape .. '.dae') or nil, road = road, dist = dist,
-      s = math.max(.5, math.min(length - .5, s)), dir = dir, key = key}
+      s = math.max(.5, math.min(length - .5, s)), dir = dir, key = key, value = value}
+  end
+  -- a limit: the game's model has this number, or it is drawn
+  local function addLimit(road, s, dir, key, limit, mph)
+    if not mph and SIGNS.speeds[limit] then add('speed', road, s, dir, key, 'speed_' .. limit)
+    else add('limit', road, s, dir, key, nil, {limit, mph}) end
+  end
+  -- traffic into the node from mouth m, and out of the node into it
+  local function inbound(m)
+    local fwd, back = SIGNS.ways(m.road.tags or NONE)
+    if m.e == 2 then return fwd end
+    return back
+  end
+  local function outbound(m)
+    local fwd, back = SIGNS.ways(m.road.tags or NONE)
+    if m.e == 1 then return fwd end
+    return back
+  end
+  -- arc length from the node into the mouth's road, and the travel direction towards it
+  local function from(m, d)
+    local dist = arc(m.road)
+    local length = dist[#dist]
+    local cut = (cutsOf[m.road] or NONE)[m.e] or 0
+    if m.e == 1 then return cut + d, 1, -1 end
+    return length - cut - d, -1, 1
+  end
+  -- the junction a road's end (1, 2) is at, if the road's arc d reaches it within SIGNS.lead
+  local function junctionAt(road, e, d)
+    local id = d <= SIGNS.lead and road.nodes and road.nodes[e]
+    local list = id and mouths[id]
+    return list and #list >= 3 and list or nil
+  end
+  -- one light to an approach: mapped nodes of one stop line stand as one
+  local lightsOn = {}
+  local function light(road, s, dir, key)
+    local seen = lightsOn[road]
+    if not seen then seen = {}; lightsOn[road] = seen end
+    for _, q in ipairs(seen) do
+      if q[2] == dir and math.abs(q[1] - s) < SIGNS.pair then return end
+    end
+    seen[#seen + 1] = {s, dir}
+    add('signal', road, s, dir, key)
+  end
+  -- what stands on a road out of town is warned of
+  local function warnAhead(kind, road, s, id, fwd, back)
+    local limit, mph = limitOf(road.tags or NONE)
+    if (limit or 0) * (mph and 1.6 or 1) < SIGNS.along.open then return end
+    local dist, ahead = arc(road), SIGNS.along.ahead
+    if fwd and s > ahead then add(kind, road, s - ahead, 1, id .. ':wf') end
+    if back and dist[#dist] - s > ahead then add(kind, road, s + ahead, -1, id .. ':wb') end
   end
   -- the mapped nodes on a road vertex: give-way, stop, a marked crossing
   local vertices, wanted = {}, {}
   for _, point in ipairs(points) do
     if point.pos and (point.kind == 'give_way' or point.kind == 'stop_sign' or point.kind == 'crossing'
-        or point.kind == 'signal' or point.kind == 'traffic_sign') then
+        or point.kind == 'signal' or point.kind == 'traffic_sign' or point.kind == 'level_crossing'
+        or point.kind == 'speed_camera') then
       wanted[#wanted + 1] = point
     end
   end
@@ -2445,51 +2685,91 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
         end
       end
     end
+    -- a sign mapped beside the road: for the road it stands by, and the side says who it faces
+    local beside
+    if not found and (point.kind == 'traffic_sign' or point.kind == 'speed_camera') then
+      local best = SIGNS.reach ^ 2
+      for _, road in ipairs(roads) do
+        local pts = road.points or NONE
+        for k = 1, #pts - 1 do
+          local a, b = pts[k], pts[k + 1]
+          local dx, dy = b[1] - a[1], b[2] - a[2]
+          local l2 = dx * dx + dy * dy
+          local t = l2 > 0 and math.max(0, math.min(1, ((p[1] - a[1]) * dx + (p[2] - a[2]) * dy) / l2)) or 0
+          local d = (a[1] + t * dx - p[1]) ^ 2 + (a[2] + t * dy - p[2]) ^ 2
+          if d < best then
+            best = d
+            found, beside = {road, t < .5 and k or k + 1, d}, ((p[1] - a[1]) * dy - (p[2] - a[2]) * dx) > 0
+          end
+        end
+      end
+    end
     if found and (found[1].points and #found[1].points >= 2) then
       local road, k = found[1], found[2]
       local dist = arc(road)
       local length, s = dist[#dist], dist[k]
       local fwd, back = SIGNS.ways(road.tags or NONE)
       if point.kind == 'signal' then
-        -- A single way vertex can control two directions. Direction is relative to that way;
-        -- when absent, show both allowed directions. It is a visual, unlit signal, not a
-        -- traffic controller. Nodes detached from a road are retained but not guessed into place.
-        local direction = tags['traffic_signals:direction'] or tags.direction
-        if fwd and direction ~= 'backward' then add('signal', road, s - 2, 1, point.id .. ':f') end
-        if back and direction ~= 'forward' then add('signal', road, s + 2, -1, point.id .. ':b') end
+        -- On a junction's node the light is for every way in. On a road, the direction is the
+        -- way's; without one a node just short of a junction is that junction's stop line, for
+        -- those driving at it, and any other (a crossing) stops both ways. Nodes detached from
+        -- a road are retained but not guessed into place.
+        local at = road.nodes and (k == 1 and road.nodes[1] or k == #road.points and road.nodes[2])
+        local list = at and mouths[at]
+        if list and #list >= 3 then
+          for index, m in ipairs(list) do
+            if inbound(m) then
+              local stop, _, toward = from(m, SIGNS.mouth)
+              light(m.road, stop, toward, point.id .. ':' .. index)
+            end
+          end
+        else
+          local direction = tags['traffic_signals:direction'] or tags.direction
+          local ahead, behind = junctionAt(road, 2, length - s), junctionAt(road, 1, s)
+          if direction == nil and ahead and not behind then direction = 'forward' end
+          if direction == nil and behind and not ahead then direction = 'backward' end
+          if fwd and direction ~= 'backward' then light(road, s - 2, 1, point.id .. ':f') end
+          if back and direction ~= 'forward' then light(road, s + 2, -1, point.id .. ':b') end
+        end
       elseif point.kind == 'crossing' then
         -- a street's crossing, not a footway over a yard's service way or a car park's aisle
         if ROADS.rankOf(road.tags or NONE) < SIGNS.minor then fwd, back = false, false end
         if tags.crossing == 'traffic_signals' or tags['crossing:signals'] == 'yes' then
-          if fwd then add('signal', road, s - SIGNS.crossing, 1, point.id .. ':signal:f') end
-          if back then add('signal', road, s + SIGNS.crossing, -1, point.id .. ':signal:b') end
+          if fwd then light(road, s - SIGNS.crossing, 1, point.id .. ':signal:f') end
+          if back then light(road, s + SIGNS.crossing, -1, point.id .. ':signal:b') end
         end
         if fwd then add('crossing', road, s - SIGNS.crossing, 1, point.id .. ':f') end
         if back then add('crossing', road, s + SIGNS.crossing, -1, point.id .. ':b') end
+        warnAhead('zebra_ahead', road, s, point.id, fwd, back)
+      elseif point.kind == 'level_crossing' then
+        if fwd then add('rail', road, s - SIGNS.rail, 1, point.id .. ':f') end
+        if back then add('rail', road, s + SIGNS.rail, -1, point.id .. ':b') end
+        warnAhead('danger', road, s, point.id, fwd, back)
       else
-        local kind = point.kind
-        if kind == 'traffic_sign' then
-          local sign = tostring(tags.traffic_sign or ''):lower()
-          kind = ({['stop'] = 'stop_sign', ['ua:2.2'] = 'stop_sign',
-            ['give_way'] = 'give_way', ['ua:2.1'] = 'give_way'})[sign]
-        end
-        if kind then
-        local direction = tostring(tags.direction or '')
-        local forward
-        if direction == 'forward' then forward = true
-        elseif direction == 'backward' then forward = false
-        else forward = (length - s) <= s end
-        if (forward and fwd) or (not forward and back) then
-          -- at the line: by a junction the strip stops at its mouth (DETAIL.paint)
-          local cuts = cutsOf[road] or NONE
-          local cut = forward and (cuts[2] or 0) or (cuts[1] or 0)
-          local toEnd = forward and (length - s) or s
-          local at = s
-          if cut > 0 and toEnd <= cut + 6 then at = forward and length - cut - SIGNS.mouth or cut + SIGNS.mouth end
-          add(kind, road, at, forward and 1 or -1, point.id)
-          handled[road] = handled[road] or {}
-          handled[road][forward and 2 or 1] = true
-        end
+        local kinds = point.kind == 'traffic_sign' and SIGNS.decode(tags) or {{point.kind}}
+        for index, sign in ipairs(kinds) do
+          local kind, limit = sign[1], sign[2]
+          local direction = tostring(tags.direction or tags['traffic_sign:direction'] or '')
+          local forward
+          if direction == 'forward' then forward = true
+          elseif direction == 'backward' then forward = false
+          elseif beside ~= nil then forward = beside ~= (ROADS.leftHand or false)
+          else forward = (length - s) <= s end
+          if (forward and fwd) or (not forward and back) then
+            -- at the line: by a junction the strip stops at its mouth (DETAIL.paint)
+            local cuts = cutsOf[road] or NONE
+            local cut = forward and (cuts[2] or 0) or (cuts[1] or 0)
+            local toEnd = forward and (length - s) or s
+            local at = s
+            if cut > 0 and toEnd <= cut + 6 then at = forward and length - cut - SIGNS.mouth or cut + SIGNS.mouth end
+            local dir, key = forward and 1 or -1, point.id .. (index > 1 and (':' .. index) or '')
+            if kind == 'speed' then addLimit(road, at, dir, key, limit, tostring(tags.maxspeed or ''):find('mph', 1, true) ~= nil)
+            elseif kind == 'town' then
+              if tags.name then add('town', road, at, dir, key, nil, tags.name) end
+            else add(kind, road, at, dir, key) end
+            handled[road] = handled[road] or {}
+            handled[road][forward and 2 or 1] = true
+          end
         end
       end
     end
@@ -2502,35 +2782,16 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
     local first = list[1]
     local fp = first.road.points
     local node = first.e == 1 and fp[1] or fp[#fp]
-    -- traffic into the node from mouth m, and out of the node into it
-    local function inbound(m)
-      local fwd, back = SIGNS.ways(m.road.tags or NONE)
-      if m.e == 2 then return fwd end
-      return back
-    end
-    local function outbound(m)
-      local fwd, back = SIGNS.ways(m.road.tags or NONE)
-      if m.e == 1 then return fwd end
-      return back
-    end
-    -- arc length from the node into the mouth's road, and the travel direction towards it
-    local function from(m, d)
-      local dist = arc(m.road)
-      local length = dist[#dist]
-      local cut = (cutsOf[m.road] or NONE)[m.e] or 0
-      if m.e == 1 then return cut + d, 1, -1 end
-      return length - cut - d, -1, 1
-    end
     if #list == 2 then
       -- a way split where the speed changes: the new limit 8 m on, for whoever drives into it
       for k = 1, 2 do
         local m, o = list[k], list[3 - k]
-        local v = signSpeed(m.road.tags or NONE)
-        local w = signSpeed(o.road.tags or NONE)
-        if v and v ~= w and SIGNS.speeds[v] and outbound(m) and not ROADS.ring(m.road.tags or NONE)
+        local v, mph = limitOf(m.road.tags or NONE)
+        local w = limitOf(o.road.tags or NONE)
+        if v and v ~= w and outbound(m) and not ROADS.ring(m.road.tags or NONE)
             and arc(m.road)[#m.road.points] > SIGNS.speedAt * 2 then
           local s, away = from(m, SIGNS.speedAt)
-          add('speed', m.road, s, away, id .. ':speed:' .. k, 'speed_' .. v)
+          addLimit(m.road, s, away, id .. ':speed:' .. k, v, mph)
         end
       end
     elseif #list >= 3 then
@@ -2549,6 +2810,11 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
             add('give_way', m.road, s, toward, id .. ':ring:' .. k)
             s = from(m, SIGNS.mouth + 6)
             add('roundabout', m.road, s, toward, id .. ':round:' .. k)
+            local limit, mph = limitOf(tags)
+            if arc(m.road)[#m.road.points] > SIGNS.along.ahead * 1.5 and (limit or 0) * (mph and 1.6 or 1) >= SIGNS.along.open then
+              s = from(m, SIGNS.along.ahead)
+              add('ring_ahead', m.road, s, toward, id .. ':ringw:' .. k)
+            end
           end
         end
       elseif not lit then
@@ -2599,12 +2865,104 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
           end
         end
       end
+      -- a turn off the street into a limit of its own: the road goes on past the junction at its
+      -- own speed, and only who leaves it needs telling
+      for k, m in ipairs(list) do
+        local v, mph = limitOf(m.road.tags or NONE)
+        if v and outbound(m) and not ROADS.ring(m.road.tags or NONE) and arc(m.road)[#m.road.points] > SIGNS.speedAt * 2 then
+          local same, other = false, false
+          for _, o in ipairs(list) do
+            if o ~= m then
+              local w = limitOf(o.road.tags or NONE)
+              if w == v then same = true elseif w then other = true end
+            end
+          end
+          if other and not same then
+            local s, away = from(m, SIGNS.speedAt)
+            addLimit(m.road, s, away, id .. ':limit:' .. k, v, mph)
+          end
+        end
+      end
+      -- the blind stub
+      for k, m in ipairs(list) do
+        local far = m.road.nodes and m.road.nodes[3 - m.e]
+        local dist = arc(m.road)
+        if far and dist[#dist] <= SIGNS.along.shortDead and dist[#dist] > SIGNS.mouth * 4 and #(mouths[far] or NONE) <= 1
+            and ROADS.rankOf(m.road.tags or NONE) >= SIGNS.minor and outbound(m) then
+          local s, away = from(m, SIGNS.mouth + 2)
+          add('dead_end', m.road, s, away, id .. ':dead:' .. k)
+        end
+      end
+      -- the names of a crossing of two named streets, on one corner of it
+      if not ring then
+        local own, cross
+        for _, m in ipairs(list) do
+          local name = (m.road.tags or NONE).name
+          if name and ROADS.rankOf(m.road.tags or NONE) >= SIGNS.minor then
+            if not own and inbound(m) then own = m
+            elseif own and name ~= (own.road.tags or NONE).name then cross = name; break end
+          end
+        end
+        if own and cross then
+          local s, _, toward = from(own, SIGNS.mouth + 3)
+          add('names', own.road, s, toward, id .. ':names', nil, {own.road.tags.name, cross})
+        end
+      end
     end
   end
+  for index, road in ipairs(roads) do
+    if index % 64 == 0 then pause() end
+    SIGNS.stretch(road, arc(road), add)
+  end
+  SIGNS.phases(out)
   return out
 end
 
--- A request's place: the street's edge on the right of travel, 0.7 m into a sidewalk or 1.2 m
+-- The lights of one crossing change together (signals.lua): r.group = slot * 2 + axis. A crossing
+-- is the lights within SIGNS.cluster of each other, so a dual carriageway's two stop lines are
+-- one; its axis is that of its biggest road, the approaches across it the other phase; the slot
+-- spreads the crossings of a town over the cycle. All of it read off the requests in a fixed
+-- order, so that two tiles agree on a crossing they share.
+function SIGNS.phases(requests)
+  local list = {}
+  for _, r in ipairs(requests) do
+    if r.kind == 'signal' then
+      local c, tx, ty = alongLine(r.road.points, r.dist, r.s)
+      r.stop, r.tx, r.ty = c, tx * r.dir, ty * r.dir
+      list[#list + 1] = r
+    end
+  end
+  local reach = SIGNS.cluster ^ 2
+  for _, seed in ipairs(list) do
+    if not seed.crossing then
+      local members, head = {seed}, 1
+      seed.crossing = true
+      while members[head] do
+        local a = members[head]
+        head = head + 1
+        for _, b in ipairs(list) do
+          if not b.crossing and (a.stop[1] - b.stop[1]) ^ 2 + (a.stop[2] - b.stop[2]) ^ 2 < reach then
+            b.crossing = true
+            members[#members + 1] = b
+          end
+        end
+      end
+      local lead, rank
+      for _, r in ipairs(members) do
+        local value = ROADS.rankOf(r.road.tags or NONE)
+        if not lead or value > rank or (value == rank and tostring(r.key) < tostring(lead.key)) then lead, rank = r, value end
+      end
+      local slot = 0
+      for k = 1, #tostring(lead.key) do slot = slot + tostring(lead.key):byte(k) end
+      slot = slot % SIGNS.slots
+      for _, r in ipairs(members) do
+        r.group = slot * 2 + (math.abs(r.tx * lead.tx + r.ty * lead.ty) >= .7071 and 0 or 1)
+      end
+    end
+  end
+end
+
+-- A request's place: the street's edge on the driver's side of travel, 0.7 m into a sidewalk or 1.2 m
 -- onto the verge, then off the drawn asphalt half a metre at a time (a turning lane, a
 -- junction's corner). Not on a deck or in a tunnel, nor where another street is. A sign within
 -- a metre of one already standing moves 1.5 m back against travel. The tile holding the final
@@ -2616,12 +2974,13 @@ function SIGNS.place(requests, env, pause)
     local road, tags = r.road, r.road.tags or NONE
     if not ROADS.bridge(tags) and not ROADS.tunnel(tags) and
         (not r.model or not FS or FS:fileExists(r.model)) then
-      local side = -r.dir
+      local kerb = ROADS.leftHand and -1 or 1
+      local side = -r.dir * kerb
       local s = r.s
       for _ = 1, 3 do
         local c, tx, ty = alongLine(road.points, r.dist, s)
         local sx, sy = tx * r.dir, ty * r.dir
-        local rx, ry = sy, -sx
+        local rx, ry = sy * kerb, -sx * kerb
         local walk = env.walkAt(road, c[1], c[2], side)
         local off = math.max(.5, math.min(80, road.width or 7)) / 2 + (walk > 0 and .7 or 1.2)
         local x, y = c[1] + rx * off, c[2] + ry * off
@@ -2639,7 +2998,7 @@ function SIGNS.place(requests, env, pause)
         if not crowded then
           placed[#placed + 1] = {x, y}
           if x >= env.rect[1] and x < env.rect[3] and y >= env.rect[2] and y < env.rect[4] then
-            env.put('sign_' .. tostring(r.key):gsub('[^%w_]', '_'), r.model, x, y, z, math.atan2(sx, sy), r.kind)
+            env.put('sign_' .. tostring(r.key):gsub('[^%w_]', '_'), r.model, x, y, z, math.atan2(sx, sy), r.kind, r)
             counts[r.kind] = (counts[r.kind] or 0) + 1
           end
           break
@@ -2734,8 +3093,8 @@ function ROADS.streetParking(roads, env)
         elseif s.where == 'none' then off = nil
         else off = hw + .25 + depth / 2 end
         -- the direction cars face: with the traffic on their side, against the point order on
-        -- the left of a two-way street
-        local along = (oneway and flip) and -1 or (not oneway and s.side == 1) and -1 or 1
+        -- the left of a two-way street (the right, where traffic keeps left)
+        local along = (oneway and flip) and -1 or (not oneway and (s.side == 1) ~= (ROADS.leftHand or false)) and -1 or 1
         local lo, hi = (cuts[1] or 0) + P.mouth, length - (cuts[2] or 0) - P.mouth
         -- the turn lanes before a junction (DETAIL.arrows) are not parked in: the side's traffic
         -- runs towards the way's end, or its start against the point order
@@ -2878,7 +3237,10 @@ function DETAIL.arrows(ctx)
                   if any then
                     -- the lane's middle, as an offset left of the point order
                     local o
-                    if dir == 1 then o = lo + (n - k + .5) * lw else o = hi - (n - k + .5) * lw end
+                    if ROADS.leftHand then
+                      if dir == 1 then o = hi - (k - .5) * lw else o = lo + (k - .5) * lw end
+                    elseif dir == 1 then o = lo + (n - k + .5) * lw
+                    else o = hi - (n - k + .5) * lw end
                     DETAIL.arrow(emit, {c[1] - ty * o, c[2] + tx * o}, sx, sy, turns, z0)
                     painted = painted + 1
                     if ctx.report then ctx.report[#ctx.report + 1] = {kind = 'arrow', x = c[1] - ty * o,
@@ -3657,6 +4019,8 @@ local function wallMaterial(building, look, height, footprint)
   -- building:part stands on the rest of its building
   local lifted = building.minHeight or number(tags.min_height, 0)
   if lifted >= 20 and footprint and not tags.e2r_part and height - lifted > 2.5 * math.sqrt(footprint) then return 'clad_metal' end
+  -- what OSM says is clad in metal and names no other material: a big wheel's rim and spokes
+  if tags['building:cladding'] == 'metal' and (not material or material == 'metal' or material == 'steel') then return 'clad_metal' end
   if BLD.isMonument(tags) then return 'hw_ashlar' end
   local region = BLD.region(look)
   local house = not tags.e2r_part and BLD.house(tags, height, h, region)
@@ -7259,6 +7623,168 @@ local YARD = {cell = {red = 0, yellow = 1, blue = 2, green = 3, orange = 4, wood
   railings = {'railing_blue', 'railing_green', 'railing_dark'}, bench = BENCH[1],
   driveways = {service = true, living_street = true}}
 
+-- A light: pole, housing and visors in the tile's decor, each lens dark there and once more lit
+-- in a mesh of its own (lens, group), which signals.lua shows while the phase has it. Over a wide
+-- road a second head hangs on an arm above the lanes. T: the frame, -Y to the driver.
+SIGNS.head = {pole = .06, z0 = 2.65, z1 = 3.55, lens = .1, step = .28, top = 3.4, armAt = 5.6, armMin = 10, armMax = 7}
+function SIGNS.lamp(mesh, lit, T, centre, z, group)
+  local H, c = SIGNS.head, YARD.cell
+  SOLID.box(mesh, 'yard', c.dark, T, centre - .2, -.12, z, centre + .2, .12, z + H.z1 - H.z0)
+  local colours = {'red', 'yellow', 'green'}
+  for k, name in ipairs(colours) do
+    local zc = z + H.top - H.z0 - (k - 1) * H.step
+    local ring = {}
+    for a = 1, 8 do
+      local angle = (a - .5) * math.pi / 4
+      ring[a] = {centre + math.cos(angle) * H.lens, -.125, zc + math.sin(angle) * H.lens}
+    end
+    SOLID.face(mesh, 'lens_dark', 0, T, ring)
+    local glow = lit(group, name)
+    local front = {}
+    for a, p in ipairs(ring) do front[a] = {p[1], -.135, p[3]} end
+    SOLID.face(glow, 'lens_' .. name, 0, T, front)
+    -- the visor over the lens
+    SOLID.box(mesh, 'yard', c.dark, T, centre - .12, -.26, zc + .1, centre + .12, -.125, zc + .125)
+  end
+end
+-- Words on a sign: cells of the glyph atlas (BLD.glyphs) in the plane y of frame T, x running
+-- from x0 by dir (+1 on the face to the driver, -1 on the back), z the foot of the letters
+function SIGNS.word(mesh, material, T, chars, size, x0, y, z, dir)
+  local P = BLD.PLATE
+  local cw = size * P.aspect
+  local pad = (size - cw) / 2
+  for i, g in ipairs(chars) do
+    if g >= 0 then
+      local col, row = g % P.perRow, math.floor(g / P.perRow)
+      local u0, u1 = col / P.perRow, (col + 1) / P.perRow
+      local v0, v1 = 1 - (row + 1) / P.perRow, 1 - row / P.perRow
+      local c = x0 + ((i - 1) * cw - pad) * dir
+      local a, b = T(c, y, z), T(c + size * dir, y, z)
+      local d, e = T(c + size * dir, y, z + size), T(c, y, z + size)
+      mesh.polygon(material, {{a[1], a[2], a[3], u0, v0}, {b[1], b[2], b[3], u1, v0}, {d[1], d[2], d[3], u1, v1},
+        {e[1], e[2], e[3], u0, v1}}, false)
+    end
+  end
+end
+-- what reads across a board of at most `width`: the size, down to `least`, and the letters
+function SIGNS.fit(text, size, least, width)
+  local chars = BLD.glyphs(text)
+  local room = width / math.max(1, #chars) / BLD.PLATE.aspect
+  return chars, math.max(least, math.min(size, room))
+end
+function SIGNS.pole(mesh, T, top)
+  local p = SIGNS.head.pole * .7
+  SOLID.box(mesh, 'yard', YARD.cell.metal, T, -p, -p, 0, p, p, top)
+end
+-- A limit the game has no model of: the white disc in its red ring, or the US board
+SIGNS.disc = {z = 2.55, r = .33, ring = .05, size = .3, board = {.6, .78}, sides = 16}
+function SIGNS.drawLimit(mesh, x, y, z, yaw, limit, mph)
+  local D, T = SIGNS.disc, SOLID.frame(x, y, z, -yaw)
+  SIGNS.pole(mesh, T, D.z + (mph and D.board[2] / 2 or 0))
+  local chars = BLD.glyphs(tostring(limit))
+  local width = #chars * D.size * BLD.PLATE.aspect
+  if mph then
+    local w, h = D.board[1], D.board[2]
+    SOLID.box(mesh, 'sign_white', 0, T, -w / 2, -.04, D.z - h / 2, w / 2, -.02, D.z + h / 2)
+    local words = BLD.glyphs('SPEED')
+    local small = .085
+    SIGNS.word(mesh, 'glyphs_dark', T, words, small, -#words * small * BLD.PLATE.aspect / 2, -.045, D.z + h / 2 - .14, 1)
+    words = BLD.glyphs('LIMIT')
+    SIGNS.word(mesh, 'glyphs_dark', T, words, small, -#words * small * BLD.PLATE.aspect / 2, -.045, D.z + h / 2 - .25, 1)
+    SIGNS.word(mesh, 'glyphs_dark', T, chars, D.size, -width / 2, -.045, D.z - h / 2 + .07, 1)
+    return
+  end
+  local outer, inner, back = {}, {}, {}
+  for k = 1, D.sides do
+    local a = (k - .5) * 2 * math.pi / D.sides
+    outer[k] = {math.cos(a) * D.r, -.03, D.z + math.sin(a) * D.r}
+    inner[k] = {math.cos(a) * (D.r - D.ring), -.035, D.z + math.sin(a) * (D.r - D.ring)}
+    back[D.sides + 1 - k] = {outer[k][1], -.02, outer[k][3]}
+  end
+  SOLID.face(mesh, 'paint_red', 0, T, outer)
+  SOLID.face(mesh, 'sign_white', 0, T, inner)
+  SOLID.face(mesh, 'yard', YARD.cell.metal, T, back)
+  SIGNS.word(mesh, 'glyphs_dark', T, chars, D.size, -width / 2, -.04, D.z - D.size / 2, 1)
+end
+-- The name of a place on a white board where the road enters it
+SIGNS.town = {z = 2.3, height = .5, size = .24, least = .13, width = 2.6, pad = .12}
+function SIGNS.drawTown(mesh, x, y, z, yaw, name)
+  local B, T = SIGNS.town, SOLID.frame(x, y, z, -yaw)
+  local chars, size = SIGNS.fit(name, B.size, B.least, B.width)
+  local w = #chars * size * BLD.PLATE.aspect + 2 * B.pad
+  SOLID.box(mesh, 'yard', YARD.cell.metal, T, -w / 2 + .1, -.03, 0, -w / 2 + .16, .03, B.z)
+  SOLID.box(mesh, 'yard', YARD.cell.metal, T, w / 2 - .16, -.03, 0, w / 2 - .1, .03, B.z)
+  SOLID.box(mesh, 'sign_white', 0, T, -w / 2, -.04, B.z, w / 2, -.02, B.z + B.height)
+  SIGNS.word(mesh, 'glyphs_dark', T, chars, size, -w / 2 + B.pad, -.045, B.z + (B.height - size) / 2, 1)
+end
+-- The two streets of a crossing on one pole: the blade across the approach names the street
+-- ahead, the one along it this street; each reads from both sides.
+SIGNS.blades = {z = 3.1, height = .3, size = .22, least = .12, width = 2.6, pad = .1, gap = .32}
+function SIGNS.blade(mesh, T, name, z)
+  local B = SIGNS.blades
+  local chars, size = SIGNS.fit(BLD.streetLabel(name), B.size, B.least, B.width)
+  local w = #chars * size * BLD.PLATE.aspect + 2 * B.pad
+  SOLID.box(mesh, 'plate', 0, T, -w, -.015, z, 0, .015, z + B.height)
+  local foot = z + (B.height - size) / 2
+  SIGNS.word(mesh, 'glyphs', T, chars, size, -w + B.pad, -.02, foot, 1)
+  SIGNS.word(mesh, 'glyphs', T, chars, size, -B.pad, .02, foot, -1)
+end
+function SIGNS.drawNames(mesh, x, y, z, yaw, own, cross)
+  local B = SIGNS.blades
+  local T = SOLID.frame(x, y, z, -yaw)
+  SIGNS.pole(mesh, T, B.z + B.gap + B.height)
+  SIGNS.blade(mesh, T, cross, B.z + B.gap)
+  SIGNS.blade(mesh, SOLID.frame(x, y, z, -yaw + math.pi / 2), own, B.z)
+end
+-- A level crossing: the Saint Andrew's cross, the one mark of it every country reads. The game has
+-- no such sign.
+SIGNS.cross = {z = 2.15, arm = .6, width = .085, angle = math.rad(35), stripes = 5}
+function SIGNS.drawRail(mesh, x, y, z, yaw)
+  local C, T = SIGNS.cross, SOLID.frame(x, y, z, -yaw)
+  SIGNS.pole(mesh, T, C.z + .35)
+  local step = 2 * C.arm / C.stripes
+  for _, a in ipairs({C.angle, math.pi - C.angle}) do
+    local ux, uz, nx, nz = math.cos(a), math.sin(a), -math.sin(a) * C.width, math.cos(a) * C.width
+    local function quad(from, to, y0)
+      local x0, z0, x1, z1 = ux * from, C.z + uz * from, ux * to, C.z + uz * to
+      return {{x0 - nx, y0, z0 - nz}, {x1 - nx, y0, z1 - nz}, {x1 + nx, y0, z1 + nz}, {x0 + nx, y0, z0 + nz}}
+    end
+    for k = 1, C.stripes do
+      local from = -C.arm + (k - 1) * step
+      SOLID.face(mesh, k % 2 == 1 and 'paint_red' or 'sign_white', 0, T, quad(from, from + step, -.03))
+    end
+    local back = quad(-C.arm, C.arm, -.02)
+    back[2], back[4] = back[4], back[2]
+    SOLID.face(mesh, 'yard', YARD.cell.metal, T, back)
+  end
+end
+-- A speed camera: a box on a tall pole looking at the driver
+SIGNS.camera = {z = 3.1, w = .22, deep = .28, high = .3, lens = .07}
+function SIGNS.drawCamera(mesh, x, y, z, yaw)
+  local C, T = SIGNS.camera, SOLID.frame(x, y, z, -yaw)
+  SIGNS.pole(mesh, T, C.z)
+  SOLID.box(mesh, 'yard', YARD.cell.dark, T, -C.w, -C.deep, C.z, C.w, C.deep, C.z + C.high)
+  local ring = {}
+  for k = 1, 8 do
+    local a = (k - .5) * math.pi / 4
+    ring[k] = {math.cos(a) * C.lens, -C.deep - .005, C.z + C.high / 2 + math.sin(a) * C.lens}
+  end
+  SOLID.face(mesh, 'lens_dark', 0, T, ring)
+end
+function SIGNS.drawLight(mesh, lit, x, y, z, yaw, group, width)
+  local H, c = SIGNS.head, YARD.cell
+  local T = SOLID.frame(x, y, z, -yaw)
+  SOLID.box(mesh, 'yard', c.metal, T, -H.pole, -H.pole, 0, H.pole, H.pole, 3.5)
+  SIGNS.lamp(mesh, lit, T, 0, H.z0, group)
+  if width and width >= H.armMin then
+    -- the arm reaches over the lanes, to the driver's left of the pole
+    local reach = math.min(H.armMax, width / 2)
+    SOLID.box(mesh, 'yard', c.metal, T, -H.pole, -H.pole, 3.5, H.pole, H.pole, H.armAt + .9)
+    SOLID.beam(mesh, 'yard', c.metal, T, {0, 0, H.armAt + .9}, {-reach, 0, H.armAt + .9}, .1)
+    SIGNS.lamp(mesh, lit, T, -reach + .3, H.armAt, group)
+  end
+end
+
 -- a bin key as VEG.streetProps keeps its own (no offset)
 local function yardBin(x, y) return math.floor(x / 50) * 65536 + math.floor(y / 50) end
 -- a keep-out band a-b of radius r in bins as VEG.streetProps returns them (VEG.streetBlocked)
@@ -8389,6 +8915,7 @@ ROADS.trimLine, ROADS.simplify, ROADS.densifyWear = trimLine, simplify, densifyW
 ROADS.liftDecks, ROADS.walkSides = liftDecks, walkSides
 
 local function build(cells, i, j, options)
+  ROADS.leftHand = options.leftHand == true
   options = options or {}
   local pause = options.pause or options.yield or function() end
   local size = options.tileSize or 500
@@ -8411,7 +8938,13 @@ local function build(cells, i, j, options)
   end
   -- Old country packs store bridge profiles with about a metre under the soffit. Raise those
   -- decks, and the roads that run up to them, before any mesh or junction reads the points.
-  ROADS.liftDecks(lists.roads, pause)
+  do
+    local carried = {}
+    for _, road in ipairs(lists.roads) do
+      if not ROADS.foot(road.tags or NONE) then carried[#carried + 1] = road end
+    end
+    ROADS.liftDecks(carried, pause)
+  end
   local roads, scene = collector(rect, key, 'road', pause), collector(rect, key, layerName, pause, distant and MIXED_TRIS or nil)
   local roadDecor, sceneDecor = collector(rect, key .. '_marks', 'road', pause), collector(rect, key .. '_cars', 'scene', pause)
   -- A far tile (the ring past the near radius, ~1 km) draws each road's surface into its scene layer,
@@ -8444,6 +8977,7 @@ local function build(cells, i, j, options)
   -- a junction takes the material of its most important road
   local function roadMaterial(tags)
     local grade = roadGrade(tags)
+    if ROADS.foot(tags) then return tags.surface == 'asphalt' and 'footway_asphalt' or 'footway', grade end
     if grade == 1 and (tags.surface == 'sett' or tags.surface == 'cobblestone' or tags.surface == 'unhewn_cobblestone') and BLD.drawnArt() then
       return 'road_sett', grade
     end
@@ -8482,7 +9016,7 @@ local function build(cells, i, j, options)
   -- A road shapes the ground up to pullZero from its edge, and the ground lattice reaches one
   -- step past the tile (its border nodes are lowered for roads in the neighbour's cells too).
   local reach = tune.pullZero + step + 5
-  local segments, segmentBins, nav, bestSpawn, bestDistance = {}, {}, {segments = {}}, nil, math.huge
+  local segments, segmentBins, nav, bestSpawn, bestDistance = {}, {}, {segments = {}, names = {}}, nil, math.huge
   for _, road in ipairs(lists.roads) do
     local tags, points, width = road.tags or {}, road.points or {}, math.max(.5, math.min(80, road.width or 7))
     for index = 1, #points - 1 do
@@ -8509,7 +9043,10 @@ local function build(cells, i, j, options)
       if index % 32 == 0 then pause() end
     end
     local navigation = visualRoads and navSegment(road)
-    if navigation then nav.segments[#nav.segments + 1] = navigation end
+    if navigation then
+      nav.segments[#nav.segments + 1] = navigation
+      nav.names[navigation[1]] = navNames(road)
+    end
     pause()
   end
   -- the mapped traffic lights of the tile (half-open rect): the flow's junctions run on them (flow.lua)
@@ -8574,14 +9111,20 @@ local function build(cells, i, j, options)
   end
   -- The DEM pulled to the roads round a point (fast.ground_corners): fully at a road's profile
   -- within pullFull of its edge, the DEM alone from pullZero. Nearer roads weigh more in the
-  -- height, the strongest pull wins. Bridges and tunnels do not pull.
+  -- height, the strongest pull wins. Bridges and tunnels do not pull, and water stays where the
+  -- DEM has it unless a road runs on it: quays on both banks of a 60 m arm of the Seine lifted the
+  -- river 4 m, over the deck of Pont Saint-Louis.
+  ROADS.waters = {}
+  for _, area in ipairs(lists.areas) do
+    if area.kind == 'water' then ROADS.waters[#ROADS.waters + 1] = {rings = area.rings, bounds = ringBounds(area.rings)} end
+  end
   local heightOperations = 0
   local span = math.max(1, tune.pullZero - tune.pullFull)
   local function pulled(x, y)
     local base = demAt(x, y)
     if base == nil then return nil end
     local nearby = segmentBins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE
-    local sa, sz, pull = 0, 0, 0
+    local sa, sz, pull, near = 0, 0, 0, math.huge
     for _, segment in ipairs(nearby) do
       if segment.surface then
         local a = segment.a
@@ -8594,11 +9137,13 @@ local function build(cells, i, j, options)
           local weight = w / math.max(d, 1)
           sa, sz = sa + weight, sz + weight * ((a[3] or 0) + t * ((segment.b[3] or 0) - (a[3] or 0)))
           if w > pull then pull = w end
+          if d < near then near = d end
         end
       end
       heightOperations = heightOperations + 1
       if heightOperations % 512 == 0 then pause() end
     end
+    if near > tune.shoulder and ROADS.wet(x, y) then return ROADS.level(x, y, base, demAt) end
     if sa > 0 then return base + (sz / sa - base) * pull end
     return base
   end
@@ -9192,7 +9737,8 @@ local function build(cells, i, j, options)
           local t = math.max(0, math.min(1, ((target[1] - a[1]) * dx + (target[2] - a[2]) * dy) / (length * length)))
           local p = lerp(a, b, t)
           local distance = (p[1] - target[1]) ^ 2 + (p[2] - target[2]) ^ 2
-          if distance < bestDistance and p[1] >= rect[1] and p[1] <= rect[3] and p[2] >= rect[2] and p[2] <= rect[4] then
+          if distance < bestDistance and p[1] >= rect[1] and p[1] <= rect[3] and p[2] >= rect[2] and p[2] <= rect[4]
+              and not ROADS.foot(tags) then
             bestDistance = distance
             bestSpawn = {pos = {p[1], p[2], (p[3] or 0) + lift}, yaw = math.atan2(dx, dy)}
           end
@@ -10788,7 +11334,7 @@ local function build(cells, i, j, options)
     if not hit then return end
     local nx, ny = -hit.dy / hit.len, hit.dx / hit.len
     local side = (p[1] - hit.x) * nx + (p[2] - hit.y) * ny >= 0 and 1 or -1
-    if math.sqrt(best) < hit.strip.hw + .5 then side = -1 end  -- on the carriageway: its right side
+    if math.sqrt(best) < hit.strip.hw + .5 then side = ROADS.leftHand and 1 or -1 end  -- on the carriageway: the kerb's side
     local walk = hit.strip.walk[hit.k][side] and tune.sidewalk or 0
     local off = hit.strip.hw + walk + 1.4
     local x, y = hit.x + nx * side * off, hit.y + ny * side * off
@@ -11047,20 +11593,37 @@ local function build(cells, i, j, options)
       end
       return true
     end
+    -- a mesh for each lit lens of each group: signals.lua shows the ones the phase has
+    OFFROAD.lights, OFFROAD.lenses = {}, {}
+    function OFFROAD.lensMesh(group, colour)
+      local name = group .. '_' .. colour
+      local mesh = OFFROAD.lenses[name]
+      if not mesh then
+        mesh = collector(rect, key .. '_lens_' .. name, 'scene', pause)
+        mesh.lens = {group, colour}
+        OFFROAD.lenses[name] = mesh
+      end
+      return mesh
+    end
     local counts
     counts, OFFROAD.signs = SIGNS.place(OFFROAD.signRequests,
       {rect = rect, nearAsphalt = OFFROAD.nearAsphalt, nearestOn = OFFROAD.nearestOn, walkAt = OFFROAD.walkAt,
-        ground = ground, clear = OFFROAD.signClear, put = function(name, shape, x, y, z, yaw, kind)
+        ground = ground, clear = OFFROAD.signClear, put = function(name, shape, x, y, z, yaw, kind, request)
           if kind == 'signal' then
-            -- Bounded, unlit visual only: 12 cm pole, 40 x 24 cm head. It does not control AI.
-            local T, c = SOLID.frame(x, y, z, -yaw), YARD.cell
-            SOLID.box(sceneDecor, 'yard', c.metal, T, -.06, -.06, 0, .06, .06, 3.5)
-            SOLID.box(sceneDecor, 'yard', c.dark, T, -.20, -.12, 2.65, .20, .12, 3.55)
-            for k, colour in ipairs({c.red, c.yellow, c.green}) do
-              local zc = 3.4 - (k - 1) * .28
-              SOLID.face(sceneDecor, 'yard', colour, T, {{-.10, -.125, zc - .10}, {.10, -.125, zc - .10},
-                {.10, -.125, zc + .10}, {-.10, -.125, zc + .10}})
-            end
+            SIGNS.drawLight(sceneDecor, OFFROAD.lensMesh, x, y, z, yaw, request.group, request.road.width)
+            local stop = request.stop
+            OFFROAD.lights[#OFFROAD.lights + 1] = {road = tostring(request.road.id), x = stop[1], y = stop[2], z = stop[3] or 0,
+              dx = request.tx, dy = request.ty, group = request.group}
+          elseif kind == 'limit' then
+            SIGNS.drawLimit(sceneDecor, x, y, z, yaw, request.value[1], request.value[2])
+          elseif kind == 'town' then
+            SIGNS.drawTown(sceneDecor, x, y, z, yaw, request.value)
+          elseif kind == 'names' then
+            SIGNS.drawNames(sceneDecor, x, y, z, yaw, request.value[1], request.value[2])
+          elseif kind == 'rail' then
+            SIGNS.drawRail(sceneDecor, x, y, z, yaw)
+          elseif kind == 'speed_camera' then
+            SIGNS.drawCamera(sceneDecor, x, y, z, yaw)
           else
             static(name, shape, x, y, z, yaw)
             local it = scene.items[#scene.items]
@@ -11078,6 +11641,14 @@ local function build(cells, i, j, options)
       scene.items[#scene.items + 1] = item
     end
     for material in pairs(sceneDecor.used) do scene.used[material] = true end
+    for _, mesh in pairs(OFFROAD.lenses) do
+      mesh.finish()
+      for _, item in ipairs(mesh.items) do
+        item.decor, item.lens, item.colour = true, mesh.lens[1], mesh.lens[2]
+        scene.items[#scene.items + 1] = item
+      end
+      for material in pairs(mesh.used) do scene.used[material] = true end
+    end
   end
   if wantLamps and not distant then
     local function treeAt(x, y)
@@ -11133,6 +11704,7 @@ local function build(cells, i, j, options)
   function SPLIT.out()
     local out = manifest(scene, 'scene')
     out.parking = parking
+    out.lights = OFFROAD.lights
     if not distant then
       out.brandPOIs = {}
       for _, poi in ipairs(lists.points) do
@@ -12004,6 +12576,7 @@ local function build(cells, i, j, options)
 end
 
 M.build = build
+M.keepsLeft = ROADS.keepsLeft
 M.YARD = YARD
 M.BRANDS = SOLID.BRANDS
 M.shopFlat = BLD.shopFlat

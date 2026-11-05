@@ -85,11 +85,22 @@ def encode_cell(cell, origin):
             raise ValueError('too few source coordinates')
         w.u(len(points))
         px, py, pz = ox, oy, 0
+        out = w.out
+        # _cm and _Writer.s by hand: a country's every coordinate passes here
         for p in points:
-            if len(p) not in (2, 3):
+            n = len(p)
+            if n != 2 and n != 3:
                 raise ValueError('source points need two or three coordinates')
-            x, y, z = _cm(p[0]), _cm(p[1]), _cm(p[2] if len(p) == 3 else 0.)
-            w.s(x - px); w.s(y - py); w.s(z - pz)
+            try:
+                x, y, z = round(p[0] * SCALE), round(p[1] * SCALE), round(p[2] * SCALE) if n == 3 else 0
+            except (OverflowError, ValueError):
+                raise ValueError('non-finite source number') from None
+            for value in (x - px, y - py, z - pz):
+                value = value * 2 if value >= 0 else -value * 2 - 1
+                while value >= 0x80:
+                    out.append((value & 0x7f) | 0x80)
+                    value >>= 7
+                out.append(value)
             px, py, pz = x, y, z
 
     def rings(value):
@@ -154,6 +165,15 @@ class _Reader:
         value = self.u()
         return value >> 1 if value % 2 == 0 else -((value + 1) >> 1)
 
+    def skip(self, count):
+        """Past `count` varints."""
+        data, at = self.data, self.at
+        while count:
+            if data[at] < 0x80:
+                count -= 1
+            at += 1
+        self.at = at
+
 
 def decode_cell(data, origin, rect, at=0, end=None):
     """The table Lua builds from encode_cell's bytes (reference decoder for tests)."""
@@ -210,6 +230,40 @@ def decode_cell(data, origin, rect, at=0, end=None):
     if r.at != r.end:
         raise ValueError('trailing bytes after source cell')
     return cell
+
+
+def decode_roads(data, origin, at, end, seen):
+    """The roads of a cell, as decode_cell gives them, that `seen` (a set of ids it adds to) has
+    not had: a road is stored whole in every cell it crosses. Stops where the roads end, and steps
+    over what it does not need: routing reads a country this way, most of a cell is buildings."""
+    r = _Reader(data, at, end)
+    strings = []
+    for _ in range(r.u()):
+        n = r.u()
+        strings.append((r.at, r.at + n))
+        r.at += n
+    text = lambda: bytes(data[slice(*strings[r.u()])]).decode('utf8')
+    r.skip(r.u() * r.u())
+    ox, oy, out = _cm(origin[0]), _cm(origin[1]), []
+    for _ in range(r.u()):
+        ident = text()
+        if ident in seen:
+            r.u()
+            r.skip(2 * r.u())
+            r.skip(r.u())
+            r.skip(3 * r.u())
+            continue
+        seen.add(ident)
+        f = {'id': ident, 'width': r.u() / SCALE}
+        f['tags'] = {text(): text() for _ in range(r.u())}
+        f['nodes'] = [text() for _ in range(r.u())]
+        points, px, py, pz = [], ox, oy, 0
+        for _ in range(r.u()):
+            px += r.s(); py += r.s(); pz += r.s()
+            points.append([px / SCALE, py / SCALE, pz / SCALE])
+        f['points'] = points
+        out.append(f)
+    return out
 
 
 def slot(i, j):

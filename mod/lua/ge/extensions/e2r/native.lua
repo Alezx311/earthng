@@ -1186,6 +1186,7 @@ local function buildTile(key, wanted)
     road.packs = '/e2r_stream/fast-art/v10/packs.json'
     road.navSegments = type(nav) == 'table' and nav.segments or {}
     road.navSignals = type(nav) == 'table' and nav.signals or nil
+    road.navNames = type(nav) == 'table' and nav.names or nil
   end
   -- While driving a near tile's road goes out as soon as it is built (AHEAD), and the build
   -- yields AHEAD to update(), which parks it until the scene's turn. The landing builds whole.
@@ -1246,6 +1247,7 @@ local function buildTile(key, wanted)
       farStep = 100, horizonStep = wanted.step or 100,
       latitude = r.data.geo and r.data.geo[4], geo = r.data.geo, nature = r.data.nature,
       look = r.data.look, country = r.country and r.country.id,
+      leftHand = generator.keepsLeft and generator.keepsLeft(r.country and r.country.id, r.data.look) or nil,
       seaLevel = finite(r.data.seaLevel) and r.data.seaLevel or nil,
       maxTrees = tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = tune.maxGrass,
       maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
@@ -1924,6 +1926,9 @@ end
 M.refresh = refresh
 M.mapRoads = mapRoads
 M.at = at
+M.keepsLeft = function()
+  return active ~= nil and generator.keepsLeft ~= nil and generator.keepsLeft(active.region.country and active.region.country.id, active.region.data.look)
+end
 M.land = land
 M.update = update
 M.pose = pose

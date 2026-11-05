@@ -307,6 +307,15 @@ KINDS['plate'] = (None, [.08, .18, .40, 1], 'METAL', 1.0, 'wall')
 KINDS['paint_red'] = (None, [.72, .10, .08, 1], 'METAL', 1.0, 'wall')
 # a shop's sign board under its real name (generator.lua BLD.storeFront)
 KINDS['fascia'] = (None, [.11, .12, .13, 1], 'METAL', 1.0, 'wall')
+# drawn road signs (generator.lua SIGNS.drawLimit, drawTown): the white of the board, black letters
+KINDS['sign_white'] = (None, [.9, .9, .88, 1], 'METAL', 1.0, 'wall')
+KINDS['glyphs_dark'] = ('glyphs', [.03, .03, .035, 1], 'METAL', 1.0, 'wall')
+EXTRA['glyphs_dark'] = {'alphaTest': True, 'alphaRef': 110, 'castShadows': False}
+# a traffic light's lenses (generator.lua SIGNS.lamp): the dark glass, and what signals.lua shows lit
+KINDS['lens_dark'] = (None, [.05, .05, .055, 1], 'METAL', 1.0, 'wall')
+LENS = {'lens_red': (1., .09, .05), 'lens_yellow': (1., .62, .05), 'lens_green': (.1, 1., .42)}
+for _kind, _glow in LENS.items():
+    KINDS[_kind] = (None, [*_glow, 1], 'METAL', 1.0, 'wall')
 EXTRA['glyphs'] = {'alphaTest': True, 'alphaRef': 110, 'castShadows': False}
 # covers in the asphalt (generator.lua ROADS.covers): the Italy manhole sheet and the grid
 # drain, cut by their opacity like the lines; drawn only where the game has these maps
@@ -375,6 +384,7 @@ KINDS['park'] = ('grass', [.30, .40, .22, 1], 'GRASS', _photo.GROUND_M, 'plan')
 
 # baseColorFactor per kind: the game's grass is dry West Coast grass; Kyiv's is green
 TINT = {'ground': [.55, .85, .42, 1], 'forest': [.36, .58, .28, 1], 'paved': [.62, .62, .60, 1]}
+TINT['glyphs_dark'] = [.03, .03, .035, 1]
 TINT.update({_k: [_c / 255 for _c in _rgb] + [1] for _k, _rgb in RAILINGS.items()})
 # Lines as East Coast paints them. The edge grass tint was set from linear means but acts as an
 # sRGB factor (_factor below); in game it sits at .9 of the verge, so it stays. The dirt edge is
@@ -560,7 +570,7 @@ UNMARKED = ('no', 'none', 'unmarked')
 
 
 # Every key point_kind reads: the exporter hands Python only nodes with one of them.
-POINT_KEYS = ('highway', 'traffic_sign', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'brand', 'operator', 'name',
+POINT_KEYS = ('highway', 'traffic_sign', 'railway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'brand', 'operator', 'name',
               'brand:uk', 'brand:en', 'name:uk', 'name:en', 'name:ru', 'operator:uk',
               'operator:en', 'operator:ru', 'brand:wikidata', 'operator:wikidata')
 
@@ -590,6 +600,10 @@ def point_kind(tags):
     # Retain the surveyed fact even when an older runtime does not draw it.
     if highway == 'traffic_signals':
         return 'signal'
+    if highway == 'speed_camera':
+        return 'speed_camera'
+    if tags.get('railway') == 'level_crossing':
+        return 'level_crossing'
     if tags.get('traffic_sign'):
         return 'traffic_sign'
     if tags.get('highway') == 'bus_stop' or (tags.get('public_transport') == 'platform' and
@@ -858,6 +872,8 @@ def dds(obj):
 
 
 MATERIALS = dds({'e2rf_' + k: material(k) for k in KINDS})
+for _kind, _glow in LENS.items():
+    MATERIALS['e2rf_' + _kind]['Stages'][0]['emissiveFactor'] = [c * 4 for c in _glow]
 # The tree shapes' own materials (game textures under /assets): this level does not define
 # them, and without them every tree rendered as the orange NO MATERIAL (fast-game-detail-03).
 import json as _json

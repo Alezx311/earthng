@@ -17,10 +17,10 @@ import numpy as np
 from PIL import Image
 import pyproj
 import shapely
-from shapely.geometry import LineString, MultiPoint, Point, shape
+from shapely.geometry import LineString, MultiPoint, Point
 from shapely.ops import transform
 
-VERSION = 'fast-21'        # source index cache; 14: full clearance and abutments; 15: widths, shoulders, rails, raceways; 16: both, clearance matches a 1.5 m deck; 17: deck and road share the clearance (no runaway hills); 18: only crossing centre lines are overpasses; 19: a bridge split over water keeps its deck; 20: a dome on a building leaves the building standing; 21: railway and tram tracks as lines
+VERSION = 'fast-23'         # source index cache: combined railway tracks, level crossings, speed cameras and foot-bridge decks
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -29,6 +29,11 @@ CRS = 'EPSG:32636'          # the frame before fast-9 (Kyiv): old replay routes 
 ORIGIN = (324000., 5590000.)
 DRIVABLE = {'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'residential',
             'unclassified', 'service', 'living_street', 'road', 'raceway'}
+# Foot and cycle ways on a bridge of their own: the deck's width without a width tag.
+FOOT_REACH = 30.       # m: the street a foot bridge's end comes to (fast_profile.foot_decks)
+FOOT_WIDTH = {'footway': 2.5, 'path': 2.0, 'pedestrian': 4.0, 'cycleway': 2.5, 'steps': 2.5, 'bridleway': 2.5}
+SIDEWALK_REACH, SIDEWALK_SHARE = 6., .6     # a foot way this far past a road bridge's edge over this share of it is its sidewalk
+DECK_SHARE = .6                             # a foot way this much inside a man_made=bridge outline is on that bridge
 
 
 def number(value, default):
@@ -90,6 +95,8 @@ def shoulder(tags):
 
 def road_width(tags):
     klass = tags.get('highway', '').replace('_link', '')
+    if klass in FOOT_WIDTH:
+        return min(35., max(1.5, number(tags.get('width'), FOOT_WIDTH[klass])))
     one = oneway(tags)
     if klass == 'raceway':
         fallback = RACEWAY.get(tags.get('sport'), RACEWAY_WIDTH)
@@ -346,28 +353,138 @@ class Terrain:
         return z + LIFT
 
 
-def read_roads(path, sha256):
-    """Drivable ways of one source tile: {way id: (tags, [(node, lon, lat), ...])}."""
+def foot_bridge(tags):
+    """A foot or cycle way on a bridge of its own. Indoor ones are a building's corridors."""
+    return (tags.get('highway') in FOOT_WIDTH and tags.get('bridge') not in (None, 'no') and tags.get('area') != 'yes'
+            and tags.get('tunnel') in (None, 'no') and tags.get('indoor') in (None, 'no'))
+
+
+def read_ways(path, sha256):
+    """The ways of one source tile the height solve needs: drivable ones and foot bridges, both
+    {way id: (tags, [(node, lon, lat), ...])}, and the closed man_made=bridge outlines
+    {way id: [(lon, lat), ...]}."""
     import osmium
     if hashlib.sha256(Path(path).read_bytes()).hexdigest() != sha256:
         raise ValueError(f'OSM checksum mismatch: {path}')
-    roads = {}
+    roads, feet, decks = {}, {}, {}
 
     class Reader(osmium.SimpleHandler):
         def way(self, w):
+            if w.tags.get('man_made') == 'bridge' and w.id not in decks and w.is_closed():
+                ring = [(n.lon, n.lat) for n in w.nodes if n.location.valid()]
+                if len(ring) == len(w.nodes) and len(ring) >= 4:
+                    decks[w.id] = ring
             h = w.tags.get('highway', '')
-            if not (h in DRIVABLE or h.endswith('_link')) or w.id in roads:
+            drivable = h in DRIVABLE or h.endswith('_link')
+            if not drivable and not foot_bridge(w.tags):
                 return
-            if w.tags.get('area') == 'yes' or w.tags.get('access') == 'no':
+            found = roads if drivable else feet
+            if w.id in found or w.tags.get('area') == 'yes' or w.tags.get('access') == 'no':
                 return
             nodes = [(n.ref, n.lon, n.lat) for n in w.nodes if n.location.valid()]
             if len(nodes) != len(w.nodes):
                 raise ValueError(f'incomplete OSM way {w.id}')
             if len(nodes) >= 2:
-                roads[w.id] = (dict(w.tags), nodes)
+                found[w.id] = (dict(w.tags), nodes)
 
     Reader().apply_file(str(path), locations=True)
-    return roads
+    return roads, feet, decks
+
+
+def read_roads(path, sha256):
+    """Drivable ways of one source tile: {way id: (tags, [(node, lon, lat), ...])}."""
+    return read_ways(path, sha256)[0]
+
+
+def foot_segments(feet, decks, frame, segments, sample, emit=print):
+    """Segments of the foot bridges, solved after the roads, which stay exactly as they are: a foot
+    bridge splits no road and makes no junction, and its nodes are its own ('f<id>').
+
+    OSM maps a road bridge's sidewalks as bridges too: a way along a road bridge is left to that
+    bridge's deck. A foot bridge's man_made=bridge outline gives the deck its width, on the way
+    nearest its middle: the ways beside that one are lanes of the same deck (Pont Saint-Louis)."""
+    import fast_profile
+    order = sorted(feet)
+    if not order:
+        return []
+
+    def lines_of(parts):
+        return shapely.linestrings(np.concatenate(parts), indices=np.repeat(np.arange(len(parts)), [len(p) for p in parts]))
+
+    def local(lonlat):
+        lon, lat = zip(*lonlat)
+        return np.column_stack(frame.local(list(lon), list(lat)))
+
+    lines = lines_of([local([n[1:] for n in feet[wid][1]]) for wid in order])
+    lengths = shapely.length(lines)
+    tree = shapely.STRtree(lines)
+    over = [seg for seg in segments if fast_profile.kind(seg['tags']) != 'tunnel']
+    roads = lines_of([np.asarray(seg['xy']) for seg in over]) if over else np.array([])
+    keep = lengths > .5
+    decked = np.array([fast_profile.kind(seg['tags']) == 'bridge' for seg in over], dtype=bool)
+    if decked.any():
+        reach = np.array([seg['width'] / 2 + SIDEWALK_REACH for seg in over])[decked]
+        near = shapely.buffer(roads[decked], reach, cap_style='flat')
+        i, j = tree.query(near, predicate='intersects')
+        along = np.bincount(j, shapely.length(shapely.intersection(lines[j], near[i])), len(lines))
+        keep &= along < SIDEWALK_SHARE * lengths
+    wide = np.zeros(len(lines))
+    if decks:
+        rings = [local(ring) for ring in decks.values()]
+        outlines = shapely.make_valid(shapely.polygons(shapely.linearrings(
+            np.concatenate(rings), indices=np.repeat(np.arange(len(rings)), [len(r) for r in rings]))))
+        carries = np.zeros(len(outlines), dtype=bool)        # a road bridge's outline says nothing of its sidewalks
+        if decked.any():
+            carries[shapely.STRtree(roads[decked]).query(outlines, predicate='intersects')[0]] = True
+        half = shapely.length(outlines) / 2
+        along_it = (half + np.sqrt(np.maximum(half * half - 4 * shapely.area(outlines), 0.))) / 2     # a rectangle's long side
+        across = shapely.area(outlines) / along_it
+        i, j = tree.query(outlines, predicate='intersects')
+        inside = shapely.length(shapely.intersection(lines[j], outlines[i]))
+        on = keep[j] & ~carries[i] & (inside >= DECK_SHARE * lengths[j])
+        i, j, inside = i[on], j[on], inside[on]
+        spanned = np.bincount(i, inside, len(outlines)) >= DECK_SHARE * along_it
+        ranked = np.lexsort((shapely.distance(lines[j], shapely.centroid(outlines[i])), i))
+        middles = shapely.line_interpolate_point(lines, lengths / 2)
+        drawn = {}
+        for o, k in zip(i[ranked].tolist(), j[ranked].tolist()):
+            if spanned[o]:
+                kept = drawn.setdefault(o, [])
+                if any(shapely.distance(middles[k], lines[m]) < across[o] / 2 for m in kept):
+                    keep[k] = False                                  # a lane of the deck the middle way draws
+                else:
+                    kept.append(k)
+                    wide[k] = max(wide[k], across[o])
+    out = []
+    for k in np.flatnonzero(keep).tolist():
+        tags, nodes = feet[order[k]]
+        out.append({'way': order[k], 'tags': tags, 'width': max(road_width(tags), min(35., float(wide[k]))),
+                    'xy': np.round(shapely.get_coordinates(lines[k]), 3).tolist(),
+                    'nodes': [f'f{nodes[0][0]}', f'f{nodes[-1][0]}']})
+    crossings = [[] for _ in out]
+    if out and len(roads):
+        foot = lines_of([np.asarray(seg['xy']) for seg in out])
+        for i, j in shapely.STRtree(roads).query(foot, predicate='crosses').T.tolist():
+            for point in shapely.get_parts(shapely.intersection(foot[i], roads[j])):
+                if shapely.get_type_id(point) == 0:
+                    height = np.interp(shapely.line_locate_point(roads[j], point), *over[j]['prof'])
+                    crossings[i].append((float(shapely.line_locate_point(foot[i], point)), float(height), over[j]['width'] / 2))
+    streets = [k for k, seg in enumerate(over) if fast_profile.kind(seg['tags']) != 'bridge']
+
+    def banks(xy):
+        heights = np.full(len(xy), np.nan)
+        if streets:
+            points = shapely.points(xy)
+            near = shapely.STRtree(roads[streets])
+            for i, j in near.query_nearest(points, max_distance=FOOT_REACH, all_matches=False).T.tolist():
+                k = streets[j]
+                heights[i] = np.interp(shapely.line_locate_point(roads[k], points[i]), *over[k]['prof'])
+        return heights
+    profiles = fast_profile.foot_decks(out, sample, crossings, banks)
+    for seg, (ps, ph) in zip(out, profiles):
+        seg['prof'] = [np.round(ps, 2).tolist(), np.round(ph, 3).tolist()]
+    emit(f'foot bridges: {len(out)} of {len(order)} ways, {sum(map(len, crossings))} road crossings')
+    return out
 
 
 class Polylines:
@@ -568,13 +685,16 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
         # tiles parse in parallel; merged in tile order, first copy of a way wins (as before)
         from concurrent.futures import ProcessPoolExecutor
         with ProcessPoolExecutor(PARSE_WORKERS) as pool:
-            parts = list(pool.map(read_roads, files, shas, chunksize=4))
+            parts = list(pool.map(read_ways, files, shas, chunksize=4))
     else:
-        parts = [read_roads(f, h) for f, h in zip(files, shas)]
-    roads = {}
-    for part in parts:
+        parts = [read_ways(f, h) for f, h in zip(files, shas)]
+    roads, feet, decks = {}, {}, {}
+    for part, foot, deck in parts:
         for wid, road in part.items():
             roads.setdefault(wid, road)
+        for wid, road in foot.items():
+            feet.setdefault(wid, road)
+        decks.update(deck)
     del parts
     emit(f'roads parsed in {time.perf_counter()-started:.1f}s')
     check()
@@ -627,6 +747,10 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
         node_h = {}
     emit(f'profile ready: {time.perf_counter()-started:.1f}s')
     check()
+    for seg in foot_segments(feet, decks, frame, segments, lambda q, m=fast_profile.Mosaic(terrain): m.sample(q, missing=True), emit):
+        seg['id'] = len(segments) + 1
+        pts = np.asarray(seg['xy'])
+        segments.append(seg); arcs.append((pts, np.r_[0., np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))]))
     tmp = target / f'sources.{os.getpid()}.tmp'
     tmp.unlink(missing_ok=True)         # left by an earlier run of this process
     write_index(segments, arcs, mouths, node_h, tmp, emit)
@@ -641,7 +765,7 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
 
 
 # what a building:part takes from the building round it, when it has none of its own
-PART_TAGS = ('building', 'building:material', 'building:colour', 'historic')
+PART_TAGS = ('building', 'building:material', 'building:cladding', 'building:colour', 'historic')
 
 
 def lifted(tags):
@@ -656,7 +780,8 @@ def link_parts(found):
     """Tie each building:part to the building that holds it: it takes that building's tags and
     id (e2r_of: one wall material for all its parts). A building mostly covered by parts that reach
     the ground gets e2r_outline: the parts draw it, its own box would hide them. Parts in the air
-    stand on the building (a dome on a tomb), so it stays and reaches up to them."""
+    stand on the building (a dome on a tomb), so it stays and reaches up to them, unless its own
+    height holds them: the London Eye is 256 parts inside one 136 m slab."""
     parts = [(ident, tags, geometry) for ident, (kind, tags, geometry) in found.items() if kind == 'building' and tags.get('e2r_part')]
     if not parts:
         return
@@ -670,7 +795,7 @@ def link_parts(found):
             if outlines[int(n)][2].covers(inside) and (holder is None or outlines[int(n)][2].area < holder[2].area):
                 holder = outlines[int(n)]
         if holder:
-            if lifted(tags) > 0:
+            if lifted(tags) >= number(holder[1].get('height'), 0.) > 0 or (lifted(tags) > 0 and 'height' not in holder[1]):
                 under[holder[0]] = min(lifted(tags), under.get(holder[0], lifted(tags)))
             else:
                 covered[holder[0]] = covered.get(holder[0], 0.) + geometry.area
@@ -705,8 +830,9 @@ class Store:
         x0,y0,x1,y1=rect
         rows = self.db.execute('''SELECT f.id,f.kind,f.data,f.geom FROM bounds b JOIN features f ON f.id=b.id
             WHERE b.x1>=? AND b.x0<=? AND b.y1>=? AND b.y0<=? ORDER BY f.id''',(x0,x1,y0,y1))
-        return [(fid,kind,json.loads(data),shapely.from_wkb(geom)) for fid,kind,data,geom in rows
-                if kinds is None or kind in kinds]
+        rows = [row for row in rows if kinds is None or row[1] in kinds]
+        return [(fid,kind,json.loads(data),geometry) for (fid,kind,data,_),geometry
+                in zip(rows,shapely.from_wkb([row[3] for row in rows]).tolist())]
 
     def node(self, nid):
         return json.loads(self.db.execute('SELECT data FROM nodes WHERE id=?',(nid,)).fetchone()[0])
@@ -738,7 +864,7 @@ class Store:
             raise ValueError(f'no_osm scenery coverage: {bbox}')
         key,entry=hit
         if key not in self.scenes:
-            found={}; lines={}; retail_areas={}; factory=osmium.geom.GeoJSONFactory()
+            found={}; lines={}; retail_areas={}; marks=[]; factory=osmium.geom.WKBFactory()
             import fast_style
             import retail
             import venues
@@ -746,15 +872,15 @@ class Store:
                 def area(self,a):
                     tags = retail.enriched(a.tags)
                     point_kind = retail.kind(tags)
-                    kind='building' if a.tags.get('building') not in (None,'no') else (
-                        'water' if a.tags.get('natural')=='water' or a.tags.get('waterway')=='riverbank' else None)
-                    if kind is None and a.tags.get('building:part') not in (None,'no'):
+                    kind='building' if tags.get('building') not in (None,'no') else (
+                        'water' if tags.get('natural')=='water' or tags.get('waterway')=='riverbank' else None)
+                    if kind is None and tags.get('building:part') not in (None,'no'):
                         kind='building'; tags['e2r_part']='1'
                     if kind is None:
-                        kind=fast_style.ground_kind(a.tags)
+                        kind=fast_style.ground_kind(tags)
                     if (kind and a.id not in found) or point_kind:
                         try:
-                            geometry=shape(json.loads(factory.create_multipolygon(a)))
+                            geometry=shapely.from_wkb(factory.create_multipolygon(a))
                         except RuntimeError:
                             return      # broken OSM ring (e.g. area 29961653): skip that area alone
                         if kind:
@@ -767,9 +893,10 @@ class Store:
                 def node(self,n):
                     # bus stops and traffic signals where OSM has them (way nodes keep their tags
                     # in the source tiles); keyed apart from areas and ways
-                    kind=fast_style.point_kind(n.tags)
+                    tags=dict(n.tags)
+                    kind=fast_style.point_kind(tags)
                     if kind and n.location.valid():
-                        lines[-(10**12+n.id)]=(kind,retail.enriched(n.tags),Point(n.location.lon,n.location.lat))
+                        marks.append((-(10**12+n.id),kind,retail.enriched(tags),n.location.lon,n.location.lat))
                 def way(self,w):
                     # footpaths, fences, tree rows: lines, not areas (an area id is 2 x way id,
                     # so a line keys as -way id to stay apart)
@@ -786,6 +913,8 @@ class Store:
             # the location index still sees every node, so ways and areas keep their geometry.
             Reader().apply_file(str(Path(self.meta['source'])/entry['file']),locations=True,
                                 filters=[osmium.filter.KeyFilter(*fast_style.point_keys()).enable_for(osmium.osm.NODE)])
+            for (ident,kind,tags,*_),geometry in zip(marks,shapely.points([m[3:] for m in marks] or np.empty((0,2)))):
+                lines[ident]=(kind,tags,geometry)
             # OSM often maps a business both as a node and a containing site/building.
             # Keep the surveyed node when category and known brand match; unknown names
             # or neighbouring businesses are never guessed to be duplicates.

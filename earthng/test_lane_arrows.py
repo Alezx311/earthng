@@ -1,4 +1,5 @@
 """Lane arrows from turn:lanes (DETAIL.arrows, options.experimentalDetail)."""
+import statistics
 import unittest
 
 import test_generator
@@ -40,6 +41,12 @@ class LaneArrowTests(unittest.TestCase):
         lane = lambda lo, hi: [p for p in near if lo <= p[1] <= hi]
         self.assertGreater(max(p[1] for p in lane(251.75, 255)), 253.5 + .5)   # the left arm
         self.assertLess(min(p[1] for p in lane(245, 248.25)), 246.5 - .5)      # the right arm
+
+    def test_where_traffic_keeps_left_the_arrows_are_on_its_half(self):
+        tags = {'lanes': '2', 'turn:lanes:forward': 'left|through'}
+        middle = lambda **o: statistics.mean(p[1] for t in self.arrows(tags, experimentalDetail=True, **o) for p in t)
+        self.assertLess(middle(), 250, 'on the right of eastward travel')
+        self.assertGreater(middle(leftHand=True), 250, 'on its left')
 
     def test_on_a_sloping_street_every_vertex_follows_the_road(self):
         road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 10.5,

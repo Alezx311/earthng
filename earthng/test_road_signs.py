@@ -2,6 +2,7 @@
 import math
 import unittest
 
+import fast_style
 import test_generator
 
 J = [250, 250, 10]
@@ -10,6 +11,14 @@ J = [250, 250, 10]
 def arm(ident, end, highway='residential', **tags):
     return {'id': ident, 'nodes': ['j', ident], 'width': 8, 'tags': {'highway': highway, **tags},
             'points': [J, end]}
+
+
+class Points(unittest.TestCase):
+    def test_level_crossings_and_cameras_are_kept(self):
+        self.assertIn('railway', fast_style.POINT_KEYS)
+        self.assertEqual(fast_style.point_kind({'railway': 'level_crossing'}), 'level_crossing')
+        self.assertEqual(fast_style.point_kind({'highway': 'speed_camera'}), 'speed_camera')
+        self.assertIsNone(fast_style.point_kind({'railway': 'crossing'}), 'a footpath over the rails')
 
 
 class RoadSignTests(unittest.TestCase):
@@ -27,6 +36,12 @@ class RoadSignTests(unittest.TestCase):
                 yaw = 2 * math.atan2(item.rot[3], item.rot[4])
                 out.append((item.shape.split('italy_traf_sign_')[1][:-4], item.pos[1], item.pos[2], yaw))
         return sorted(out)
+
+    def counts(self, roads, points=()):
+        report = self.h.lua.table()
+        self.h.build([{'roads': roads, 'points': list(points)}], 0, 0, terrainStep=100, maxTrees=0, maxGrass=0,
+                     propSpacing=0, detailReport=report, experimentalDetail=True)
+        return dict(report.signs.items())
 
     def t_junction(self, minor='residential', **extra):
         return [arm('w', [0, 250, 10], 'primary'), arm('e', [500, 250, 10], 'primary'),
@@ -76,7 +91,119 @@ class RoadSignTests(unittest.TestCase):
                 'pos': [250, 250, 10]}
         self.assertEqual([s[0] for s in self.signs([road], [node])], ['stop'])
         node['tags']['traffic_sign'] = 'US:R1-1'
+        self.assertEqual([s[0] for s in self.signs([road], [node])], ['stop'])
+        node['tags']['traffic_sign'] = 'XX:999'
         self.assertEqual(self.signs([road], [node]), [])
+
+    def test_a_code_and_its_number_make_a_limit(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        node = {'id': 's', 'kind': 'traffic_sign', 'tags': {'traffic_sign': 'DE:274-50', 'direction': 'forward'}, 'pos': [250, 250, 10]}
+        self.assertEqual([s[0] for s in self.signs([road], [node])], ['speed_50'])
+        node['tags']['traffic_sign'] = 'UA:3.29[60]'
+        self.assertEqual([s[0] for s in self.signs([road], [node])], ['speed_60'])
+        node['tags'].update({'traffic_sign': 'maxspeed', 'maxspeed': '100'})
+        self.assertEqual([s[0] for s in self.signs([road], [node])], ['speed_100'])
+
+    def drawn(self, roads, points=(), material='e2rf_glyphs_dark'):
+        report = self.h.lua.table()
+        scene = self.h.build([{'roads': roads, 'points': list(points)}], 0, 0, terrainStep=100, maxTrees=0, maxGrass=0,
+                             propSpacing=0, detailReport=report, experimentalDetail=True)[1]
+        return report, list(self.h.meshes(scene, material))
+
+    def test_a_limit_the_game_has_no_model_of_is_drawn(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        node = {'id': 's', 'kind': 'traffic_sign', 'tags': {'traffic_sign': 'DE:274-70', 'direction': 'forward'}, 'pos': [250, 250, 10]}
+        report, meshes = self.drawn([road], [node])
+        self.assertEqual(report.signs.limit, 1)
+        self.assertTrue(meshes, 'the digits')
+
+    def test_a_sign_mapped_beside_the_road_faces_those_on_its_side(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [400, 250, 10]]}
+        south = {'id': 's', 'kind': 'traffic_sign', 'tags': {'traffic_sign': 'stop'}, 'pos': [250, 243, 10]}
+        signs = self.signs([road], [south])
+        self.assertEqual([s[0] for s in signs], ['stop'])
+        self.assertLess(signs[0][2], 250, 'on the right of who drives east')
+        north = {'id': 's', 'kind': 'traffic_sign', 'tags': {'traffic_sign': 'stop'}, 'pos': [250, 257, 10]}
+        self.assertGreater(self.signs([road], [north])[0][2], 250)
+
+    def test_a_crossing_of_two_named_streets_says_their_names_once(self):
+        roads = [arm('w', [0, 250, 10], 'residential', name='Main Street'), arm('e', [500, 250, 10], 'residential', name='Main Street'),
+                 arm('s', [250, 0, 10], 'residential', name='Oak Lane')]
+        report, meshes = self.drawn(roads, material='e2rf_plate')
+        self.assertEqual(report.signs.names, 1)
+        self.assertTrue(meshes)
+
+    def test_one_name_alone_is_no_crossing_of_names(self):
+        roads = [arm('w', [0, 250, 10], 'residential', name='Main Street'), arm('e', [500, 250, 10], 'residential', name='Main Street'),
+                 arm('s', [250, 0, 10], 'residential')]
+        self.assertEqual(self.drawn(roads, material='e2rf_plate')[1], [])
+
+    def test_a_town_is_named_where_a_mapped_sign_says_so(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        node = {'id': 's', 'kind': 'traffic_sign', 'tags': {'traffic_sign': 'city_limit', 'direction': 'forward', 'name': 'Bucha'}, 'pos': [250, 250, 10]}
+        self.assertEqual(self.drawn([road], [node], 'e2rf_sign_white')[0].signs.town, 1)
+
+    def test_a_bend_out_of_town_is_warned_of_on_its_own_side(self):
+        # east, then round to the north: a left-hander for who drives it east
+        points = [[10, 100, 10], [200, 100, 10], [320, 100, 10], [370, 125, 10], [395, 170, 10], [400, 240, 10], [400, 480, 10]]
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'secondary', 'maxspeed': '90'}, 'points': points}
+        kinds = sorted(s[0] for s in self.signs([road]))
+        self.assertIn('warn_bend_l', kinds)
+        self.assertIn('warn_bend_r', kinds)
+
+    def test_a_town_street_of_the_same_shape_has_no_warning(self):
+        points = [[10, 100, 10], [200, 100, 10], [320, 100, 10], [370, 125, 10], [395, 170, 10], [400, 240, 10], [400, 480, 10]]
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'}, 'points': points}
+        self.assertEqual(self.signs([road]), [])
+
+    def test_a_turn_off_the_road_into_a_lower_limit_is_signed_once(self):
+        roads = [arm('w', [0, 250, 10], 'primary', maxspeed='50'), arm('e', [500, 250, 10], 'primary', maxspeed='50'),
+                 arm('s', [250, 0, 10], 'residential', maxspeed='30')]
+        kinds = [s[0] for s in self.signs(roads)]
+        self.assertEqual(kinds.count('speed_30'), 1)
+        self.assertEqual(kinds.count('speed_50'), 0)
+
+    def test_on_the_left_of_the_road_a_sign_stands_on_the_left(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential', 'oneway': 'yes'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        node = {'id': 's', 'kind': 'give_way', 'tags': {'direction': 'forward'}, 'pos': [250, 250, 10]}
+        self.assertLess(self.signs([road], [node])[0][2], 250)
+        self.assertGreater(self.signs([road], [node], leftHand=True)[0][2], 250)
+
+    def test_who_drives_on_the_left(self):
+        left = lambda id, block: self.h.generator.keepsLeft(id, self.h.table({'block': block}))
+        self.assertTrue(left('spot-london', 'british'))
+        self.assertTrue(left('zanzibar', 'general'))
+        self.assertTrue(left('new-zealand', 'general'))
+        self.assertFalse(left('ukraine', 'postsoviet'))
+        self.assertFalse(left('california', 'general'))
+
+    def test_a_level_crossing_has_its_cross_on_both_ways(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        counts = self.counts([road], [{'id': 'x', 'kind': 'level_crossing', 'tags': {}, 'pos': [250, 250, 10]}])
+        self.assertEqual(counts['rail'], 2)
+
+    def test_out_of_town_a_level_crossing_is_warned_of(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'secondary', 'maxspeed': '90'},
+                'points': [[0, 250, 10], [250, 250, 10], [499, 250, 10]]}
+        counts = self.counts([road], [{'id': 'x', 'kind': 'level_crossing', 'tags': {}, 'pos': [250, 250, 10]}])
+        self.assertEqual(counts['danger'], 2)
+
+    def test_a_camera_stands_for_the_way_it_watches(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        camera = {'id': 'c', 'kind': 'speed_camera', 'tags': {'direction': 'forward'}, 'pos': [250, 250, 10]}
+        self.assertEqual(self.counts([road], [camera])['speed_camera'], 1)
+
+    def test_a_road_with_no_overtaking_says_so(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'tertiary', 'overtaking': 'no'},
+                'points': [[100, 250, 10], [400, 250, 10]]}
+        self.assertEqual([s[0] for s in self.signs([road])].count('no_overtaking'), 2)
 
     def test_signal_is_placed_on_allowed_approaches_and_suppresses_guessed_priority(self):
         road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},

@@ -25,6 +25,9 @@ M.fifo = require('ge/extensions/e2r/fifo') -- keep below LuaJIT's 200 chunk loca
 M.brandStyles = NATIVE and require('ge/extensions/e2r/generator').BRANDS or {}
 -- the route to a point picked on the map (docs/NAVIGATION.md); on M for the same reason
 M.navigator = NATIVE and require('ge/extensions/e2r/navigator') or nil
+M.location = NATIVE and require('ge/extensions/e2r/location') or nil
+M.signals = NATIVE and require('ge/extensions/e2r/signals') or nil
+if M.signals and not M.signals.step then M.signals = nil end
 if M.navigator then M.navigator.source = native end
 M.gc = require('ge/extensions/e2r/gc')   -- the collector's step while in the level (gc.lua)
 M.flowSim = require('ge/extensions/e2r/flow')   -- cars without physics, hundreds of them (flow.lua)
@@ -263,6 +266,8 @@ local function land()
   if not S.marker then return end
   if NATIVE and not native.at(S.marker.lat, S.marker.lon) then return end
   if M.navigator then M.navigator.clear() end   -- the old route is in the old region's frame
+  if M.signals then M.signals.clear() end
+  S.location = nil
   S.landSeq = request({type = 'land', lat = S.marker.lat, lon = S.marker.lon})
   S.landAt = S.now
   S.landTimer = hptimer()
@@ -636,6 +641,7 @@ local function spawnItem(it, group, pause, tile, layer)
       S.coll = S.coll or collision.new()
       S.coll:track(tile, obj:getID(), not (tile.far or tile.horizon) and collision.quiet(meshes, layer), it.triangles, layer)
     end
+    if it.lens and M.signals then M.signals.addMesh(obj:getID(), it.lens, it.colour) end
     local ms = t:stop()
     if ms > (result.createMeshMs or 0) then result.createMeshMs, result.createMeshItem = ms, it.name end
   else
@@ -1060,7 +1066,8 @@ local function startTile(key, i, j)
   S.tiles[key] = tile
   if manifest.nav then table.insert(S.navPending, {key = key, path = manifest.nav}) end
   if manifest.navSegments then
-    table.insert(S.navPending, {key = key, data = {segments = manifest.navSegments, signals = manifest.navSignals}})
+    table.insert(S.navPending, {key = key, data = {segments = manifest.navSegments,
+      signals = manifest.navSignals, names = manifest.navNames}})
   end
   for _, it in ipairs(manifest.items) do table.insert(S.queue, {tile = tile, key = key, item = it}) end
   if #manifest.items == 0 then tile.state = 'loaded'; tile.roadComplete = true end
@@ -1078,6 +1085,7 @@ local function startScene(key, tile)
   tile.brandPOIs = manifest.brandPOIs
   tile.sceneGroup = tileGroup('E2RS_' .. key)
   tile.sceneLeft = queueItems(manifest.items, tile, key, 'scene')
+  if M.signals then M.signals.addTile(key, manifest.lights) end
   tile.sceneComplete = tile.sceneLeft == 0
   tile.left = tile.left + tile.sceneLeft
   if NATIVE and tile.refreshScene then native.release(key, 'road'); tile.refreshScene = nil end
@@ -1160,11 +1168,41 @@ local function navRead()
       local n = (#s - 7) / 3
       local mid = 8 + 3 * math.floor((n - 1) / 2)
       seg = {s = require('ge/extensions/e2r/navigation').simplify(s), tiles = {}, x = s[mid], y = s[mid + 1]}
+      local box = {math.huge, math.huge, -math.huge, -math.huge}
+      for k = 8, #seg.s - 2, 3 do
+        local px, py = seg.s[k], seg.s[k + 1]
+        box[1], box[2], box[3], box[4] = math.min(box[1], px), math.min(box[2], py), math.max(box[3], px), math.max(box[4], py)
+      end
+      seg.box, seg.names = box, data.names and data.names[s[1]]
       S.nav[s[1]] = seg
       S.navDirty = true
     end
     seg.tiles[job.key] = true
   end
+end
+
+-- The line of where the car is (location.lua): looked up four times a second, drawn every frame
+-- from the strings it left. Off in the widget (settings/earthng.json).
+function M.locationStep()
+  if not M.location or S.locationOff or S.now < (S.locationAt or 0) then return end
+  S.locationAt = S.now + .25
+  local p, v = focus()
+  if not p then return end
+  local lat, lon = native.toGeo(p.x, p.y)
+  S.location = S.location or M.location.new()
+  S.locationEnv = S.locationEnv or {places = planetMap.settlements,
+    near = function(name) return string.format(L('поблизу %s', 'near %s'), name) end,
+    region = function()
+      local country, descriptor = native.at(S.locationEnv.lat, S.locationEnv.lon)
+      if country then
+        S.locationRegion = descriptor and descriptor.section == true and (descriptor.title or descriptor.id) or nil
+        S.locationCountry = planetMap.countryName(country.title, lang)
+      end
+      return S.locationRegion, S.locationCountry
+    end}
+  local env = S.locationEnv
+  env.segments, env.lat, env.lon, env.lang = S.nav, lat, lon, lang
+  M.location.step(S.location, S.now, p.x, p.y, v and v.x or 0, v and v.y or 0, env)
 end
 
 local function trafficRunning()
@@ -1236,7 +1274,10 @@ local function navBuild()
   -- (traffic.lua:1252 "attempt to index a nil value", traffic-03). The old table keeps its place.
   local m = map.getMap()
   local keep = m.nodes
+  local rules = map.getRoadRules and map.getRoadRules()
+  if rules and native.keepsLeft then rules.rightHandDrive = native.keepsLeft() end
   map.reset(nodes)
+  if M.signals then M.signals.navgraph(nodes, S.nav, p.x, p.y, trafficRunning(), vec3) end
   m = map.getMap()
   if keep and m.nodes ~= keep then
     table.clear(keep)
@@ -1522,6 +1563,7 @@ local function updateTiles()
     if not held and (d > unloadR or behind(cx, cy, d)) then
       retireForest(tile)
       dropGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
+      if M.signals then M.signals.dropTile(key) end
       S.tiles[key] = nil
       S.navDirty = true
       if NATIVE then native.unload(key) end
@@ -3745,6 +3787,9 @@ end
 
 local function drawWindow()
   if test and test.clean then return end   -- a clean screen for recorded video
+  if M.location and S.location and S.state == 'driving' and not S.locationOff then
+    M.location.draw(im, S.location, M.navigator and M.navigator.lines(L))
+  end
   if NATIVE then planetMap.update(S.status and S.status.countries) end
   pushTheme()
   if S.widgetHidden then
@@ -3807,6 +3852,14 @@ local function drawWindow()
     if im.CollapsingHeader1(L('Вигляд і трафік', 'Style and traffic')) then
       if S.packs then drawPacks() end
       drawTraffic()
+      S.locationShown = S.locationShown or im.BoolPtr(not S.locationOff)
+      if im.Checkbox(L('Рядок з назвою вулиці', 'Street name line'), S.locationShown) then
+        S.locationOff = not S.locationShown[0]
+        local ok, cfg = pcall(jsonReadFile, LANG_FILE)
+        cfg = ok and type(cfg) == 'table' and cfg or {}
+        cfg.locationOff = S.locationOff
+        pcall(jsonWriteFile, LANG_FILE, cfg, true)
+      end
     end
     if im.CollapsingHeader1(L('Статистика', 'Statistics')) then drawStats(st, p, v) end
     if im.CollapsingHeader1(L('Якість світу', 'World quality'), im.TreeNodeFlags_DefaultOpen) then drawTune() end
@@ -4203,14 +4256,20 @@ local function runTest()
       result.trace = S.trace
       if test.traffic and gameplay_traffic then
         -- how many AI cars there are, how many move, the nearest one
-        local n, moving, nearest = 0, 0, math.huge
+        local n, moving, nearest, cars = 0, 0, math.huge, {}
         for _, id in ipairs(gameplay_traffic.getTrafficList() or {}) do
           local o = be:getObjectByID(id)
           if o then
             n = n + 1
-            if o:getVelocity():length() > 2 then moving = moving + 1 end
-            nearest = math.min(nearest, (o:getPosition() - p):length())
+            local v, at = o:getVelocity(), o:getPosition()
+            if v:length() > 2 then moving = moving + 1 end
+            nearest = math.min(nearest, (at - p):length())
+            cars[n] = {x = at.x, y = at.y, vx = v.x, vy = v.y}
           end
+        end
+        if M.signals then
+          result.signalWatch = result.signalWatch or {}
+          M.signals.watch(cars, result.signalWatch)
         end
         result.trafficTrace = result.trafficTrace or {}
         table.insert(result.trafficTrace, {math.floor(S.now), n, moving, nearest < math.huge and math.floor(nearest) or -1})
@@ -4706,6 +4765,8 @@ function M.tick(dt)
     if S.state == 'driving' then
       navStep()
       if M.navigator then M.navigator.step(focus, S.now, lang) end
+      M.locationStep()
+      if M.signals then M.signals.step(S.now, trafficRunning()) end
       if S.flow then M.flowStep() end
     end
     updateParking()

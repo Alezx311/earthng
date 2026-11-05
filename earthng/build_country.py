@@ -1003,7 +1003,7 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
 
 def _add_routing(pack, jobs, emit, cancel=None):
     """The navigation's graph of every region (docs/NAVIGATION.md), from the pack's own roads, so
-    the route a player picks works in the pack as it comes. Ukraine: 101 regions, ~40 min at 3 jobs."""
+    the route a player picks works in the pack as it comes. Ukraine: 101 regions, 3.5 min at 3 jobs."""
     import build_routing
     from concurrent.futures import ProcessPoolExecutor
     with zipfile.ZipFile(pack) as archive:
@@ -1025,7 +1025,10 @@ def _add_routing(pack, jobs, emit, cancel=None):
     with zipfile.ZipFile(pack, 'a', zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
         for region, data in built:
             country = regions[region].split('/')[2]
-            archive.writestr(f'earthng/countries/{country}/routing/{region}.bin', data)
+            # no clock in the pack: the same sources give the same bytes
+            info = zipfile.ZipInfo(f'earthng/countries/{country}/routing/{region}.bin', date_time=(2020, 1, 1, 0, 0, 0))
+            info.compress_type, info.external_attr = zipfile.ZIP_DEFLATED, 0o600 << 16
+            archive.writestr(info, data)
 
 
 def section_region(source, dem, work, core, region_id, outline=None, emit=print):
