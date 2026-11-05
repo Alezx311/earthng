@@ -1,0 +1,11 @@
+[package]
+name = "kernels"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "earthng_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rayon = "1.12.0"

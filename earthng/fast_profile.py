@@ -417,11 +417,17 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
     # crossing in an active set, outside the CSR matrix
     active = np.zeros(len(xa))
     work = np.empty(len(col))
+    # the same product and conjugate gradients in earthng_native.dll when it is built (rust/):
+    # 85 of the 96 s of Kyiv's solve were these two in numpy
+    import native_tool
+    native = native_tool.kernels()
 
     def gap(h):
         return sum(c * h[v] for c, v in zip(xc, xv))
 
     def matvec(h, springs=True):
+        if native is not None:
+            return native.matvec(native.system(ptr, col, data, diag0, xv, xc, active, CLEAR_WEIGHT), h, springs)
         # 3000 times a solve over millions of entries: the same sums in buffers kept between calls
         if len(work) != len(col):
             work.resize(len(col), refcheck=False)
@@ -435,6 +441,8 @@ def solve(segments, sample, iterations=400, tol=1e-3, emit=None):
         return out
 
     def cg(b):
+        if native is not None:
+            return native.cg(native.system(ptr, col, data, diag0, xv, xc, active, CLEAR_WEIGHT), b, iterations, tol)
         diag = diag0 + sum(np.bincount(v, CLEAR_WEIGHT * active * c * c, nvar) for c, v in zip(xc, xv))
         x = np.zeros(nvar); r = b.copy(); z = r / diag; p = z.copy(); rz = r @ z
         step = np.empty(nvar)
