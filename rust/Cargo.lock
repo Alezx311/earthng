@@ -371,7 +371,9 @@ dependencies = [
  "anyhow",
  "clap",
  "osm",
+ "pack",
  "rayon",
+ "serde",
  "serde_json",
 ]
 
@@ -450,6 +452,14 @@ dependencies = [
  "protobuf",
  "protobuf-codegen",
  "rayon",
+]
+
+[[package]]
+name = "pack"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
