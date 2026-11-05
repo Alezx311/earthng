@@ -29,6 +29,12 @@ function M.colour(group, now)
   return 'red'
 end
 
+-- The lenses and AI update at EVERY, not continuously. Consumers must use the phase actually
+-- displayed, including the small interval between a clock boundary and the next update.
+function M.current(group, now)
+  return st.colours[group] or M.colour(group, now)
+end
+
 local function show(id, on)
   local obj = scenetree.findObjectById(id)
   if obj then obj:setHidden(not on) end

@@ -461,6 +461,65 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(wrong, 0)
         self.assertEqual(bad, 0)
 
+    def test_flow_and_real_cars_follow_the_displayed_signal_phase(self):
+        lua = self.lua()
+        lua.globals().signals = lua.execute(FLOW.with_name('signals.lua').read_text(encoding='utf8'))
+        lua.execute(self.CROSS)
+        out = lua.execute('''
+          local F = flow.new{}
+          local scene = {
+            {road = 'w', x = -10, y = 0, dx = 1, dy = 0, group = 4},
+            {road = 'e', x = 10, y = 0, dx = -1, dy = 0, group = 4},
+            {road = 's', x = 0, y = -10, dx = 0, dy = 1, group = 5},
+            {road = 'n', x = 0, y = 10, dx = 0, dy = -1, group = 5},
+          }
+          flow.sync(F, crossing(), nil, nil, {{2, 3}}, scene)
+          local mismatch, heldWrong, seen = 0, 0, {}
+          local lane = flow.laneOffset(F, F.links['w+'], 1)
+          -- The flow may be started long after the scene and can run in slow motion. Its local
+          -- simulation clock is deliberately very different from the light's world clock.
+          for now = 1000, 1060, .5 do
+            signals.step(now, false)
+            flow.step(F, .01, nil, nil, nil, now, signals.current)
+            for _, entry in ipairs({{'w+', 4}, {'e-', 4}, {'s+', 5}, {'n-', 5}}) do
+              if flow.lightOf(F, F.links[entry[1]]) ~= signals.colour(entry[2], now) then
+                mismatch = mismatch + 1
+              end
+            end
+            local colour = signals.colour(4, now)
+            seen[colour] = true
+            local held = flow.holdAt(F, -20, -lane, 1, 0, 8)
+            if held ~= (colour ~= 'green') then heldWrong = heldWrong + 1 end
+          end
+          return {mismatch, heldWrong, seen.green, seen.yellow, seen.red}
+        ''')
+        self.assertEqual(list(out.values()), [0, 0, True, True, True])
+
+    def test_signal_updates_match_the_display_and_missing_scene_has_a_fallback(self):
+        lua = self.lua()
+        lua.globals().signals = lua.execute(FLOW.with_name('signals.lua').read_text(encoding='utf8'))
+        lua.execute(self.CROSS)
+        out = lua.execute('''
+          local F = flow.new{}
+          local scene = {{road = 'w', x = -10, y = 0, dx = 1, dy = 0, group = 0}}
+          flow.sync(F, crossing(), nil, nil, {{2, 3}}, scene)
+          signals.step(23.9, false)
+          flow.step(F, .01, nil, nil, nil, 23.9, signals.current)
+          local green = flow.lightOf(F, F.links['w+'])
+          -- The clock crosses the boundary, but the displayed lens has not updated yet.
+          signals.step(24.01, false)
+          flow.step(F, .01, nil, nil, nil, 24.01, signals.current)
+          local stillGreen = flow.lightOf(F, F.links['w+'])
+          signals.step(24.11, false)
+          flow.step(F, .01, nil, nil, nil, 24.11, signals.current)
+          local yellow = flow.lightOf(F, F.links['w+'])
+          -- An unloaded scene restores the inferred junction behaviour, without a nil phase.
+          flow.sync(F, crossing(), nil, nil, {{2, 3}}, {})
+          local fallback = flow.lightOf(F, F.links['w+'])
+          return {green, stillGreen, yellow, fallback ~= nil}
+        ''')
+        self.assertEqual(list(out.values()), ['green', 'green', 'yellow', True])
+
     def test_lights_light_the_junction_they_stand_at(self):
         lua = self.lua()
         lua.execute(self.CROSS)

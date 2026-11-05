@@ -249,7 +249,7 @@ local function mustStop(F, car)
     -- a lit crossing: red stops, yellow stops a car that can, green goes when there is room;
     -- the roads inside a crossing (between its two halves) go on when there is room
     if light ~= true then
-      local c = M.colour(light.c.offset, light.axis, F.now)
+      local c = M.lightOf(F, link)
       if c == 'red' then return true end
       if c == 'yellow' then
         -- only a car at speed runs a yellow: one creeping up to the line would crawl across into
@@ -272,7 +272,7 @@ end
 -- segments: sid -> seg (seg.s the nav array, seg.x/seg.y its middle). Links within KEEP_R of
 -- (fx, fy) come and go with the segments; a car on a link that went is taken away.
 local planLights
-function M.sync(F, segments, fx, fy, lights)
+function M.sync(F, segments, fx, fy, lights, sceneLights)
   local want = {}
   for sid, seg in pairs(segments) do
     local s = seg.s or seg
@@ -333,7 +333,8 @@ function M.sync(F, segments, fx, fy, lights)
     end
   end
   if lights then F.lights = lights end
-  if changed or lights then planLights(F) end
+  if sceneLights then F.sceneLights = sceneLights end
+  if changed or lights or sceneLights then planLights(F) end
   return changed
 end
 
@@ -371,7 +372,8 @@ function planLights(F)
   for _, n in pairs(F.nodes) do n.signal = nil end
   for _, link in pairs(F.links) do link.light = nil end
   local lit = {}
-  for _, q in ipairs(F.lights or {}) do
+  for _, list in ipairs({F.lights or {}, F.sceneLights or {}}) do
+  for _, q in ipairs(list) do
     local x, y = q[1] or q.x, q[2] or q.y
     local seen = {}
     for gx = -2, 2 do
@@ -390,6 +392,7 @@ function planLights(F)
         end
       end
     end
+  end
   end
   -- a fixed order: two syncs of one graph light it the same way
   local order = {}
@@ -437,6 +440,25 @@ function planLights(F)
       crossings = crossings + 1
     end
   end
+  -- Scene lights carry the exact phase shown on the signal and sent to the game's AI. Match
+  -- them by road and direction, then by proximity to the junction, rather than inventing a
+  -- second phase from the flow graph's node ids. Keep the inferred phase where no scene exists.
+  local best = {}
+  for _, q in ipairs(F.sceneLights or {}) do
+    if q.road and q.group ~= nil and q.dx and q.dy then
+      for _, dir in ipairs({'+', '-'}) do
+        local link = F.links[tostring(q.road) .. dir]
+        if link and link.light and link.light ~= true and onApproach(link, q.x, q.y) then
+          local x, y, dx, dy = linkEnd(link)
+          local d = (x - q.x) ^ 2 + (y - q.y) ^ 2
+          if dx * q.dx + dy * q.dy > 0 and (not best[link] or d < best[link]) then
+            best[link] = d
+            link.light = {c = {offset = math.floor(q.group / 2) * CYCLE / SLOTS}, axis = q.group % 2, group = q.group}
+          end
+        end
+      end
+    end
+  end
   F.crossings = crossings
 end
 
@@ -445,7 +467,8 @@ function M.lightOf(F, link)
   local light = link.light
   if not light then return nil end
   if light == true then return 'green' end
-  return M.colour(light.c.offset, light.axis, F.now)
+  if light.group and F.signalColour then return F.signalColour(light.group, F.lightNow or F.now) end
+  return M.colour(light.c.offset, light.axis, F.lightNow or F.now)
 end
 
 -- position, heading and pitch of a car (or of link, s, lane)
@@ -567,7 +590,7 @@ function M.holdAt(F, x, y, hx, hy, v)
   locate(F, x, y, hx, hy, function(link, lane, s)
     local light = link.light
     if light and light ~= true then
-      local c = M.colour(light.c.offset, light.axis, F.now)
+      local c = M.lightOf(F, link)
       local toEnd = link.len - s
       local brake = v * v / (2 * BRAKE)
       if toEnd > .5 and toEnd < brake + 8 and (c == 'red' or (c == 'yellow' and toEnd > brake)) then hold = true end
@@ -817,9 +840,10 @@ local function spawnSomewhere(F, fx, fy, minR, maxR)
 end
 
 -- one step: dt s, focus (fx, fy), obstacles {x, y, vx, vy}
-function M.step(F, dt, fx, fy, obstacles)
+function M.step(F, dt, fx, fy, obstacles, lightNow, signalColour)
   dt = math.min(dt or 0, MAX_DT)
   F.now = F.now + dt
+  F.lightNow, F.signalColour = lightNow, signalColour
   placeObstacles(F, obstacles)
   -- leaders first along each lane, so a follower sees where its leader is now
   for _, link in pairs(F.links) do
@@ -839,7 +863,7 @@ function M.step(F, dt, fx, fy, obstacles)
   for _, car in pairs(F.cars) do
     -- the cars standing at lights that are not green, once a second (result.flow.atRed)
     local light = keep and car.v < .5 and car.link.light
-    if light and light ~= true and M.colour(light.c.offset, light.axis, F.now) ~= 'green' then atRed = atRed + 1 end
+    if light and light ~= true and M.lightOf(F, car.link) ~= 'green' then atRed = atRed + 1 end
     if car.s >= car.link.len then cross(F, car) end
     if not car.dead then
       if car.wait > WAIT_GIVE_UP then removeCar(F, car, 'gaveUp')

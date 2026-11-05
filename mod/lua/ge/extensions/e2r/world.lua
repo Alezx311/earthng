@@ -1086,6 +1086,13 @@ local function startScene(key, tile)
   tile.sceneGroup = tileGroup('E2RS_' .. key)
   tile.sceneLeft = queueItems(manifest.items, tile, key, 'scene')
   if M.signals then M.signals.addTile(key, manifest.lights) end
+  if (tile.flowLights and #tile.flowLights > 0) or (manifest.lights and #manifest.lights > 0) then
+    S.flowLightVersion = (S.flowLightVersion or 0) + 1
+    -- The road graph can have been built before its scene finished. Rebuild in navStep's
+    -- normal batch so physical AI sees newly loaded (or replaced) scene signals too.
+    S.navDirty = true
+  end
+  tile.flowLights = manifest.lights
   tile.sceneComplete = tile.sceneLeft == 0
   tile.left = tile.left + tile.sceneLeft
   if NATIVE and tile.refreshScene then native.release(key, 'road'); tile.refreshScene = nil end
@@ -1161,7 +1168,10 @@ local function navRead()
   if not ok or type(data) ~= 'table' or not data.segments then return end
   -- the tile's traffic lights {x, y} for the flow (flow.lua), while the tile is loaded
   S.navLights = S.navLights or {}
-  if data.signals and #data.signals > 0 then S.navLights[job.key] = data.signals; S.navLightsAt = S.now end
+  local oldLights = S.navLights[job.key]
+  local newLights = data.signals and #data.signals > 0 and data.signals or nil
+  S.navLights[job.key] = newLights
+  if oldLights or newLights then S.flowLightVersion = (S.flowLightVersion or 0) + 1 end
   for _, s in ipairs(data.segments) do
     local seg = S.nav[s[1]]
     if not seg then
@@ -1387,9 +1397,11 @@ function M.flowStep()
   if not p then return end
   local t = hptimer()
   -- the graph follows navBuild (new tiles, 250 m of driving)
-  if fl.syncAt ~= S.navAt then
+  local sceneChanged = fl.lightVersion ~= (S.flowLightVersion or 0)
+  if fl.syncAt ~= S.navAt or (sceneChanged and S.now - (fl.lightAt or -10) >= 1) then
     fl.syncAt = S.navAt
-    local lights = {}
+    fl.lightVersion, fl.lightAt = S.flowLightVersion or 0, S.now
+    local lights, sceneLights = {}, {}
     for key, list in pairs(S.navLights or {}) do
       if S.tiles[key] then
         for _, q in ipairs(list) do lights[#lights + 1] = q end
@@ -1397,7 +1409,10 @@ function M.flowStep()
         S.navLights[key] = nil
       end
     end
-    fs.sync(fl.F, S.nav, p.x, p.y, lights)
+    for _, tile in pairs(S.tiles) do
+      for _, light in ipairs(tile.flowLights or {}) do sceneLights[#sceneLights + 1] = light end
+    end
+    fs.sync(fl.F, S.nav, p.x, p.y, lights, sceneLights)
     fl.syncMs = t:stopAndReset()
   end
   local obs = {}
@@ -1422,7 +1437,7 @@ function M.flowStep()
   end
   -- the simulation's time, as the physics cars round them: paused or in slow motion the flow
   -- used to drive on at full speed through the real cars standing still
-  fs.step(fl.F, S.dtSim or S.dt or 1 / 60, p.x, p.y, obs)
+  fs.step(fl.F, S.dtSim or S.dt or 1 / 60, p.x, p.y, obs, S.now, M.signals and M.signals.current)
   -- the swap follows the player's car, not a free camera: the cars one can hit are round it
   if car then M.handoffSim.step(fl.H, fs, fl.F, car.x, car.y, S.now, fl.api) end
   fl.simMs = t:stopAndReset()
@@ -1564,6 +1579,7 @@ local function updateTiles()
       retireForest(tile)
       dropGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
       if M.signals then M.signals.dropTile(key) end
+      if tile.flowLights and #tile.flowLights > 0 then S.flowLightVersion = (S.flowLightVersion or 0) + 1 end
       S.tiles[key] = nil
       S.navDirty = true
       if NATIVE then native.unload(key) end
@@ -2359,7 +2375,7 @@ local function beginArrival(job)
   if trafficRunning() then gameplay_traffic.deleteVehicles() end
   if S.flow then M.flowSet(0) end
   if S.park then parking.clear(S.park) end
-  S.nav, S.navPending, S.navDirty, S.trafficWanted = {}, {}, false, nil
+  S.nav, S.navPending, S.navLights, S.navDirty, S.trafficWanted = {}, {}, {}, false, nil
   S.navAt, S.navPos, S.navSerial = nil, nil, nil
   map.reset({})
   if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
@@ -3933,7 +3949,7 @@ local function refreshCountries()
     if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
     S.navAt, S.navPos, S.navSerial = nil, nil, nil
     S.stream, S.co, S.job, S.landing = nil, nil, nil, nil
-    S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending = {}, {}, {}, {}, {}, {}
+    S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending, S.navLights = {}, {}, {}, {}, {}, {}, {}
     S.collisionDirty, S.state, S.coll = true, 'off', nil
   end
   if S.state == 'generating' or S.state == 'warmup' then
@@ -3985,7 +4001,7 @@ function M.onClientEndMission()
   resetForests()
   if NATIVE then native.refresh() end
   S.stream, S.co, S.job, S.landing, S.state = nil, nil, nil, nil, 'off'
-  S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending = {}, {}, {}, {}, {}, {}
+  S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending, S.navLights = {}, {}, {}, {}, {}, {}, {}
   S.knownMats, S.coverage, S.centredOnPackage = {}, nil, nil
   dropLights()
 end
