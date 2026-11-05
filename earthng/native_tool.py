@@ -218,3 +218,36 @@ def routing(pack, emit=print, cancel=None):
             raise RuntimeError(f'native routing failed: {error.strip()[-2000:]}')
         return [(info['region'], (Path(folder) / f"{info['region']}.bin").read_bytes())
                 for info in sorted(lines, key=lambda i: i['region'])]
+
+
+def map_source(pbf, emit=print):
+    """What build_map.py's osmium pass reads, natively: (places, roads), places as
+    [(lat, lon, [(key, value), ...])] and roads as [(rank, [(lon, lat), ...])] of roads with every
+    node located, both in file order; None without the native tool. Raises RuntimeError on failure."""
+    import json
+    import struct
+    import subprocess
+    import tempfile
+    exe = tool()
+    if exe is None:
+        return None
+    with tempfile.TemporaryDirectory(prefix='earthng-map-source-') as folder:
+        places_file, roads_file = Path(folder) / 'places.jsonl', Path(folder) / 'roads.bin'
+        result = subprocess.run([str(exe), 'map-source', str(pbf), '--places', str(places_file),
+                                 '--roads', str(roads_file)], capture_output=True, text=True, encoding='utf-8',
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if result.returncode:
+            raise RuntimeError(f'native map source failed: {result.stderr.strip()[-2000:]}')
+        for line in result.stderr.splitlines():
+            emit(line)
+        with places_file.open(encoding='utf-8') as stream:
+            places = [(lat, lon, [tuple(pair) for pair in tags]) for lat, lon, tags in map(json.loads, stream)]
+        data = roads_file.read_bytes()
+    roads, at = [], 0
+    while at < len(data):
+        rank, count = struct.unpack_from('<BI', data, at)
+        at += 5
+        values = struct.unpack_from(f'<{2 * count}d', data, at)
+        at += 16 * count
+        roads.append((rank, list(zip(values[::2], values[1::2]))))
+    return places, roads

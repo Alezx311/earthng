@@ -86,6 +86,42 @@ class MapDataTests(unittest.TestCase):
                 self.assertIsNotNone(image.getbbox())
             self.assertEqual(build_map.build(source, output), output)
 
+    def test_native_reader_writes_what_osmium_wrote(self):
+        import os
+        from unittest.mock import patch
+        import osmium
+        import native_tool
+        if native_tool.tool() is None:
+            self.skipTest('native tool not built')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            xml = root / 'sample.osm'
+            xml.write_text('''<osm version="0.6">
+              <node id="1" lat="50.123456789" lon="30.1"><tag k="place" v="town"/><tag k="name" v="A"/>
+                <tag k="name:en" v="Ay"/><tag k="population" v="1 200"/></node>
+              <node id="4" lat="50.2" lon="30.2"><tag k="place" v="locality"/><tag k="name" v="Not a place"/></node>
+              <node id="2" lat="50.01" lon="30.01"/><node id="3" lat="50.02" lon="30.0201"/>
+              <node id="5" lat="50.015" lon="30.5"/>
+              <way id="10"><nd ref="2"/><nd ref="5"/><nd ref="3"/><tag k="highway" v="primary"/></way>
+              <way id="11"><nd ref="2"/><nd ref="99"/><tag k="highway" v="trunk"/></way>
+              <way id="12"><nd ref="3"/><nd ref="5"/><tag k="highway" v="tertiary_link"/></way>
+              <way id="13"><nd ref="3"/><nd ref="2"/><tag k="highway" v="residential"/></way></osm>''',
+                           encoding='utf8')
+            pbf = root / 'sample.osm.pbf'
+            writer = osmium.SimpleWriter(str(pbf))
+            for obj in osmium.FileProcessor(str(xml)):
+                writer.add(obj)
+            writer.close()
+            outputs = []
+            for native in ('0', '1'):
+                with patch.dict(os.environ, {'EARTHNG_NATIVE': native}):
+                    outputs.append(build_map.build(pbf, root / f'map{native}', emit=lambda _: None))
+            names = sorted(p.name for p in outputs[0].iterdir())
+            self.assertEqual(names, sorted(p.name for p in outputs[1].iterdir()))
+            for name in names:
+                self.assertEqual((outputs[0] / name).read_bytes(), (outputs[1] / name).read_bytes(), name)
+            self.assertEqual(json.loads((outputs[1] / 'index.json').read_text())['roads'], 2)
+
     def test_overview_reuses_engine_points_and_pans_without_distortion(self):
         root = '/earthng/planet/maps/demo/'
         lua = self.runtime({root + 'index.json': {'version': 1, 'tiles': {

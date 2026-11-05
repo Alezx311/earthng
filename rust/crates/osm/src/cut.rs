@@ -178,7 +178,7 @@ fn tags_of(table: &[Vec<u8>], pairs: impl Iterator<Item = (usize, usize)>) -> Ta
     pairs.map(|(k, v)| (table[k].clone().into_boxed_slice(), table[v].clone().into_boxed_slice())).collect()
 }
 
-fn decode<'a>(blob: &'a MmapBlob<'a>) -> Result<Option<PrimitiveBlock>> {
+pub(crate) fn decode<'a>(blob: &'a MmapBlob<'a>) -> Result<Option<PrimitiveBlock>> {
     Ok(match blob.decode()? {
         BlobDecode::OsmData(block) => Some(block),
         _ => None,
@@ -226,7 +226,7 @@ pub struct CutReport {
 
 /// What the blob ranges of each phase are: all blobs of a kind, found by binary search in a file
 /// sorted by type then id, else by decoding everything once.
-fn phases(data: &[MmapBlob], sorted: bool) -> Result<[Vec<usize>; 3]> {
+pub(crate) fn phases(data: &[MmapBlob], sorted: bool) -> Result<[Vec<usize>; 3]> {
     let n = data.len();
     if sorted && n > 0 {
         let kind = |i: usize| -> Result<u8> { Ok(decode(&data[i])?.map(|b| kinds(&b)).unwrap_or(0)) };

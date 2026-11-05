@@ -38,6 +38,15 @@ enum Command {
         #[arg(long)]
         region: Vec<String>,
     },
+    /// Settlement nodes and main roads of a PBF for earthng/build_map.py: places as JSON lines
+    /// [lat, lon, [[k, v], ...]], roads as (u8 rank, u32 n, n x (lon, lat) f64)
+    MapSource {
+        pbf: PathBuf,
+        #[arg(long)]
+        places: PathBuf,
+        #[arg(long)]
+        roads: PathBuf,
+    },
     /// Encode cells dumped as JSON lines ({"origin": [x, y], "cell": {...}}) into hex lines
     /// (a check against earthng/country_format.py)
     #[command(hide = true)]
@@ -54,6 +63,11 @@ fn main() -> Result<()> {
         Command::Cut { pbf, out, package_box } => {
             let package_box = package_box.map(|b| [b[0], b[1], b[2], b[3]]);
             osm::cut::cut(&pbf, &out, package_box, &emit)?;
+        }
+        Command::MapSource { pbf, places, roads } => {
+            let found = osm::mapsrc::extract(&pbf, &|line| eprintln!("{line}"))?;
+            osm::mapsrc::write(&found, &places, &roads)?;
+            println!("{}", serde_json::json!({"places": found.places.len(), "roads": found.roads.len(), "skipped": found.skipped}));
         }
         Command::EncodeCells { input, output } => encode_cells(&input, &output)?,
         Command::Routing { pack, out, region } => routing(&pack, &out, &region)?,
