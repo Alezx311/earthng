@@ -504,15 +504,27 @@ local function readPaused(path)
   local f = io.open(path, 'rb')
   if not f then error('cannot open mounted source: ' .. path) end
   local parts = {}
+  local ioStats = state.stream.ioStats
   while true do
+    local readTimer = hptimer()
     local s = f:read(262144)
+    local ms = readTimer:stop()
+    ioStats.readCount, ioStats.readMs = ioStats.readCount + 1, ioStats.readMs + ms
+    ioStats.readMaxMs = math.max(ioStats.readMaxMs, ms)
+    active.resumeReadMs = (active.resumeReadMs or 0) + ms
     if not s then break end
     parts[#parts + 1] = s
     if #s < 262144 then break end
     active.pause()
   end
   f:close()
-  return table.concat(parts)
+  local concatTimer = hptimer()
+  local data = table.concat(parts)
+  local ms = concatTimer:stop()
+  ioStats.concatCount, ioStats.concatMs = ioStats.concatCount + 1, ioStats.concatMs + ms
+  ioStats.concatMaxMs = math.max(ioStats.concatMaxMs, ms)
+  active.resumeConcatMs = (active.resumeConcatMs or 0) + ms
+  return data
 end
 
 local function loadBlock(key, block)
@@ -809,6 +821,7 @@ local function land(req)
     meanBuildSeconds = 0, loadRadius = 1000, farRadius = 3000, farFast = 25,
     -- where the generator's time went (ms) and the parked builds given up, for the reports
     spentMs = {road = 0, scene = 0, grass = 0, far = 0, horizon = 0}, stageMs = {}, lost = {scene = 0, grass = 0},
+    ioStats = {readCount = 0, readMs = 0, readMaxMs = 0, concatCount = 0, concatMs = 0, concatMaxMs = 0},
     horizonRadius = HORIZON_RADIUS, horizonDem = true}
   if pendingTune then
     active.tune = pendingTune
@@ -1373,9 +1386,12 @@ local function loseGrass(key)
   if entry and not entry.grass then entry.grassLost = true end
 end
 
-local function update(dt, budgetMs, farBudgetMs)
+local function update(dt, budgetMs, farBudgetMs, now)
   ensure()
   if not active then return end
+  -- The caller's world clock is shared with the game report. Standalone users have only
+  -- accumulated update time since land, which is explicitly labelled in slowResumes.
+  active.elapsed = (active.elapsed or 0) + (finite(dt) and math.max(dt, 0) or 0)
   if live and active.region.country.id == 'live' and live.absorb(active.region) then
     active.prioritiesDirty = true
   end
@@ -1533,7 +1549,9 @@ local function update(dt, budgetMs, farBudgetMs)
     local resumeTimer = hptimer()
     local kind = active.workHorizon and 'horizon' or (active.workFar and 'far')
       or (active.workGrass and 'grass') or (active.workScene and 'scene') or 'road'
-    local stage = kind .. ' after ' .. (STAGE[active.work] or 'start')
+    local before = STAGE[active.work] or 'start'
+    local stage = kind .. ' after ' .. before
+    active.resumeReadMs, active.resumeConcatMs = 0, 0
     local ok, message = coroutine.resume(active.work)
     local resumeMs = resumeTimer:stop()
     state.stream.spentMs[kind] = state.stream.spentMs[kind] + resumeMs
@@ -1542,7 +1560,13 @@ local function update(dt, budgetMs, farBudgetMs)
     if resumeMs > 30 then
       local slow = state.stream.slowResumes or {}
       state.stream.slowResumes = slow
-      if #slow < 40 then slow[#slow + 1] = {active.workKey, active.workHorizon and 'horizon' or (active.workFar and 'far' or 'near'), math.floor(resumeMs)} end
+      if #slow < 40 then
+        -- First three fields retain the old report format. Marks bound the work in this
+        -- resume; it may cross multiple marks, so neither is necessarily the culprit.
+        slow[#slow + 1] = {active.workKey, active.workHorizon and 'horizon' or (active.workFar and 'far' or 'near'),
+          math.floor(resumeMs), kind, before, STAGE[active.work] or 'start', finite(now) and now or active.elapsed,
+          active.resumeReadMs, active.resumeConcatMs, finite(now) and 'world' or 'land-update'}
+      end
     end
     steps = steps + 1
     if not ok then

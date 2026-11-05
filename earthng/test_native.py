@@ -588,6 +588,49 @@ def fixture_v2(size=4, roads=False, landing=(1750, 1750)):
 
 
 class NativeV2Tests(NativeTests.__base__):
+    def test_slow_resume_keeps_old_fields_and_attributes_io(self):
+        for world_time in (123.5, None):
+            with self.subTest(world_time=world_time):
+                lua, mod, cv = self.make(fixture_v2())
+                # Every timer reports 31 ms, forcing a slow resume without a real delay.
+                lua.execute('''
+                  hptimer=function() return {stop=function() return 31 end} end
+                  local old = stubGenerator.build
+                  stubGenerator.build=function(cells, i, j, options)
+                    options.mark('test-stage')
+                    return old(cells, i, j, options)
+                  end
+                ''')
+                lat, lon = geographic(1750, 1750)
+                mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
+                for _ in range(40):
+                    mod.update(.1, 2, None, world_time)
+                stream = mod.status().stream
+                events = list(stream.slowResumes.values())
+                self.assertTrue(events)
+                event = next(e for e in events if e[8] > 0 and e[9] > 0)
+                self.assertIsInstance(event[1], str)  # tile key
+                self.assertEqual(event[2], 'near')    # old layer classification
+                self.assertEqual(event[3], 31)        # old duration in ms
+                self.assertEqual(event[4], 'road')    # detailed kind
+                self.assertEqual(event[5], 'start')
+                self.assertEqual(event[6], 'start')
+                self.assertEqual(event[8], 31)        # read time inside this resume
+                self.assertEqual(event[9], 31)        # concat time inside this resume
+                if world_time is None:
+                    self.assertGreater(event[7], 0)
+                    self.assertEqual(event[10], 'land-update')
+                else:
+                    self.assertEqual(event[7], world_time)
+                    self.assertEqual(event[10], 'world')
+                self.assertGreaterEqual(stream.ioStats.readCount, 1)
+                self.assertEqual(stream.ioStats.readMs, stream.ioStats.readCount * 31)
+                self.assertEqual(stream.ioStats.readMaxMs, 31)
+                self.assertGreaterEqual(stream.ioStats.concatCount, 1)
+                self.assertEqual(stream.ioStats.concatMs, stream.ioStats.concatCount * 31)
+                self.assertEqual(stream.ioStats.concatMaxMs, 31)
+                self.assertTrue(any(e[6] == 'test-stage' for e in events))
+
     make = NativeTests.make
     pump = NativeTests.pump
 

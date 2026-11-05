@@ -4087,7 +4087,8 @@ local function runTest()
       job = {state = job.state, progress = job.progress, message = job.message, stage = job.stage},
       built = stream.built, ready = stream.readyCount, error = S.lastError,
       cachedTiles = stream.cachedTiles, cachedCells = stream.cachedCells, rebuilds = stream.rebuilds,
-      slowResumes = stream.slowResumes, spentMs = stream.spentMs, stageMs = stream.stageMs, lost = stream.lost}
+      slowResumes = stream.slowResumes, spentMs = stream.spentMs, stageMs = stream.stageMs,
+      ioStats = stream.ioStats, lost = stream.lost}
     if M.live and M.live.status then
       local liveState = M.live.status()
       if liveState then result.live = {message_en = liveState.message_en, message_uk = liveState.message_uk} end
@@ -4740,7 +4741,7 @@ function M.tick(dt)
         if kb >= S.profKb then P.kbUp = P.kbUp + kb - S.profKb else P.collections = P.collections + 1 end
       end
     end
-    native.update(dt, test and test.genBudget or BUDGET_MS, test and test.genBudget)
+    native.update(dt, test and test.genBudget or BUDGET_MS, test and test.genBudget, S.now)
     S.nativeMs = t:stop()
     profAdd('native', S.nativeMs, collectgarbage('count') - kb)
     S.profKb = collectgarbage('count')
