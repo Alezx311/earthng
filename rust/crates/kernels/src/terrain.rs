@@ -160,13 +160,57 @@ impl Dem {
         Ok(image[(y.rem_euclid(SIDE) * SIDE + x.rem_euclid(SIDE)) as usize])
     }
 
-    /// Terrain.sample of one local point, without the finite check and the lift. single: the
-    /// pixels rounded to float32 as fast_profile.Mosaic keeps a z13 grid.
-    fn height(&mut self, x: f64, y: f64, smooth: bool, single: bool) -> Result<f64, DemError> {
+    /// Web Mercator pixel coordinates of a local point at the DEM's zoom.
+    #[inline]
+    fn pixel_xy(&self, x: f64, y: f64) -> (f64, f64) {
         let (lon, lat) = self.frame.geographic(x, y);
         let scale = (256u64 << self.zoom) as f64;
         let px = (lon + 180.0) / 360.0 * scale;
         let py = (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * scale;
+        (px, py)
+    }
+
+    /// True when every pixel the 5 x 5 samples `spacing` apart round p can read lies within less
+    /// than `spike` of every other: then the median is within `spike` of the centre, and
+    /// despike() keeps the centre. The pixel box is grown by one pixel past the four corners'
+    /// (the map from metres to pixels is affine to far less than a pixel over 100 m). False
+    /// where a pixel is not available: the full path then reads (and fails) as before.
+    fn calm(&mut self, p: [f64; 2], spacing: f64, spike: f64) -> bool {
+        let r = 2.0 * spacing;
+        let a = self.pixel_xy(p[0] - r, p[1] - r);
+        let b = self.pixel_xy(p[0] + r, p[1] - r);
+        let c = self.pixel_xy(p[0] - r, p[1] + r);
+        let d = (b.0 + c.0 - a.0, b.1 + c.1 - a.1);
+        let (xs, ys) = ([a.0, b.0, c.0, d.0], [a.1, b.1, c.1, d.1]);
+        if !xs.iter().chain(&ys).all(|v| v.is_finite()) {
+            return false;
+        }
+        let lo = |v: &[f64; 4]| v.iter().copied().fold(f64::INFINITY, f64::min).floor() as i64 - 1;
+        let hi = |v: &[f64; 4]| v.iter().copied().fold(f64::NEG_INFINITY, f64::max).floor() as i64 + 2;
+        let (x0, x1, y0, y1) = (lo(&xs), hi(&xs), lo(&ys), hi(&ys));
+        if (x1 - x0 + 1) * (y1 - y0 + 1) > 1024 {
+            return false;
+        }
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                match self.pixel(x, y) {
+                    Ok(v) => {
+                        low = low.min(v);
+                        high = high.max(v);
+                    }
+                    Err(_) => return false,
+                }
+            }
+        }
+        // the margin covers the rounding of the bilinear sums and of the lift
+        high - low < spike - 1e-6
+    }
+
+    /// Terrain.sample of one local point, without the finite check and the lift. single: the
+    /// pixels rounded to float32 as fast_profile.Mosaic keeps a z13 grid.
+    fn height(&mut self, x: f64, y: f64, smooth: bool, single: bool) -> Result<f64, DemError> {
+        let (px, py) = self.pixel_xy(x, y);
         let (ix, iy) = (px.floor() as i64, py.floor() as i64);
         let (u, v) = (px - ix as f64, py - iy as f64);
         const ONE: [(i64, i64, f64); 1] = [(0, 0, 1.0)];
@@ -212,7 +256,50 @@ impl Dem {
 
     /// Despiked.sample: each point's height, or the median of the 5 x 5 samples `spacing` apart
     /// round it when the point lies more than `spike` from that median.
+    ///
+    /// The same values and errors as sampling all 25 points of every point in one sample()
+    /// call (a missing tile fails at once, a non-finite height after the last point), but a
+    /// point over calm ground (calm()) reads only its centre: four of five over flat land.
     pub fn despiked(&mut self, xy: &[[f64; 2]], spacing: f64, spike: f64, out: &mut [f64]) -> Result<(), DemError> {
+        let mut finite = true;
+        let mut heights = [0.0; 25];
+        // over rough ground calm() mostly fails: after a run of failures it is tried on every
+        // fourth point only (which path a point takes never changes its value)
+        let mut rough = 0u32;
+        for (n, (p, o)) in xy.iter().zip(out.iter_mut()).enumerate() {
+            let tried = rough < 8 || n % 4 == 0;
+            let calm = tried && self.calm(*p, spacing, spike);
+            if tried {
+                rough = if calm { 0 } else { rough + 1 };
+            }
+            if calm {
+                let h = self.height(p[0], p[1], false, false)?;
+                finite &= h.is_finite();
+                *o = h + self.lift;
+                continue;
+            }
+            let mut k = 0;
+            for dy in -2..=2 {
+                for dx in -2..=2 {
+                    let h = self.height(p[0] + dx as f64 * spacing, p[1] + dy as f64 * spacing, false, false)?;
+                    finite &= h.is_finite();
+                    heights[k] = h;
+                    k += 1;
+                }
+            }
+            for h in heights.iter_mut() {
+                *h += self.lift;
+            }
+            *o = despike(&heights, 12, spike);
+        }
+        if !finite {
+            return Err(DemError::NonFinite);
+        }
+        Ok(())
+    }
+
+    /// despiked() reading all 25 points of every point (the reference calm() must match).
+    pub fn despiked_full(&mut self, xy: &[[f64; 2]], spacing: f64, spike: f64, out: &mut [f64]) -> Result<(), DemError> {
         let mut around = Vec::with_capacity(xy.len() * 25);
         for p in xy {
             for dy in -2..=2 {

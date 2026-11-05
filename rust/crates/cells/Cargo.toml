@@ -1,0 +1,14 @@
+[package]
+name = "cells"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+libloading = "0.8"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order", "float_roundtrip"] }
+earthng_native = { package = "kernels", path = "../kernels" }
+pack = { path = "../pack" }
+geo = { path = "../geo" }

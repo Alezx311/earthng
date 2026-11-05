@@ -251,3 +251,56 @@ def map_source(pbf, emit=print):
         at += 16 * count
         roads.append((rank, list(zip(values[::2], values[1::2]))))
     return places, roads
+
+
+def geos_library():
+    """shapely's own geos_c library (the cells must use the same GEOS build), or None."""
+    import shapely
+    folder = Path(shapely.__file__).resolve().parent
+    names = ('geos_c*.dll',) if os.name == 'nt' else ('libgeos_c*.so*', 'libgeos_c*.dylib')
+    for where in (folder.parent / 'shapely.libs', folder / '.libs', folder.parent / 'Shapely.libs', folder / '.dylibs'):
+        for name in names:
+            found = sorted(where.glob(name))
+            if found:
+                return found[0]
+    return None
+
+
+def compile_cells(config, cells):
+    """build_country.compile_cell + country_format.encode_cell of cells natively.
+
+    config: {'index', 'scenes', 'dem': {cache, zoom, epsg, cx, cy, lift}, 'step', 'include'};
+    cells: [(i, j, [(x0, y0, x1, y1, tile key), ...] scenery leaves)]. Returns
+    {(i, j): (payload bytes, road count)} of the cells done and {(i, j): reason} of those
+    left to Python, or None without the native tool or shapely's GEOS."""
+    import json
+    import struct
+    import subprocess
+    import tempfile
+    exe, geos = tool(), geos_library()
+    if exe is None or geos is None:
+        return None
+    task = dict(config, geos=str(geos), cells=[{'i': i, 'j': j, 'scenery': [list(leaf) for leaf in leaves]}
+                                               for i, j, leaves in cells])
+    with tempfile.TemporaryDirectory(prefix='earthng-cells-') as folder:
+        path, out = Path(folder) / 'task.json', Path(folder) / 'cells.bin'
+        path.write_text(json.dumps(task), encoding='utf-8')
+        result = subprocess.run([str(exe), '--threads', '1', 'compile', str(path), '--out', str(out)],
+                                capture_output=True, text=True, encoding='utf-8',
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if result.returncode:
+            raise RuntimeError(f'native cells failed: {result.stderr.strip()[-2000:]}')
+        if os.environ.get('EARTHNG_CELLS_PROFILE'):
+            print(result.stderr.strip())
+        data = out.read_bytes()
+    done, left, at = {}, {}, 0
+    while at < len(data):
+        i, j, status, roads, n = struct.unpack_from('<qqBII', data, at)
+        at += 25
+        body = data[at:at + n]
+        at += n
+        if status == 0:
+            done[i, j] = (body, roads)
+        else:
+            left[i, j] = body.decode('utf-8', 'replace')
+    return done, left

@@ -369,6 +369,18 @@ pub unsafe extern "C" fn earthng_dem_despiked(handle: *mut DemHandle, xy: *const
     dem_result(h, r)
 }
 
+/// earthng_dem_despiked through every one of the 25 samples (a check of its calm-ground path).
+///
+/// # Safety
+/// As earthng_dem_sample.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_dem_despiked_full(handle: *mut DemHandle, xy: *const f64, n: usize, spacing: f64,
+                                                   spike: f64, out: *mut f64) -> i32 {
+    let h = unsafe { &mut *handle };
+    let r = h.dem.despiked_full(points(xy, n), spacing, spike, values(out, n));
+    dem_result(h, r)
+}
+
 /// Despiked.grid of the lattice ys x xs into out (ny * nx, row-major).
 ///
 /// # Safety

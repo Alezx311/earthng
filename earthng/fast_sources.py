@@ -829,6 +829,44 @@ def link_parts(found):
             tags['height'] = str(under[ident])
 
 
+SCENE_MAGIC = b'ESC1'
+
+
+def write_scene(records):
+    """A scene file (rust/crates/cells scene.rs reads it too): 'ESC1', count, then per record fid,
+    kind, tags as a JSON list of [key, value] (their order kept) and WKB, little-endian."""
+    import struct
+    out = [SCENE_MAGIC, struct.pack('<I', len(records))]
+    for (fid, kind, data, _), wkb in zip(records, shapely.to_wkb([r[3] for r in records])):
+        name = kind.encode('utf8')
+        tags = json.dumps(list(data['tags'].items()), ensure_ascii=False, separators=(',', ':')).encode('utf8')
+        out += [struct.pack('<qH', fid, len(name)), name, struct.pack('<I', len(tags)), tags,
+                struct.pack('<I', len(wkb)), wkb]
+    return b''.join(out)
+
+
+def read_scene(data):
+    """(fids, kinds, tag dicts, WKB) of a write_scene file."""
+    import struct
+    if data[:4] != SCENE_MAGIC:
+        raise ValueError('not a scene file')
+    count, = struct.unpack_from('<I', data, 4)
+    at, fids, kinds, tags, wkb = 8, [], [], [], []
+    for _ in range(count):
+        fid, n = struct.unpack_from('<qH', data, at)
+        at += 10
+        kinds.append(data[at:at + n].decode('utf8'))
+        at += n
+        n, = struct.unpack_from('<I', data, at)
+        tags.append(dict(json.loads(data[at + 4:at + 4 + n])))
+        at += 4 + n
+        n, = struct.unpack_from('<I', data, at)
+        wkb.append(data[at + 4:at + 4 + n])
+        at += 4 + n
+        fids.append(fid)
+    return fids, kinds, tags, wkb
+
+
 class Store:
     def __init__(self, directory):
         self.directory = Path(directory).resolve()
@@ -881,6 +919,9 @@ class Store:
         key,entry=hit
         if key not in self.scenes:
             records = self.load_scene(key)
+            if records is None and self.scene_dir:
+                self.save_scene(key)        # or wait for the worker reading it now
+                records = self.load_scene(key)
             if records is None:
                 records = self.build_scene(entry)
             self.scenes[key]=(records,shapely.STRtree([r[3] for r in records]))
@@ -899,27 +940,38 @@ class Store:
         return Path(self.scene_dir) / f'{key}.scene' if self.scene_dir else None
 
     def load_scene(self, key):
-        import pickle
         path = self.scene_path(key)
         if path is None or not path.is_file():
             return None
-        with path.open('rb') as stream:
-            data = pickle.load(stream)
-        return list(zip(data['fid'], data['kind'], ({'tags': t} for t in data['tags']), shapely.from_wkb(data['wkb'])))
+        fids, kinds, tags, wkb = read_scene(path.read_bytes())
+        return list(zip(fids, kinds, ({'tags': t} for t in tags), shapely.from_wkb(wkb)))
 
-    def save_scene(self, key):
-        """Read raw tile key into scene_dir (once; a concurrent writer of the same key is harmless)."""
-        import pickle
+    def save_scene(self, key, wait=600.):
+        """Read raw tile key into scene_dir once. While another worker reads it (its .lock file),
+        wait for its file instead of reading the tile twice; if that worker fails (the lock goes
+        without a file) or takes longer than wait seconds, read it here."""
         path = self.scene_path(key)
         if path.is_file():
             return
-        records = self.build_scene(self.source_index['tiles'][key])
-        data = {'fid': [r[0] for r in records], 'kind': [r[1] for r in records],
-                'tags': [r[2]['tags'] for r in records], 'wkb': shapely.to_wkb([r[3] for r in records])}
-        part = path.with_suffix(f'.{os.getpid()}.part')
-        with part.open('wb') as stream:
-            pickle.dump(data, stream, protocol=pickle.HIGHEST_PROTOCOL)
-        os.replace(part, path)
+        lock = path.with_suffix('.lock')
+        try:
+            handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            handle = None
+            deadline = time.monotonic() + wait
+            while not path.is_file() and lock.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            if path.is_file():
+                return
+        try:
+            records = self.build_scene(self.source_index['tiles'][key])
+            part = path.with_suffix(f'.{os.getpid()}.part')
+            part.write_bytes(write_scene(records))
+            os.replace(part, path)
+        finally:
+            if handle is not None:
+                os.close(handle)
+                lock.unlink(missing_ok=True)
 
     def build_scene(self, entry):
         """Records (fid, kind, {'tags'}, local geometry) of one raw OSM tile, sorted by fid."""

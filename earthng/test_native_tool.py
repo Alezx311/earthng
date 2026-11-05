@@ -184,3 +184,102 @@ class FallbackTests(unittest.TestCase):
             self.assertFalse((Path(tmp) / 'tiles.part').exists())
         self.assertEqual(calls[0][0], 'native')
         self.assertTrue(calls[1][1].endswith('osm_tiles_country.py'))
+
+
+class NativeCellsTests(unittest.TestCase):
+    """earthng-mapbuilder compile writes compile_cell's payloads: a small region with a real index,
+    DEM tiles and a scene of every scenery kind it handles (clips, partition, buildings, lines)."""
+
+    @unittest.skipUnless(native_tool.tool() and native_tool.kernels() and native_tool.geos_library(),
+                         'native tools not built (cargo build --release in rust/) or no shapely GEOS')
+    def test_native_cells_are_the_python_bytes(self):
+        import sqlite3
+        import numpy as np
+        import shapely
+        from PIL import Image
+        from shapely.geometry import LineString, Point, Polygon, box
+        import build_country
+        import country_format
+        import fast_sources
+        frame = fast_sources.Frame.at(30.525, 50.475)
+        rng = np.random.default_rng(3)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            scale = 256 * 2 ** 12
+            lon, lat = frame.geographic(np.array([-2500., 2500.]), np.array([-2500., 2500.]))
+            xs = ((np.array(lon) + 180) / 360 * scale // 256).astype(int)
+            ys = ((1 - np.arcsinh(np.tan(np.radians(lat))) / np.pi) / 2 * scale // 256).astype(int)
+            for a in range(min(xs) - 1, max(xs) + 2):
+                for b in range(min(ys) - 1, max(ys) + 2):
+                    folder = tmp / 'dem' / 'terrain' / '12' / str(a)
+                    folder.mkdir(parents=True, exist_ok=True)
+                    rgb = np.zeros((256, 256, 3), dtype=np.uint8)
+                    rgb[:, :, 0] = 129                       # 256 m and up: no sea near
+                    rgb[:, :, 1] = (np.arange(256)[None, :] // 32 + np.arange(256)[:, None] // 64).astype(np.uint8)
+                    rgb[:, :, 2] = rng.integers(0, 256, (256, 256), dtype=np.uint8)
+                    rgb[rng.integers(0, 256, 40), rng.integers(0, 256, 40), 1] = 200   # spikes for Despiked
+                    Image.fromarray(rgb, 'RGB').save(folder / f'{b}.png')
+            ix, iy = 610, 1009
+            osm = tmp / 'osm'
+            osm.mkdir()
+            coverage = [ix * .05 - .01, iy * .05 - .01, (ix + 1) * .05 + .01, (iy + 1) * .05 + .01]
+            (osm / 'index.json').write_text(json.dumps({'cell': .05, 'buffer': .01, 'tiles': {
+                f'{ix}_{iy}': {'coverage': coverage, 'file': 'none.osm.pbf', 'bytes': 1}}}))
+            region = tmp / 'region'
+            region.mkdir()
+            (region / 'region.json').write_text(json.dumps({
+                'id': 'test', 'frame': frame.spec(), 'dem': str(tmp / 'dem'), 'demZoom': 12, 'source': str(osm),
+                'coverage': [coverage], 'bbox': coverage}))
+            db = sqlite3.connect(region / 'sources.sqlite')
+            db.execute('CREATE TABLE features(id INTEGER PRIMARY KEY, kind TEXT, data TEXT, geom BLOB)')
+            db.execute('CREATE VIRTUAL TABLE bounds USING rtree(id,x0,x1,y0,y1)')
+            road = {'xy': [[-1300, -200], [-400, 33.3], [-399.9, 33.3], [300, 700], [1300, 750]],
+                    'prof': [[0, 233, 500, 733, 2100], [300.1, 301, 310, 305.5, 320]],
+                    'width': 7, 'tags': {'highway': 'residential', 'name': 'Вулиця'},
+                    'nodes': [9007199254740993, 'f17']}
+            junction = Polygon([(-420, 20), (-380, 20), (-380, 50), (-420, 50)])
+            for fid, kind, data, geometry in ((5, 'road', road, LineString(road['xy'])),
+                                              (-14319656677, 'junction', {'h': 310.25}, junction)):
+                x0, y0, x1, y1 = geometry.bounds
+                db.execute('INSERT INTO features VALUES(?,?,?,?)', (fid, kind, json.dumps(data), shapely.to_wkb(geometry)))
+                db.execute('INSERT INTO bounds VALUES(?,?,?,?,?)', (fid, x0, x1, y0, y1))
+            db.commit()
+            db.close()
+            records = [
+                (-3 * 10**12 - 8, 'grocery_site', {'tags': {'shop': 'supermarket'}}, box(100, 100, 160, 140)),
+                (-10**12 - 2, 'stop', {'tags': {'highway': 'bus_stop', 'name': 'Зупинка'}}, Point(-50.25, 12.5)),
+                (-40, 'fence', {'tags': {'barrier': 'fence'}}, LineString([(-1500, 10), (-200, 10), (-150, 400)])),
+                (-41, 'power', {'tags': {'power': 'line'}}, LineString([(-1600, -50), (1600, -40)])),
+                (2, 'forest', {'tags': {'landuse': 'forest'}},
+                 shapely.MultiPolygon([Polygon([(-3000, -3000), (500, -3000), (500, 600), (-3000, 600)],
+                                               holes=[[(-300, -300), (-300, -100), (-100, -100), (-100, -300)]])])),
+                (4, 'meadow', {'tags': {'landuse': 'meadow'}}, Polygon([(-200, -200), (300, -200), (300, 300), (-200, 300)])),
+                (6, 'building', {'tags': {'building': 'yes', 'height': '12,5 m', 'building:levels': '4'}},
+                 Polygon([(10, 10), (60, 10), (60, 40), (10, 40)])),
+                (8, 'building', {'tags': {'building': 'house', 'building:levels': '2;3', 'min_height': '3'}},
+                 Polygon([(900, -800), (1300, -800), (1300, -500), (900, -500)])),
+                (10, 'water', {'tags': {'natural': 'water'}}, Polygon([(-900, 200), (-700, 200), (-700, 500)])),
+                (12, 'paved', {'tags': {'area:highway': 'yes'}}, Polygon([(-250, -250), (0, -250), (0, 0), (-250, 0)])),
+                (14, 'park', {'tags': {'leisure': 'park'}}, Point(1e6, 1e6).buffer(1)),    # far: never queried
+            ]
+            records.sort(key=lambda r: r[0])
+            scenes = tmp / 'scenes'
+            scenes.mkdir()
+            (scenes / f'{ix}_{iy}.scene').write_bytes(fast_sources.write_scene(records))
+            store = build_country._despike(fast_sources.Store(region))
+            store.scene_dir = scenes
+            cells = [(-1, -1), (0, -1), (-1, 0), (0, 0)]
+            for i, j in cells:
+                padded = [i*1000-100, j*1000-100, (i+1)*1000+100, (j+1)*1000+100]
+                self.assertEqual([leaf[4] for leaf in build_country._scenery_plan(store, padded)], [f'{ix}_{iy}'])
+            native = build_country._native_cells(store, cells, None)
+            self.assertEqual(sorted(native), sorted(cells))
+            for i, j in cells:
+                rect = [i*1000, j*1000, (i+1)*1000, (j+1)*1000]
+                cell = build_country.compile_cell(store, rect)
+                self.assertEqual(native[i, j], (country_format.encode_cell(cell, rect[:2]), len(cell['roads'])), (i, j))
+            areas = build_country.compile_cell(store, [-1000, -1000, 0, 0])['areas']
+            self.assertTrue(any(':cover:' in a['id'] for a in areas))
+            with patch.dict(os.environ, {'EARTHNG_NATIVE': '0'}):
+                self.assertEqual(build_country._native_cells(store, cells, None), {})
+            store.db.close()

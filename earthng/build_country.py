@@ -511,10 +511,59 @@ def _credits_text(title, credits):
     return ('\n'.join(lines) + '\n').encode('utf-8')
 
 
+def _scenery_plan(store, rect, depth=0):
+    """The (rect, OSM tile key) reads _scenery(store, rect) makes, in its order."""
+    import osm_tiles
+    hit = osm_tiles.tile_for(store.source_index, store.frame.geo_bbox(rect))
+    if hit:
+        return [(*rect, hit[0])]
+    if depth >= 3:
+        return []
+    mx, my = (rect[0]+rect[2])/2, (rect[1]+rect[3])/2
+    return [leaf for part in ([rect[0], rect[1], mx, my], [mx, rect[1], rect[2], my],
+                              [rect[0], my, mx, rect[3]], [mx, my, rect[2], rect[3]])
+            for leaf in _scenery_plan(store, part, depth + 1)]
+
+
+def _native_cells(store, cells, include):
+    """{(i, j): (payload, roads)} of the cells earthng-mapbuilder compiles (rust/crates/cells:
+    compile_cell through shapely's GEOS, the same bytes); {} where it cannot run. It reads the
+    scenes from Store.scene_dir, so only a build with shared scenes uses it; the cells it leaves
+    (near the sea, a sea harbour, any error) compile here."""
+    import native_tool
+    terrain = getattr(store.terrain, 'terrain', None)
+    if (getattr(store, 'scene_dir', None) is None or getattr(store, 'landcover', None) is not None
+            or not isinstance(store.terrain, Despiked) or terrain is None or terrain.native() is None
+            or native_tool.tool() is None):
+        return {}
+    code = str(store.frame.crs).upper()
+    tasks = []
+    for i, j in cells:
+        padded = [i*CELL-HALO, j*CELL-HALO, (i+1)*CELL+HALO, (j+1)*CELL+HALO]
+        leaves = _scenery_plan(store, padded)
+        for leaf in leaves:
+            store.save_scene(leaf[4])
+        tasks.append((i, j, leaves))
+    config = {'index': str(store.directory / 'sources.sqlite'), 'scenes': str(store.scene_dir),
+              'dem': {'cache': str(terrain.cache), 'zoom': terrain.zoom, 'epsg': int(code[5:]),
+                      'cx': store.frame.cx, 'cy': store.frame.cy, 'lift': sources.LIFT},
+              'step': grid_step(store), 'include': include}
+    try:
+        found = native_tool.compile_cells(config, tasks)
+    except (OSError, RuntimeError, ValueError):
+        return {}
+    return found[0] if found else {}
+
+
 def compile_block(store, cells, include=None):
     """Encoded payloads {slot: bytes} and road counts {slot: n} of the given (i, j) cells."""
     payloads, roads = {}, {}
+    native = _native_cells(store, cells, include)
     for i, j in cells:
+        if (i, j) in native:
+            slot = binary.slot(i, j)
+            payloads[slot], roads[slot] = native[i, j]
+            continue
         rect = [i*CELL, j*CELL, (i+1)*CELL, (j+1)*CELL]
         try:
             cell = compile_cell(store, rect, include)
@@ -604,13 +653,14 @@ def _shared_scenes(executor, store, directory, parts, emit=print):
             hit = osm_tiles.tile_for(store.source_index, store.frame.geo_bbox(padded))
             if hit:
                 keys.add(hit[0])
-    import time
-    start = time.perf_counter()
     folder = tempfile.mkdtemp(prefix='earthng-scenes-')
     tiles = store.source_index['tiles']
     order = sorted(keys, key=lambda k: -tiles[k].get('bytes', 0))     # the heaviest first
-    list(executor.map(_worker_scene, [(str(directory), k, folder) for k in order]))
-    emit(f'scenes: {len(order)} OSM tiles read in {time.perf_counter() - start:.1f} s')
+    # Queued ahead of the parts, not waited for: a part starts as soon as a worker is free and
+    # waits only for the scenes it needs (Store.save_scene); the cells overlap the last reads.
+    for key in order:
+        executor.submit(_worker_scene, (str(directory), key, folder))
+    emit(f'scenes: {len(order)} OSM tiles queued')
     return folder
 
 

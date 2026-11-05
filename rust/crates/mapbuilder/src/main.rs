@@ -47,6 +47,13 @@ enum Command {
         #[arg(long)]
         roads: PathBuf,
     },
+    /// Compile cells as earthng/build_country.compile_cell (task JSON from native_tool.compile_cells):
+    /// per cell i64 i, i64 j, u8 status (0 payload, 2 left to Python), u32 roads, u32 n, n bytes
+    Compile {
+        task: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Encode cells dumped as JSON lines ({"origin": [x, y], "cell": {...}}) into hex lines
     /// (a check against earthng/country_format.py)
     #[command(hide = true)]
@@ -69,6 +76,7 @@ fn main() -> Result<()> {
             osm::mapsrc::write(&found, &places, &roads)?;
             println!("{}", serde_json::json!({"places": found.places.len(), "roads": found.roads.len(), "skipped": found.skipped}));
         }
+        Command::Compile { task, out } => compile(&task, &out)?,
         Command::EncodeCells { input, output } => encode_cells(&input, &output)?,
         Command::Routing { pack, out, region } => routing(&pack, &out, &region)?,
     }
@@ -187,5 +195,40 @@ fn routing(pack: &std::path::Path, out: &std::path::Path, only: &[String]) -> Re
     for r in results {
         println!("{}", r?);
     }
+    Ok(())
+}
+
+fn compile(task: &std::path::Path, out: &std::path::Path) -> Result<()> {
+    use std::io::Write;
+    #[derive(serde::Deserialize)]
+    struct Task {
+        geos: PathBuf,
+        #[serde(flatten)]
+        config: cells::compile::Config,
+        cells: Vec<cells::compile::CellTask>,
+    }
+    let task: Task = serde_json::from_slice(&std::fs::read(task)?)?;
+    cells::geos::load(&task.geos)?;
+    let t = std::time::Instant::now();
+    let outcomes = cells::compile::run(task.config, &task.cells)?;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(out)?);
+    let mut left = 0;
+    for (cell, outcome) in task.cells.iter().zip(&outcomes) {
+        let (status, roads, body): (u8, usize, &[u8]) = match outcome {
+            cells::compile::Outcome::Done { payload, roads } => (0, *roads, payload),
+            cells::compile::Outcome::Python(reason) => {
+                left += 1;
+                (2, 0, reason.as_bytes())
+            }
+        };
+        file.write_all(&cell.i.to_le_bytes())?;
+        file.write_all(&cell.j.to_le_bytes())?;
+        file.write_all(&[status])?;
+        file.write_all(&(roads as u32).to_le_bytes())?;
+        file.write_all(&(body.len() as u32).to_le_bytes())?;
+        file.write_all(body)?;
+    }
+    file.flush()?;
+    eprintln!("cells: {} compiled, {} left to Python ({:.2} s)", outcomes.len() - left, left, t.elapsed().as_secs_f64());
     Ok(())
 }
