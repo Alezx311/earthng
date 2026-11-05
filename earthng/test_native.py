@@ -553,17 +553,22 @@ class NativeTests(unittest.TestCase):
                                   tags={'highway': 'residential', 'sidewalk': 'both'}))
         cells = cv([dict(roads=roads, junctions=[], buildings=[], areas=[], lines=[], points=[],
                          terrain=dict(rect=[0, 0, 500, 500], nx=2, ny=2, heights=[0] * 4))])
-        run = lua.eval('''function(cells, far, tracked)
+        run = lua.eval('''function(cells, far, tracked, plateLine, stripLine)
           local hits = {}
           local options = {tileSize=500, terrainStep=100, maxTrees=0, maxGrass=0, maxRocks=0, far=far}
           if tracked then
             options.pause = function()
               local line = debug.getinfo(2, 'l').currentline
-              hits[line] = (hits[line] or 0) + 1
+              if line == plateLine or line == stripLine then coroutine.yield(line) end
             end
           end
-          local road, scene, distant = stubGenerator.build(cells, 0, 0, options)
-          return road, scene, distant, hits
+          local co = coroutine.create(function() return stubGenerator.build(cells, 0, 0, options) end)
+          while true do
+            local ok, road, scene, distant, nav, grass = coroutine.resume(co)
+            assert(ok, road)
+            if coroutine.status(co) == 'dead' then return road, scene, distant, nav, grass, hits end
+            hits[road] = (hits[road] or 0) + 1
+          end
         end''')
 
         def plain(value):
@@ -573,11 +578,11 @@ class NativeTests(unittest.TestCase):
 
         for far in (False, True):
             with self.subTest(far=far):
-                before = run(cells, far, False)
-                after = run(cells, far, True)
-                self.assertGreater(after[3][plate_line] or 0, 0)
-                self.assertGreater(after[3][strip_line] or 0, 0)
-                self.assertEqual([plain(x) for x in before[:3]], [plain(x) for x in after[:3]])
+                before = run(cells, far, False, plate_line, strip_line)
+                after = run(cells, far, True, plate_line, strip_line)
+                self.assertGreater(after[5][plate_line] or 0, 0)
+                self.assertGreater(after[5][strip_line] or 0, 0)
+                self.assertEqual([plain(x) for x in before[:5]], [plain(x) for x in after[:5]])
 
     def test_a_near_tile_over_the_geometry_budget_waits_for_the_renderer(self):
         # A tile of central Kyiv alone is over the budget: evicted before the renderer took it, it
