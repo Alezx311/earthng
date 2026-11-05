@@ -1367,16 +1367,21 @@ function M.flowStep()
     obs[1] = {x = car.x, y = car.y, vx = v.x, vy = v.y}
   end
   M.handoffSim.obstacles(fl.H, fl.api, obs)
-  if trafficRunning() then
-    for _, id in ipairs(gameplay_traffic.getTrafficList() or {}) do
-      local o = be:getObjectByID(id)
-      if o then
-        local q, v = o:getPosition(), o:getVelocity()
-        obs[#obs + 1] = {x = q.x, y = q.y, vx = v.x, vy = v.y}
-      end
+  -- every other physical car in the level: the game's traffic, a second car the player spawned,
+  -- police in a pursuit. Only the game's traffic used to count, so the flow drove through the rest.
+  local mine = {}
+  for _, e in ipairs(fl.H.pool) do mine[e.id] = true end
+  for i = 0, be:getObjectCount() - 1 do
+    local o = be:getObject(i)
+    local id = o and o:getID()
+    if id and not mine[id] and o ~= veh and be:getObjectActive(id) then
+      local q, v = o:getPosition(), o:getVelocity()
+      obs[#obs + 1] = {x = q.x, y = q.y, vx = v.x, vy = v.y}
     end
   end
-  fs.step(fl.F, S.dt or 1 / 60, p.x, p.y, obs)
+  -- the simulation's time, as the physics cars round them: paused or in slow motion the flow
+  -- used to drive on at full speed through the real cars standing still
+  fs.step(fl.F, S.dtSim or S.dt or 1 / 60, p.x, p.y, obs)
   -- the swap follows the player's car, not a free camera: the cars one can hit are round it
   if car then M.handoffSim.step(fl.H, fs, fl.F, car.x, car.y, S.now, fl.api) end
   fl.simMs = t:stopAndReset()
@@ -4554,7 +4559,7 @@ local function profAdd(part, ms, kb)
   if kb and kb > 0 then P.kb[part] = (P.kb[part] or 0) + kb end
 end
 
-function M.onUpdate(dtReal)
+function M.onUpdate(dtReal, dtSim)
   local ours = inOurLevel()
   M.gc.step(ours, dtReal)
   if not ours then
@@ -4562,6 +4567,8 @@ function M.onUpdate(dtReal)
     return
   end
   S.now, S.dt = S.now + dtReal, dtReal
+  -- the simulation's own step: 0 while paused, a fraction of dtReal in slow motion
+  S.dtSim = dtSim or dtReal
   forestCommit()
   local frameMs = frameTimer:stopAndReset()
   table.insert(S.frames, frameMs)
