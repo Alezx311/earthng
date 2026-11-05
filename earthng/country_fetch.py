@@ -331,12 +331,21 @@ def cut_tiles(pbf, tiles, box=None, jobs=None, emit=print, cancel=None, heavy_jo
         # the native cut: the same tiles in one read of the PBF on every core (Kyiv's centre
         # from Ukraine: 12 s instead of 21 min)
         command = native_tool.cut_command(pbf, target, box)
+        if command is not None:
+            try:
+                run_step(command, emit, cancel)
+            except (subprocess.CalledProcessError, OSError) as exc:
+                # out of memory on a whole country, a missing runtime: the Python cut still works
+                emit(f'native cut failed ({exc}); cutting in Python')
+                for folder in (target, target.with_name(target.name + '.part')):
+                    shutil.rmtree(folder, ignore_errors=True)
+                command = None
         if command is None:
             command = [_python(), str(HERE / 'osm_tiles_country.py'), str(pbf), '--out', str(target),
                        '--jobs', str(jobs), '--heavy-jobs', str(heavy_jobs)]
             if box:
                 command += ['--package-box', *(str(v) for v in box)]
-        run_step(command, emit, cancel)
+            run_step(command, emit, cancel)
     if target != tiles:
         shutil.rmtree(tiles)
         import sysmem

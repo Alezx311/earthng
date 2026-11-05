@@ -1134,7 +1134,11 @@ def _add_routing(pack, jobs, emit, cancel=None):
     if not tasks:
         return
     import native_tool
-    built = native_tool.routing(pack, emit, cancel)
+    try:
+        built = native_tool.routing(pack, emit, cancel)
+    except (RuntimeError, OSError, ValueError) as exc:
+        emit(f'native routing failed ({exc}); routing in Python')
+        built = None
     if built is not None:
         tasks = []
     else:

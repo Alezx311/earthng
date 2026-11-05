@@ -163,3 +163,24 @@ class NativeRoutingTests(unittest.TestCase):
             expected = build_routing.build_region((str(pack), 'r1', prefix))[1]
             built = native_tool.routing(pack, emit=lambda line: None)
         self.assertEqual(built, [('r1', expected)])
+
+
+class FallbackTests(unittest.TestCase):
+    def test_a_failed_native_cut_is_cut_again_in_python(self):
+        import country_fetch
+        calls = []
+
+        def run_step(command, emit=print, cancel=None):
+            calls.append(command)
+            if len(calls) == 1:
+                raise subprocess.CalledProcessError(3, command)
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(native_tool, 'cut_command', lambda pbf, out, box=None, threads=None: ['native', str(out)]), \
+                patch.object(country_fetch, 'run_step', run_step), \
+                patch.object(country_fetch, 'tiles_current', lambda tiles: False):
+            (Path(tmp) / 'tiles.part').mkdir()          # what the native cut leaves when it fails
+            country_fetch.cut_tiles(Path(tmp) / 'x.osm.pbf', Path(tmp) / 'tiles', jobs=2, heavy_jobs=1,
+                                    emit=lambda line: None)
+            self.assertFalse((Path(tmp) / 'tiles.part').exists())
+        self.assertEqual(calls[0][0], 'native')
+        self.assertTrue(calls[1][1].endswith('osm_tiles_country.py'))

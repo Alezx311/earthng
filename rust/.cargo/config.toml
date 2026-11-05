@@ -1,0 +1,4 @@
+# The release ships bin/earthng-mapbuilder.exe and earthng_native.dll to players' PCs: the C
+# runtime is linked in, so they run without the Visual C++ Redistributable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
