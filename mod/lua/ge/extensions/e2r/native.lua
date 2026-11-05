@@ -597,6 +597,17 @@ local function foreignCell(f, key, i, j, keep, memo, terrainOnly)
   return out
 end
 
+-- A source grid can contain 257 x 257 heights. It is read in buildTile's coroutine, so
+-- check the same frame budget used by the decoder while finding the minimum as well.
+local function minimumHeight(heights)
+  local low = math.huge
+  for i, h in ipairs(heights) do
+    if h < low then low = h end
+    if i % 8192 == 0 then active.pause() end
+  end
+  return low
+end
+
 -- keep: the tile's rectangle. A v2 cell is decoded for one tile and never cached: only the
 -- features reaching the tile become tables, and decoded points are the bulk of the Lua heap the
 -- game's collector walks every cycle (a dense 1 km cell is 6-10 MB of them). The block bytes
@@ -618,9 +629,7 @@ local function loadCell(key, i, j, keep, memo)
       local cell = live.cell(i, j)
       if type(cell) ~= 'table' or type(cell.terrain) ~= 'table' then error('missing live cell: ' .. key) end
       if not active.lows[key] then
-        local low = math.huge
-        for _, h in ipairs(cell.terrain.heights) do if h < low then low = h end end
-        active.lows[key] = low
+        active.lows[key] = minimumHeight(cell.terrain.heights)
       end
       return cell
     end
@@ -638,9 +647,7 @@ local function loadCell(key, i, j, keep, memo)
     local cell = cellformat.cell(loaded.data, range[1], range[2], i * s, j * s,
       {i * s, j * s, (i + 1) * s, (j + 1) * s}, active.pause, keep, grid.data)
     if not active.lows[key] then
-      local low = math.huge
-      for _, h in ipairs(cell.terrain.heights) do if h < low then low = h end end
-      active.lows[key] = low
+      active.lows[key] = minimumHeight(cell.terrain.heights)
     end
     return cell
   end
@@ -682,13 +689,13 @@ local function loadCell(key, i, j, keep, memo)
       end
     end
   end
+  if not active.lows[key] then
+    active.lows[key] = minimumHeight(terrain.heights)
+  end
+  -- Publish the cell only after the yielding minimum pass has finished; otherwise a second
+  -- tile could take a cached cell whose low is still missing if the first job is parked.
   active.cells[key] = {data = cell, used = touch()}
   evict(active.cells, CELL_LIMIT)
-  if not active.lows[key] then
-    local low = math.huge
-    for _, h in ipairs(terrain.heights) do if h < low then low = h end end
-    active.lows[key] = low
-  end
   return cell
 end
 
@@ -1118,9 +1125,7 @@ local function loadTerrain(key, i, j, memo)
     local cell = live.cell(i, j)
     if type(cell) ~= 'table' or type(cell.terrain) ~= 'table' then error('missing live cell: ' .. key) end
     if not cell.low then
-      local low = math.huge
-      for _, h in ipairs(cell.terrain.heights) do if h < low then low = h end end
-      cell.low = low
+      cell.low = minimumHeight(cell.terrain.heights)
     end
     active.lows[key] = active.lows[key] or cell.low
     return {terrain = cell.terrain, low = cell.low, roads = {}, junctions = {}, buildings = {},

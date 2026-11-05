@@ -465,7 +465,8 @@ class NativeTests(unittest.TestCase):
           local sceneCopy, roadCopy
           local co = coroutine.create(function()
             return stubGenerator.build(cells, 0, 0, {
-              tileSize=500, maxTrees=15, maxGrass=30, maxRocks=4,
+              tileSize=100, terrainStep=25, maxTrees=15, maxGrass=30, maxRocks=4,
+              propSpacing=0, experimentalDetail=true,
               roadReady=function(road) coroutine.yield('road', road) end,
               sceneReady=function(scene) coroutine.yield('scene', scene) end,
             })
@@ -478,7 +479,10 @@ class NativeTests(unittest.TestCase):
           for _, item in ipairs(road.items) do
             if item.kind == 'proc' and not item.decor then weak[1] = item; break end
           end
-          assert(weak[1])
+          for _, item in ipairs(road.items) do
+            if item.kind == 'proc' and item.decor then weak[2] = item; break end
+          end
+          assert(weak[1] and weak[2], 'fixture needs road and decorative road meshes')
           active.tiles['test'] = {road=road}
           if release then
             local oldItems = road.items
@@ -486,24 +490,40 @@ class NativeTests(unittest.TestCase):
             assert(#oldItems == 0 and #road.items == 0)
             collectgarbage('collect')
             assert(weak[1] == nil, 'delivered road mesh remains held by a collector')
+            assert(weak[2] == nil, 'delivered road decor remains held by its collector')
           end
           local ok2, nextPhase, scene = coroutine.resume(co)
           assert(ok2 and nextPhase == 'scene', tostring(nextPhase))
           sceneCopy = copy(scene)
+          -- The lens collectors are emitted with pairs(), whose iteration order need not
+          -- match between runs. Delivery order does not affect the generated scene.
+          table.sort(sceneCopy.items, function(a, b) return a.name < b.name end)
           active.tiles['test'].scene = scene
-          if release then assert(native.release('test', 'scene')) end
+          for _, item in ipairs(scene.items) do
+            if item.kind == 'proc' and item.decor then
+              if item.lens ~= nil then weak[4] = item else weak[3] = item end
+            end
+          end
+          assert(weak[3] and weak[4], 'fixture needs scene decor and a traffic-light lens')
+          if release then
+            assert(native.release('test', 'scene'))
+            collectgarbage('collect')
+            assert(weak[3] == nil, 'delivered scene decor remains held by its collector')
+            assert(weak[4] == nil, 'delivered lens remains held by its collector')
+          end
           local ok3, finalRoad, finalScene, far, nav, grass = coroutine.resume(co)
           assert(ok3, tostring(finalRoad))
           assert(coroutine.status(co) == 'dead' and grass)
           return roadCopy, sceneCopy, copy(grass)
         end''')
         cell = dict(roads=[dict(id='r', nodes=['a', 'b'], width=8,
-                                points=[[0, 250, 0], [500, 250, 0]],
-                                tags={'highway': 'residential', 'sidewalk': 'no'})],
+                                points=[[0, 50, 0], [50, 50, 0], [100, 50, 0]],
+                                tags={'highway': 'residential', 'lanes': '2', 'sidewalk': 'no'})],
                     buildings=[dict(id='b', height=9, kind='building', tags={'building': 'yes'},
-                                    rings=[[[100, 100, 0], [120, 100, 0], [120, 120, 0], [100, 120, 0]]])],
-                    junctions=[], areas=[], lines=[], points=[],
-                    terrain=dict(rect=[0, 0, 500, 500], nx=2, ny=2, heights=[0] * 4))
+                                    rings=[[[20, 20, 0], [40, 20, 0], [40, 40, 0], [20, 40, 0]]])],
+                    junctions=[], areas=[], lines=[],
+                    points=[dict(id='signal', kind='signal', pos=[50, 50, 0], tags={})],
+                    terrain=dict(rect=[0, 0, 100, 100], nx=2, ny=2, heights=[0] * 4))
 
         def plain(value):
             if hasattr(value, 'items'):
@@ -514,6 +534,50 @@ class NativeTests(unittest.TestCase):
         before = run(cv([cell]), False)
         after = run(cv([cell]), True)
         self.assertEqual([plain(value) for value in before], [plain(value) for value in after])
+
+    def test_verge_work_yields_for_near_and_far_without_changing_output(self):
+        lua, _, cv = self.make(real_generator=True)
+        source = (ROOT / 'mod/lua/ge/extensions/e2r/generator.lua').read_text(encoding='utf8').splitlines()
+        plate_line = next(i for i, line in enumerate(source, 1) if '-- plate verge budget' in line)
+        strip_line = next(i for i, line in enumerate(source, 1) if '-- strip verge budget' in line)
+        road = dict(id='r', nodes=['a', 'b'], width=7,
+                    points=[[5 * k, 250 + .1 * (k % 2), 0] for k in range(101)],
+                    tags={'highway': 'residential', 'sidewalk': 'both'})
+        roads = [road]
+        for k in range(8):
+            x, y = 45 + (k % 4) * 120, 50 + (k // 4) * 340
+            # Three distinct roads sharing a node form a six-edge junction plate.
+            for arm, (dx, dy) in enumerate(((25, 0), (0, 25), (-25, 0))):
+                roads.append(dict(id=f'j{k}-{arm}', nodes=[f'j{k}', f'j{k}-{arm}'], width=7,
+                                  points=[[x, y, 0], [x+dx, y+dy, 0]],
+                                  tags={'highway': 'residential', 'sidewalk': 'both'}))
+        cells = cv([dict(roads=roads, junctions=[], buildings=[], areas=[], lines=[], points=[],
+                         terrain=dict(rect=[0, 0, 500, 500], nx=2, ny=2, heights=[0] * 4))])
+        run = lua.eval('''function(cells, far, tracked)
+          local hits = {}
+          local options = {tileSize=500, terrainStep=100, maxTrees=0, maxGrass=0, maxRocks=0, far=far}
+          if tracked then
+            options.pause = function()
+              local line = debug.getinfo(2, 'l').currentline
+              hits[line] = (hits[line] or 0) + 1
+            end
+          end
+          local road, scene, distant = stubGenerator.build(cells, 0, 0, options)
+          return road, scene, distant, hits
+        end''')
+
+        def plain(value):
+            if hasattr(value, 'items'):
+                return {key: plain(item) for key, item in value.items()}
+            return value
+
+        for far in (False, True):
+            with self.subTest(far=far):
+                before = run(cells, far, False)
+                after = run(cells, far, True)
+                self.assertGreater(after[3][plate_line] or 0, 0)
+                self.assertGreater(after[3][strip_line] or 0, 0)
+                self.assertEqual([plain(x) for x in before[:3]], [plain(x) for x in after[:3]])
 
     def test_a_near_tile_over_the_geometry_budget_waits_for_the_renderer(self):
         # A tile of central Kyiv alone is over the budget: evicted before the renderer took it, it

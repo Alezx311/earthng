@@ -10414,6 +10414,8 @@ local function build(cells, i, j, options)
     if not distant then return true end
     return not options.horizon and not (box[1] >= inner[1] and box[2] >= inner[2] and box[3] <= inner[3] and box[4] <= inner[4])
   end
+  do
+  local plateVergeOps = 0
   for _, plate in ipairs(plates) do
     for _, quad in ipairs(plate.verges or NONE) do
       if vergeWanted(ringBounds({quad})) then
@@ -10422,7 +10424,10 @@ local function build(cells, i, j, options)
         outerA[9], outerB[9] = 1, 1
         emit(distant and scene or roads, vergeKind, {quad[1], quad[2], outerA, outerB}, nil, true)
       end
+      plateVergeOps = plateVergeOps + 1
+      if plateVergeOps % 32 == 0 then pause() end -- plate verge budget
     end
+  end
   end
   -- Edge decals over a carriageway's edge where it has no sidewalk: grass creeping onto the
   -- asphalt, or a dirt shoulder along main roads (and wherever the look's verge is bare).
@@ -10457,7 +10462,8 @@ local function build(cells, i, j, options)
     emit(roadDecor, kind, {edgePoint(a, o, 0, low, v0), edgePoint(a, o, out, high, v0),
       edgePoint(b, p, out, high, v1), edgePoint(b, p, 0, low, v1)}, item[2], true)
   end
-  local edgeOps = 0
+  do
+  local stripVergeOps = 0
   for _, strip in ipairs(strips) do
     local kind = edgeKind(strip)
     for _, item in ipairs(strip.verges or NONE) do
@@ -10472,11 +10478,12 @@ local function build(cells, i, j, options)
         elseif distant then scene.polygon(vergeKind, verge, true) end
         if kind and item.edge then
           emitEdge(kind, strip, item)
-          edgeOps = edgeOps + 1
-          if edgeOps % 64 == 0 then pause() end
         end
       end
+      stripVergeOps = stripVergeOps + 1
+      if stripVergeOps % 32 == 0 then pause() end -- strip verge budget
     end
+  end
   end
 
   mark('verges')
@@ -10659,7 +10666,13 @@ local function build(cells, i, j, options)
   local function finishRoad()
     roads.finish()
     roadDecor.finish()
-    for _, item in ipairs(roadDecor.items) do item.decor = true; roads.items[#roads.items + 1] = item end
+    -- The collector closes over this array. Move its contents rather than retaining a
+    -- second reference to delivered road meshes while the scene coroutine is parked.
+    for k = 1, #roadDecor.items do
+      local item = roadDecor.items[k]
+      item.decor = true; roads.items[#roads.items + 1] = item
+      roadDecor.items[k] = nil
+    end
     for material in pairs(roadDecor.used) do roads.used[material] = true end
     roadManifest = manifest(roads, 'road')
     roadManifest.spawn = bestSpawn or groundSpawn()
@@ -12478,6 +12491,13 @@ local function build(cells, i, j, options)
     if options.sceneReady and not distant then
       SPLIT.scene = SPLIT.out()
       scene.items = {}
+      -- All signs and yard additions have been copied into the scene. Their collectors
+      -- must not keep those meshes alive after native.release clears the delivered scene.
+      for k = #sceneDecor.items, 1, -1 do
+        sceneDecor.items[k] = nil
+        if k % 128 == 0 then pause() end
+      end
+      OFFROAD.lenses = nil
       options.sceneReady(SPLIT.scene)
     end
     -- Forest floor and mapped fields stay a thin scatter. Lawn kinds are absent here,
