@@ -7,4 +7,8 @@
 pub mod compile;
 pub mod geos;
 pub mod numeric;
+pub mod proj;
+pub mod pytext;
+pub mod rules;
 pub mod scene;
+pub mod scenebuild;

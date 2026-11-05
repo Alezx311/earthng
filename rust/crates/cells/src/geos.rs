@@ -70,6 +70,18 @@ api! {
     GEOSDifference_r: fn(Ctx, G, G) -> G;
     GEOSUnaryUnion_r: fn(Ctx, G) -> G;
     GEOSArea_r: fn(Ctx, G, *mut c_double) -> c_int;
+    GEOSPointOnSurface_r: fn(Ctx, G) -> G;
+    GEOSCovers_r: fn(Ctx, G, G) -> c_char;
+    GEOSFree_r: fn(Ctx, *mut c_void);
+    GEOSWKBWriter_create_r: fn(Ctx) -> *mut c_void;
+    GEOSWKBWriter_destroy_r: fn(Ctx, *mut c_void);
+    GEOSWKBWriter_setOutputDimension_r: fn(Ctx, *mut c_void, c_int);
+    GEOSWKBWriter_write_r: fn(Ctx, *mut c_void, G, *mut usize) -> *mut u8;
+    GEOSSTRtree_create_r: fn(Ctx, usize) -> *mut c_void;
+    GEOSSTRtree_insert_r: fn(Ctx, *mut c_void, G, *mut c_void);
+    GEOSSTRtree_build_r: fn(Ctx, *mut c_void) -> c_int;
+    GEOSSTRtree_query_r: fn(Ctx, *mut c_void, G, extern "C" fn(*mut c_void, *mut c_void), *mut c_void);
+    GEOSSTRtree_destroy_r: fn(Ctx, *mut c_void);
 }
 
 static API: OnceLock<Api> = OnceLock::new();
@@ -104,6 +116,7 @@ fn api() -> &'static Api {
 struct Local {
     ctx: Ctx,
     reader: *mut c_void,
+    writer: *mut c_void,
     valid: *mut c_void,
 }
 
@@ -112,6 +125,7 @@ impl Drop for Local {
         let a = api();
         unsafe {
             (a.GEOSWKBReader_destroy_r)(self.ctx, self.reader);
+            (a.GEOSWKBWriter_destroy_r)(self.ctx, self.writer);
             (a.GEOSMakeValidParams_destroy_r)(self.ctx, self.valid);
             (a.GEOS_finish_r)(self.ctx);
         }
@@ -130,11 +144,14 @@ fn with<T>(f: impl FnOnce(&Local) -> T) -> T {
             unsafe {
                 let ctx = (a.GEOS_init_r)();
                 let reader = (a.GEOSWKBReader_create_r)(ctx);
+                // shapely.to_wkb's defaults: output_dimension 3, the machine's byte order, extended flavor
+                let writer = (a.GEOSWKBWriter_create_r)(ctx);
+                (a.GEOSWKBWriter_setOutputDimension_r)(ctx, writer, 3);
                 // shapely.make_valid's defaults: method 'linework', keep_collapsed True
                 let valid = (a.GEOSMakeValidParams_create_r)(ctx);
                 (a.GEOSMakeValidParams_setMethod_r)(ctx, valid, 0);
                 (a.GEOSMakeValidParams_setKeepCollapsed_r)(ctx, valid, 1);
-                *c = Some(Local { ctx, reader, valid });
+                *c = Some(Local { ctx, reader, writer, valid });
             }
         }
         f(c.as_ref().unwrap())
@@ -262,6 +279,26 @@ pub trait Shape {
     fn clone_geom(&self) -> Result<Geom> {
         owned(unsafe { (api().GEOSGeom_clone_r)(ctx(), self.ptr()) }, "clone")
     }
+    fn covers(&self, other: &impl Shape) -> Result<bool> {
+        flag(unsafe { (api().GEOSCovers_r)(ctx(), self.ptr(), other.ptr()) }, "covers")
+    }
+    /// shapely's representative_point()
+    fn point_on_surface(&self) -> Result<Geom> {
+        owned(unsafe { (api().GEOSPointOnSurface_r)(ctx(), self.ptr()) }, "pointOnSurface")
+    }
+    /// shapely.to_wkb(geometry) with its defaults
+    fn wkb(&self) -> Result<Vec<u8>> {
+        with(|c| unsafe {
+            let mut n = 0usize;
+            let buf = (api().GEOSWKBWriter_write_r)(c.ctx, c.writer, self.ptr(), &mut n);
+            if buf.is_null() {
+                bail!("GEOS WKB write failed");
+            }
+            let out = std::slice::from_raw_parts(buf, n).to_vec();
+            (api().GEOSFree_r)(c.ctx, buf as *mut c_void);
+            Ok(out)
+        })
+    }
 }
 
 impl Shape for Geom {
@@ -357,4 +394,51 @@ pub fn parts<'a, S: Shape>(g: &'a S, kind: i32, out: &mut Vec<Part<'a>>) {
         }
     }
     walk(g.ptr(), kind, out)
+}
+
+/// shapely.STRtree(geometries) (node_capacity 10, empty geometries left out) and its query
+/// without a predicate: indices in the order GEOS visits them, which shapely does not sort.
+pub struct Tree<'a> {
+    tree: *mut c_void,
+    _geoms: std::marker::PhantomData<&'a Geom>,
+}
+
+extern "C" fn collect(item: *mut c_void, data: *mut c_void) {
+    unsafe { (*(data as *mut Vec<usize>)).push(item as usize) }
+}
+
+impl<'a> Tree<'a> {
+    pub fn new(geometries: &[&'a Geom]) -> Result<Tree<'a>> {
+        let (a, c) = (api(), ctx());
+        let tree = unsafe { (a.GEOSSTRtree_create_r)(c, 10) };
+        if tree.is_null() {
+            bail!("GEOS STRtree failed");
+        }
+        let mut count = 0;
+        for (i, g) in geometries.iter().enumerate() {
+            if !g.is_empty()? {
+                unsafe { (a.GEOSSTRtree_insert_r)(c, tree, g.0, i as *mut c_void) };
+                count += 1;
+            }
+        }
+        if count > 0 {
+            unsafe { (a.GEOSSTRtree_build_r)(c, tree) };
+        }
+        Ok(Tree { tree, _geoms: Default::default() })
+    }
+
+    pub fn query(&self, g: &impl Shape) -> Result<Vec<usize>> {
+        let mut out: Vec<usize> = Vec::new();
+        if g.is_empty()? {
+            return Ok(out);
+        }
+        unsafe { (api().GEOSSTRtree_query_r)(ctx(), self.tree, g.ptr(), collect, &mut out as *mut Vec<usize> as *mut c_void) };
+        Ok(out)
+    }
+}
+
+impl Drop for Tree<'_> {
+    fn drop(&mut self) {
+        unsafe { (api().GEOSSTRtree_destroy_r)(ctx(), self.tree) }
+    }
 }

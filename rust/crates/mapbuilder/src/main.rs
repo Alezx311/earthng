@@ -54,6 +54,13 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Build one raw OSM tile's scene as fast_sources.Store.build_scene and write_scene do. Input on
+    /// stdin from native_tool.build_scene: u32 length + task JSON, then osmium's areas. Prints
+    /// "ok <records>" or "python <reason>" (the tile left to Python, nothing written)
+    Scene {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Encode cells dumped as JSON lines ({"origin": [x, y], "cell": {...}}) into hex lines
     /// (a check against earthng/country_format.py)
     #[command(hide = true)]
@@ -77,8 +84,25 @@ fn main() -> Result<()> {
             println!("{}", serde_json::json!({"places": found.places.len(), "roads": found.roads.len(), "skipped": found.skipped}));
         }
         Command::Compile { task, out } => compile(&task, &out)?,
+        Command::Scene { out } => scene(&out)?,
         Command::EncodeCells { input, output } => encode_cells(&input, &output)?,
         Command::Routing { pack, out, region } => routing(&pack, &out, &region)?,
+    }
+    Ok(())
+}
+
+fn scene(out: &std::path::Path) -> Result<()> {
+    let t = std::time::Instant::now();
+    let (task, areas) = cells::scenebuild::read_input(std::io::stdin().lock())?;
+    match cells::scenebuild::build(&task, areas)? {
+        cells::scenebuild::Outcome::Done(data, n) => {
+            std::fs::write(out, data)?;
+            if std::env::var_os("EARTHNG_SCENE_PROFILE").is_some() {
+                eprintln!("scene: {n} records in {:.3} s", t.elapsed().as_secs_f64());
+            }
+            println!("ok {n}");
+        }
+        cells::scenebuild::Outcome::Python(why) => println!("python {why}"),
     }
     Ok(())
 }
