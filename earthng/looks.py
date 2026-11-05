@@ -239,7 +239,8 @@ def keep_scenery(kind, include):
     if kind == 'power':
         return bool(include.get('barriers', True))
     # road details (fast_style.ROAD_DETAILS) belong to the road
+    # a track crosses the roads at grade: it belongs to them too
     if kind in ('path', 'signal', 'traffic_sign', 'road', 'junction', 'crossing', 'give_way', 'stop_sign',
-                'mini_roundabout', 'turning_circle', 'island', 'gantry'):
+                'mini_roundabout', 'turning_circle', 'island', 'gantry', 'rail'):
         return True
     return bool(include.get('cover', True))

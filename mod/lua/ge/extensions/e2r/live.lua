@@ -22,6 +22,8 @@ local PATHS = {footway = true, path = true, pedestrian = true, cycleway = true, 
 local PAVED = {industrial = true, commercial = true, retail = true, railway = true, garages = true,
   construction = true, depot = true}
 local WOODS = {forest = true, wood = true}
+-- tracks the generator lays (fast_style.RAILS); one in a tunnel stays off the map
+local RAILS = {rail = true, light_rail = true, tram = true, narrow_gauge = true}
 local PARKS = {park = true, garden = true, recreation_ground = true, cemetery = true, village_green = true}
 local LOOKS = {
   {'postsoviet', 44, 22, 53, 41},
@@ -97,6 +99,10 @@ end
 
 local function lineKind(tags)
   if tags.natural == 'coastline' then return 'coastline' end
+  if RAILS[tags.railway] and (tags.tunnel == nil or tags.tunnel == 'no') and (tags.covered == nil or tags.covered == 'no')
+      and tags.area ~= 'yes' then
+    return 'rail'
+  end
   local h = tags.highway
   if PATHS[h] and tags.area ~= 'yes' and tags.footway ~= 'sidewalk' and tags.footway ~= 'crossing'
       and (tags.bridge == nil or tags.bridge == 'no') and (tags.tunnel == nil or tags.tunnel == 'no')
@@ -686,6 +692,7 @@ local function overpass(west, south, east, north)
     .. 'way["leisure"]' .. b .. ';'
     .. 'way["waterway"]' .. b .. ';'
     .. 'way["barrier"]' .. b .. ';'
+    .. 'way["railway"~"^(rail|light_rail|tram|narrow_gauge)$"]' .. b .. ';'
     .. 'node["highway"~"bus_stop|crossing|stop|give_way"]' .. b .. ';'
     .. ');(._;>;);out body;'
   local text, code = httpCall('POST', 'http://overpass.osm.ch/api/interpreter', query, 'text/plain', 90)

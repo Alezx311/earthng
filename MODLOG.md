@@ -58,6 +58,31 @@
 - Parked in Kyiv: 0 cars 13-16 ms, 8 simple 23, 16 simple 35, 32 simple 62, 48 simple 95, 64 simple
   127; 16 full 65. A simple car is ~1.5 ms of the frame, linear. Buttons are 0/4/8/16/24 now; a crowd
   needs cars without physics on our navgraph (docs/NATIVE_MODS.md). Planet only, no pack rebuild.
+## 2026-11-03: railway and tram tracks (PACK_DATA A5)
+
+- The level crossing at 50.44322, 30.46409 in Kyiv had its St Andrew's crosses and no rails, on a
+  shiny concrete pad (`landuse=railway` was drawn as `paved`). Now `fast_style.line_kind` gives
+  `railway=rail/light_rail/tram/narrow_gauge` the line kind `rail` (not in a tunnel, no subway), with
+  only `RAIL_TAGS`; index version fast-21, so tracks need a pack rebuild. The Kyiv spot pack
+  rebuilt with them came out 61.9 MB against 62.9 MB before (the old one was cut by older code).
+- `generator.lua` RAIL: off the road a bed of concrete sleepers on ballast (`fast_art.rail_art`, its
+  ragged shoulders cut by opacity) and two steel rails 15 cm high, the gauge from `gauge` or 1520 /
+  1435 mm by `look.block`. On a carriageway at grade only the rail heads, 12 mm over the asphalt: a
+  crossing and a tram in the street are flush with the road. Knots every 8 m, every metre where a step
+  meets the asphalt. On a bridge a track keeps only the part over a road deck. No collision.
+- `landuse=railway` stays `paved` in the pack (an older planet keeps trees off it) and is drawn in
+  `ballast`. `live.lua` asks Overpass for tracks too.
+- Cost, `bench_native.py` on the spot pack, same generator: the yard by the crossing (~30 sidings)
+  took a near tile from 22k to 100k triangles in the first try, 44k of them rail sides; with fine
+  knots only at the asphalt's edge and the sides of `service=yard/siding/spur` rails only within 30 m
+  of a road it is 41k. A tram tile in Podil (50.4718, 30.5040): 41.5k -> 42.7k.
+- In game (`test_world.py`, separate profile, planet from this branch, the Kyiv spot pack, preset
+  Normal, 1280x720): at the crossing 50.44322, 30.46409 the close top-down views show two rails on
+  concrete sleepers and ballast, and the station yard north of it is rows of tracks on ballast, not a
+  grey slab. On the tram in Podil (50.47175, 30.5041) the rail heads lie flush in the asphalt a gauge
+  apart, with no bed. Both runs passed functionally; performance failed on `frame_over_100ms` (2
+  frames each, worst 319 and 577 ms, means 22.9 and 26.9 ms), as the Kyiv run of 27.10 did before
+  tracks. Not done: embankments and cuttings, catenary, rail bridges without a road deck.
 
 ## 2026-11-02: after the 0.7.0 release, domes over Hagia Sophia's tombs
 

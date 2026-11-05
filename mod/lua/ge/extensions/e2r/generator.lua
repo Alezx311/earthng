@@ -18,14 +18,14 @@ local TUNE = {roadLift = ROAD_LIFT, groundDrop = .25, pullFull = 12, pullZero = 
   terrainStep = 25, sidewalk = 2, curb = .25, vergeCut = 1, vergeSink = 0, pressEven = 1, mitre = 2,
   simplifyXY = 0, simplifyZ = .02, fenceStep = 4, wallThick = .2, fenceThick = .08}
 -- Covers that take a whole ground triangle over (lower rank wins where they overlap).
-local CLAIM = {paved = 1, water = 2, glacier = 3, bare_rock = 4, scree = 5, beach = 6,
+local CLAIM = {paved = 1, ballast = 1, water = 2, glacier = 3, bare_rock = 4, scree = 5, beach = 6,
   wetland = 7, orchard = 8, vineyard = 9, farmland = 10, meadow = 11, heath = 12,
   scrub = 13, forest = 14, park = 15, bare_ground = 16}
 -- Asphalt: the aerial street photo over 30 m, its fine detail through the detail maps
 -- (fast_style.ROAD_M, DETAIL_M).
 local COVER_SCALE = {ground = 24, forest = 24, park = 24, meadow = 24, orchard = 24,
   scrub = 24, heath = 24, glacier = 24, farmland = 24, vineyard = 12, bare_rock = 12,
-  scree = 12, beach = 12, wetland = 12, bare_ground = 12,
+  scree = 12, beach = 12, wetland = 12, bare_ground = 12, ballast = 4,
   road = 30, road_major = 30, road_worn = 30, footway_asphalt = 30, road_sett = 3,
   -- the climate's open ground (biome.lua): photo sheets of fast_photo.GROUND_M
   desert = 24, dune = 24, steppe = 24, dry_grass = 24, tundra = 24, alpine = 24, snow = 24, snow_edge = 24}
@@ -4260,6 +4260,150 @@ function BLD.powerLines(lines, rect, scene, ground, onAsphalt, put, pause)
         end
       end
       pause()
+    end
+  end
+end
+
+-- Railway and tram tracks (fast_style.line_kind 'rail': OSM railway=rail/light_rail/tram/
+-- narrow_gauge, never in a tunnel). Off the road a bed of sleepers on ballast (fast_art.rail_art,
+-- its own UVs: u across, v along) lies `lift` m over the drawn ground and two steel rails stand
+-- `height` m on it. On a carriageway at grade (a level crossing, a tram in the street) only the
+-- rail heads are drawn, `flush` m over the asphalt the car drives on. A knot every `step` m of
+-- open track, every `fine` m where a step goes on or off the asphalt, so a crossing's edge falls
+-- within a metre of the curb; each OSM segment is cut on its own, so two tiles cut it alike. A
+-- track on a bridge keeps only the part over a road deck. The rails of a station's tracks
+-- (service=yard/siding/spur) have their sides only within `seen` m of a road: a yard of thirty
+-- sidings was 77k triangles a tile, two thirds of them rail sides nobody comes near. Decoration
+-- without collision (collision.lua QUIET): the ground under the bed is what a car feels.
+-- ctx: rect, ground(x, y), polygon(kind, poly, up),
+-- road(x, y, reach, deck) -> the carriageway's (or a deck's) surface z within reach m of its
+-- edge (negative: that far inside it) or nil, postsoviet, pause.
+local RAIL = {step = 8, fine = 1, seen = 30, inside = -.15, shoulder = 1.25, lift = .05, height = .15, head = .072,
+  flush = .012, sleepers = 4 * .545}
+function RAIL.gauge(tags, postsoviet)
+  local mm = tonumber(tostring(tags.gauge or ''):match('^%s*(%d+)'))
+  if mm and mm >= 500 and mm <= 2000 then return mm / 1000 end
+  if tags.railway == 'narrow_gauge' then return postsoviet and .75 or 1 end
+  return postsoviet and 1.52 or 1.435
+end
+
+-- the ground (or `ballast`) a landuse=railway area is drawn in: a station's or a yard's ground
+-- is ballast, not the concrete of a car park ('paved' in the pack, for an older runtime)
+function RAIL.cover(area)
+  if area.kind == 'paved' and (area.tags or NONE).landuse == 'railway' then return 'ballast' end
+  return area.kind
+end
+
+function RAIL.lay(ctx, lines)
+  for _, line in ipairs(lines) do
+    local pts = line.points or NONE
+    if line.kind == 'rail' and #pts >= 2 and boundsTouch(ringBounds({pts}), ctx.rect, 4) then
+      RAIL.track(ctx, line)
+      ctx.pause()
+    end
+  end
+end
+
+-- The knots of one track: {x, y, nx, ny (the mitred normal), s (m along), z (flush) or zl, zr
+-- (the drawn ground at the bed's edges), skip (on a bridge over no deck), near (a road within
+-- `seen` m, when `sides` asks)}, only the OSM segments that reach the tile
+function RAIL.knots(ctx, pts, hw, deck, sides)
+  local R, rect, out = RAIL, ctx.rect, {}
+  local dirs = {}
+  for k = 1, #pts - 1 do
+    local dx, dy = pts[k + 1][1] - pts[k][1], pts[k + 1][2] - pts[k][2]
+    local l = math.sqrt(dx * dx + dy * dy)
+    if l > EPS then dirs[k] = {dx / l, dy / l, l} end
+  end
+  local function mitre(k, own)
+    local a, b = dirs[k - 1] or own, dirs[k] or own
+    local tx, ty = a[1] + b[1], a[2] + b[2]
+    local l = math.sqrt(tx * tx + ty * ty)
+    if l < .2 then return -own[2], own[1] end
+    local m = math.min(2, 2 / l)
+    return -ty / l * m, tx / l * m
+  end
+  local function on(t, a, d) return ctx.road(a[1] + d[1] * d[3] * t, a[2] + d[2] * d[3] * t, deck and .3 or R.inside, deck) ~= nil end
+  local along = 0
+  for k = 1, #pts - 1 do
+    local d = dirs[k]
+    if d then
+      local a, b = pts[k], pts[k + 1]
+      local box = {math.min(a[1], b[1]), math.min(a[2], b[2]), math.max(a[1], b[1]), math.max(a[2], b[2])}
+      if boundsTouch(box, rect, 2 * hw + 1) then
+        local ts, n = {0}, math.ceil(d[3] / R.step)
+        for i = 0, n - 1 do
+          local t0, t1 = i / n, (i + 1) / n
+          local o0 = on(t0, a, d)
+          local fine = on(t1, a, d) ~= o0 or on((t0 + t1) / 2, a, d) ~= o0
+          local m = fine and math.ceil(d[3] / n / R.fine) or 1
+          for j = 1, m do ts[#ts + 1] = t0 + (t1 - t0) * j / m end
+        end
+        local ax, ay = mitre(k, d)
+        local bx, by = mitre(k + 1, d)
+        for index, t in ipairs(ts) do
+          -- a knot shared with the previous segment is that segment's last one
+          if not (index == 1 and out[#out] and out[#out].vertex == k) then
+            local x, y = a[1] + d[1] * d[3] * t, a[2] + d[2] * d[3] * t
+            local nx, ny = -d[2], d[1]
+            if index == 1 then nx, ny = ax, ay elseif index == #ts then nx, ny = bx, by end
+            local knot = {x = x, y = y, nx = nx, ny = ny, s = along + d[3] * t, vertex = index == #ts and k + 1 or nil}
+            local z = ctx.road(x, y, deck and .3 or R.inside, deck)
+            if z then
+              knot.z = z + R.flush
+            elseif deck then
+              knot.skip = true
+            else
+              knot.zl, knot.zr = ctx.ground(x - nx * hw, y - ny * hw), ctx.ground(x + nx * hw, y + ny * hw)
+              knot.near = sides == 'near' and ctx.road(x, y, R.seen, false) ~= nil
+            end
+            out[#out + 1] = knot
+          end
+        end
+      else
+        out[#out + 1] = {gap = true}
+      end
+      along = along + d[3]
+    end
+  end
+  return out
+end
+
+function RAIL.track(ctx, line)
+  local R, tags = RAIL, line.tags or NONE
+  local gauge = R.gauge(tags, ctx.postsoviet)
+  local hw, o, head = gauge / 2 + R.shoulder, gauge / 2 + R.head / 2, R.head / 2
+  -- beds of tracks side by side or through a switch overlap: each its own few mm, no flicker
+  local lift = R.lift + (hash(tostring(line.id or '')) % 5) * .004
+  local station = tags.service == 'yard' or tags.service == 'siding' or tags.service == 'spur'
+  local knots = RAIL.knots(ctx, line.points, hw, ROADS.bridge(tags), station and 'near')
+  local polygon = ctx.polygon
+  -- the top of the rail at side s (-1 / 1) of knot p, and its foot
+  local function top(p, s)
+    if p.z then return p.z, p.z - .02 end
+    local z = (p.zl + p.zr) / 2 + (p.zr - p.zl) / 2 * s * o / hw + lift
+    return z + R.height, z
+  end
+  local function at(p, s, off, z, u, v)
+    return {p.x + p.nx * (s * o + off), p.y + p.ny * (s * o + off), z, u, v}
+  end
+  for k = 1, #knots - 1 do
+    local a, b = knots[k], knots[k + 1]
+    if not (a.gap or b.gap or a.skip or b.skip) then
+      if not (a.z or b.z) then
+        local va, vb = a.s / R.sleepers, b.s / R.sleepers
+        polygon('track', {{a.x - a.nx * hw, a.y - a.ny * hw, a.zl + lift, 0, va}, {b.x - b.nx * hw, b.y - b.ny * hw, b.zl + lift, 0, vb},
+          {b.x + b.nx * hw, b.y + b.ny * hw, b.zr + lift, 1, vb}, {a.x + a.nx * hw, a.y + a.ny * hw, a.zr + lift, 1, va}}, true)
+      end
+      for _, s in ipairs({-1, 1}) do
+        local ta, fa = top(a, s)
+        local tb, fb = top(b, s)
+        polygon('rail', {at(a, s, -head, ta), at(b, s, -head, tb), at(b, s, head, tb), at(a, s, head, ta)}, true)
+        if not (a.z and b.z) and (not station or a.near or b.near or a.z or b.z) then
+          polygon('rail_side', {at(b, s, head, fb), at(a, s, head, fa), at(a, s, head, ta), at(b, s, head, tb)}, false)
+          polygon('rail_side', {at(a, s, -head, fa), at(b, s, -head, fb), at(b, s, -head, tb), at(a, s, -head, ta)}, false)
+        end
+      end
     end
   end
 end
@@ -9899,7 +10043,7 @@ local function build(cells, i, j, options)
   for _, area in ipairs(distant and NONE or lists.areas) do
     local kind = area.kind
     if CLAIM[kind] and not (((area.tags or NONE).source or ''):find('worldcover', 1, true)) and ringsTouch(area.rings, rect) then
-      drapeRings(kind, area.rings, .025)
+      drapeRings(RAIL.cover(area), area.rings, .025)
     end
     pause()
   end
@@ -10834,6 +10978,13 @@ local function build(cells, i, j, options)
       local it = scene.items[#scene.items]
       it.prop, it.streetKind, it.collision = true, 'power', 'Collision Mesh'
     end, pause)
+    RAIL.lay({rect = rect, ground = ground, polygon = scene.polygon, pause = pause, postsoviet = postsoviet,
+      road = function(x, y, reach, deck)
+        local hit = OFFROAD.nearestOn(x, y, nil, deck, nil, reach)
+        -- a junction's plate or a mouth, past the centre lines' widths
+        if not hit and not deck and reach < 0 and OFFROAD.onAsphalt(x, y) then hit = OFFROAD.nearestOn(x, y, nil, false, nil, 30) end
+        return hit and hit.z
+      end}, lists.lines)
   end
   OFFROAD.signs = {}
   OFFROAD.signRequests = options.experimentalDetail and not distant and lists.signMouths and
