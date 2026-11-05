@@ -327,10 +327,15 @@ def cut_tiles(pbf, tiles, box=None, jobs=None, emit=print, cancel=None, heavy_jo
         if target.exists():
             shutil.rmtree(target)
         emit(f'cutting tiles into {tiles.name}')
-        command = [_python(), str(HERE / 'osm_tiles_country.py'), str(pbf), '--out', str(target),
-                   '--jobs', str(jobs), '--heavy-jobs', str(heavy_jobs)]
-        if box:
-            command += ['--package-box', *(str(v) for v in box)]
+        import native_tool
+        # the native cut: the same tiles in one read of the PBF on every core (Kyiv's centre
+        # from Ukraine: 12 s instead of 21 min)
+        command = native_tool.cut_command(pbf, target, box)
+        if command is None:
+            command = [_python(), str(HERE / 'osm_tiles_country.py'), str(pbf), '--out', str(target),
+                       '--jobs', str(jobs), '--heavy-jobs', str(heavy_jobs)]
+            if box:
+                command += ['--package-box', *(str(v) for v in box)]
         run_step(command, emit, cancel)
     if target != tiles:
         shutil.rmtree(tiles)

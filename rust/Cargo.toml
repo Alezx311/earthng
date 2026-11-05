@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/osm", "crates/mapbuilder"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 4
+
+[profile.dev]
+opt-level = 1
