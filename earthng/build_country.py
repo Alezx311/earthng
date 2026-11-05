@@ -505,7 +505,10 @@ def compile_block(store, cells, include=None):
 def _finish_block(store, cells, include):
     """A block ready for the zip: deflated bytes and the presence mask, or None when every
     cell lacked elevation. Deflate runs here so each worker compresses its own blocks."""
-    payloads, counts = compile_block(store, cells, include)
+    return _pack(*compile_block(store, cells, include))
+
+
+def _pack(payloads, counts):
     if not payloads:
         return None, counts
     data, mask = binary.encode_block(payloads)
@@ -546,6 +549,54 @@ def _worker_store(directory):
 def _worker_block(task):
     directory, key, cells = task
     return key, _finish_block(_worker_store(directory), cells, _WORKER.get('include'))
+
+
+def _worker_part(task):
+    """Part of a block, not yet packed: a city has too few blocks to keep every worker busy."""
+    directory, key, cells = task
+    return key, compile_block(_worker_store(directory), cells, _WORKER.get('include'))
+
+
+def _block_parts(tasks, workers):
+    """(key, cells) tasks split by cell rows into about 3 tasks a worker: Kyiv's 630 cells are
+    16 blocks, four to a worker kept 4 of 12 processes busy for 170 s. None when the blocks
+    alone are enough."""
+    if not tasks or len(tasks) >= 4 * workers:
+        return None
+    split = min(binary.BLOCK, -(-3 * workers // len(tasks)))
+    out = []
+    for key, cells in tasks:
+        rows = sorted({j for _, j in cells})
+        size = -(-len(rows) // split)
+        for k in range(0, len(rows), size):
+            chosen = set(rows[k:k + size])
+            out.append((key, [c for c in cells if c[1] in chosen]))
+    return out
+
+
+def _merged(futures, finished):
+    """Packed blocks from futures of _worker_part results, as each block's last part arrives."""
+    expected = {}
+    for future in futures:
+        expected[future.block] = expected.get(future.block, 0) + 1
+    from concurrent.futures import ThreadPoolExecutor
+    pending, packing = {}, []
+    # deflate at level 9 is ~1 s a city block; zlib lets go of the GIL, so blocks pack side by side
+    with ThreadPoolExecutor(4) as threads:
+        for future in futures:
+            for key, (payloads, counts) in finished(future):
+                have = pending.setdefault(key, [{}, {}, 0])
+                have[0].update(payloads)
+                have[1].update(counts)
+                have[2] += 1
+                if have[2] == expected[key]:
+                    del pending[key]
+                    packing.append((key, threads.submit(_pack, have[0], have[1])))
+            while packing and packing[0][1].done():
+                key, job = packing.pop(0)
+                yield key, job.result()
+        for key, job in packing:
+            yield key, job.result()
 
 
 def _region_spec(region):
@@ -651,7 +702,15 @@ def _region_begin(country_id, region, bbox, emit, landcover=(), include=None, ca
         if _stopped(cancel):
             raise InterruptedError('build stopped')
         tasks = sorted(blocks.items())
+        parts = None
         if executor is not None:
+            parts = _block_parts(tasks, getattr(executor, '_max_workers', 1))
+        if parts is not None:
+            futures = []
+            for key, cells in parts:
+                futures.append(executor.submit(_worker_part, (str(directory), key, cells)))
+                futures[-1].block = key
+        elif executor is not None:
             # four neighbouring blocks to a worker at a time: they share raw OSM tiles (SCENES)
             futures = [executor.submit(_worker_run, [(str(directory), key, cells) for key, cells in tasks[k:k + 4]])
                        for k in range(0, len(tasks), 4)]
@@ -660,7 +719,7 @@ def _region_begin(country_id, region, bbox, emit, landcover=(), include=None, ca
         ok = True
         return {'store': store, 'directory': directory, 'core': core, 'region_id': region_id, 'meta': meta,
                 'provenance': provenance, 'frame': frame, 'base': base, 'blocks': blocks, 'total': total,
-                'tasks': tasks, 'futures': futures, 'include': include}
+                'tasks': tasks, 'futures': futures, 'parts': parts is not None, 'include': include}
     finally:
         if not ok:
             if getattr(store, 'landcover', None) is not None:
@@ -687,7 +746,9 @@ def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None,
                 except TimeoutError:
                     if _stopped(cancel):
                         raise InterruptedError('build stopped') from None
-        if ctx['futures'] is not None:
+        if ctx.get('parts'):
+            results = _merged(ctx['futures'], lambda future: [finished(future)])
+        elif ctx['futures'] is not None:
             results = (result for future in ctx['futures'] for result in finished(future))
         else:
             results = ((key, _finish_block(store, cells, ctx['include'])) for key, cells in ctx['tasks'])

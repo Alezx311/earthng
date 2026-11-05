@@ -543,3 +543,23 @@ class ResumablePartTests(unittest.TestCase):
             path.write_bytes(b'truncated')
             self.assertIsNone(build_country._load_part(path))          # a torn part is exported again
             self.assertIsNone(build_country._load_part(Path(tmp) / 'missing.part'))
+
+
+class BlockPartsTests(unittest.TestCase):
+    def test_city_blocks_split_by_rows_and_merge_whole(self):
+        cells = [(i, j) for j in range(8) for i in range(8)]
+        tasks = [((0, 0), cells), ((1, 0), [(i + 8, j) for i, j in cells])]
+        self.assertIsNone(country._block_parts(tasks * 4, 2))        # enough blocks: none split
+        parts = country._block_parts(tasks, 6)
+        self.assertEqual(len(parts), 16)                             # 3 a worker -> 8 rows a block
+        self.assertEqual(sorted(c for key, part in parts if key == (0, 0) for c in part), sorted(cells))
+
+        class Done:
+            def __init__(self, key, result):
+                self.block, self.value = key, result
+        futures = [Done(key, ({binary.slot(*c): b'%d' % c[0] for c in part}, {binary.slot(*c): 1 for c in part}))
+                   for key, part in parts]
+        merged = dict(country._merged(futures, lambda f: [(f.block, f.value)]))
+        whole = country._pack({binary.slot(*c): b'%d' % c[0] for c in cells}, {binary.slot(*c): 1 for c in cells})
+        self.assertEqual(merged[(0, 0)], whole)
+        self.assertEqual(len(merged[(1, 0)][1]), 64)
