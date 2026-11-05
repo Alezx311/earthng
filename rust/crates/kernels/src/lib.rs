@@ -115,6 +115,39 @@ impl Csr<'_> {
     }
 }
 
+/// The matrix of a solve with 32-bit columns: a CG iteration streams the whole matrix, so its
+/// columns are a third of the memory traffic. Same rows, same order of every sum.
+struct Narrow<'a> {
+    ptr: &'a [i64],
+    col: Vec<u32>,
+    data: &'a [f64],
+}
+
+impl<'a> Narrow<'a> {
+    fn of(a: &Csr<'a>) -> Option<Narrow<'a>> {
+        if a.rows() > u32::MAX as usize {
+            return None;
+        }
+        let col = a.col.par_iter().map(|&c| c as u32).collect();
+        Some(Narrow { ptr: a.ptr, col, data: a.data })
+    }
+
+    fn matvec(&self, h: &[f64], out: &mut [f64]) {
+        out.par_chunks_mut(BLOCK).enumerate().for_each(|(c, chunk)| {
+            for (k, o) in chunk.iter_mut().enumerate() {
+                let i = c * BLOCK + k;
+                let (a, b) = (self.ptr[i] as usize, self.ptr[i + 1] as usize);
+                // as Csr::matvec (and numpy's reduceat on an empty row: the entry at a)
+                let mut s = self.data[a] * h[self.col[a] as usize];
+                for e in a + 1..b {
+                    s += h[self.col[e] as usize] * self.data[e];
+                }
+                *o = s;
+            }
+        });
+    }
+}
+
 pub fn matvec(a: &Csr, springs: &Springs, h: &[f64], out: &mut [f64], with_springs: bool) {
     a.matvec(h, out);
     if with_springs && springs.any() {
@@ -135,13 +168,17 @@ pub fn cg(a: &Csr, diag0: &[f64], springs: &Springs, b: &[f64], iterations: i64,
     let norm0 = { let v = dot(b, b).sqrt(); if v == 0.0 { 1.0 } else { v } };
     let springs_on = springs.any();
     let mut scratch = Vec::new();
+    let narrow = Narrow::of(a);
     let mut it = 0i64;
     for i in 0..iterations.max(0) {
         it = i;
         if dot(&r, &r).sqrt() < tol * norm0 || rz <= 0.0 {
             break;
         }
-        a.matvec(&p, &mut ap);
+        match &narrow {
+            Some(m) => m.matvec(&p, &mut ap),
+            None => a.matvec(&p, &mut ap),
+        }
         if springs_on {
             springs.add(&p, &mut ap, &mut scratch);
         }
