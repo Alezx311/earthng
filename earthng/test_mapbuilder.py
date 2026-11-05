@@ -702,3 +702,25 @@ class TkTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class BackgroundStageTests(unittest.TestCase):
+    def test_background_stage_reports_waits_raises_and_stops(self):
+        import sys
+        seen = []
+        progress = lambda name, seconds: seen.append((name, seconds is None))
+        ok = country_fetch._Background('Map detail', [sys.executable, '-c', 'print("drawn")'], seen.append, None, progress)
+        ok.join()
+        self.assertIn('drawn', seen)
+        self.assertEqual([s for s in seen if isinstance(s, tuple)], [('Map detail', True), ('Map detail', False)])
+        bad = country_fetch._Background('Map detail', [sys.executable, '-c', 'raise SystemExit(3)'], seen.append, None, None)
+        with self.assertRaises(country_fetch.subprocess.CalledProcessError):
+            bad.join()
+        cancel = threading.Event()
+        slow = country_fetch._Background('Map detail', [sys.executable, '-c', 'import time; time.sleep(30)'],
+                                         seen.append, cancel, None)
+        started = time.monotonic()
+        slow.stop()                      # the build failed meanwhile: the stage goes with it
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertIsInstance(slow.error, InterruptedError)
+        self.assertFalse(cancel.is_set())

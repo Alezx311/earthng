@@ -588,6 +588,14 @@ class Mosaic:
         """Same filter and result as Terrain.sample (smooth 5-tap bilinear)."""
         from fast_sources import LIFT
         xy = np.asarray(xy, dtype=float).reshape(-1, 2)
+        native = getattr(self.terrain, 'native', None)
+        native = native() if native is not None else None
+        if native is not None:
+            # the same pixels without the grids (a foot bridge's few points filled 52 MB of NaN)
+            out = native.sample(xy, smooth, missing=True, single=self.zoom > 12)
+            if not missing and not np.isfinite(out).all():
+                raise FileNotFoundError('no_dem: profile stations outside the downloaded DEM')
+            return out
         lon, lat = self.terrain.frame.geographic(xy[:, 0], xy[:, 1])
         x, y = self._px(lon, lat, self.zoom)
         ix, iy = np.floor(x).astype(int), np.floor(y).astype(int)

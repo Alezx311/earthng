@@ -20,6 +20,8 @@ const CACHE: usize = 96;
 pub enum DemError {
     /// a tile that is not in the cache: the cell has no elevation there
     Missing(PathBuf),
+    /// a z12 neighbour a z13 tile is upsampled from: an error even where a missing tile is NaN
+    MissingBelow(PathBuf),
     NonFinite,
     Image(String),
 }
@@ -27,7 +29,7 @@ pub enum DemError {
 impl DemError {
     pub fn code(&self) -> i32 {
         match self {
-            DemError::Missing(_) => 1,
+            DemError::Missing(_) | DemError::MissingBelow(_) => 1,
             DemError::NonFinite => 2,
             DemError::Image(_) => 3,
         }
@@ -35,7 +37,7 @@ impl DemError {
 
     pub fn message(&self) -> String {
         match self {
-            DemError::Missing(path) => format!("no_dem: {}", path.display()),
+            DemError::Missing(path) | DemError::MissingBelow(path) => format!("no_dem: {}", path.display()),
             DemError::NonFinite => "non-finite DEM".into(),
             DemError::Image(text) => text.clone(),
         }
@@ -131,8 +133,12 @@ impl Dem {
             let path = self.path(a, b);
             let heights = if path.is_file() {
                 Dem::decode(&path)?
-            } else if self.zoom == 13 {
-                self.upsampled(a, b)?
+            } else if self.zoom == 13 && self.coarse.as_ref().is_some_and(|c| c.path(a.div_euclid(2), b.div_euclid(2)).is_file()) {
+                // Terrain.has: the z12 tile under it is there; a neighbour it reaches into must be
+                self.upsampled(a, b).map_err(|e| match e {
+                    DemError::Missing(p) => DemError::MissingBelow(p),
+                    other => other,
+                })?
             } else {
                 return Err(DemError::Missing(path));
             };
@@ -154,8 +160,9 @@ impl Dem {
         Ok(image[(y.rem_euclid(SIDE) * SIDE + x.rem_euclid(SIDE)) as usize])
     }
 
-    /// Terrain.sample of one local point, without the finite check and the lift.
-    fn height(&mut self, x: f64, y: f64, smooth: bool) -> Result<f64, DemError> {
+    /// Terrain.sample of one local point, without the finite check and the lift. single: the
+    /// pixels rounded to float32 as fast_profile.Mosaic keeps a z13 grid.
+    fn height(&mut self, x: f64, y: f64, smooth: bool, single: bool) -> Result<f64, DemError> {
         let (lon, lat) = self.frame.geographic(x, y);
         let scale = (256u64 << self.zoom) as f64;
         let px = (lon + 180.0) / 360.0 * scale;
@@ -167,8 +174,11 @@ impl Dem {
         let mut z = 0.0;
         for &(dx, dy, weight) in if smooth { &FIVE[..] } else { &ONE[..] } {
             let (x0, y0) = (ix + dx, iy + dy);
-            let (p0, p1) = (self.pixel(x0, y0)?, self.pixel(x0 + 1, y0)?);
-            let (p2, p3) = (self.pixel(x0, y0 + 1)?, self.pixel(x0 + 1, y0 + 1)?);
+            let (mut p0, mut p1) = (self.pixel(x0, y0)?, self.pixel(x0 + 1, y0)?);
+            let (mut p2, mut p3) = (self.pixel(x0, y0 + 1)?, self.pixel(x0 + 1, y0 + 1)?);
+            if single {
+                (p0, p1, p2, p3) = (p0 as f32 as f64, p1 as f32 as f64, p2 as f32 as f64, p3 as f32 as f64);
+            }
             z += weight * ((p0 * (1.0 - u) + p1 * u) * (1.0 - v) + (p2 * (1.0 - u) + p3 * u) * v);
         }
         Ok(z)
@@ -176,12 +186,22 @@ impl Dem {
 
     /// Terrain.sample: heights of local points plus the lift.
     pub fn sample(&mut self, xy: &[[f64; 2]], smooth: bool, out: &mut [f64]) -> Result<(), DemError> {
+        self.sample_with(xy, smooth, false, false, out)
+    }
+
+    /// sample(), or fast_profile.Mosaic.sample with `missing`: NaN where a tile is not in the
+    /// cache instead of an error, and no finite check.
+    pub fn sample_with(&mut self, xy: &[[f64; 2]], smooth: bool, missing: bool, single: bool, out: &mut [f64])
+                       -> Result<(), DemError> {
         let mut finite = true;
         for (p, o) in xy.iter().zip(out.iter_mut()) {
-            *o = self.height(p[0], p[1], smooth)?;
+            *o = match self.height(p[0], p[1], smooth, single) {
+                Err(DemError::Missing(_)) if missing => f64::NAN,
+                other => other?,
+            };
             finite &= o.is_finite();
         }
-        if !finite {
+        if !finite && !missing {
             return Err(DemError::NonFinite);
         }
         for o in out.iter_mut() {

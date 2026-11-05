@@ -128,13 +128,15 @@ class Dem:
             raise FileNotFoundError(message)
         raise ValueError(message)
 
-    def sample(self, xy, smooth=False):
+    def sample(self, xy, smooth=False, missing=False, single=False):
+        """Terrain.sample; missing and single as fast_profile.Mosaic.sample (NaN where a tile is
+        not in the cache; a z13 grid's float32 pixels)."""
         import numpy as np
         xy = np.ascontiguousarray(np.asarray(xy, dtype=float).reshape(-1, 2))
         out = np.empty(len(xy))
+        flags = int(bool(smooth)) | 2 * bool(missing) | 4 * bool(single)
         if len(xy):
-            self._check(self.lib.earthng_dem_sample(self.handle, xy.ctypes.data, len(xy), int(bool(smooth)),
-                                                    out.ctypes.data))
+            self._check(self.lib.earthng_dem_sample(self.handle, xy.ctypes.data, len(xy), flags, out.ctypes.data))
         return out
 
     def despiked(self, xy, spacing, spike):

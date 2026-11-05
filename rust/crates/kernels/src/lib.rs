@@ -306,15 +306,17 @@ fn values<'a>(out: *mut f64, n: usize) -> &'a mut [f64] {
     if n == 0 { &mut [] } else { unsafe { slice::from_raw_parts_mut(out, n) } }
 }
 
-/// Terrain.sample of n points (x, y interleaved) into out. 0, or 1 no_dem, 2 non-finite, 3 image.
+/// Terrain.sample of n points (x, y interleaved) into out. flags: 1 the 5-tap filter, 2 NaN
+/// where a tile is missing (Mosaic.sample's missing), 4 float32 pixels (a z13 Mosaic).
+/// Returns 0, or 1 no_dem, 2 non-finite, 3 image.
 ///
 /// # Safety
 /// `xy` holds 2n values, `out` n.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn earthng_dem_sample(handle: *mut DemHandle, xy: *const f64, n: usize, smooth: i32,
+pub unsafe extern "C" fn earthng_dem_sample(handle: *mut DemHandle, xy: *const f64, n: usize, flags: i32,
                                             out: *mut f64) -> i32 {
     let h = unsafe { &mut *handle };
-    let r = h.dem.sample(points(xy, n), smooth != 0, values(out, n));
+    let r = h.dem.sample_with(points(xy, n), flags & 1 != 0, flags & 2 != 0, flags & 4 != 0, values(out, n));
     dem_result(h, r)
 }
 

@@ -515,6 +515,31 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
             box_of = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))['package_box']
             tiles = est_roads.enrich(tiles, est_roads.fetch(box_of, Path(root) / 'data', emit), emit)
     index = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))
+    map_data = tiles / 'map'
+    map_job = None
+    if section is not None:
+        map_data = None       # the offline map is the country's: the country pack carries it
+    elif not (map_data / 'index.json').is_file():
+        if pbf.is_file():
+            # It reads only the PBF: it runs beside the elevation and the index (Ukraine's
+            # 90 s were waited for after a city's 40 s index), and the export waits for it.
+            map_data = map_cache_dir(root, slug_id, pbf)
+            map_job = _Background('Map detail', [_python(), str(HERE / 'build_map.py'), '--pbf', str(pbf),
+                                                 '--out', str(map_data)], emit, cancel, progress)
+        else:
+            emit('No original PBF/map sidecar in this cache: using base map labels and close-up roads.')
+            map_data = None
+    try:
+        return _build_rest(place, mods, root, look, include, jobs, landing, emit, cancel, stage, slug_id, tiles,
+                           index, map_data, map_job, local_dem, road_register, section)
+    finally:
+        if map_job is not None:
+            map_job.stop()
+
+
+def _build_rest(place, mods, root, look, include, jobs, landing, emit, cancel, stage, slug_id, tiles, index,
+                map_data, map_job, local_dem, road_register, section):
+    import sysmem
     dem = Path(root) / 'out' / 'world' / 'cache'
     with stage('Elevation'):
         fetch_dem(index, dem, emit, cancel)
@@ -538,18 +563,8 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
         run_build_job(index_job, emit, cancel)
         regions = json.loads(regions_path.read_text(encoding='utf-8'))
     out = Path(root) / 'out' / 'country-setup'
-    map_data = tiles / 'map'
-    if section is not None:
-        map_data = None       # the offline map is the country's: the country pack carries it
-    elif not (map_data / 'index.json').is_file():
-        if pbf.is_file():
-            # A separate worker keeps this cancellable, just like source extraction.
-            map_data = map_cache_dir(root, slug_id, pbf)
-            with stage('Map detail'):
-                run_step([_python(), str(HERE / 'build_map.py'), '--pbf', str(pbf), '--out', str(map_data)], emit, cancel)
-        else:
-            emit('No original PBF/map sidecar in this cache: using base map labels and close-up roads.')
-            map_data = None
+    if map_job is not None:
+        map_job.join()
     # the optional sources a pack is built from travel in it (build_country.CREDITS)
     credits = []
     if road_register:
@@ -625,6 +640,58 @@ def run_build_job(job, emit=print, cancel=None):
     path = folder / f"{job['command']}-job.json"
     path.write_text(json.dumps(job), encoding='utf-8')
     run_step([_python(), str(HERE / 'build_country.py'), '--job', str(path)], emit, cancel)
+
+
+class _Either:
+    """A cancel event set when any of its events is (the user's Stop, or the build failing)."""
+    def __init__(self, *events):
+        self.events = [e for e in events if e is not None]
+
+    def is_set(self):
+        return any(e.is_set() for e in self.events)
+
+    def wait(self, timeout):
+        end = time.monotonic() + timeout
+        while not self.is_set():
+            left = end - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(.05, left))
+        return True
+
+
+class _Background:
+    """A build stage in its own process beside the next stages: run_step on a thread, its
+    progress reported as a stage of its own. join() waits and raises what it raised."""
+    def __init__(self, name, command, emit, cancel, progress):
+        import threading
+        self.stopped = threading.Event()
+        self.error = None
+        self.name, self.progress = name, progress
+
+        def run():
+            start = time.monotonic()
+            try:
+                run_step(command, emit, _Either(cancel, self.stopped))
+                if progress:
+                    progress(name, time.monotonic() - start)
+            except BaseException as exc:      # noqa: BLE001 - handed to join()
+                self.error = exc
+        if progress:
+            progress(name, None)
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
+
+    def join(self):
+        self.thread.join()
+        if self.error is not None:
+            raise self.error
+
+    def stop(self):
+        """Kill it if it still runs (the build stopped or failed before it was joined)."""
+        if self.thread.is_alive():
+            self.stopped.set()
+            self.thread.join()
 
 
 def run_step(command, emit=print, cancel=None):
