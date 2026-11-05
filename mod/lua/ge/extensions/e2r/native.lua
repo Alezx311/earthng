@@ -1557,7 +1557,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
     local before = STAGE[active.work] or 'start'
     local stage = kind .. ' after ' .. before
     active.resumeReadMs, active.resumeConcatMs = 0, 0
-    local ok, message = coroutine.resume(active.work)
+    local ok, message = (generator.resumeBuild or coroutine.resume)(active.work)
     local resumeMs = resumeTimer:stop()
     state.stream.spentMs[kind] = state.stream.spentMs[kind] + resumeMs
     state.stream.stageMs[stage] = (state.stream.stageMs[stage] or 0) + resumeMs

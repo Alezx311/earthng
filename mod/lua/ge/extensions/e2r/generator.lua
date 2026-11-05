@@ -12587,6 +12587,36 @@ local function build(cells, i, j, options)
   return roadManifest, sceneManifest, nil, nav
 end
 
+-- The streaming scheduler may park one tile at a budget pause, roadReady or sceneReady
+-- and resume a different tile. These fields are per-build scratch state, although their
+-- namespace tables are shared by this module. Keep them with the suspended coroutine.
+-- The legacy/live source-cell road tables are a separate shared-data concern.
+-- This scheduler helper accepts no resume arguments and returns only the success flag and
+-- first yielded value, which is the native streaming scheduler's contract. Direct coroutine
+-- callers must also use it if they interleave builds of independent source cells.
+local buildContexts = setmetatable({}, {__mode = 'k'})
+function M.resumeBuild(co)
+  local ctx = buildContexts[co]
+  if ctx then
+    ROADS.leftHand, ROADS.waters = ctx.leftHand, ctx.waters
+    BLD.packBlock, BLD.city, BLD.face, BLD.faces = ctx.packBlock, ctx.city, ctx.face, ctx.faces
+    BLD.plane, BLD.bare, BLD.report = ctx.plane, ctx.bare, ctx.report
+    BLD.probe, BLD.onroad = ctx.probe, ctx.onroad
+  end
+  local ok, result = coroutine.resume(co)
+  if coroutine.status(co) == 'dead' then
+    buildContexts[co] = nil
+  else
+    ctx = ctx or {}
+    ctx.leftHand, ctx.waters = ROADS.leftHand, ROADS.waters
+    ctx.packBlock, ctx.city, ctx.face, ctx.faces = BLD.packBlock, BLD.city, BLD.face, BLD.faces
+    ctx.plane, ctx.bare, ctx.report = BLD.plane, BLD.bare, BLD.report
+    ctx.probe, ctx.onroad = BLD.probe, BLD.onroad
+    buildContexts[co] = ctx
+  end
+  return ok, result
+end
+
 M.build = build
 M.keepsLeft = ROADS.keepsLeft
 M.YARD = YARD
