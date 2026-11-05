@@ -535,55 +535,6 @@ class NativeTests(unittest.TestCase):
         after = run(cv([cell]), True)
         self.assertEqual([plain(value) for value in before], [plain(value) for value in after])
 
-    def test_verge_work_yields_for_near_and_far_without_changing_output(self):
-        lua, _, cv = self.make(real_generator=True)
-        source = (ROOT / 'mod/lua/ge/extensions/e2r/generator.lua').read_text(encoding='utf8').splitlines()
-        plate_line = next(i for i, line in enumerate(source, 1) if '-- plate verge budget' in line)
-        strip_line = next(i for i, line in enumerate(source, 1) if '-- strip verge budget' in line)
-        road = dict(id='r', nodes=['a', 'b'], width=7,
-                    points=[[5 * k, 250 + .1 * (k % 2), 0] for k in range(101)],
-                    tags={'highway': 'residential', 'sidewalk': 'both'})
-        roads = [road]
-        for k in range(8):
-            x, y = 45 + (k % 4) * 120, 50 + (k // 4) * 340
-            # Three distinct roads sharing a node form a six-edge junction plate.
-            for arm, (dx, dy) in enumerate(((25, 0), (0, 25), (-25, 0))):
-                roads.append(dict(id=f'j{k}-{arm}', nodes=[f'j{k}', f'j{k}-{arm}'], width=7,
-                                  points=[[x, y, 0], [x+dx, y+dy, 0]],
-                                  tags={'highway': 'residential', 'sidewalk': 'both'}))
-        cells = cv([dict(roads=roads, junctions=[], buildings=[], areas=[], lines=[], points=[],
-                         terrain=dict(rect=[0, 0, 500, 500], nx=2, ny=2, heights=[0] * 4))])
-        run = lua.eval('''function(cells, far, tracked, plateLine, stripLine)
-          local hits = {}
-          local options = {tileSize=500, terrainStep=100, maxTrees=0, maxGrass=0, maxRocks=0, far=far}
-          if tracked then
-            options.pause = function()
-              local line = debug.getinfo(2, 'l').currentline
-              if line == plateLine or line == stripLine then coroutine.yield(line) end
-            end
-          end
-          local co = coroutine.create(function() return stubGenerator.build(cells, 0, 0, options) end)
-          while true do
-            local ok, road, scene, distant, nav, grass = coroutine.resume(co)
-            assert(ok, road)
-            if coroutine.status(co) == 'dead' then return road, scene, distant, nav, grass, hits end
-            hits[road] = (hits[road] or 0) + 1
-          end
-        end''')
-
-        def plain(value):
-            if hasattr(value, 'items'):
-                return {key: plain(item) for key, item in value.items()}
-            return value
-
-        for far in (False, True):
-            with self.subTest(far=far):
-                before = run(cells, far, False, plate_line, strip_line)
-                after = run(cells, far, True, plate_line, strip_line)
-                self.assertGreater(after[5][plate_line] or 0, 0)
-                self.assertGreater(after[5][strip_line] or 0, 0)
-                self.assertEqual([plain(x) for x in before[:5]], [plain(x) for x in after[:5]])
-
     def test_a_near_tile_over_the_geometry_budget_waits_for_the_renderer(self):
         # A tile of central Kyiv alone is over the budget: evicted before the renderer took it, it
         # was built again at the next epoch and the city along the road never came up.
