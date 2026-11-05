@@ -95,8 +95,10 @@ function M.edge(sid, seg, q, nodes)
   local forward = (s[o + 3] - s[o]) * q.dx + (s[o + 4] - s[o + 1]) * q.dy >= 0
   local a, b = id(bestK), id(bestK + 1)
   if not forward then a, b = b, a end
-  local node = nodes[a]
-  if node and node.links[b] then return a, b end
+  -- map.reset converts a custom graph to single-sided storage: the edge can be
+  -- listed under either endpoint, independent of the direction of this light.
+  local from, to = nodes[a], nodes[b]
+  if (from and from.links and from.links[b]) or (to and to.links and to.links[a]) then return a, b end
   return nil
 end
 

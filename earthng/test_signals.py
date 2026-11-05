@@ -154,6 +154,28 @@ class Clock(unittest.TestCase):
         self.assertEqual(self.lua.eval("S.edge('r', seg, {x = 150, y = 2, dx = -1, dy = 0}, nodes)"), ('e2r_nb', 'e2r_sr_2'))
         self.assertEqual(self.lua.eval("S.edge('r', seg, {x = 50, y = 2, dx = 1, dy = 0}, nodes)"), ('e2r_na', 'e2r_sr_2'))
 
+    def test_single_sided_graph_keeps_light_direction_and_rejects_missing_edge(self):
+        # map.reset keeps links under outNode, not under both endpoints.
+        self.lua.execute('''
+          nodes = {e2r_na = {links = {}},
+                   e2r_sr_2 = {links = {e2r_na = {}}},
+                   e2r_nb = {links = {e2r_sr_2 = {}}}}
+        ''')
+        self.assertEqual(self.lua.eval("S.edge('r', seg, {x = 150, y = 2, dx = 1, dy = 0}, nodes)"), ('e2r_sr_2', 'e2r_nb'))
+        self.assertEqual(self.lua.eval("S.edge('r', seg, {x = 150, y = 2, dx = -1, dy = 0}, nodes)"), ('e2r_nb', 'e2r_sr_2'))
+        self.assertEqual(self.lua.eval("S.edge('r', seg, {x = 50, y = 2, dx = 1, dy = 0}, nodes)"), ('e2r_na', 'e2r_sr_2'))
+        self.lua.execute('''
+          S.step(0, true)
+          S.addTile('t', {{road = 'r', x = 150, y = 0, z = 0, dx = 1, dy = 0, group = 0},
+                          {road = 'r', x = 150, y = 0, z = 0, dx = -1, dy = 0, group = 1}})
+          S.navgraph(nodes, {r = seg}, 150, 0, true, function(x, y, z) return {x, y, z} end)
+        ''')
+        self.assertEqual(self.lua.eval('dict.e2r_sr_2.e2r_nb[1].action'), 0)
+        self.assertEqual(self.lua.eval('dict.e2r_nb.e2r_sr_2[1].action'), 2)
+        self.lua.execute('nodes.e2r_nb.links.e2r_sr_2 = nil')
+        self.assertIsNone(self.lua.eval("S.edge('r', seg, {x = 150, y = 2, dx = 1, dy = 0}, nodes)"))
+        self.assertIsNone(self.lua.eval("S.edge('r', seg, {x = 150, y = 2, dx = -1, dy = 0}, nodes)"))
+
     def feed(self):
         self.lua.execute('''
           S.step(0, true)
