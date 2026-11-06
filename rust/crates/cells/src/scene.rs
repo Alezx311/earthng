@@ -59,6 +59,35 @@ pub fn read(path: &Path) -> Result<Scene> {
     Ok(Scene { records })
 }
 
+/// (fid, geometry) of a scene's records of one kind with a non-empty geometry, in file order,
+/// as read() keeps them; other records are skipped unparsed (a coast tile's coastlines cost a
+/// scan, not a whole scene).
+pub fn read_kind(path: &Path, want: &str) -> Result<Vec<(i64, Geom)>> {
+    let data = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut at = 0;
+    if take(&data, &mut at, 4)? != b"ESC1" {
+        bail!("{} is not a scene file", path.display());
+    }
+    let count = u32::from_le_bytes(take(&data, &mut at, 4)?.try_into()?) as usize;
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let fid = i64::from_le_bytes(take(&data, &mut at, 8)?.try_into()?);
+        let n = u16::from_le_bytes(take(&data, &mut at, 2)?.try_into()?) as usize;
+        let kind = take(&data, &mut at, n)?;
+        let n = u32::from_le_bytes(take(&data, &mut at, 4)?.try_into()?) as usize;
+        take(&data, &mut at, n)?;
+        let n = u32::from_le_bytes(take(&data, &mut at, 4)?.try_into()?) as usize;
+        let wkb = take(&data, &mut at, n)?;
+        if kind == want.as_bytes() {
+            let geom = geos::from_wkb(wkb)?;
+            if !geom.is_empty()? {
+                out.push((fid, geom));
+            }
+        }
+    }
+    Ok(out)
+}
+
 impl Scene {
     /// Store.scenery: the records whose envelope meets rect, in file order.
     pub fn query(&self, r: [f64; 4]) -> impl Iterator<Item = &Record> {

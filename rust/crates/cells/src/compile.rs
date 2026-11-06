@@ -1,7 +1,7 @@
 //! build_country.compile_cell for inland cells without sea harbours, then country_format's
 //! encoder. Every step follows the Python line it replaces; comments name them.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -73,8 +73,11 @@ pub struct Worker {
     db: rusqlite::Connection,
     dem: Dem,
     scenes: Vec<(String, Scene)>,
-    /// seconds per stage: query, scene files, scenery, DEM, partition, grid, encode
-    pub times: [f64; 7],
+    /// the coastline ways of each tile read for _coast: (fid, line), in scene order
+    shores: HashMap<String, Vec<(i64, Geom)>>,
+    /// seconds per stage: query, scene files, scenery, DEM, partition, grid, encode; of grid:
+    /// coastline reading and merging, coast distances and sides
+    pub times: [f64; 9],
 }
 
 fn truthy(v: &Value) -> bool {
@@ -248,7 +251,7 @@ impl Worker {
         let utm = Dem::epsg(config.dem.epsg).with_context(|| format!("EPSG:{} is not a UTM zone", config.dem.epsg))?;
         let frame = geo::tm::Frame { utm, origin: (config.dem.cx, config.dem.cy) };
         let dem = Dem::new(config.dem.cache.clone(), config.dem.zoom, frame, config.dem.lift);
-        Ok(Worker { config, db, dem, scenes: Vec::new(), times: [0.0; 7] })
+        Ok(Worker { config, db, dem, scenes: Vec::new(), shores: HashMap::new(), times: [0.0; 9] })
     }
 
     fn scene(&mut self, key: &str) -> Result<usize> {
@@ -287,6 +290,7 @@ impl Worker {
         if low > lift + COAST_LOW {
             return Ok(Ok(())); // no sea in reach of this cell's DEM
         }
+        let start = std::time::Instant::now();
         let reach = COAST_BAND + 50.0;
         let wide = [rect[0] - reach, rect[1] - reach, rect[2] + reach, rect[3] + reach];
         // _coastlines: the coastline ways of every tile over the window, once each, by way id
@@ -296,10 +300,17 @@ impl Worker {
             if !self.config.scenes.join(format!("{key}.scene")).is_file() {
                 return Ok(Err(COAST_SCENES));
             }
-            let at = self.scene(key)?;
-            for r in &self.scenes[at].1.records {
-                if r.kind == "coastline" && !ways.iter().any(|(f, _)| *f == r.fid) {
-                    ways.push((r.fid, r.geom.clone_geom()?));
+            if !self.shores.contains_key(key) {
+                // a coast tile need not be a scenery tile: keep its coastlines, not its scene
+                let shore = match self.scenes.iter().find(|(k, _)| k == key) {
+                    Some((_, scene)) => coastlines(scene)?,
+                    None => scene::read_kind(&self.config.scenes.join(format!("{key}.scene")), "coastline")?,
+                };
+                self.shores.insert(key.clone(), shore);
+            }
+            for (fid, line) in &self.shores[key] {
+                if !ways.iter().any(|(f, _)| f == fid) {
+                    ways.push((*fid, line.clone_geom()?));
                 }
             }
         }
@@ -324,6 +335,8 @@ impl Worker {
         if lines.is_empty() {
             bail!("need at least one array to stack"); // np.stack([]) in Python
         }
+        let middle = std::time::Instant::now();
+        self.times[7] += (middle - start).as_secs_f64();
         let mut pts = Vec::with_capacity(xs.len() * ys.len());
         for y in ys {
             for x in xs {
@@ -367,6 +380,7 @@ impl Worker {
                 heights[n] = heights[n].max(lift + 0.6);
             }
         }
+        self.times[8] += middle.elapsed().as_secs_f64();
         Ok(Ok(()))
     }
 
@@ -408,7 +422,7 @@ impl Worker {
             points: Vec::new(),
         };
         let mut clock = std::time::Instant::now();
-        let mut lap = |times: &mut [f64; 7], k: usize| {
+        let mut lap = |times: &mut [f64; 9], k: usize| {
             let now = std::time::Instant::now();
             times[k] += (now - clock).as_secs_f64();
             clock = now;
@@ -571,18 +585,24 @@ impl Worker {
             return Ok(Err(why));
         }
         if !tidal.is_empty() {
+            let start = std::time::Instant::now();
             let refs: Vec<&Geom> = tidal.iter().collect();
             let waters = geos::union_all(&refs)?;
             let inside = geos::Prepared::new(&waters)?;
-            let mut k = 0;
-            for y in &ys {
-                for x in &xs {
-                    if inside.contains_xy(*x, *y)? {
+            // only the lattice within the waters' envelope can be inside them
+            let [x0, y0, x1, y1] = waters.bounds()?;
+            for (r, y) in ys.iter().enumerate() {
+                if !(*y >= y0 && *y <= y1) {
+                    continue;
+                }
+                for (c, x) in xs.iter().enumerate() {
+                    if *x >= x0 && *x <= x1 && inside.contains_xy(*x, *y)? {
+                        let k = r * xs.len() + c;
                         heights[k] = heights[k].min(lift - HARBOUR_FLOOR);
                     }
-                    k += 1;
                 }
             }
+            self.times[8] += start.elapsed().as_secs_f64();
         }
         cell.terrain = Terrain { nx: xs.len(), ny: ys.len(), heights };
         let roads = cell.roads.len();
@@ -593,12 +613,23 @@ impl Worker {
     }
 }
 
+/// A scene's coastline records, (fid, line) in record order.
+fn coastlines(scene: &Scene) -> Result<Vec<(i64, Geom)>> {
+    let mut out = Vec::new();
+    for r in &scene.records {
+        if r.kind == "coastline" {
+            out.push((r.fid, r.geom.clone_geom()?));
+        }
+    }
+    Ok(out)
+}
+
 /// Compile cells (in order) with one worker; results by cell.
 pub fn run(config: Config, cells: &[CellTask]) -> Result<Vec<Outcome>> {
     let mut worker = Worker::new(config)?;
     let out = cells.iter().map(|c| worker.compile(c)).collect();
     if std::env::var_os("EARTHNG_CELLS_PROFILE").is_some() {
-        let names = ["query", "scene files", "scenery", "DEM", "partition", "grid", "encode"];
+        let names = ["query", "scene files", "scenery", "DEM", "partition", "grid", "encode", " coast lines", " coast, harbours"];
         for (name, t) in names.iter().zip(worker.times) {
             eprintln!("  {name:12} {t:6.2} s");
         }
