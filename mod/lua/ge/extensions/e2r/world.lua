@@ -144,7 +144,8 @@ local frameTimer = hptimer()
 local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128,
   forestStep = 0.12, forestKind = 1.5, forestMax = 2500, propMax = 600,
   collisionWant = 200, collisionLead = 6, collisionMargin = 200, vehicleCollision = {100, 300},
-  roadAhead = 15, roadUrgent = 8, roadFloorMs = 2.5}
+  sceneCollisionWait = 6,
+  roadAhead = 15, roadUrgent = 8, roadFloorMs = 2.5, tilesMs = 3, graveMs = 1.5, sortEvery = 0.25}
 -- Read-only view for the development probe (earthng/probe.py); nothing in the mod calls it.
 function M.dbg() return {S = S, result = result, native = native, detail = detailStream, test = test} end
 
@@ -465,7 +466,11 @@ local function spawnForestItem(it, tile)
   local kind = forestFor(tile) and plantDataFor(key)
   if not kind then return false end
   local adds = forestQueue(key).adds
-  M.fifo.push(adds, {it, tile, tile.forestGen or 0})
+  -- the commit needs the transform only: an entry used to hold the manifest item (its pos and rot
+  -- tables and name), ~770 bytes a crown kept until the commit once the layer was released,
+  -- ~130 now. Same numbers, same yaw (yawOf), so the same crowns.
+  local pos = it.pos
+  M.fifo.push(adds, {pos[1], pos[2], pos[3], yawOf(it.rot), it.scale or 1, tile, tile.forestGen or 0, it.shape == LAMP_SHAPE})
   return true
 end
 
@@ -548,17 +553,22 @@ local function forestCommit()
   local m, euler, at = MatrixF(true), vec3(0, 0, 0), vec3(0, 0, 0)
   for index = 1, count do
     local entry = M.fifo.pop(adds)
-    local it, tile = entry[1], entry[2]
-    if kind and not tile.dropped and not tile.vegetationDropped and (tile.forestGen or 0) == entry[3] then
-      euler.z = yawOf(it.rot)
+    if type(entry[1]) == 'table' then
+      -- {item, tile, generation}: the layout before the transform-only entries (also what the unit tests push)
+      local it = entry[1]
+      entry = {it.pos[1], it.pos[2], it.pos[3], yawOf(it.rot), it.scale or 1, entry[2], entry[3], it.shape == LAMP_SHAPE}
+    end
+    local tile = entry[6]
+    if kind and not tile.dropped and not tile.vegetationDropped and (tile.forestGen or 0) == entry[7] then
+      euler.z = entry[4]
       m:setFromEuler(euler)
-      at.x, at.y, at.z = it.pos[1], it.pos[2], it.pos[3]
+      at.x, at.y, at.z = entry[1], entry[2], entry[3]
       m:setPosition(at)
-      local ok, item = pcall(data.createNewItem, data, kind, m, it.scale or 1)
+      local ok, item = pcall(data.createNewItem, data, kind, m, entry[5])
       if ok and item then
         tile.forestId = sharedForestId
         added = added + 1
-        if it.shape == LAMP_SHAPE then
+        if entry[8] then
           S.lamps = S.lamps or {}
           S.lamps[string.format('%d_%d', math.floor(at.x), math.floor(at.y))] = {at.x, at.y, at.z}
         end
@@ -630,7 +640,14 @@ local function spawnItem(it, group, pause, tile, layer)
     obj:setPosition(vec3(it.pos[1], it.pos[2], it.pos[3]))
     if NATIVE and tile then
       S.coll = S.coll or collision.new()
-      S.coll:track(tile, obj:getID(), not (tile.far or tile.horizon) and collision.quiet(meshes, layer))
+      local quiet = not (tile.far or tile.horizon) and collision.quiet(meshes, layer)
+      S.coll:track(tile, obj:getID(), quiet, it.triangles)
+      -- only a scene piece with something solid asks for a rebuild: roofs, windows, doors and
+      -- ground covers (collision.QUIET) are left out of it anyway
+      if layer == 'scene' and not quiet and not tile.dropped then
+        S.collisionDirty = true
+        if not tile.sceneDirty then tile.sceneDirty, tile.sceneDirtyAt = true, S.now end
+      end
     end
     local ms = t:stop()
     if ms > (result.createMeshMs or 0) then result.createMeshMs, result.createMeshItem = ms, it.name end
@@ -702,6 +719,7 @@ end
 -- Grass/rocks are indexed once and do not block delivery of a scene's meshes.
 local function queueItems(items, tile, key, layer)
   local count, batch = 0, nil
+  S.queueDirty = true
   for _, it in ipairs(items) do
     if not getDetailStream():add(tile, it) then
       if it.kind ~= 'proc' and (it.prop or vegetationShape(it.shape)) then
@@ -753,11 +771,13 @@ local function buryGroup(name)
   table.insert(S.graves, g)
 end
 
+-- A near tile's road group (ProceduralMesh with their buffers) goes here too, so the count has a
+-- time cap: LIMIT.graveMs, read after every delete.
 local function digGraves()
   local graves = S.graves
   if not graves or #graves == 0 then return end
-  local left = GRAVE_PER_FRAME
-  while left > 0 and #graves > 0 do
+  local left, timer = GRAVE_PER_FRAME, hptimer()
+  while left > 0 and #graves > 0 and timer:stop() < LIMIT.graveMs do
     local g = graves[1]
     local n = g:getCount()
     if n == 0 then
@@ -768,6 +788,7 @@ local function digGraves()
         local o = g:getObject(g:getCount() - 1)
         if o then o:delete() end
         left = left - 1
+        if timer:stop() >= LIMIT.graveMs then break end
       end
     end
   end
@@ -964,6 +985,11 @@ loadNewMaterials = function(path, stock)
     end
   end
   if not path then return end
+  -- Natively every manifest names the same planet materials.json (native.lua): ~150 definitions,
+  -- 82 kB of JSON read and decoded again at each tile, scene, far and horizon start, up to four
+  -- in one updateTiles. Once it is loaded it has nothing new, so its path is remembered with the
+  -- names (a path starts with '/', a material name never does; reset with S.knownMats).
+  if NATIVE and S.knownMats[path] then return end
   local ok, defs = pcall(jsonReadFile, path)
   if not ok or type(defs) ~= 'table' then return end
   local fresh, n = {}, 0
@@ -974,6 +1000,7 @@ loadNewMaterials = function(path, stock)
       n = n + 1
     end
   end
+  if NATIVE then S.knownMats[path] = true end
   if n == 0 then return end
   S.matSeq = (S.matSeq or 0) + 1
   local tmp = string.format('e2r_world/materials_%d.json', S.matSeq)
@@ -1055,6 +1082,7 @@ local function startTile(key, i, j)
   if manifest.nav then table.insert(S.navPending, {key = key, path = manifest.nav}) end
   if manifest.navSegments then table.insert(S.navPending, {key = key, data = {segments = manifest.navSegments}}) end
   for _, it in ipairs(manifest.items) do table.insert(S.queue, {tile = tile, key = key, item = it}) end
+  S.queueDirty = true
   if #manifest.items == 0 then tile.state = 'loaded'; tile.roadComplete = true end
 end
 
@@ -1273,6 +1301,17 @@ local function updateTiles()
   local p, v = focus()
   if not p then return end
   local fast = st.generator ~= nil
+  -- `tiles` still reached 55-85 ms in single frames while driving. One frame could do every unload
+  -- due (each a Forest scan and the delete of a road group), a road start, a scene start, a far
+  -- start and a horizon start, each with its manifest and materials. Now a step after the first runs only while
+  -- the frame has spent less than LIMIT.tilesMs here; the rest waits for the next frame, in the
+  -- same order (roads before scenes, near before far). A road due within LIMIT.roadUrgent s
+  -- always starts. The landing and the stills (test.genBudget) keep the old pace.
+  local budget, steps = hptimer(), 0
+  local function room()
+    if S.state ~= 'driving' or (test and test.genBudget) then return true end
+    return steps == 0 or budget:stop() < LIMIT.tilesMs
+  end
   local loadR = fast and (st.loadRadius or 1000) or LOAD_R
   -- the descent needs every tile within 500 m of the spawn (tick): a corner tile's centre is up to
   -- ~1060 m away, beyond the 1 km radius, and was never loaded (native-hops-02, landing hung)
@@ -1300,9 +1339,13 @@ local function updateTiles()
     -- A free camera far from the car owns the bubble; the tiles under the parked car used to
     -- unload with the rest and it fell through the world (night-fence-02, z 179 -> 0.2).
     local held = (S.heldCar and (cx - S.heldCar[1]) ^ 2 + (cy - S.heldCar[2]) ^ 2 <= 600 * 600) or dueNear(key)
-    if not held and (d > unloadR or behind(cx, cy, d)) then
+    if not held and (d > unloadR or behind(cx, cy, d)) and room() then
+      steps = steps + 1
       retireForest(tile)
-      dropGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
+      -- the road group goes to the graves too (digGraves, a few ms a frame): deleting a city
+      -- tile's road meshes at once was part of the long frame. collision.lua leaves a dropped
+      -- tile's meshes out of the next rebuild, and the tile is past unloadR or well behind the car.
+      buryGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
       S.tiles[key] = nil
       S.navDirty = true
       if NATIVE then native.unload(key) end
@@ -1335,10 +1378,13 @@ local function updateTiles()
     end
   end
   local soon = best and dueNear(best[1])
-  if best and (#S.queue < 400 or (soon and soon < LIMIT.roadAhead)) then startTile(best[1], best[2], best[3]) end
+  if best and (#S.queue < 400 or (soon and soon < LIMIT.roadAhead)) and (room() or (soon and soon < LIMIT.roadUrgent)) then
+    steps = steps + 1
+    startTile(best[1], best[2], best[3])
+  end
   -- the nearest scene (look-ahead point too) whose road is in: it used to wait for every road tile
   -- in loadR and then took any one, so buildings next to the car came after roads 1 km away
-  if fast and #S.queue < 300 and st.scenes then
+  if fast and #S.queue < 300 and st.scenes and room() then
     local bestS, bestSD
     for key, tile in pairs(S.tiles) do
       if tile.roadComplete and not tile.sceneStarted and st.scenes[key] then
@@ -1347,7 +1393,7 @@ local function updateTiles()
         if not bestSD or d < bestSD then bestS, bestSD = {key, tile}, d end
       end
     end
-    if bestS and (not best or bestSD < bestD) then startScene(bestS[1], bestS[2]) end
+    if bestS and (not best or bestSD < bestD) then steps = steps + 1; startScene(bestS[1], bestS[2]) end
   end
   if fast then
     -- the far city (earthng/fast_far.py): a tile without its own scene, within farRadius, gets
@@ -1366,7 +1412,12 @@ local function updateTiles()
       -- forest as soon as the near scene starts; its ground mesh stays until the
       -- near ground has replaced it.
       if near and near.sceneStarted then retireForest(far); far.vegetationDropped = true end
-      if d > farR + 500 or (near and near.sceneComplete) then
+      -- The far ground and roads used to stay until the near scene finished too: with the near ground
+      -- (in the road layer) already in, two ground levels showed for the whole spawn (in testing,
+      -- offline: far ground > 5 cm over near in 25 % of cells). The far tile goes once
+      -- the near roads and ground are in and its scene has started.
+      if (d > farR + 500 or (near and (near.sceneComplete or (near.roadComplete and near.sceneStarted)))) and room() then
+        steps = steps + 1
         retireForest(far)
         buryGroup('E2RF_' .. key)
         far.dropped = true
@@ -1376,14 +1427,15 @@ local function updateTiles()
     end
     for key, token in pairs(st.far or {}) do
       local spawned = S.far[key]
-      if spawned and type(token) == 'number' and spawned.serial ~= token then
+      if spawned and type(token) == 'number' and spawned.serial ~= token and room() then
+        steps = steps + 1
         retireForest(spawned)
         buryGroup('E2RF_' .. key)
         spawned.dropped = true
         S.far[key] = nil
       end
     end
-    if #S.queue < 60 then
+    if #S.queue < 60 and room() then
       local bestF, bestFD
       for key in pairs(st.far or {}) do
         local near = S.tiles[key]
@@ -1401,6 +1453,7 @@ local function updateTiles()
         if NATIVE then ok, manifest = true, native.manifest(key, 'far')
         else ok, manifest = pcall(jsonReadFile, tilePath(key, 'far')) end
         if ok and type(manifest) == 'table' and manifest.source == S.stream.region then
+          steps = steps + 1
           loadNewMaterials(manifest.materials, manifest.stockMaterials)
           local far = {i = i, j = j, left = #manifest.items, group = tileGroup('E2RF_' .. key, true), far = true,
             serial = type(st.far[key]) == 'number' and st.far[key] or 1}
@@ -1429,17 +1482,33 @@ local function updateTiles()
         local info = st.horizon and st.horizon[key]
         local cx = info and info.x or spawned.x or p.x
         local cy = info and info.y or spawned.y or p.y
-        if not info or math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) > horizonR + 800 then
+        local gone = not info or math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) > horizonR + 800
+        -- A block the wanted set has left (split into 500 m quads and far tiles as the car nears,
+        -- merged back as it leaves) goes once everything wanted on its ground is in: dropped at
+        -- once it left a hole, kept until the native cache evicted it it was a second ground level.
+        local cover = not gone and NATIVE and native.horizonCover(key)
+        if cover and #cover > 0 then
+          gone = true
+          for n = 1, #cover do
+            local k = cover[n][1]
+            local h, near, far = S.horizon[k], S.tiles[k], S.far[k]
+            if cover[n][2] then gone = h ~= nil and h.left == 0
+            else gone = (near ~= nil and near.roadComplete == true) or (far ~= nil and far.left == 0) end
+            if not gone then break end
+          end
+        end
+        if gone then
           buryGroup(spawned.groupName or ('E2RH_' .. key:gsub('[^%w_]', '_')))
           spawned.dropped = true
           S.horizon[key] = nil
           if NATIVE then native.unload(key, 'horizon') end
         end
       end
-      if #S.queue < 40 then
+      if #S.queue < 40 and room() then
         local bestH, bestHD
         for key, info in pairs(st.horizon or {}) do
-          if not S.horizon[key] and type(info) == 'table' and info.x and info.y then
+          -- a block the wanted set has left is not spawned (its cover above would drop it again)
+          if not S.horizon[key] and type(info) == 'table' and info.x and info.y and not native.horizonCover(key) then
             local d = math.sqrt((info.x - p.x) ^ 2 + (info.y - p.y) ^ 2)
             if d <= horizonR + 250 and (not bestHD or d < bestHD) then bestH, bestHD = key, d end
           end
@@ -1448,6 +1517,7 @@ local function updateTiles()
           local info = st.horizon[bestH]
           local manifest = native.manifest(bestH, 'horizon')
           if type(manifest) == 'table' and manifest.source == S.stream.region then
+            steps = steps + 1
             loadNewMaterials(manifest.materials, manifest.stockMaterials)
             local groupName = 'E2RH_' .. bestH:gsub('[^%w_]', '_')
             local horizon = {left = #manifest.items, group = tileGroup(groupName, true), horizon = true,
@@ -1458,6 +1528,7 @@ local function updateTiles()
               for _, it in ipairs(manifest.items) do
                 table.insert(S.queue, {tile = horizon, key = bestH, item = it, horizon = true})
               end
+              S.queueDirty = true
             end
           end
         end
@@ -1472,6 +1543,10 @@ local function updateTiles()
     -- Among meshes, roads and scenes go by the car's arrival (wanted, s), a
     -- scene SCENE_LAG s after its road: the buildings by the car come before
     -- the roads of a tile a kilometre ahead.
+    -- Sorting the whole queue every frame cost ~1.6 ms at 1000 jobs and ~5 ms at 3000 (LuaJIT
+    -- offline): now when jobs were added, and every LIMIT.sortEvery s for the car's new arrivals.
+    if not S.queueDirty and S.now - (S.queueSortAt or -1) < LIMIT.sortEvery then return end
+    S.queueDirty, S.queueSortAt = false, S.now
     local wanted = st.wanted or {}
     local function rank(job) return job.horizon and 2 or (job.far and 1 or 0) end
     local function due(job) return (wanted[job.key] or 1e6) + (job.scene and SCENE_LAG or 0) end
@@ -1571,7 +1646,11 @@ local function stepQueue()
         table.sort(sorted)
         S.deliveryP99 = sorted[math.ceil(#sorted * .99)]
       end
-      if S.job.scene and not tile.dropped and not S.job.item.decor then S.collisionDirty = true; tile.sceneDirty = true end
+      -- (natively a mesh piece marks itself in spawnItem, and only when it is solid)
+      if S.job.scene and not tile.dropped and not S.job.item.decor and not (NATIVE and S.job.item.kind == 'proc') then
+        S.collisionDirty = true
+        if not tile.sceneDirty then tile.sceneDirty, tile.sceneDirtyAt = true, S.now end
+      end
     end
   until over()
 end
@@ -1601,16 +1680,30 @@ local function collisionPoints(p, v)
   local want = math.min(1600, math.max(LIMIT.collisionWant, speed * LIMIT.collisionLead + 100))
   -- the descent waits for collision on every tile within 500 m of the spawn (tick)
   if S.state ~= 'driving' then want = math.max(want, 750) end
-  points[1] = {p.x, p.y, want, want + LIMIT.collisionMargin}
+  -- Driving, the margin that spaces the rebuilds out (a tile kept until the car is `margin` past
+  -- the trigger) lies ahead only: a second circle of `want`, `margin` m along the heading, that
+  -- keeps but never asks (want -1). Behind and beside the car a rebuild kept want + margin, about
+  -- 8 tiles of 500 m in all, though the car leaves them; now ~5. A tile left out there asks again
+  -- once it is within `want` (>= 200 m), and the next rebuild is at most COLLISION_EVERY (2 s)
+  -- away, in which the car covers well under `want` (300 km/h: 166 of 600 m).
+  local margin = LIMIT.collisionMargin
+  if S.state == 'driving' and speed >= 5 then
+    points[1] = {p.x, p.y, want, want}
+    points[2] = {p.x + v.x / speed * margin, p.y + v.y / speed * margin, -1, want}
+  else
+    points[1] = {p.x, p.y, want, want + margin}
+  end
   local vw, vk = LIMIT.vehicleCollision[1], LIMIT.vehicleCollision[2]
-  if S.heldCar then points[2] = {S.heldCar[1], S.heldCar[2], vw, vk} end
+  if S.heldCar then points[#points + 1] = {S.heldCar[1], S.heldCar[2], vw, vk} end
   pcall(function()
     for k = 0, be:getObjectCount() - 1 do
       -- a car the parking pool has hidden needs no ground where it was left
       local obj = be:getObject(k)
       if obj:getActive() then
         local q = obj:getPosition()
-        points[#points + 1] = {q.x, q.y, vw, vk}
+        -- the car the camera follows is points[1] already; its 300 m circle kept more than
+        -- `want` behind it at town speeds
+        if (q.x - p.x) ^ 2 + (q.y - p.y) ^ 2 > 25 then points[#points + 1] = {q.x, q.y, vw, vk} end
       end
     end
   end)
@@ -1628,36 +1721,59 @@ local function updateCollision()
   if S.state ~= 'driving' then radius = math.max(radius, 500 * math.sqrt(2) + S.stream.tile * 0.71) end
   local size = S.stream and S.stream.tile or 500
   local points = NATIVE and collisionPoints(p, v) or {}
-  local near = S.removedCollision or false
+  -- near: why this rebuild runs (result.collisionWhy)
+  local near = S.removedCollision and 'removed' or false
   for _, tile in pairs(S.tiles) do
     local empty = tile.manifest.empty or itemCount(tile.manifest) == 0
     if NATIVE then
-      if (tile.state == 'loaded' and not tile.collided and not empty) or (tile.sceneDirty and fast) then
-        if #points == 0 or collision.within(tile, points, size, 3) then near = true; break end
+      -- A streaming scene asked for a rebuild every COLLISION_EVERY s while it came in, and each
+      -- one rebuilt every tile within reach (worst frame 142 ms, 1-3 s bursts in a dense town). Its
+      -- walls now wait until the scene is complete or for LIMIT.sceneCollisionWait s, whichever
+      -- comes first; a road rebuild in between takes them too. Roads and ground do not wait.
+      -- (6 s is not measured: at 50 km/h a wall is passable for at most ~110 m, 6 + 2 s.)
+      local road = tile.state == 'loaded' and not tile.collided and not empty
+      local scene = fast and tile.sceneDirty
+        and (tile.sceneComplete or S.now - (tile.sceneDirtyAt or 0) >= LIMIT.sceneCollisionWait)
+      if (road or scene) and (#points == 0 or collision.within(tile, points, size, 3)) then
+        near = road and 'road' or 'scene'; break
       end
     else
       if tile.state == 'loaded' and not tile.collided and not empty then
         local cx, cy = tileCentre(tile.i, tile.j)
-        if not p or math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) <= radius then near = true; break end
+        if not p or math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) <= radius then near = 'road'; break end
       end
       -- buildings/ground next to the car get theirs soon; far scenery waits for a road rebuild
       if fast and tile.sceneDirty and p then
         local cx, cy = tileCentre(tile.i, tile.j)
-        if math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) <= 400 then near = true; break end
+        if math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) <= 400 then near = 'scene'; break end
       end
     end
   end
   if not near then return end
+  result.collisionWhy = result.collisionWhy or {}
+  result.collisionWhy[near] = (result.collisionWhy[near] or 0) + 1
   local timer = hptimer()
   if NATIVE then
+    -- the far ground under near roads and ground stays out (collision.solid)
+    local covered = 0
+    for key, far in pairs(S.far) do
+      local tile = S.tiles[key]
+      far.covered = (tile and tile.roadComplete and not tile.failed and tile.solidIds ~= nil) or nil
+      if far.covered then covered = covered + 1 end
+    end
     S.coll = S.coll or collision.new()
     S.coll:rebuild(points, size, function(id) return scenetree.findObjectById(id) end,
       function() be:reloadCollision() end)
-    result.collisionHidden = S.coll.lastHidden
+    result.collisionHidden, result.collisionSolid, result.collisionCovered = S.coll.lastHidden, S.coll.lastSolid, covered
+    -- what the engine rebuilt (the ms follow it); reloadCollisionMaxTris below is the slowest one's
+    result.collisionTris, result.collisionObjects = S.coll.lastTris, S.coll.lastObjects
   else
     be:reloadCollision()
   end
   local ms = timer:stop()
+  if NATIVE and ms > (result.reloadCollisionMs or 0) then
+    result.reloadCollisionMaxTris, result.reloadCollisionMaxObjects = S.coll.lastTris, S.coll.lastObjects
+  end
   result.reloadCollisionMs = math.max(result.reloadCollisionMs or 0, ms)
   result.collisionReloads = (result.collisionReloads or 0) + 1
   result.collisionMsSum = (result.collisionMsSum or 0) + ms
@@ -1667,7 +1783,7 @@ local function updateCollision()
       tile.collided = not NATIVE or collision.solid(tile, points, size)
       left = left or not tile.collided
     end
-    tile.sceneDirty = false
+    tile.sceneDirty, tile.sceneDirtyAt = false, nil
   end
   -- natively the tiles left out keep the check running as the car moves
   S.collisionDirty, S.collisionAt = NATIVE and left, S.now

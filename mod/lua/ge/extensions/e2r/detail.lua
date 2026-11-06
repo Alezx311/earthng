@@ -22,19 +22,39 @@ end
 -- Expand only a live cell, never every blade of every loaded 500 m tile. Nine short tufts
 -- fill each square on a 2/3 m grid, so neighbouring squares meet. The descriptor's n already
 -- counts those nine, so selection enforces the actual TSStatic budget.
+-- A part keeps its patches in one flat array (part.flat): per patch x, y, the shapes, spans and
+-- bottoms of its tile's carpet, the sample count, then the samples (slot, z, gx, gy each).
+-- A table per patch, its samples table and six empty static arrays per 8 m part were ~2 kB a
+-- cell and most of a town tile's 5.9 MB here (earthng/detail_test.py).
+M.PATCH = 6
 function M.expand(part, pause)
-  if not part.patches or #part.patches == 0 then return part end
+  local flat = part.flat
+  if not flat and part.patches and #part.patches > 0 then
+    -- a part with a table per patch (the layout before part.flat): the same carpet
+    flat = {}
+    for _, patch in ipairs(part.patches) do
+      local at = #flat
+      flat[at + 1], flat[at + 2], flat[at + 3], flat[at + 4], flat[at + 5] = patch.x, patch.y, patch.shapes, patch.spans, patch.bottoms
+      flat[at + 6] = #patch.samples / 4
+      for k = 1, #patch.samples do flat[at + M.PATCH + k] = patch.samples[k] end
+    end
+  end
+  if not flat then return part end
   local out = {tile = part.tile, n = 0, x = {}, y = {}, z = {}, yaw = {}, scale = {}, shape = {}}
   local function put(x,y,z,yaw,scale,shape)
     local n = out.n + 1; out.n = n
     out.x[n],out.y[n],out.z[n],out.yaw[n],out.scale[n],out.shape[n] = x,y,z,yaw,scale,shape
   end
   for k = 1, part.staticN do put(part.x[k],part.y[k],part.z[k],part.yaw[k],part.scale[k],part.shape[k]) end
-  for _, patch in ipairs(part.patches) do
-    for k = 1, #patch.samples, 4 do
-      local slot, z, gx, gy = patch.samples[k], patch.samples[k+1], patch.samples[k+2], patch.samples[k+3]
-      local x = patch.x + (slot % 4) * 2 + 1
-      local y = patch.y + math.floor(slot / 4) * 2 + 1
+  local at = 1
+  while at <= #flat do
+    local px, py, shapes, spans, bottoms, count = flat[at], flat[at + 1], flat[at + 2], flat[at + 3], flat[at + 4], flat[at + 5]
+    local first = at + M.PATCH
+    at = first + count * 4
+    for k = first, at - 1, 4 do
+      local slot, z, gx, gy = flat[k], flat[k+1], flat[k+2], flat[k+3]
+      local x = px + (slot % 4) * 2 + 1
+      local y = py + math.floor(slot / 4) * 2 + 1
       for iy = -1, 1 do for ix = -1, 1 do
         -- Lua 5.1 leaves a negative remainder; a cell west or south of the origin is negative.
         local h = math.floor(x) * 73856093 + math.floor(y) * 19349663 + (ix + 2) * 83492791 + (iy + 2) * 2654435761
@@ -44,9 +64,9 @@ function M.expand(part, pause)
         local dy = iy * (2 / 3) + ((math.floor(h / 101) % 101) / 100 - .5) * .12
         local model = h % 3 + 1
         local height = .32 + (math.floor(h / 10201) % 101) / 100 * .18
-        local scale = height / patch.spans[model]
-        put(x + dx, y + dy, z + gx * dx + gy * dy - patch.bottoms[model] * scale,
-          h % 6283 / 1000, scale, patch.shapes[model])
+        local scale = height / spans[model]
+        put(x + dx, y + dy, z + gx * dx + gy * dy - bottoms[model] * scale,
+          h % 6283 / 1000, scale, shapes[model])
       end end
     end
     if pause then pause() end
@@ -81,21 +101,27 @@ function M.new(create, destroy)
     local part = cell.parts[tile]
     if not part then
       self.serial = self.serial + 1
-      part = {tile = tile, serial = self.serial, n = 0, staticN = 0, zSum = 0, patches = {}, x = {}, y = {}, z = {}, yaw = {}, scale = {}, shape = {}}
+      -- the static arrays and part.flat are made by the first object of their kind
+      part = {tile = tile, serial = self.serial, n = 0, staticN = 0, zSum = 0}
       cell.parts[tile] = part
       tile.detailCells = tile.detailCells or {}
       tile.detailCells[#tile.detailCells + 1] = cell.key
     end
     if it.grassPatch then
-      local patch = it.grassPatch
-      part.patches[#part.patches + 1] = patch
-      local n, zs = #patch.samples / 4 * 9, 0
-      for k = 1, #patch.samples, 4 do zs = zs + patch.samples[k + 1] * 9 end
+      local patch, flat = it.grassPatch, part.flat
+      if not flat then flat = {}; part.flat = flat end
+      local samples, at = patch.samples, #flat
+      flat[at + 1], flat[at + 2], flat[at + 3] = patch.x, patch.y, patch.shapes
+      flat[at + 4], flat[at + 5], flat[at + 6] = patch.spans, patch.bottoms, #samples / 4
+      for k = 1, #samples do flat[at + M.PATCH + k] = samples[k] end
+      local n, zs = #samples / 4 * 9, 0
+      for k = 1, #samples, 4 do zs = zs + samples[k + 1] * 9 end
       part.n, part.zSum = part.n + n, part.zSum + zs
       cell.n, cell.rev, cell.zSum = cell.n + n, cell.rev + 1, cell.zSum + zs
       self.revision = self.revision + 1
       return true
     end
+    if not part.x then part.x, part.y, part.z, part.yaw, part.scale, part.shape = {}, {}, {}, {}, {}, {} end
     local n, rot, z = part.staticN + 1, it.rot, it.pos[3] or 0
     part.staticN, part.n, part.zSum = n, part.n + 1, part.zSum + z
     part.x[n], part.y[n], part.z[n] = it.pos[1], it.pos[2], z
