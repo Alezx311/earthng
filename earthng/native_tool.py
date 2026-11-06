@@ -266,11 +266,15 @@ def geos_library():
     return None
 
 
+# compile's reason for a cell by the sea whose coastline tiles are not all read into scenes yet
+COAST_SCENES = 'coast scenes'
+
+
 def compile_cells(config, cells):
     """build_country.compile_cell + country_format.encode_cell of cells natively.
 
     config: {'index', 'scenes', 'dem': {cache, zoom, epsg, cx, cy, lift}, 'step', 'include'};
-    cells: [(i, j, [(x0, y0, x1, y1, tile key), ...] scenery leaves)]. Returns
+    cells: [(i, j, [(x0, y0, x1, y1, tile key), ...] scenery leaves[, coastline tile keys])]. Returns
     {(i, j): (payload bytes, road count)} of the cells done and {(i, j): reason} of those
     left to Python, or None without the native tool or shapely's GEOS."""
     import json
@@ -280,8 +284,9 @@ def compile_cells(config, cells):
     exe, geos = tool(), geos_library()
     if exe is None or geos is None:
         return None
-    task = dict(config, geos=str(geos), cells=[{'i': i, 'j': j, 'scenery': [list(leaf) for leaf in leaves]}
-                                               for i, j, leaves in cells])
+    task = dict(config, geos=str(geos), cells=[{'i': i, 'j': j, 'scenery': [list(leaf) for leaf in leaves],
+                                                'coast': list(coast[0]) if coast else []}
+                                               for i, j, leaves, *coast in cells])
     with tempfile.TemporaryDirectory(prefix='earthng-cells-') as folder:
         path, out = Path(folder) / 'task.json', Path(folder) / 'cells.bin'
         path.write_text(json.dumps(task), encoding='utf-8')

@@ -20,6 +20,15 @@ pub const GRID: f64 = 25.0;
 pub const SPIKE: f64 = 40.0; // Despiked.SPIKE
 pub const ROAD_LIFT: f64 = 0.12;
 const SCENES: usize = 9;
+const COAST_BAND: f64 = 1500.0; // build_country.COAST_BAND
+const COAST_DRY: f64 = 300.0; // build_country.COAST_DRY
+const HARBOUR_RISE: f64 = 12.0; // build_country.HARBOUR_RISE
+const HARBOUR_FLOOR: f64 = 2.0; // build_country.HARBOUR_FLOOR
+/// the reason a cell goes back when a coastline tile's scene is not read yet (Python reads it
+/// and asks again)
+pub const COAST_SCENES: &str = "coast scenes";
+/// _coast's test for sea in reach: the DEM's lowest grid point within this of the sea plane
+const COAST_LOW: f64 = 60.0;
 
 #[derive(Deserialize, Clone)]
 pub struct DemSpec {
@@ -48,6 +57,9 @@ pub struct CellTask {
     pub i: i64,
     pub j: i64,
     pub scenery: Vec<(f64, f64, f64, f64, String)>,
+    /// the OSM tiles _coastlines reads for the cell (coverage over geo_bbox of the cell + 1550 m)
+    #[serde(default)]
+    pub coast: Vec<String>,
 }
 
 pub enum Outcome {
@@ -267,6 +279,97 @@ impl Worker {
         Ok(())
     }
 
+    /// build_country._coast: the nearest OSM coastline within COAST_BAND decides each grid point;
+    /// on its right the ground sinks under the sea plane, on its left within COAST_DRY it stays above.
+    fn coast(&mut self, task: &CellTask, rect: [f64; 4], xs: &[f64], ys: &[f64], heights: &mut [f64]) -> Result<std::result::Result<(), &'static str>> {
+        let lift = self.config.dem.lift;
+        let low = heights.iter().copied().fold(f64::INFINITY, f64::min);
+        if low > lift + COAST_LOW {
+            return Ok(Ok(())); // no sea in reach of this cell's DEM
+        }
+        let reach = COAST_BAND + 50.0;
+        let wide = [rect[0] - reach, rect[1] - reach, rect[2] + reach, rect[3] + reach];
+        // _coastlines: the coastline ways of every tile over the window, once each, by way id
+        // (a scene line keeps fid -way id and the same nodes, projected by the same PROJ)
+        let mut ways: Vec<(i64, Geom)> = Vec::new();
+        for key in &task.coast {
+            if !self.config.scenes.join(format!("{key}.scene")).is_file() {
+                return Ok(Err(COAST_SCENES));
+            }
+            let at = self.scene(key)?;
+            for r in &self.scenes[at].1.records {
+                if r.kind == "coastline" && !ways.iter().any(|(f, _)| *f == r.fid) {
+                    ways.push((r.fid, r.geom.clone_geom()?));
+                }
+            }
+        }
+        ways.sort_by_key(|(fid, _)| -fid);
+        let mut pieces = Vec::new();
+        for (_, line) in &ways {
+            let clipped = line.clip_by_rect(wide)?;
+            let mut parts = Vec::new();
+            geos::parts(&clipped, LINESTRING, &mut parts);
+            for part in parts {
+                if part.length()? > 0.0 {
+                    pieces.push(part.clone_geom()?);
+                }
+            }
+        }
+        if pieces.is_empty() {
+            return Ok(Ok(()));
+        }
+        let merged = geos::line_merge_directed(&pieces)?;
+        let mut lines = Vec::new();
+        geos::parts(&merged, LINESTRING, &mut lines);
+        if lines.is_empty() {
+            bail!("need at least one array to stack"); // np.stack([]) in Python
+        }
+        let mut pts = Vec::with_capacity(xs.len() * ys.len());
+        for y in ys {
+            for x in xs {
+                pts.push((*x, *y, geos::point(*x, *y)?));
+            }
+        }
+        // distances.argmin(axis=0), distances.min(axis=0)
+        let mut nearest = vec![0usize; pts.len()];
+        let mut distance = vec![0.0f64; pts.len()];
+        for (k, line) in lines.iter().enumerate() {
+            for (n, (_, _, p)) in pts.iter().enumerate() {
+                let d = line.distance(p)?;
+                if k == 0 || d < distance[n] {
+                    distance[n] = d;
+                    nearest[n] = k;
+                }
+            }
+        }
+        let mut side = vec![0.0f64; pts.len()];
+        for (k, line) in lines.iter().enumerate() {
+            let length = line.length()?;
+            for (n, (px, py, p)) in pts.iter().enumerate() {
+                if nearest[n] != k || !(distance[n] <= COAST_BAND) {
+                    continue;
+                }
+                // the side of the coastline's local direction at the nearest point (1 m either way)
+                let along = line.project(p);
+                let (back, ahead) = (along - 1.0, along + 1.0);
+                let back = if back.is_nan() || back > 0.0 { back } else { 0.0 }; // np.maximum(along - 1, 0)
+                let ahead = if ahead.is_nan() || ahead < length { ahead } else { length }; // np.minimum(along + 1, length)
+                let [ax, ay] = line.interpolate(back)?.xy()?;
+                let [bx, by] = line.interpolate(ahead)?.xy()?;
+                let v = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+                side[n] = if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { v }; // np.sign
+            }
+        }
+        for n in 0..pts.len() {
+            if side[n] < 0.0 {
+                heights[n] = heights[n].min(lift - 1.0 - 0.01 * distance[n].min(600.0));
+            } else if side[n] > 0.0 && distance[n] <= COAST_DRY {
+                heights[n] = heights[n].max(lift + 0.6);
+            }
+        }
+        Ok(Ok(()))
+    }
+
     pub fn compile(&mut self, task: &CellTask) -> Outcome {
         match self.compile_cell(task) {
             Ok(Ok(done)) => done,
@@ -280,6 +383,21 @@ impl Worker {
         let rect = [task.i as f64 * CELL, task.j as f64 * CELL, (task.i + 1) as f64 * CELL, (task.j + 1) as f64 * CELL];
         let padded = [rect[0] - HALO, rect[1] - HALO, rect[2] + HALO, rect[3] + HALO];
         let include = self.config.include.clone();
+        // terrain: Despiked.grid of the cell's lattice, read first: a cell by the sea whose coastline
+        // tiles are not in scenes yet goes back before any other work
+        let step = self.config.step;
+        let xs = arange(rect[0], rect[2] + step, step);
+        let ys = arange(rect[1], rect[3] + step, step);
+        let mut heights = vec![0.0; xs.len() * ys.len()];
+        self.dem.grid(&xs, &ys, GRID, SPIKE, &mut heights).map_err(|e| anyhow!(e.message()))?;
+        if !heights.iter().all(|h| h.is_finite()) {
+            bail!("non-finite terrain grid");
+        }
+        if heights.iter().copied().fold(f64::INFINITY, f64::min) <= self.config.dem.lift + COAST_LOW
+            && task.coast.iter().any(|key| !self.config.scenes.join(format!("{key}.scene")).is_file())
+        {
+            return Ok(Err(COAST_SCENES));
+        }
         let mut cell = Cell {
             terrain: Terrain { nx: 0, ny: 0, heights: Vec::new() },
             roads: Vec::new(),
@@ -340,6 +458,7 @@ impl Worker {
         lap(&mut self.times, 0);
         let padded_box = geos::rectangle(padded)?;
         let mut point_index = Vec::new();
+        let mut harbours: Vec<Geom> = Vec::new();
         for (x0, y0, x1, y1, key) in &task.scenery {
             lap(&mut self.times, 2);
             let at = self.scene(key)?;
@@ -353,7 +472,7 @@ impl Worker {
                 seen.insert((record.kind.clone(), record.fid));
                 let tags = &record.tags;
                 if kind == "water" && tags.iter().find(|(k, _)| k == "water").is_some_and(|(_, v)| v == "harbour") {
-                    return Ok(Err("a water=harbour (_at_sea_level, _flood)"));
+                    harbours.push(record.geom.clone_geom()?); // _at_sea_level decides below
                 }
                 let clipped;
                 let geometry: &Geom = if kind != "building" && kind != "power" && !padded_box.contains(&record.geom)? {
@@ -437,19 +556,33 @@ impl Worker {
         cell.areas.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));
         cell.lines.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));
         cell.points.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));
-        // terrain: Despiked.grid of the cell's lattice
-        let step = self.config.step;
-        let xs = arange(rect[0], rect[2] + step, step);
-        let ys = arange(rect[1], rect[3] + step, step);
-        let mut heights = vec![0.0; xs.len() * ys.len()];
-        self.dem.grid(&xs, &ys, GRID, SPIKE, &mut heights).map_err(|e| anyhow!(e.message()))?;
-        if !heights.iter().all(|h| h.is_finite()) {
-            bail!("non-finite terrain grid");
+        // _flood(xs, ys, _coast(...), tidal), tidal: the harbours _at_sea_level
+        let lift = self.config.dem.lift;
+        let mut tidal = Vec::new();
+        for g in harbours {
+            let at = g.point_on_surface()?.xy()?;
+            let mut z = [0.0];
+            self.dem.despiked(&[at], GRID, SPIKE, &mut z).map_err(|e| anyhow!(e.message()))?;
+            if z[0] <= lift + HARBOUR_RISE {
+                tidal.push(g);
+            }
         }
-        // _coast: a cell whose DEM reaches near the sea may meet a coastline
-        let low = heights.iter().copied().fold(f64::INFINITY, f64::min);
-        if !(low > self.config.dem.lift + 60.0) {
-            return Ok(Err("near sea level (_coast)"));
+        if let Err(why) = self.coast(task, rect, &xs, &ys, &mut heights)? {
+            return Ok(Err(why));
+        }
+        if !tidal.is_empty() {
+            let refs: Vec<&Geom> = tidal.iter().collect();
+            let waters = geos::union_all(&refs)?;
+            let inside = geos::Prepared::new(&waters)?;
+            let mut k = 0;
+            for y in &ys {
+                for x in &xs {
+                    if inside.contains_xy(*x, *y)? {
+                        heights[k] = heights[k].min(lift - HARBOUR_FLOOR);
+                    }
+                    k += 1;
+                }
+            }
         }
         cell.terrain = Terrain { nx: xs.len(), ny: ys.len(), heights };
         let roads = cell.roads.len();

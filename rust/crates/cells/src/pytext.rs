@@ -16,6 +16,23 @@ fn is_word(c: char) -> bool {
         .is_ok()
 }
 
+/// str.isspace()
+pub fn is_space(c: char) -> bool {
+    tables::SPACE.binary_search(&(c as u32)).is_ok()
+}
+
+/// unicodedata.decimal(c, None)
+pub fn decimal(c: char) -> Option<u8> {
+    let c = c as u32;
+    let i = match tables::DECIMAL_ZERO.binary_search(&c) {
+        Ok(i) => i,
+        Err(0) => return None,
+        Err(i) => i - 1,
+    };
+    let d = c - tables::DECIMAL_ZERO[i];
+    (d < 10).then_some(d as u8)
+}
+
 fn fold(c: char, out: &mut String) {
     match tables::FOLD.binary_search_by_key(&(c as u32), |&(k, _)| k) {
         Ok(i) => out.push_str(tables::FOLD[i].1),

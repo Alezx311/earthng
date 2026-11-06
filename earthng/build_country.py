@@ -525,11 +525,21 @@ def _scenery_plan(store, rect, depth=0):
             for leaf in _scenery_plan(store, part, depth + 1)]
 
 
+def _coast_tiles(store, rect):
+    """The OSM tiles _coastlines(store, ...) reads for _coast(store, rect, ...), in their order."""
+    reach = COAST_BAND + 50
+    w, s, e, n = store.frame.geo_bbox([rect[0] - reach, rect[1] - reach, rect[2] + reach, rect[3] + reach])
+    return [key for key, entry in getattr(store, 'source_index', {}).get('tiles', {}).items()
+            if not (entry['coverage'][2] < w or entry['coverage'][0] > e
+                    or entry['coverage'][3] < s or entry['coverage'][1] > n)]
+
+
 def _native_cells(store, cells, include):
     """{(i, j): (payload, roads)} of the cells earthng-mapbuilder compiles (rust/crates/cells:
     compile_cell through shapely's GEOS, the same bytes); {} where it cannot run. It reads the
     scenes from Store.scene_dir, so only a build with shared scenes uses it; the cells it leaves
-    (near the sea, a sea harbour, any error) compile here."""
+    (landcover, any error) compile here. A cell by the sea reads the coastlines of the tiles round
+    it from their scenes: those not read yet are read here and the cell is asked again."""
     import native_tool
     terrain = getattr(store.terrain, 'terrain', None)
     if (getattr(store, 'scene_dir', None) is None or getattr(store, 'landcover', None) is not None
@@ -543,16 +553,26 @@ def _native_cells(store, cells, include):
         leaves = _scenery_plan(store, padded)
         for leaf in leaves:
             store.save_scene(leaf[4])
-        tasks.append((i, j, leaves))
+        tasks.append((i, j, leaves, _coast_tiles(store, [i*CELL, j*CELL, (i+1)*CELL, (j+1)*CELL])))
     config = {'index': str(store.directory / 'sources.sqlite'), 'scenes': str(store.scene_dir),
               'dem': {'cache': str(terrain.cache), 'zoom': terrain.zoom, 'epsg': int(code[5:]),
                       'cx': store.frame.cx, 'cy': store.frame.cy, 'lift': sources.LIFT},
               'step': grid_step(store), 'include': include}
     try:
         found = native_tool.compile_cells(config, tasks)
+        if not found:
+            return {}
+        done, left = found
+        again = [task for task in tasks if left.get((task[0], task[1])) == native_tool.COAST_SCENES]
+        if again:
+            for key in sorted({key for task in again for key in task[3]}):
+                store.save_scene(key)
+            more = native_tool.compile_cells(config, again)
+            if more:
+                done.update(more[0])
     except (OSError, RuntimeError, ValueError):
         return {}
-    return found[0] if found else {}
+    return done
 
 
 def compile_block(store, cells, include=None):

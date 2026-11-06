@@ -284,6 +284,104 @@ class NativeCellsTests(unittest.TestCase):
                 self.assertEqual(build_country._native_cells(store, cells, None), {})
             store.db.close()
 
+    @unittest.skipUnless(native_tool.tool() and native_tool.kernels() and native_tool.geos_library(),
+                         'native tools not built (cargo build --release in rust/) or no shapely GEOS')
+    def test_cells_by_the_sea_are_the_python_bytes(self):
+        """_coast and _flood: a coastline of two ways (Python reads the raw tile, Rust its scene),
+        a harbour at sea level, a building with full-width digits; a cell whose coastline tiles
+        have no scene yet goes back with COAST_SCENES before any other work."""
+        import sqlite3
+        import numpy as np
+        from osmium.osm.mutable import Node, Way
+        from PIL import Image
+        import build_country
+        import country_format
+        import fast_sources
+        frame = fast_sources.Frame.at(30.525, 50.475)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            scale = 256 * 2 ** 12
+            lon, lat = frame.geographic(np.array([-2500., 2500.]), np.array([-2500., 2500.]))
+            xs = ((np.array(lon) + 180) / 360 * scale // 256).astype(int)
+            ys = ((1 - np.arcsinh(np.tan(np.radians(lat))) / np.pi) / 2 * scale // 256).astype(int)
+            for a in range(min(xs) - 1, max(xs) + 2):
+                for b in range(min(ys) - 1, max(ys) + 2):
+                    folder = tmp / 'dem' / 'terrain' / '12' / str(a)
+                    folder.mkdir(parents=True, exist_ok=True)
+                    rgb = np.zeros((256, 256, 3), dtype=np.uint8)
+                    rgb[:, :, 0] = 128                       # 0-11 m: the sea's reach
+                    rgb[:, :, 1] = (np.arange(256)[None, :] // 32 + np.arange(256)[:, None] // 64).astype(np.uint8)
+                    rgb[:, :, 2] = (np.arange(256)[None, :] * 7 % 256).astype(np.uint8)
+                    Image.fromarray(rgb, 'RGB').save(folder / f'{b}.png')
+            nodes, ways, ident = [], [], [100]
+
+            def node(x, y, tags=None):
+                ident[0] += 1
+                lo, la = frame.geographic(np.array([float(x)]), np.array([float(y)]))
+                nodes.append(Node(id=ident[0], location=(float(lo[0]), float(la[0])), tags=tags or {}))
+                return ident[0]
+
+            shared = node(0, -250)
+            ways.append(Way(id=50, nodes=[node(-3000, -300), node(-1200, -420), shared],
+                            tags={'natural': 'coastline'}))
+            ways.append(Way(id=51, nodes=[shared, node(900, -180), node(3000, -350)], tags={'natural': 'coastline'}))
+            harbour = [node(-600, -900), node(-200, -900), node(-200, -600), node(-600, -600)]
+            ways.append(Way(id=52, nodes=harbour + [harbour[0]], tags={'natural': 'water', 'water': 'harbour'}))
+            house = [node(100, 100), node(140, 100), node(140, 130), node(100, 130)]
+            ways.append(Way(id=53, nodes=house + [house[0]], tags={'building': 'yes', 'height': '１２'}))
+            osm = tmp / 'osm'
+            osm.mkdir()
+            with osmium.SimpleWriter(str(osm / 'tile.osm.pbf')) as writer:
+                for o in nodes:
+                    writer.add_node(o)
+                for o in ways:
+                    writer.add_way(o)
+            ix, iy = 610, 1009
+            coverage = [ix * .05 - .01, iy * .05 - .01, (ix + 1) * .05 + .01, (iy + 1) * .05 + .01]
+            (osm / 'index.json').write_text(json.dumps({'cell': .05, 'buffer': .01, 'tiles': {
+                f'{ix}_{iy}': {'coverage': coverage, 'file': 'tile.osm.pbf',
+                               'bytes': (osm / 'tile.osm.pbf').stat().st_size}}}))
+            region = tmp / 'region'
+            region.mkdir()
+            (region / 'region.json').write_text(json.dumps({
+                'id': 'test', 'frame': frame.spec(), 'dem': str(tmp / 'dem'), 'demZoom': 12, 'source': str(osm),
+                'coverage': [coverage], 'bbox': coverage}))
+            db = sqlite3.connect(region / 'sources.sqlite')
+            db.execute('CREATE TABLE features(id INTEGER PRIMARY KEY, kind TEXT, data TEXT, geom BLOB)')
+            db.execute('CREATE VIRTUAL TABLE bounds USING rtree(id,x0,x1,y0,y1)')
+            db.commit()
+            db.close()
+            scenes = tmp / 'scenes'
+            scenes.mkdir()
+            store = build_country._despike(fast_sources.Store(region))
+            store.scene_dir = scenes
+            cells = [(-1, -1), (0, -1), (-1, 0), (0, 0)]
+            for i, j in cells:
+                self.assertEqual(build_country._coast_tiles(store, [i*1000, j*1000, (i+1)*1000, (j+1)*1000]),
+                                 [f'{ix}_{iy}'])
+            configs = []
+            compile_cells = native_tool.compile_cells
+
+            def recorded(config, tasks):
+                configs.append(config)
+                return compile_cells(config, tasks)
+            with patch.object(native_tool, 'compile_cells', recorded):
+                native = build_country._native_cells(store, cells, None)
+            self.assertEqual(sorted(native), sorted(cells))
+            self.assertEqual(len(configs), 1)
+            done, left = native_tool.compile_cells(configs[0], [(0, -1, [], [f'{ix}_{iy}', 'no_such_tile'])])
+            self.assertEqual((done, left), ({}, {(0, -1): native_tool.COAST_SCENES}))
+            lowered = 0
+            for i, j in cells:
+                rect = [i*1000, j*1000, (i+1)*1000, (j+1)*1000]
+                cell = build_country.compile_cell(store, rect)
+                lowered += min(cell['terrain']['heights']) < fast_sources.LIFT
+                self.assertEqual(native[i, j], (country_format.encode_cell(cell, rect[:2]), len(cell['roads'])), (i, j))
+            self.assertEqual(lowered, 2)      # the sea side of the coastline, south of it
+            heights = {b['tags']['height']: b['height'] for b in build_country.compile_cell(store, [0, 0, 1000, 1000])['buildings']}
+            self.assertEqual(heights, {'１２': 12.0})
+            store.db.close()
+
 
 def _scene_fixture(path):
     """A raw tile with what Store.build_scene reads: buildings and their parts (covered, in the

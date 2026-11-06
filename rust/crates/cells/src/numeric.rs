@@ -59,14 +59,46 @@ pub fn unique(mut v: Vec<f64>) -> Vec<f64> {
     v
 }
 
-/// Python's float(text) for ASCII text without underscores; None where Python raises, Err
-/// where this cannot answer for Python (non-ASCII digits or spaces, underscores).
+/// Python's float(text) of a str: None where Python raises ValueError. As CPython's
+/// PyFloat_FromString: Unicode spaces become ' ' and decimal digits of any script ASCII digits
+/// (other non-ASCII characters make it invalid), underscores only between digits, then ASCII
+/// whitespace stripped. (Err is kept for callers that once had cases this could not answer.)
 pub fn py_float(text: &str) -> Result<Option<f64>, ()> {
-    if !text.is_ascii() || text.contains('_') {
-        return Err(());
+    let mut s = String::with_capacity(text.len());
+    for c in text.chars() {
+        if crate::pytext::is_space(c) {
+            s.push(' ');
+        } else if let Some(d) = crate::pytext::decimal(c) {
+            s.push((b'0' + d) as char);
+        } else if c.is_ascii() {
+            s.push(c);
+        } else {
+            return Ok(None);
+        }
     }
-    // str.strip() of ASCII whitespace, as float() strips
-    let t = text.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c' | '\x1c'..='\x1f'));
+    if s.contains('_') {
+        // _Py_string_to_number_with_underscores
+        let mut kept = String::with_capacity(s.len());
+        let mut prev = 0u8;
+        for &c in s.as_bytes() {
+            if c == b'_' {
+                if !prev.is_ascii_digit() {
+                    return Ok(None);
+                }
+            } else {
+                if prev == b'_' && !c.is_ascii_digit() {
+                    return Ok(None);
+                }
+                kept.push(c as char);
+            }
+            prev = c;
+        }
+        if prev == b'_' {
+            return Ok(None);
+        }
+        s = kept;
+    }
+    let t = s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'));
     Ok(t.parse::<f64>().ok())
 }
 
@@ -110,7 +142,15 @@ mod tests {
         assert_eq!(number(Some("high"), 3.0), Ok(3.0));
         assert_eq!(number(None, 3.0), Ok(3.0));
         assert_eq!(number(Some(" 7 "), 3.0), Ok(7.0));
-        assert!(number(Some("1_0"), 3.0).is_err());
+        assert_eq!(number(Some("1_0"), 3.0), Ok(10.0));
+        assert_eq!(number(Some("1__0"), 3.0), Ok(3.0));
+        assert_eq!(number(Some("_1"), 3.0), Ok(3.0));
+        assert_eq!(number(Some("1e1_0"), 3.0), Ok(1e10));
+        assert_eq!(number(Some("\u{ff11}\u{ff12}"), 3.0), Ok(12.0));
+        assert_eq!(number(Some("\u{3000}\u{ff13}.\u{ff15}\u{3000}"), 3.0), Ok(3.5));
+        assert_eq!(number(Some("\u{661}\u{660}"), 3.0), Ok(10.0));
+        assert_eq!(number(Some("12\u{5c64}"), 3.0), Ok(3.0));
+        assert_eq!(py_float("inf"), Ok(Some(f64::INFINITY)));
         assert_eq!(py_max(2.5, py_min(850.0, f64::NAN)), 850.0);
     }
 }

@@ -82,6 +82,17 @@ api! {
     GEOSSTRtree_build_r: fn(Ctx, *mut c_void) -> c_int;
     GEOSSTRtree_query_r: fn(Ctx, *mut c_void, G, extern "C" fn(*mut c_void, *mut c_void), *mut c_void);
     GEOSSTRtree_destroy_r: fn(Ctx, *mut c_void);
+    GEOSLength_r: fn(Ctx, G, *mut c_double) -> c_int;
+    GEOSLineMergeDirected_r: fn(Ctx, G) -> G;
+    GEOSDistance_r: fn(Ctx, G, G, *mut c_double) -> c_int;
+    GEOSProject_r: fn(Ctx, G, G) -> c_double;
+    GEOSInterpolate_r: fn(Ctx, G, c_double) -> G;
+    GEOSGeomGetX_r: fn(Ctx, G, *mut c_double) -> c_int;
+    GEOSGeomGetY_r: fn(Ctx, G, *mut c_double) -> c_int;
+    GEOSGeom_createPointFromXY_r: fn(Ctx, c_double, c_double) -> G;
+    GEOSPrepare_r: fn(Ctx, G) -> *const c_void;
+    GEOSPreparedGeom_destroy_r: fn(Ctx, *const c_void);
+    GEOSPreparedContainsXY_r: fn(Ctx, *const c_void, c_double, c_double) -> c_char;
 }
 
 static API: OnceLock<Api> = OnceLock::new();
@@ -279,6 +290,39 @@ pub trait Shape {
     fn clone_geom(&self) -> Result<Geom> {
         owned(unsafe { (api().GEOSGeom_clone_r)(ctx(), self.ptr()) }, "clone")
     }
+    fn length(&self) -> Result<f64> {
+        let mut v = 0.0;
+        if unsafe { (api().GEOSLength_r)(ctx(), self.ptr(), &mut v) } == 0 {
+            bail!("GEOS length failed");
+        }
+        Ok(v)
+    }
+    /// shapely.distance(self, other)
+    fn distance(&self, other: &impl Shape) -> Result<f64> {
+        let mut v = 0.0;
+        if unsafe { (api().GEOSDistance_r)(ctx(), self.ptr(), other.ptr(), &mut v) } == 0 {
+            bail!("GEOS distance failed");
+        }
+        Ok(v)
+    }
+    /// shapely.line_locate_point(self, point)
+    fn project(&self, point: &impl Shape) -> f64 {
+        unsafe { (api().GEOSProject_r)(ctx(), self.ptr(), point.ptr()) }
+    }
+    /// shapely.line_interpolate_point(self, distance)
+    fn interpolate(&self, distance: f64) -> Result<Geom> {
+        owned(unsafe { (api().GEOSInterpolate_r)(ctx(), self.ptr(), distance) }, "interpolate")
+    }
+    /// shapely.get_x, shapely.get_y of a point
+    fn xy(&self) -> Result<[f64; 2]> {
+        let (mut x, mut y) = (0.0, 0.0);
+        unsafe {
+            if (api().GEOSGeomGetX_r)(ctx(), self.ptr(), &mut x) == 0 || (api().GEOSGeomGetY_r)(ctx(), self.ptr(), &mut y) == 0 {
+                bail!("GEOS getX/getY failed");
+            }
+        }
+        Ok([x, y])
+    }
     fn covers(&self, other: &impl Shape) -> Result<bool> {
         flag(unsafe { (api().GEOSCovers_r)(ctx(), self.ptr(), other.ptr()) }, "covers")
     }
@@ -440,5 +484,49 @@ impl<'a> Tree<'a> {
 impl Drop for Tree<'_> {
     fn drop(&mut self) {
         unsafe { (api().GEOSSTRtree_destroy_r)(ctx(), self.tree) }
+    }
+}
+
+pub const MULTILINESTRING: i32 = 5;
+
+/// shapely.Point(x, y)
+pub fn point(x: f64, y: f64) -> Result<Geom> {
+    owned(unsafe { (api().GEOSGeom_createPointFromXY_r)(ctx(), x, y) }, "point")
+}
+
+/// shapely.line_merge(shapely.MultiLineString(lines), directed=True)
+pub fn line_merge_directed(lines: &[Geom]) -> Result<Geom> {
+    let clones = lines.iter().map(|g| g.clone_geom()).collect::<Result<Vec<_>>>()?;
+    let mut raw: Vec<G> = clones.iter().map(|g| g.0).collect();
+    let multi = unsafe { (api().GEOSGeom_createCollection_r)(ctx(), MULTILINESTRING, raw.as_mut_ptr(), raw.len() as c_uint) };
+    for g in clones {
+        std::mem::forget(g);
+    }
+    let multi = owned(multi, "multilinestring")?;
+    owned(unsafe { (api().GEOSLineMergeDirected_r)(ctx(), multi.0) }, "lineMergeDirected")
+}
+
+/// A prepared geometry for shapely.contains_xy.
+pub struct Prepared<'a> {
+    p: *const c_void,
+    _g: std::marker::PhantomData<&'a Geom>,
+}
+
+impl<'a> Prepared<'a> {
+    pub fn new(g: &'a Geom) -> Result<Prepared<'a>> {
+        let p = unsafe { (api().GEOSPrepare_r)(ctx(), g.0) };
+        if p.is_null() {
+            bail!("GEOS prepare failed");
+        }
+        Ok(Prepared { p, _g: Default::default() })
+    }
+    pub fn contains_xy(&self, x: f64, y: f64) -> Result<bool> {
+        flag(unsafe { (api().GEOSPreparedContainsXY_r)(ctx(), self.p, x, y) }, "containsXY")
+    }
+}
+
+impl Drop for Prepared<'_> {
+    fn drop(&mut self) {
+        unsafe { (api().GEOSPreparedGeom_destroy_r)(ctx(), self.p) }
     }
 }
