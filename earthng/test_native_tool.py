@@ -283,3 +283,87 @@ class NativeCellsTests(unittest.TestCase):
             with patch.dict(os.environ, {'EARTHNG_NATIVE': '0'}):
                 self.assertEqual(build_country._native_cells(store, cells, None), {})
             store.db.close()
+
+
+def _scene_fixture(path):
+    """A raw tile with what Store.build_scene reads: buildings and their parts (covered, in the
+    air), retail sites with and without their surveyed node, a multipolygon relation, rings
+    drawn either way round, a broken ring, lines and points."""
+    from osmium.osm.mutable import Node, Relation, Way
+    nodes, ways, rels = [], [], []
+    ident = [100]
+
+    def node(dx, dy, tags=None):
+        ident[0] += 1
+        nodes.append(Node(id=ident[0], location=(30.5 + dx * 1e-5, 50.45 + dy * 1e-5), tags=tags or {}))
+        return ident[0]
+
+    def ring(way_id, points, tags=None):
+        refs = [node(x, y) for x, y in points]
+        ways.append(Way(id=way_id, nodes=refs + [refs[0]], tags=tags or {}))
+
+    ring(10, [(0, 0), (100, 0), (100, 100), (0, 100)],
+         {'building': 'yes', 'height': '20', 'building:material': 'brick', 'amenity': 'place_of_worship'})
+    ring(11, [(5, 5), (95, 5), (95, 95), (5, 95)], {'building:part': 'yes', 'min_height': '5'})
+    ring(12, [(40, 40), (40, 60), (60, 60), (60, 40)], {'building:part': 'yes', 'min_height': '25'})
+    ring(13, [(300, 0), (400, 0), (400, 80), (300, 80)], {'building': 'house'})
+    ring(14, [(320, 20), (380, 20), (380, 60), (320, 60)], {'building:part': 'roof', 'building:min_level': '2'})
+    ring(15, [(500, 0), (600, 0), (600, 100), (500, 100)], {'shop': 'supermarket', 'name': 'АТБ'})
+    node(550, 50, {'shop': 'supermarket', 'brand': 'АТБ'})
+    ring(16, [(700, 0), (800, 0), (800, 100), (700, 100)], {'shop': 'supermarket', 'name': 'Сільпо', 'building': 'retail'})
+    node(900, 0, {'amenity': 'post_office', 'name': 'Нова Пошта №12'})
+    ring(17, [(0, 300), (300, 300), (300, 600), (0, 600)])
+    ring(18, [(100, 400), (200, 400), (200, 500), (100, 500)])
+    rels.append(Relation(id=20, members=[('w', 17, 'outer'), ('w', 18, 'inner')],
+                         tags={'type': 'multipolygon', 'natural': 'water', 'name': 'Озеро'}))
+    ring(19, [(500, 400), (500, 600), (700, 650), (720, 380)], {'landuse': 'forest'})        # clockwise
+    ring(21, [(900, 300), (1000, 400), (1000, 300), (900, 400)], {'landuse': 'grass'})       # a bow tie
+    line = [node(0, 800), node(400, 820), node(800, 790)]
+    ways.append(Way(id=30, nodes=line, tags={'highway': 'footway', 'surface': 'asphalt'}))
+    ways.append(Way(id=31, nodes=[node(0, 900), node(900, 900)],
+                    tags={'railway': 'tram', 'name': 'Трамвай', 'gauge': '1524', 'electrified': 'contact_line'}))
+    ways.append(Way(id=32, nodes=[node(0, 1000), node(500, 1000)], tags={'barrier': 'fence', 'layer': '1'}))
+    node(10, 700, {'highway': 'crossing', 'crossing': 'unmarked'})
+    node(20, 700, {'highway': 'traffic_signals'})
+    node(30, 700, {'natural': 'tree', 'leaf_type': 'broadleaved'})
+    node(40, 700, {'highway': 'bus_stop', 'name': 'Зупинка "Центр"\n'})
+    with osmium.SimpleWriter(str(path)) as writer:
+        for o in nodes:
+            writer.add_node(o)
+        for o in ways:
+            writer.add_way(o)
+        for o in rels:
+            writer.add_relation(o)
+
+
+class NativeScenesTests(unittest.TestCase):
+    def test_rules_fingerprint(self):
+        found = native_tool.rules_fingerprint()
+        self.assertEqual(found, native_tool.RULES,
+                         'a function Store.build_scene runs changed: port it to rust/crates/cells (rules.rs, '
+                         f'scenebuild.rs), check the scenes against Python, then set native_tool.RULES = {found!r}')
+
+    @unittest.skipUnless(native_tool.tool() and native_tool.geos_library() and native_tool.proj_library(),
+                         'native tools not built (cargo build --release in rust/), or no shapely GEOS / pyproj PROJ')
+    def test_native_scene_is_the_python_bytes(self):
+        import fast_sources
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            _scene_fixture(tmp / 'tile.osm.pbf')
+            store = fast_sources.Store.__new__(fast_sources.Store)
+            store.meta = {'source': str(tmp)}
+            store.frame = fast_sources.Frame.at(30.5, 50.45)
+            entry = {'file': 'tile.osm.pbf'}
+            want = fast_sources.write_scene(store.build_scene(entry))
+            self.assertIsNone(native_tool.build_scene(store, entry, tmp / 'native.scene'))
+            self.assertEqual((tmp / 'native.scene').read_bytes(), want)
+            fids, kinds, tags, _ = fast_sources.read_scene(want)
+            by = dict(zip(fids, zip(kinds, tags)))
+            self.assertEqual(by[20][1].get('e2r_outline'), '1')             # its part covers it
+            self.assertEqual(by[26][1].get('height'), '6.0')               # a part in the air
+            self.assertEqual(by[22][1]['e2r_of'], '20')
+            self.assertIn('grocery_site', kinds)
+            self.assertIn(41, fids)                                        # the relation's water
+            self.assertNotIn(42, fids)                                     # the bow tie
+            with patch.dict(os.environ, {'EARTHNG_NATIVE': '0'}):
+                self.assertIsNotNone(native_tool.build_scene(store, entry, tmp / 'off.scene'))

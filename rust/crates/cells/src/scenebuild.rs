@@ -279,6 +279,13 @@ fn tags_json(t: &Tags) -> String {
 const RETAIL: [&str; 5] = ["fuel", "grocery", "fast_food", "post", "service"];
 
 pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
+    let clock = std::time::Instant::now();
+    let profile = std::env::var_os("EARTHNG_SCENE_PROFILE").is_some();
+    let stage = |name: &str| {
+        if profile {
+            eprintln!("  {name:10} {:.3} s", clock.elapsed().as_secs_f64());
+        }
+    };
     geos::load(&task.geos)?;
     proj::load(&task.proj)?;
     let rules = &task.rules;
@@ -343,6 +350,7 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
             }
         }
     }
+    stage("decode");
     let mut lines: Vec<Rec> = Vec::new();
     'line: for (id, kind, tags, refs) in pending {
         let mut coords = Vec::with_capacity(refs.len());
@@ -409,6 +417,7 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
         }
     }
     lines.extend(marks);
+    stage("areas");
 
     // ---- a business mapped both as a node and as its site: keep the node ----
     let shared = |t: &TagsOf| match t {
@@ -450,6 +459,7 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
     drop(nodes);
     lines.extend(kept);
 
+    stage("retail");
     if let Err(why) = link_parts(&found, &mut arena, rules) {
         return Ok(Outcome::Python(why));
     }
@@ -462,6 +472,7 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
         return Ok(Outcome::Python("two records with one id".into()));
     }
 
+    stage("link_parts");
     // ---- shapely.make_valid(shapely.transform(geoms, frame.local)) ----
     let (mut xs, mut ys) = (Vec::new(), Vec::new());
     for r in &found {
@@ -471,6 +482,7 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
         });
     }
     proj::Forward::new(&task.crs, &task.proj_data)?.transform(&mut xs, &mut ys)?;
+    stage("proj");
     let [cx, cy] = task.origin;
     let mut out = Vec::with_capacity(64 << 20);
     out.extend_from_slice(b"ESC1");
@@ -495,6 +507,7 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
         out.extend_from_slice(&(wkb.len() as u32).to_le_bytes());
         out.extend_from_slice(&wkb);
     }
+    stage("write");
     Ok(Outcome::Done(out, found.len()))
 }
 

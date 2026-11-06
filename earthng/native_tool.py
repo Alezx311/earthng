@@ -304,3 +304,137 @@ def compile_cells(config, cells):
         else:
             left[i, j] = body.decode('utf-8', 'replace')
     return done, left
+
+
+def proj_library():
+    """pyproj's own PROJ library and its data folder (scenes must use the same PROJ), or None."""
+    import pyproj
+    import pyproj.datadir
+    folder = Path(pyproj.__file__).resolve().parent
+    names = ('proj_*.dll', 'proj*.dll') if os.name == 'nt' else ('libproj*.so*', 'libproj*.dylib')
+    for where in (folder.parent / 'pyproj.libs', folder / '.libs', folder / '.dylibs'):
+        for name in names:
+            found = sorted(where.glob(name))
+            if found:
+                return found[0], Path(pyproj.datadir.get_data_dir())
+    return None
+
+
+# The Python sources rust/crates/cells (rules.rs, scenebuild.rs) mirrors: when one of them
+# changes, rules_fingerprint() no longer equals RULES and every scene is read in Python again
+# until the Rust side follows (test_native_tool says so).
+RULES = '18eed95425adb62e'
+
+
+def rules_fingerprint():
+    """sha256 of the functions Store.build_scene runs, or None where their source is not here."""
+    import hashlib
+    import inspect
+    import fast_sources
+    import fast_style
+    import nature
+    import retail
+    import venues
+    functions = (retail._key, retail._recognized, retail._named.__wrapped__, retail.post_type, retail.kind,
+                 retail.brand, retail.enriched, fast_style.ground_kind, fast_style.rail_tags, fast_style.line_kind,
+                 fast_style.point_kind, fast_style.poi, fast_style.point_keys, nature.ground_kind,
+                 fast_sources.number, fast_sources.lifted, fast_sources.link_parts, fast_sources.Store.build_scene,
+                 fast_sources.write_scene, venues.point_tags)
+    digest = hashlib.sha256()
+    try:
+        for f in functions:
+            digest.update(inspect.getsource(f).encode('utf-8'))
+    except (OSError, TypeError):
+        return None
+    return digest.hexdigest()[:16]
+
+
+def scene_rules():
+    """The sets and tables of the scene rules, as rules.rs reads them."""
+    import fast_sources
+    import fast_style as fs
+    import retail
+    return {
+        'lookup': retail._LOOKUP, 'wikidata': retail.WIKIDATA, 'fuel': sorted(retail.FUEL),
+        'networks': sorted(retail.SERVICE_NETWORKS), 'food_shops': sorted(retail.FOOD_SHOPS),
+        'service_amenity': sorted(retail.SERVICE_AMENITY), 'service_shops': sorted(retail.SERVICE_SHOPS),
+        'names': list(retail.NAMES), 'says': sorted(retail._SAYS),
+        'point_keys': list(fs.point_keys()), 'islands': list(fs.ISLANDS.items()), 'fields': sorted(fs.FIELDS),
+        'hard_fields': sorted(fs.HARD_FIELDS), 'sites': sorted(fs.SITES), 'paved': sorted(fs.PAVED),
+        'woods': sorted(fs.WOODS), 'parks': sorted(fs.PARKS), 'paths': sorted(fs.PATHS), 'rails': list(fs.RAILS),
+        'rail_tags': list(fs.RAIL_TAGS), 'unmarked': list(fs.UNMARKED), 'entrances': list(fs.ENTRANCES),
+        'pois': fs.POIS, 'poi_amenity': sorted(fs.POI_AMENITY), 'poi_not': list(fs.POI_NOT), 'doors': list(fs.DOORS),
+        'part_tags': list(fast_sources.PART_TAGS),
+    }
+
+
+def scene_venues():
+    """(fid, write_scene tags JSON, lon, lat) of the venue points every scene holds."""
+    import json
+    import venues
+    return [(-(4 * 10**12 + n), json.dumps(list(venues.point_tags(venue, record).items()), ensure_ascii=False,
+                                           separators=(',', ':')), float(record['lon']), float(record['lat']))
+            for n, (venue, record) in enumerate(venues.located())]
+
+
+def scene_areas(pbf):
+    """osmium's areas of a raw tile in its callback order, for the scene command: a way area of
+    one outer ring as its id (Rust builds that ring from the way), else osmium's tags and WKB, or
+    a mark that create_multipolygon raised. One osmium pass with the area callback only."""
+    import json
+    import struct
+    import osmium
+    factory = osmium.geom.WKBFactory()
+    out = []
+
+    class Areas(osmium.SimpleHandler):
+        def area(self, a):
+            if a.from_way() and a.num_rings() == (1, 0):
+                out.append(struct.pack('<qB', a.id, 0))
+                return
+            try:
+                wkb = factory.create_multipolygon(a)
+            except RuntimeError:
+                out.append(struct.pack('<qB', a.id, 2))
+                return
+            wkb = bytes.fromhex(wkb) if isinstance(wkb, str) else bytes(wkb)
+            tags = json.dumps([(t.k, t.v) for t in a.tags], ensure_ascii=False).encode('utf-8')
+            out.append(struct.pack('<qBI', a.id, 1, len(tags)) + tags + struct.pack('<I', len(wkb)) + wkb)
+
+    Areas().apply_file(str(pbf), locations=True)
+    return b'EAR1' + struct.pack('<I', len(out)) + b''.join(out)
+
+
+_scene_parts = {}
+
+
+def build_scene(store, entry, out):
+    """Store.build_scene + write_scene of a raw tile into out, natively. None when written, else
+    why not (no tool or library, the rules changed, or a tile the Rust side leaves to Python)."""
+    import json
+    import struct
+    import subprocess
+    exe, geos, proj = tool(), geos_library(), proj_library()
+    if exe is None or geos is None or proj is None:
+        return 'no native tool, GEOS or PROJ'
+    if 'rules' not in _scene_parts:
+        fingerprint = rules_fingerprint()
+        _scene_parts['ok'] = fingerprint is None or fingerprint == RULES
+        _scene_parts['rules'] = scene_rules()
+        _scene_parts['venues'] = scene_venues()
+    if not _scene_parts['ok']:
+        return 'scene rules changed in Python (native_tool.RULES)'
+    pbf = Path(store.meta['source']) / entry['file']
+    task = {'geos': str(geos), 'proj': str(proj[0]), 'proj_data': str(proj[1]), 'pbf': str(pbf),
+            'crs': store.frame.crs, 'origin': [store.frame.cx, store.frame.cy],
+            'rules': _scene_parts['rules'], 'venues': _scene_parts['venues']}
+    data = json.dumps(task, ensure_ascii=False).encode('utf-8')
+    stdin = struct.pack('<I', len(data)) + data + scene_areas(pbf)
+    result = subprocess.run([str(exe), '--threads', '1', 'scene', '--out', str(out)], input=stdin,
+                            capture_output=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    said = result.stdout.decode('utf-8', 'replace').strip()
+    if os.environ.get('EARTHNG_SCENE_PROFILE'):
+        print(entry['file'], said, result.stderr.decode('utf-8', 'replace').strip())
+    if result.returncode:
+        return 'native scene failed: ' + result.stderr.decode('utf-8', 'replace').strip()[-500:]
+    return None if said.startswith('ok') else said.removeprefix('python ').strip()

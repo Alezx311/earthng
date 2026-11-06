@@ -964,9 +964,12 @@ class Store:
             if path.is_file():
                 return
         try:
-            records = self.build_scene(self.source_index['tiles'][key])
+            entry = self.source_index['tiles'][key]
             part = path.with_suffix(f'.{os.getpid()}.part')
-            part.write_bytes(write_scene(records))
+            # the same bytes from rust/ (native_tool.build_scene) where it covers the tile
+            import native_tool
+            if native_tool.build_scene(self, entry, part) is not None:
+                part.write_bytes(write_scene(self.build_scene(entry)))
             os.replace(part, path)
         finally:
             if handle is not None:
