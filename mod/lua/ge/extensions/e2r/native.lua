@@ -13,8 +13,11 @@ local live = liveOk and type(liveMod) == 'table' and type(liveMod.sync) == 'func
 -- delivered tile keeps only flags, while undelivered geometry is bounded by triangles/vertices.
 -- At 32 the far ring evicted itself and was rebuilt after every 250 m.
 local CELL_LIMIT, TILE_LIMIT, TRIANGLE_LIMIT, VERTEX_LIMIT, LAND_RADIUS = 32, 160, 80000, 240000, 500
--- 8: at a seam a tile reads its own region's blocks and a neighbour's (foreignCell)
-local BLOCK_LIMIT = 8
+-- A source block is 8 x 8 km, read whole in one call. The 5 km horizon ring is an ~11 km square round
+-- the car and touches up to 3 x 3 blocks, and at a seam a tile reads its own region's blocks and a
+-- neighbour's (foreignCell): 9 hold the whole ring square, or a horizon build that hops round it
+-- reads a block file again in one frame (state.stream.blockReads and blockReadMaxMs say how often).
+local BLOCK_LIMIT = 9
 -- Prepared horizon meshes, separate from the near/far triangle budget above. The 5 km ring
 -- is the one that is scheduled; 15 km and 30 km stay off until an in-game check.
 local HORIZON_RADIUS, HORIZON_TILE_LIMIT, HORIZON_TRIANGLE_LIMIT = 5000, 96, 250000
@@ -111,6 +114,18 @@ local function readBytes(path)
   local data = f:read('*a')
   f:close()
   if type(data) ~= 'string' then error('cannot read mounted source: ' .. path) end
+  return data
+end
+
+-- readBytes for a generator block (source and pack v3 roads), counted for the automation report
+local function blockBytes(path)
+  local timer = hptimer()
+  local data = readBytes(path)
+  local ms, st = timer:stop(), state and state.stream
+  if st then
+    st.blockReads = (st.blockReads or 0) + 1
+    if ms > (st.blockReadMaxMs or 0) then st.blockReadMaxMs, st.blockReadMaxKb = ms, math.floor(#data / 1024) end
+  end
   return data
 end
 
@@ -783,7 +798,10 @@ local function land(req)
   -- broke LuaJIT's traces in every hot loop. The clock is read at every point: read at every
   -- 8th, a city tile's triangle loop ran 512 triangles past the budget, and the frame took
   -- 12-20 ms of a 4 ms budget (Kyiv stream bench at 20 m/s: p99 18.6 -> 8.7 ms, the same
-  -- work a millisecond).
+  -- work a millisecond). A clock read costs ~0.4 us under LuaJIT, ~8 ms spread over a near
+  -- tile's ~21,000 pause points and ~1 s of work, and whole builds ran as fast as with the read
+  -- at every 8th point (in the hot loops the call sits on a branch taken once in 4-512
+  -- iterations, so their traces compile as before; earthng/generator_budget.py).
   local a = active
   active.pause = function()
     if a.timer and a.timer:stop() >= a.budget then coroutine.yield() end
@@ -1043,16 +1061,20 @@ end
 local function trimHorizon()
   local a, st = active, state.stream
   if not a then return end
+  -- A spawned block the wanted set has left stays until world.lua has spawned what replaces it
+  -- (M.horizonCover). As the lowest priority it was evicted here first, before its replacements
+  -- were in: a hole. Its items are released, so it weighs nothing and is not counted.
+  local function shown(key, entry) return entry.horizonDelivered and not a.desired[key] end
   local count, triangles = 0, 0
-  for _, entry in pairs(a.horizon) do
-    count, triangles = count + 1, triangles + (entry.triangles or 0)
+  for key, entry in pairs(a.horizon) do
+    if not shown(key, entry) then count, triangles = count + 1, triangles + (entry.triangles or 0) end
   end
   local limit = math.max(HORIZON_TILE_LIMIT, (a.horizonWanted or 0) + 16)
   while count > limit or triangles > HORIZON_TRIANGLE_LIMIT * (limit > HORIZON_TILE_LIMIT and 2 or 1) do
     local worst, worstPriority, oldest
     for key, entry in pairs(a.horizon) do
       local priority = a.desired[key] and a.desired[key].priority or 1e20
-      local held = entry.horizonTaken and not entry.horizonDelivered
+      local held = (entry.horizonTaken and not entry.horizonDelivered) or shown(key, entry)
       if not held and (not worst or priority > worstPriority or (priority == worstPriority and entry.used < oldest)) then
         worst, worstPriority, oldest = key, priority, entry.used
       end
@@ -1637,7 +1659,7 @@ local function mapBlock(r, key, block)
     end
     return lines
   end
-  local data = readBytes(block.path)
+  local data = blockBytes(block.path)
   coroutine.yield()
   local b, s = blocksOf(r.data), r.data.cellSize
   local bi, bj = key:match('^(-?%d+)_(-?%d+)$')
@@ -1740,6 +1762,35 @@ local function mapRoads(view, budgetMs)
     end
   end
   return out
+end
+
+-- The ground the wanted set now draws over a horizon block it has left, for world.lua to drop
+-- that block once all of it is spawned. As the car nears, a 1000 m block splits into 500 m
+-- quads and far tiles (and merges back as it leaves); the old block stayed drawn until
+-- trimHorizon evicted it, a second ground level over the new one. nil: the block is wanted
+-- (or unknown). Each entry is {key, horizon}. One list per wanted set: the per-frame check
+-- in world.lua makes no garbage.
+function M.horizonCover(key)
+  local a = active
+  if not a or not a.desired or a.desired[key] then return nil end
+  local info = state.stream.horizon and state.stream.horizon[key]
+  if type(info) ~= 'table' or not info.size or not info.i or not info.j then return nil end
+  if a.coverFor ~= a.desired then a.cover, a.coverFor = {}, a.desired end
+  local list = a.cover[key]
+  if list then return list end
+  list = {}
+  local s, t = info.size, a.region.data.tileSize
+  local x0, y0 = info.i * s, info.j * s
+  for k, w in pairs(a.desired) do
+    local ws = w.size or t
+    local wx, wy = w.i * ws, w.j * ws
+    -- strict: a neighbour sharing only an edge is no replacement
+    if wx < x0 + s and x0 < wx + ws and wy < y0 + s and y0 < wy + ws then
+      list[#list + 1] = {k, w.horizon and true or false}
+    end
+  end
+  a.cover[key] = list
+  return list
 end
 
 -- Which horizon meshes to show. A coarser tile stays until every finer tile that overlaps
