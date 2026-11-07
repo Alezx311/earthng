@@ -143,6 +143,16 @@ def close_pairs(pos, seg_of, width, ground, same):
     """Station -> nearby edge of another ground segment whose strip touches it: lateral
     distance to the edge < half widths + 0.5 m. Returns station rows a, edge start rows e
     (edge = e, e+1) and the parameter t of the closest point. Grid hashing, no SciPy."""
+    import native_tool
+    native = native_tool.kernels()
+    if native is not None and native.has_solve:
+        # the same arithmetic and order in earthng_native.dll (rust/crates/kernels solve.rs)
+        return native.close_pairs(pos, seg_of, width, ground, same)
+    return python_close_pairs(pos, seg_of, width, ground, same)
+
+
+def python_close_pairs(pos, seg_of, width, ground, same):
+    """close_pairs in numpy (and the reference for the native one)."""
     cell = 24.0
     e0 = np.flatnonzero(same)                     # edge e0 -> e0+1, both of one segment
     mid = (pos[e0] + pos[e0 + 1]) / 2
@@ -224,6 +234,16 @@ def stations(segments, node_index):
 
 def csr(rows, cols, vals, n):
     """COO -> CSR with duplicates summed (no SciPy here)."""
+    import native_tool
+    native = native_tool.kernels()
+    if native is not None and native.has_solve:
+        # stable sort and np.add.reduceat's sums in earthng_native.dll, the same bits
+        return native.csr(rows, cols, vals, n)
+    return python_csr(rows, cols, vals, n)
+
+
+def python_csr(rows, cols, vals, n):
+    """csr in numpy (and the reference for the native one)."""
     key = rows * n + cols
     order = np.argsort(key, kind='stable')
     key, vals = key[order], vals[order]

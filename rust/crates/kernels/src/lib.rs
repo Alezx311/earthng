@@ -12,6 +12,9 @@ use std::slice;
 use rayon::prelude::*;
 
 pub mod crossings;
+pub mod solve;
+pub mod split;
+pub mod index;
 pub mod terrain;
 
 const BLOCK: usize = 4096;
@@ -393,6 +396,112 @@ pub unsafe extern "C" fn earthng_crossings_take(handle: *mut crossings::Crossing
             slice::from_raw_parts_mut(t, n).copy_from_slice(&c.t);
         }
     }
+}
+
+/// fast_profile.csr of m entries over n rows: an Out of ints [ptr, col], floats [data].
+///
+/// # Safety
+/// rows, cols, vals hold m values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_profile_csr(m: usize, rows: *const i64, cols: *const i64, vals: *const f64, n: i64) -> *mut solve::Out {
+    unsafe {
+        let (ptr, col, data) = solve::csr(view(rows, m), view(cols, m), view(vals, m), n);
+        Box::into_raw(Box::new(solve::Out { ints: vec![ptr, col], floats: vec![data] }))
+    }
+}
+
+/// fast_profile.close_pairs over n stations (pos n x 2, same n - 1): ints [a, e], floats [t].
+///
+/// # Safety
+/// Every pointer holds the lengths named.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_profile_close_pairs(n: usize, pos: *const f64, seg_of: *const i64, width: *const f64, ground: *const u8,
+                                                    same: *const u8) -> *mut solve::Out {
+    unsafe {
+        let pos: &[[f64; 2]] = if n == 0 { &[] } else { slice::from_raw_parts(pos as *const [f64; 2], n) };
+        let flags = |p: *const u8, len: usize| -> Vec<bool> { view(p, len).iter().map(|&b| b != 0).collect() };
+        let (a, e, t) = solve::close_pairs(pos, view(seg_of, n), view(width, n), &flags(ground, n), &flags(same, n.saturating_sub(1)));
+        Box::into_raw(Box::new(solve::Out { ints: vec![a, e], floats: vec![t] }))
+    }
+}
+
+/// fast_sources._prepare's road split of nw ways (lens) over nn nodes (ids, x, y): ints
+/// [way, node a, node b, offsets, point rows], floats [x y rounded, arc length, piece length].
+///
+/// # Safety
+/// lens holds nw values, ids / x / y nn.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_split_roads(nw: usize, lens: *const i64, nn: usize, ids: *const i64, x: *const f64, y: *const f64) -> *mut solve::Out {
+    unsafe {
+        let p = split::split(view(lens, nw), view(ids, nn), view(x, nn), view(y, nn));
+        Box::into_raw(Box::new(solve::Out { ints: vec![p.way, p.a, p.b, p.off, p.rows], floats: vec![p.xy, p.cum, p.length] }))
+    }
+}
+
+/// fast_sources.write_index's rows into a new SQLite file (rust/crates/kernels index.rs): 0 when
+/// written, else 1 with the reason on stderr (Python then writes it itself).
+///
+/// # Safety
+/// `i` and its arrays as index::IndexIn describes them.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_write_index(i: *const index::IndexIn) -> i32 {
+    match unsafe { index::write(&*i) } {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("earthng_write_index: {e}");
+            1
+        }
+    }
+}
+
+/// Python's repr of x into buf (cap bytes); returns its length. For the tests of index.rs.
+///
+/// # Safety
+/// buf holds cap bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_float_repr(x: f64, buf: *mut u8, cap: usize) -> usize {
+    let mut s = String::new();
+    index::py_float(x, &mut s);
+    let n = s.len().min(cap);
+    unsafe { slice::from_raw_parts_mut(buf, n).copy_from_slice(&s.as_bytes()[..n]) };
+    s.len()
+}
+
+/// Length of an Out's array k (floats when `float` is not 0).
+///
+/// # Safety
+/// `out` from a kernel, not yet freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_out_len(out: *const solve::Out, float: i32, k: usize) -> usize {
+    unsafe { if float != 0 { (&(*out).floats)[k].len() } else { (&(*out).ints)[k].len() } }
+}
+
+/// Copy an Out's array k into `to` (its earthng_out_len values).
+///
+/// # Safety
+/// `out` from a kernel, not yet freed; `to` holds the array.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_out_copy(out: *const solve::Out, float: i32, k: usize, to: *mut u8) {
+    unsafe {
+        if float != 0 {
+            let a = &(&(*out).floats)[k];
+            if !a.is_empty() {
+                slice::from_raw_parts_mut(to as *mut f64, a.len()).copy_from_slice(a);
+            }
+        } else {
+            let a = &(&(*out).ints)[k];
+            if !a.is_empty() {
+                slice::from_raw_parts_mut(to as *mut i64, a.len()).copy_from_slice(a);
+            }
+        }
+    }
+}
+
+/// # Safety
+/// `out` from a kernel, freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_out_free(out: *mut solve::Out) {
+    unsafe { drop(Box::from_raw(out)) }
 }
 
 /// Worker threads of the kernels (0: all cores). Only the first call takes effect.

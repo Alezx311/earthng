@@ -470,6 +470,143 @@ class NativeIndexTests(unittest.TestCase):
             w = np.asarray(w, dtype=g.dtype)
             self.assertEqual(g.view(np.int64).tolist(), w.view(np.int64).tolist())
 
+    @unittest.skipUnless(native_tool.kernels(), 'native kernels not built (cargo build --release in rust/)')
+    def test_native_csr_and_close_pairs_are_numpy_bits(self):
+        import numpy as np
+        import fast_profile
+        if not native_tool.kernels().has_solve:
+            self.skipTest('an older earthng_native.dll')
+        rng = np.random.default_rng(11)
+        bits = lambda a: np.asarray(a).view(np.int64).tolist() if np.asarray(a).dtype == float else np.asarray(a).tolist()
+        # duplicates in runs of every length numpy's pairwise sum treats apart (< 8, 8..128, > 128)
+        n = 50
+        rows = np.r_[rng.integers(0, n, 3000), np.full(300, 7), np.full(20, 9)]
+        cols = np.r_[rng.integers(0, n, 3000), np.full(300, 3), np.full(20, 9)]
+        vals = rng.normal(size=len(rows)) * 10.0 ** rng.uniform(-3, 3, len(rows))
+        for got, want in zip(fast_profile.csr(rows, cols, vals, n), fast_profile.python_csr(rows, cols, vals, n)):
+            self.assertEqual(bits(got), bits(want))
+        counts = rng.integers(2, 10, 500)
+        seg_of = np.repeat(np.arange(len(counts)), counts)
+        k = np.arange(len(seg_of)) - np.repeat(np.cumsum(counts) - counts, counts)
+        heads = rng.normal(size=(len(counts), 2))
+        pos = rng.uniform(-600, 600, (len(counts), 2))[seg_of] + heads[seg_of] * (k * 9.3)[:, None]
+        pos[5] = pos[4]
+        same = seg_of[1:] == seg_of[:-1]
+        width = rng.uniform(3, 30, len(counts))[seg_of]
+        ground = rng.random(len(seg_of)) < .9
+        got = fast_profile.close_pairs(pos, seg_of, width, ground, same)
+        want = fast_profile.python_close_pairs(pos, seg_of, width, ground, same)
+        self.assertGreater(len(want[0]), 100)
+        for g, w in zip(got, want):
+            self.assertEqual(bits(g), bits(w))
+
+    @unittest.skipUnless(native_tool.kernels(), 'native kernels not built (cargo build --release in rust/)')
+    def test_native_split_is_the_python_loop(self):
+        import math
+        from collections import Counter
+        import numpy as np
+        native = native_tool.kernels()
+        if not native.has_split:
+            self.skipTest('an older earthng_native.dll')
+
+        def python_split(lens, ids, X, Y):          # _prepare's loop
+            refs, out, at = Counter(ids), [], 0
+            for count in lens:
+                nodes = ids[at:at + count]; xy = list(zip(X[at:at + count], Y[at:at + count])); at += count
+                cuts = [0] + [q for q in range(1, len(nodes) - 1) if refs[nodes[q]] > 1] + [len(nodes) - 1]
+                for a, b in zip(cuts, cuts[1:]):
+                    pts = [xy[a]] + [xy[q] for q in range(a + 1, b + 1)
+                                     if math.hypot(xy[q][0] - xy[q-1][0], xy[q][1] - xy[q-1][1]) > 0.01]
+                    if len(pts) < 2:
+                        continue
+                    cum = [0.]
+                    for q in range(1, len(pts)):
+                        cum.append(cum[-1] + math.hypot(pts[q][0] - pts[q-1][0], pts[q][1] - pts[q-1][1]))
+                    if cum[-1] < .1:
+                        continue
+                    out.append(([[round(p[0], 3), round(p[1], 3)] for p in pts], [nodes[a], nodes[b]], cum))
+            return out
+        rng = np.random.default_rng(7)
+        lens = rng.integers(1, 30, 2000)
+        N = int(lens.sum())
+        ids = rng.integers(0, N * 2 // 3, N).tolist()
+        X = np.cumsum(rng.choice([0., .005, .01, .0100000001, .05, 1., 37.], N) * rng.choice([1, -1], N))
+        X[rng.random(N) < .02] += .0625                      # exact ties at three decimals
+        Y = np.cumsum(rng.choice([0., .003, .0625, 2.5], N)) * 10.0 ** rng.uniform(-2, 4, N)
+        want = python_split(lens.tolist(), ids, X.tolist(), Y.tolist())
+        way, na, nb, off, rows, xy, cum, length = native.split_roads(lens, ids, X, Y)
+        self.assertGreater(len(want), 1000)
+        self.assertEqual(len(na), len(want))
+        for s, (pts, nodes, c) in enumerate(want):
+            self.assertEqual([int(na[s]), int(nb[s])], nodes)
+            self.assertEqual(np.array(pts).view(np.int64).tolist(), xy[off[s]:off[s + 1]].view(np.int64).tolist())
+            self.assertEqual(np.array(c).view(np.int64).tolist(), cum[off[s]:off[s + 1]].view(np.int64).tolist())
+            self.assertEqual(length[s], c[-1])
+
+    @unittest.skipUnless(native_tool.kernels(), 'native kernels not built (cargo build --release in rust/)')
+    def test_native_float_repr_is_python(self):
+        import numpy as np
+        native = native_tool.kernels()
+        if not native.has_index:
+            self.skipTest('an older earthng_native.dll')
+        rng = np.random.default_rng(5)
+        values = [0.0, -0.0, 1.0, 0.1, 1e16, 1e15 + .5, 1e-4, 1e-5, 5e-324, 1.7976931348623157e308, float('nan'),
+                  float('inf'), -float('inf'), 9127.1505126953125, -9127.1505126953125, 2.675]
+        values += (rng.standard_normal(20000) * 10.0 ** rng.uniform(-30, 30, 20000)).tolist()
+        values += [float(int(m)) / 2.0 ** int(s) for m, s in zip(rng.integers(1, 1 << 52, 20000), rng.integers(8, 40, 20000))]
+        for x in values:
+            want = {'nan': 'NaN', 'inf': 'Infinity', '-inf': '-Infinity'}.get(repr(x), repr(x))
+            self.assertEqual(native.float_repr(x), want)
+
+    @unittest.skipUnless(native_tool.kernels(), 'native kernels not built (cargo build --release in rust/)')
+    def test_native_write_index_is_python_rows(self):
+        import copy
+        import sqlite3
+        import numpy as np
+        import fast_sources
+        native = native_tool.kernels()
+        if not native.has_index:
+            self.skipTest('an older earthng_native.dll')
+        # a star of roads round node 1 (a junction), a road to a dead end, a foot segment
+        ends = {2: (100., 0.), 3: (0., 100.), 4: (-70., -70.), 5: (100., 80.)}
+        tags = [{'highway': 'primary', 'name': 'Вулиця "Нова"\n'}, {'highway': 'residential', 'bridge': 'yes', 'layer': '2'},
+                {'highway': 'service'}, {'highway': 'track', 'width': '3,5'}]
+        segments, arcs, mouths = [], [], {}
+        for i, (node, (x, y)) in enumerate(((2, ends[2]), (3, ends[3]), (4, ends[4]))):
+            pts = np.array([[0., 0.], [x / 2 + .123456789, y / 2 - .987654321], [x, y]])
+            cum = np.r_[0., np.cumsum(np.hypot(*np.diff(pts, axis=0).T))]
+            width = [7.5, 4, 3.25][i]
+            segments.append({'id': i + 1, 'way': 100 + i, 'tags': tags[i], 'xy': np.round(pts, 3).tolist(), 'nodes': [1, node],
+                             'width': width, 'prof': [np.round(cum, 2).tolist(), np.round(100 + cum / 50, 3).tolist()]})
+            arcs.append((pts, cum))
+            mouths.setdefault(1, []).append((i + 1, 0, pts[0].tolist(), None, width, cum[-1]))
+            mouths.setdefault(node, []).append((i + 1, 1, pts[-1].tolist(), None, width, cum[-1]))
+        pts = np.array([[100., 0.], [100., 80.]])
+        segments.append({'id': 4, 'way': 103, 'tags': tags[3], 'xy': pts.tolist(), 'nodes': [2, 5], 'width': 3.5,
+                         'prof': [[0., 80.], [102., 101.5]]})
+        arcs.append((pts, np.array([0., 80.])))
+        mouths[2].append((4, 0, [100., 0.], None, 3.5, 80.))
+        mouths[5] = [(4, 1, [100., 80.], None, 3.5, 80.)]
+        segments.append({'way': 7, 'tags': {'highway': 'footway', 'bridge': 'yes'}, 'width': 2.0, 'xy': [[5., 5.], [9., 9.]],
+                         'nodes': ['f1', 'f2'], 'prof': [[0., 5.66], [101., 101.2]], 'id': 5})
+        arcs.append((np.array([[5., 5.], [9., 9.]]), np.array([0., 5.656854249492381])))
+        node_h = {1: 100.0, 2: 102.000001, 3: 102.1, 4: 101.9, 5: 101.5}
+        rows = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, on in (('native', True), ('python', False)):
+                native.has_index = on
+                try:
+                    path = Path(tmp) / f'{name}.sqlite'
+                    fast_sources.write_index(copy.deepcopy(segments), arcs, copy.deepcopy(mouths), node_h, path, emit=lambda s: None)
+                finally:
+                    native.has_index = True
+                db = sqlite3.connect(path)
+                rows[name] = {t: db.execute(f'SELECT * FROM {t} ORDER BY rowid').fetchall() for t in ('features', 'nodes', 'links', 'bounds')}
+                db.close()
+        self.assertEqual(len(rows['python']['features']), 7)             # junctions 1 and 2, five segments
+        for table in rows['python']:
+            self.assertEqual(rows['native'][table], rows['python'][table], table)
+
 
 def _scene_fixture(path):
     """A raw tile with what Store.build_scene reads: buildings and their parts (covered, in the

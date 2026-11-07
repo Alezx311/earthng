@@ -5,6 +5,7 @@ A release ships it as bin/earthng-mapbuilder.exe; a checkout builds it with
 Each native step writes exactly what the Python step it replaces writes (the cut: the same
 objects in every tile, tests in rust/ and earthng/test_native_tool.py).
 """
+import ctypes
 import os
 from pathlib import Path
 
@@ -25,6 +26,14 @@ def tool():
 
 LIBRARY = 'earthng_native.dll' if os.name == 'nt' else 'libearthng_native.so'
 _kernels = []
+
+
+class IndexIn(ctypes.Structure):
+    """rust/crates/kernels index.rs IndexIn, field for field."""
+    _fields_ = [(name, ctypes.c_size_t if name in ('ns', 'nn', 'nj', 'path_len') else ctypes.c_void_p) for name in (
+        'ns', 'layout', 'way', 'node_a', 'node_b', 'width', 'width_int', 'xy', 'xy_off', 'ps', 'ps_off', 'ph', 'ph_off',
+        'cuts', 'text', 'text_off', 'raw', 'raw_off', 'nn', 'nid', 'node_xy', 'lift', 'h', 'mouth_sid', 'mouth_off',
+        'nj', 'j_node', 'corners', 'corner_off', 'cz', 'wkb', 'wkb_off', 'j_bounds', 'path', 'path_len')]
 
 
 class Kernels:
@@ -58,6 +67,30 @@ class Kernels:
             lib.earthng_crossings_len.restype = ctypes.c_size_t
             lib.earthng_crossings_take.argtypes = [P, P, P, P, P]
             lib.earthng_crossings_take.restype = None
+
+        # csr / close_pairs (rust/crates/kernels solve.rs), absent from an older library
+        self.has_solve = hasattr(lib, 'earthng_profile_csr')
+        if self.has_solve:
+            lib.earthng_profile_csr.argtypes = [ctypes.c_size_t, P, P, P, ctypes.c_int64]
+            lib.earthng_profile_csr.restype = P
+            lib.earthng_profile_close_pairs.argtypes = [ctypes.c_size_t, P, P, P, P, P]
+            lib.earthng_profile_close_pairs.restype = P
+            lib.earthng_out_len.argtypes = [P, ctypes.c_int32, ctypes.c_size_t]
+            lib.earthng_out_len.restype = ctypes.c_size_t
+            lib.earthng_out_copy.argtypes = [P, ctypes.c_int32, ctypes.c_size_t, P]
+            lib.earthng_out_copy.restype = None
+            lib.earthng_out_free.argtypes = [P]
+            lib.earthng_out_free.restype = None
+        self.has_index = hasattr(lib, 'earthng_write_index')
+        if self.has_index:
+            lib.earthng_write_index.argtypes = [P]
+            lib.earthng_write_index.restype = ctypes.c_int32
+            lib.earthng_float_repr.argtypes = [ctypes.c_double, ctypes.c_char_p, ctypes.c_size_t]
+            lib.earthng_float_repr.restype = ctypes.c_size_t
+        self.has_split = hasattr(lib, 'earthng_split_roads')
+        if self.has_split:
+            lib.earthng_split_roads.argtypes = [ctypes.c_size_t, P, ctypes.c_size_t, P, P, P]
+            lib.earthng_split_roads.restype = P
 
         D = ctypes.c_void_p
         lib.earthng_dem_open.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int32, ctypes.c_uint32,
@@ -103,6 +136,78 @@ class Kernels:
         out = np.empty(s.nvar)
         self.lib.earthng_profile_matvec(self.ctypes.byref(s), h.ctypes.data, out.ctypes.data, int(bool(springs)))
         return out
+
+    def _take(self, out, ints, floats):
+        """The arrays of a kernel's Out (ints int64, then floats float64), freeing it."""
+        import numpy as np
+        try:
+            got = []
+            for float_, count, dtype in ((0, ints, np.int64), (1, floats, np.float64)):
+                for k in range(count):
+                    a = np.empty(self.lib.earthng_out_len(out, float_, k), dtype=dtype)
+                    self.lib.earthng_out_copy(out, float_, k, a.ctypes.data)
+                    got.append(a)
+            return got
+        finally:
+            self.lib.earthng_out_free(out)
+
+    def csr(self, rows, cols, vals, n):
+        """fast_profile.csr: (ptr, col, data), the same bits (rust/crates/kernels solve.rs)."""
+        import numpy as np
+        keep = [np.ascontiguousarray(rows, dtype=np.int64), np.ascontiguousarray(cols, dtype=np.int64),
+                np.ascontiguousarray(vals, dtype=np.float64)]
+        assert len(keep[0]) == len(keep[1]) == len(keep[2])
+        return tuple(self._take(self.lib.earthng_profile_csr(len(keep[0]), *[k.ctypes.data for k in keep], int(n)), 2, 1))
+
+    def float_repr(self, x):
+        """repr(float(x)) as the index writer writes it (for its tests)."""
+        buf = ctypes.create_string_buffer(64)
+        n = self.lib.earthng_float_repr(float(x), buf, 64)
+        return buf.raw[:n].decode()
+
+    def write_index(self, path, arrays):
+        """fast_sources.write_index's rows into a new SQLite file at path (rust/crates/kernels
+        index.rs); arrays by IndexIn's field names. False when it could not (reason on stderr)."""
+        import numpy as np
+        kinds = {'layout': np.uint8, 'width_int': np.uint8, 'text': np.uint8, 'wkb': np.uint8}
+        floats = {'width', 'xy', 'ps', 'ph', 'cuts', 'raw', 'node_xy', 'lift', 'h', 'corners', 'cz', 'j_bounds'}
+        keep, values = [], {}
+        for name, _ in IndexIn._fields_:
+            if name in ('ns', 'nn', 'nj', 'path', 'path_len'):
+                continue
+            dtype = kinds.get(name, np.float64 if name in floats else np.int64)
+            a = arrays[name]
+            a = np.frombuffer(a, dtype=np.uint8) if isinstance(a, bytes) else np.ascontiguousarray(a, dtype=dtype)
+            if not len(a):
+                a = np.zeros(1, dtype=dtype)        # a real pointer even for nothing
+            keep.append(a)
+            values[name] = a.ctypes.data
+        encoded = str(path).encode()
+        spec = IndexIn(ns=arrays['ns'], nn=arrays['nn'], nj=arrays['nj'], path=ctypes.cast(ctypes.c_char_p(encoded), ctypes.c_void_p),
+                       path_len=len(encoded), **values)
+        return self.lib.earthng_write_index(ctypes.byref(spec)) == 0
+
+    def split_roads(self, lens, ids, x, y):
+        """fast_sources._prepare's split (rust/crates/kernels split.rs): way, node a, node b,
+        offsets, point rows (int64), then x y rounded (P x 2), arc lengths, piece lengths."""
+        import numpy as np
+        keep = [np.ascontiguousarray(lens, dtype=np.int64), np.ascontiguousarray(ids, dtype=np.int64),
+                np.ascontiguousarray(x, dtype=np.float64), np.ascontiguousarray(y, dtype=np.float64)]
+        assert len(keep[1]) == len(keep[2]) == len(keep[3]) == int(keep[0].sum())
+        got = self._take(self.lib.earthng_split_roads(len(keep[0]), keep[0].ctypes.data, len(keep[1]),
+                                                      *[k.ctypes.data for k in keep[1:]]), 5, 3)
+        got[5] = got[5].reshape(-1, 2)
+        return got
+
+    def close_pairs(self, pos, seg_of, width, ground, same):
+        """fast_profile.close_pairs: (a, e, t), the same arrays in the same order."""
+        import numpy as np
+        n = len(pos)
+        keep = [np.ascontiguousarray(pos, dtype=np.float64).reshape(n, 2), np.ascontiguousarray(seg_of, dtype=np.int64),
+                np.ascontiguousarray(width, dtype=np.float64), np.ascontiguousarray(ground, dtype=np.uint8),
+                np.ascontiguousarray(same, dtype=np.uint8)]
+        assert len(keep[4]) == max(0, n - 1) and all(len(k) == n for k in keep[1:4])
+        return tuple(self._take(self.lib.earthng_profile_close_pairs(n, *[k.ctypes.data for k in keep]), 2, 1))
 
     def crossings(self, pos, seg_of, same, upper, lower, widths, levels):
         """fast_profile.crossings, the same arrays (rust/crates/kernels crossings.rs)."""

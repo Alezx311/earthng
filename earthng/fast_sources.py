@@ -6,6 +6,7 @@ SQLite/RTree readers are independent and bounded; workers never copy a city grap
 from collections import Counter, defaultdict, OrderedDict
 import gc
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -507,9 +508,19 @@ class Polylines:
     """Many 1-D functions (xp[k], fp[k]) evaluated at once: value(x, k) == np.interp(x, xp[k], fp[k])
     bit for bit (the same slope formula), without a Python step per call."""
     def __init__(self, xp):
-        self.n = np.array([len(a) for a in xp])
+        self._place(np.concatenate(xp), np.array([len(a) for a in xp]))
+
+    @classmethod
+    def end_to_end(cls, X, n):
+        """The same functions from their xp laid end to end (X) and their lengths n."""
+        self = cls.__new__(cls)
+        self._place(X, n)
+        return self
+
+    def _place(self, X, n):
+        self.n = n
         self.start = np.concatenate([[0], np.cumsum(self.n)[:-1]])
-        self.X = np.concatenate(xp)
+        self.X = X
         first, last = self.X[self.start], self.X[self.start + self.n - 1]
         # the functions laid end to end (1 apart) only to find the bracketing pair
         self.offset = np.concatenate([[0.], np.cumsum(last - first + 1.)[:-1]]) - first
@@ -529,6 +540,81 @@ class Polylines:
         return np.where(x >= X[hi], F[hi], out)
 
 
+ROAD_KEYS = ('id', 'way', 'tags', 'xy', 'nodes', 'width', 'prof')   # a road segment from _prepare
+
+
+def _native_rows(segments, arcs, mouths, node_h, nids, counts, first, sid, plus, minus, cz, level, cuts,
+                 ps, ps_n, ph, ph_n):
+    """write_index's arrays for earthng_write_index: the JSON it composes itself for _prepare's
+    road segments (floats from round / tolist, ints, a width int or float), Python's JSON of any
+    other segment, the junctions kept with their GEOS hulls. Every segment gets its cuts here too."""
+    import shapely
+    chain = itertools.chain.from_iterable
+    ns = len(segments)
+    widths = [seg['width'] for seg in segments]
+    width = np.array(widths, dtype=float)
+    width_int = np.array([type(w) is int for w in widths], dtype=np.uint8)
+
+    def road(seg):
+        nodes = seg['nodes']
+        return (tuple(seg) == ROAD_KEYS and type(seg['way']) is int and type(nodes) is list and len(nodes) == 2
+                and type(nodes[0]) is int and type(nodes[1]) is int and type(seg['width']) in (int, float))
+    is_road = [road(seg) for seg in segments]
+    layout = np.array(is_road, dtype=np.uint8) ^ 1
+    texts, tag_text = [], {}
+    for seg, cut, ok in zip(segments, cuts[1:].tolist(), is_road):
+        seg['cuts'] = cut
+        if ok:
+            tags = seg['tags']
+            text = tag_text.get(id(tags))
+            if text is None:
+                text = tag_text[id(tags)] = json.dumps(tags, separators=(',', ':'))
+            texts.append(text)
+        else:
+            texts.append(json.dumps(seg, separators=(',', ':')))
+    way = np.array([seg['way'] if ok else 0 for seg, ok in zip(segments, is_road)], dtype=np.int64)
+    node_a = np.array([seg['nodes'][0] if ok else 0 for seg, ok in zip(segments, is_road)], dtype=np.int64)
+    node_b = np.array([seg['nodes'][1] if ok else 0 for seg, ok in zip(segments, is_road)], dtype=np.int64)
+    road_xy = [seg['xy'] if ok else () for seg, ok in zip(segments, is_road)]
+    xy_n = np.array([len(xy) for xy in road_xy])
+    xy = np.fromiter(chain(chain(road_xy)), dtype=float)      # _prepare's points are [x, y]
+    if len(xy) != 2 * int(xy_n.sum()):
+        raise ValueError('a road point is not x, y')
+    encoded = [t.encode() for t in texts]
+    text_n = np.array([len(t) for t in encoded])
+    raw_n = np.array([len(a[0]) for a in arcs])
+    raw = np.concatenate([a[0] for a in arcs])
+    offsets = lambda n: np.r_[0, np.cumsum(n)].astype(np.int64)
+    # junctions: the corners of every mouth of a node with more than one, their GEOS hull
+    junction = counts > 1
+    corners = np.empty((2 * len(sid), 2)); corners[0::2], corners[1::2] = plus, minus
+    pick = np.repeat(np.repeat(junction, counts), 2)
+    corners, corner_z = corners[pick], np.repeat(cz, 2)[pick]
+    nc = 2 * counts[junction]
+    rows = np.flatnonzero(junction)
+    wkb, wkb_n, bounds = b'', np.zeros(0, dtype=np.int64), np.zeros((0, 4))
+    if len(rows):
+        hulls = shapely.convex_hull(shapely.multipoints(corners, indices=np.repeat(np.arange(len(rows)), nc)))
+        kept = shapely.area(hulls) > .01
+        hulls, rows = hulls[kept], rows[kept]
+        point_kept = np.repeat(kept, nc)
+        corners, corner_z, nc = corners[point_kept], corner_z[point_kept], nc[kept]
+        wkbs = shapely.to_wkb(hulls)
+        wkb, wkb_n, bounds = b''.join(wkbs), np.array([len(w) for w in wkbs]), shapely.bounds(hulls)
+    else:
+        corners, corner_z, nc = corners[:0], corner_z[:0], nc[:0]
+    return {'ns': ns, 'layout': layout, 'way': way, 'node_a': node_a, 'node_b': node_b, 'width': width,
+            'width_int': width_int, 'xy': xy, 'xy_off': offsets(xy_n), 'ps': ps, 'ps_off': offsets(ps_n),
+            'ph': ph, 'ph_off': offsets(ph_n), 'cuts': cuts[1:], 'text': b''.join(encoded), 'text_off': offsets(text_n),
+            'raw': raw, 'raw_off': offsets(raw_n),
+            'nn': len(nids), 'nid': np.array(nids, dtype=np.int64),
+            'node_xy': np.array([mouths[n][0][2] for n in nids], dtype=float).reshape(-1, 2), 'lift': level,
+            'h': np.array([node_h[n] + ROAD_LIFT for n in nids], dtype=float),
+            'mouth_sid': sid, 'mouth_off': offsets(counts),
+            'nj': len(rows), 'j_node': rows, 'corners': corners, 'corner_off': offsets(nc), 'cz': corner_z,
+            'wkb': wkb, 'wkb_off': offsets(wkb_n), 'j_bounds': bounds}
+
+
 def _dumps(objs, compact):
     return [json.dumps(o, separators=(',', ':')) if compact else json.dumps(o) for o in objs]
 
@@ -539,6 +625,7 @@ def write_index(segments, arcs, mouths, node_h, path, emit=print):
     of the rows is encoded in parallel (~60 s in one process), and the rows go in key / spatial
     order into a database without a journal: a temporary file, renamed only once complete."""
     from concurrent.futures import ProcessPoolExecutor
+    import native_tool
     started = time.perf_counter()
     pool = ProcessPoolExecutor(min(6, os.cpu_count() or 2)) if len(segments) > 50_000 else None
     schema = '''PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-262144;
@@ -579,17 +666,29 @@ def write_index(segments, arcs, mouths, node_h, path, emit=print):
         norm = np.maximum(1e-9, np.sqrt(dx * dx + dy * dy))
         dx, dy = dx / norm, dy / norm
         nx, ny = -dy * width / 2, dx * width / 2
-        plus = np.round(np.column_stack([px + nx, py + ny]), 3).tolist()
-        minus = np.round(np.column_stack([px - nx, py - ny]), 3).tolist()
-        prof = Polylines([np.asarray(seg['prof'][0], dtype=float) for seg in segments])
-        cz = (prof.value(s, prof.locate(s, k), np.concatenate([np.asarray(seg['prof'][1], dtype=float) for seg in segments]))
-              + ROAD_LIFT).tolist()
+        plus = np.round(np.column_stack([px + nx, py + ny]), 3)
+        minus = np.round(np.column_stack([px - nx, py - ny]), 3)
+        # every profile end to end (np.asarray per segment cost a second in Tokyo)
+        chain = itertools.chain.from_iterable
+        ps_n = np.array([len(seg['prof'][0]) for seg in segments]); ph_n = np.array([len(seg['prof'][1]) for seg in segments])
+        ps = np.fromiter(chain(seg['prof'][0] for seg in segments), dtype=float, count=int(ps_n.sum()))
+        ph = np.fromiter(chain(seg['prof'][1] for seg in segments), dtype=float, count=int(ph_n.sum()))
+        prof = Polylines.end_to_end(ps, ps_n)
+        cz = prof.value(s, prof.locate(s, k), ph) + ROAD_LIFT
         bridge = np.array([max(1, number(seg['tags'].get('layer'), 1)) * 6.5
                            if seg['tags'].get('bridge') not in (None, 'no') else 0. for seg in segments])
-        level = np.maximum(np.maximum.reduceat(bridge[k], first), 0.).tolist()
+        level = np.maximum(np.maximum.reduceat(bridge[k], first), 0.)
         cuts = np.zeros((len(segments) + 1, 2)); cuts[sid, end] = cut
-        cuts = cuts.tolist()
         emit(f'mouths: {time.perf_counter()-started:.1f}s')
+        native = native_tool.kernels()
+        if native is not None and native.has_index and all(seg['id'] == i + 1 for i, seg in enumerate(segments)):
+            arrays = _native_rows(segments, arcs, mouths, node_h, nids, counts, first, sid, plus, minus, cz, level,
+                                  cuts, ps, ps_n, ph, ph_n)
+            if native.write_index(path, arrays):
+                emit(f'written: {time.perf_counter()-started:.1f}s')
+                return
+            Path(path).unlink(missing_ok=True)      # the reason is on stderr; Python writes it
+        plus, minus, cz, level, cuts = plus.tolist(), minus.tolist(), cz.tolist(), level.tolist(), cuts.tolist()
         nodes, junctions = [], []
         for n, nid, a, lev in zip(counts.tolist(), nids, first.tolist(), level):
             entries = mouths[nid]
@@ -719,13 +818,40 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
     del parts
     emit(f'roads parsed in {time.perf_counter()-started:.1f}s')
     check()
-    refs = Counter(n[0] for _, nodes in roads.values() for n in nodes)
     order = sorted(roads)
     lens = [len(roads[w][1]) for w in order]
     lon = [n[1] for w in order for n in roads[w][1]]; lat = [n[2] for w in order for n in roads[w][1]]
     X, Y = frame.local(lon, lat)            # one transform for every node (was one per way)
-    X, Y = X.tolist(), Y.tolist(); del lon, lat
+    del lon, lat
     segments, arcs, mouths = [], [], defaultdict(list)
+    every_xy = None
+    native = native_tool.kernels()
+    if native is not None and native.has_split:
+        # the loop below in earthng_native.dll: the same cuts, CPython's hypot, round(x, 3)
+        ids = [n[0] for w in order for n in roads[w][1]]
+        way, na, nb, off, rows, xy, cum, length = native.split_roads(lens, ids, X, Y)
+        del ids
+        every_xy = xy                       # the segments' xy, end to end (the mosaic's points)
+        raw = np.column_stack([X, Y])[rows]
+        heads, tails = raw[off[:-1]].tolist(), raw[off[1:] - 1].tolist()
+        xy, off, length, na, nb = xy.tolist(), off.tolist(), length.tolist(), na.tolist(), nb.tolist()
+        widths = {}
+        for s, k in enumerate(way.tolist()):
+            wid = order[k]
+            tags = roads[wid][0]
+            width = widths.get(k)
+            if width is None:
+                width = widths[k] = road_width(tags)
+            lo, hi = off[s], off[s + 1]
+            seg = {'id': s + 1, 'way': wid, 'tags': tags, 'xy': xy[lo:hi], 'nodes': [na[s], nb[s]], 'width': width}
+            segments.append(seg); arcs.append((raw[lo:hi], cum[lo:hi]))
+            mouths[na[s]].append((s + 1, 0, heads[s], None, width, length[s]))
+            mouths[nb[s]].append((s + 1, 1, tails[s], None, width, length[s]))
+        lens = []                           # the loop below has nothing left to do
+        del way, na, nb, off, rows, xy, raw, heads, tails, length, widths
+    else:
+        refs = Counter(n[0] for _, nodes in roads.values() for n in nodes)
+    X, Y = X.tolist(), Y.tolist()
     at = 0
     hypot = math.hypot
     for wid, count in zip(order, lens):
@@ -752,14 +878,17 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
             segments.append(seg); arcs.append((np.array(pts), np.array(cum)))
             mouths[seg['nodes'][0]].append((seg['id'],0,list(pts[0]),None,width,cum[-1]))
             mouths[seg['nodes'][1]].append((seg['id'],1,list(pts[-1]),None,width,cum[-1]))
-    del roads, refs
+    del roads
     # one height solve for the whole graph: shared nodes, smooth grades, soft bridges/tunnels
     import fast_profile
     zoom = dem_zoom(dem, index['package_box'])
     terrain = Terrain(dem, frame, zoom)
     # a wilderness region (Everest's Tibetan side) has no road at all: nothing to solve
     if segments:
-        mosaic = fast_profile.Mosaic(terrain, np.concatenate([np.asarray(seg['xy']) for seg in segments]))
+        if every_xy is None:
+            every_xy = np.concatenate([np.asarray(seg['xy']) for seg in segments])
+        mosaic = fast_profile.Mosaic(terrain, every_xy)
+        del every_xy
         profiles, node_h = fast_profile.solve(segments, lambda q: mosaic.sample(q, missing=True), emit=emit)
         for seg, (ps, ph) in zip(segments, profiles):
             seg['prof'] = [np.round(ps, 2).tolist(), np.round(ph, 3).tolist()]
