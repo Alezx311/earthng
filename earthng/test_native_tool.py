@@ -90,6 +90,56 @@ class NativeToolTests(unittest.TestCase):
                     self.assertEqual(tile[field], other[field], (key, field))
                 self.assertEqual(objects(tmp / 'python' / tile['file']), objects(tmp / 'native' / other['file']), key)
 
+    @unittest.skipUnless(native_tool.tool(), 'native Map Builder not built (cargo build --release in rust/)')
+    def test_selection_cut_grows_to_whole_cells_like_python(self):
+        import country_fetch
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            pbf = tmp / 'fixture.osm.pbf'
+            fixture(pbf)
+            selection = [30.02, 50.02, 30.08, 50.06]            # inside a few cells, wholly inside none
+            country_fetch.cut_tiles(pbf, tmp / 'tiles-cells', selection, emit=lambda _: None)
+            index = json.loads((tmp / 'tiles-cells' / 'index.json').read_text(encoding='utf8'))
+            self.assertEqual(index['cutter'], 'earthng-mapbuilder')
+            self.assertEqual(index['package_box'], country_fetch.package_box(pbf, selection))
+            osm_tiles.cut(pbf, tmp / 'python', country_fetch.package_box(pbf, selection))
+            python = json.loads((tmp / 'python' / 'index.json').read_text(encoding='utf8'))
+            self.assertTrue(index['tiles'])
+            self.assertEqual(sorted(index['tiles']), sorted(python['tiles']))
+            self.assertTrue(country_fetch.tiles_current(tmp / 'tiles-cells', selection))
+            # a cut of the bare selection (the native cut before 7.11) is cut again
+            subprocess.run(native_tool.cut_command(pbf, tmp / 'bare', selection), check=True, capture_output=True)
+            self.assertFalse(country_fetch.tiles_current(tmp / 'bare', selection))
+            self.assertTrue(country_fetch.tiles_current(tmp / 'bare'))
+
+    @unittest.skipUnless(native_tool.tool(), 'native Map Builder not built (cargo build --release in rust/)')
+    def test_selection_from_a_covering_cut_is_its_own_cut(self):
+        import country_fetch
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            pbf = tmp / 'fixture.osm.pbf'
+            fixture(pbf)
+            selection = [30.02, 50.02, 30.08, 50.06]
+            self.assertFalse(country_fetch.tiles_from_cover(tmp, 'land', selection, country_fetch.tiles_dir(tmp, 'land', selection)))
+            wide = [29.9, 49.9, 30.2, 50.2]
+            country_fetch.cut_tiles(pbf, country_fetch.tiles_dir(tmp, 'land', wide), wide, emit=lambda _: None)
+            lines = []
+            taken = country_fetch.tiles_dir(tmp, 'land', selection)
+            self.assertTrue(country_fetch.tiles_from_cover(tmp, 'land', selection, taken, lines.append))
+            self.assertTrue(any('taken from land-user-cells' in line for line in lines))
+            country_fetch.cut_tiles(pbf, tmp / 'fresh', selection, emit=lambda _: None)
+            a = json.loads((taken / 'index.json').read_text(encoding='utf8'))
+            b = json.loads((tmp / 'fresh' / 'index.json').read_text(encoding='utf8'))
+            self.assertTrue(a['tiles'])
+            self.assertEqual(a['package_box'], b['package_box'])
+            self.assertEqual({k: t['sha256'] for k, t in a['tiles'].items()}, {k: t['sha256'] for k, t in b['tiles'].items()})
+            self.assertTrue(country_fetch.tiles_current(taken, selection))
+            for tile in a['tiles'].values():
+                self.assertEqual((taken / tile['file']).read_bytes(), (tmp / 'fresh' / tile['file']).read_bytes())
+            # a selection reaching past the covering cut is not taken from it
+            self.assertFalse(country_fetch.tiles_from_cover(tmp, 'land', [30.0, 50.0, 30.4, 50.1],
+                                                            country_fetch.tiles_dir(tmp, 'land', [30.0, 50.0, 30.4, 50.1])))
+
 
 if __name__ == '__main__':
     unittest.main()
@@ -177,7 +227,7 @@ class FallbackTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(native_tool, 'cut_command', lambda pbf, out, box=None, threads=None: ['native', str(out)]), \
                 patch.object(country_fetch, 'run_step', run_step), \
-                patch.object(country_fetch, 'tiles_current', lambda tiles: False):
+                patch.object(country_fetch, 'tiles_current', lambda tiles, box=None: False):
             (Path(tmp) / 'tiles.part').mkdir()          # what the native cut leaves when it fails
             country_fetch.cut_tiles(Path(tmp) / 'x.osm.pbf', Path(tmp) / 'tiles', jobs=2, heavy_jobs=1,
                                     emit=lambda line: None)

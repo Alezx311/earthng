@@ -1,12 +1,13 @@
 """Audit/download raw Terrarium sources. No road profiles or geometry are prepared here."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import http.client
 import json
 import math
 import os
 from pathlib import Path
+import threading
 import time
-import urllib.request
 
 import tls
 
@@ -25,14 +26,57 @@ def audit(index, cache):
     return [Path(cache)/'terrain/12'/str(x)/f'{y}.png' for x,y in sorted(keys)]
 
 
+# The AWS Open Data bucket of the Terrarium tiles (us-east-1). A new TLS connection per tile held
+# the build at 11 tiles/s from Kyiv; one kept-alive connection per thread fetched 29 (2026-11-07).
+HOST='elevation-tiles-prod.s3.us-east-1.amazonaws.com'
+USER_AGENT='EarthNG/0.1 (+https://github.com/Alezx311/earth2road)'
+# Some connections to S3 stall for minutes (an 11 MB file took 3 s, then 83 s and 433 s on the same
+# line): a tile that sends nothing for STALL seconds, or is not in after DEADLINE, is abandoned and
+# asked again on a fresh connection.
+STALL=8
+DEADLINE=20
+_local=threading.local()
+
+
+def _download(url_path):
+    """GET over this thread's kept-alive connection; the connection is dropped on any failure."""
+    conn=getattr(_local,'conn',None)
+    if conn is None:
+        conn=_local.conn=http.client.HTTPSConnection(HOST,timeout=STALL,context=tls.context())
+    try:
+        started=time.monotonic()
+        conn.request('GET',url_path,headers={'User-Agent':USER_AGENT})
+        response=conn.getresponse()
+        chunks=[]
+        while True:
+            chunk=response.read(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if time.monotonic()-started>DEADLINE:
+                raise TimeoutError(f'{url_path}: slower than {DEADLINE} s')
+        if response.status!=200:
+            raise OSError(f'https://{HOST}{url_path}: HTTP {response.status}')
+        if response.will_close:
+            conn.close(); _local.conn=None
+        return b''.join(chunks)
+    except BaseException:
+        conn.close(); _local.conn=None
+        raise
+
+
 def fetch(path):
     from PIL import Image
     if path.exists():
         return
-    url='https://s3.amazonaws.com/elevation-tiles-prod/terrarium/12/'+path.parent.name+'/'+path.name
-    req=urllib.request.Request(url,headers={'User-Agent':'EarthNG/0.1 (+https://github.com/Alezx311/earth2road)'})
-    with urllib.request.urlopen(req,timeout=45,context=tls.context()) as response:
-        data=response.read()
+    url_path='/terrarium/12/'+path.parent.name+'/'+path.name
+    url=f'https://{HOST}{url_path}'
+    try:
+        data=_download(url_path)
+    except (OSError,http.client.HTTPException):
+        # a kept-alive connection the server closed, or a stalled one: once more on a new one
+        # at once (the callers' retries back off for seconds)
+        data=_download(url_path)
     path.parent.mkdir(parents=True,exist_ok=True)
     tmp=path.with_suffix(f'.{os.getpid()}.png.part'); tmp.write_bytes(data)   # builds side by side
     with Image.open(tmp) as image:

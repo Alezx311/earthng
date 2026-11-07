@@ -274,14 +274,40 @@ class PackFileTests(unittest.TestCase):
         with TemporaryDirectory() as folder:
             dest = Path(folder) / 'extract.pbf'
             dest.write_bytes(b'old')
-            response = io.BytesIO(b'short')
-            response.status = 200
+            def short(*_args, **_kw):
+                response = io.BytesIO(b'short')
+                response.status = 200
+                response.headers = {}
+                return response
             with patch.object(country_fetch, 'content_length', return_value=20), \
-                    patch.object(country_fetch.urllib.request, 'urlopen', return_value=response):
+                    patch.object(country_fetch, 'DOWNLOAD_RESUMES', 2), \
+                    patch.object(country_fetch.time, 'sleep'), \
+                    patch.object(country_fetch.urllib.request, 'urlopen', side_effect=short) as opened:
                 with self.assertRaisesRegex(OSError, 'incomplete download'):
                     country_fetch.download('https://example.com/extract.pbf', dest, emit=lambda _: None)
+            self.assertEqual(opened.call_count, 3)          # the first try and two resumes
             self.assertEqual(dest.read_bytes(), b'old')
             self.assertEqual(dest.with_suffix('.pbf.part').read_bytes(), b'short')
+
+    def test_broken_transfer_resumes_where_it_stopped(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            dest = Path(folder) / 'extract.pbf'
+            first = io.BytesIO(b'abc')
+            first.status = 200
+            first.headers = {'Content-Length': '6', 'ETag': '"v1"'}
+            rest = io.BytesIO(b'def')
+            rest.status = 206
+            rest.headers = {'Content-Range': 'bytes 3-5/6', 'Content-Length': '3', 'ETag': '"v1"'}
+            lines = []
+            with patch.object(country_fetch, 'content_length', return_value=6), \
+                    patch.object(country_fetch.time, 'sleep'), \
+                    patch.object(country_fetch.urllib.request, 'urlopen', side_effect=[first, rest]) as opened:
+                country_fetch.download('https://example.com/extract.pbf', dest, emit=lines.append)
+            self.assertEqual(dest.read_bytes(), b'abcdef')
+            self.assertEqual(opened.call_args_list[1].args[0].get_header('Range'), 'bytes=3-')
+            self.assertEqual(opened.call_args_list[1].args[0].get_header('If-range'), '"v1"')
+            self.assertTrue(any('resuming at' in line for line in lines))
 
     def test_worker_output_and_failure_reach_the_gui_log(self):
         import subprocess

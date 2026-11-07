@@ -421,7 +421,7 @@ class Setup:
         area = box or (list(boundary.bounds) if boundary is not None else None)
         slug = places.slug(self.place['id'])
         cached_pbf = country_fetch.pbf_path(ROOT, slug).is_file()
-        cached_tiles = country_fetch.tiles_current(country_fetch.tiles_dir(ROOT, slug, box))
+        cached_tiles = country_fetch.tiles_current(country_fetch.tiles_dir(ROOT, slug, box), box)
         include = self.chosen_include()
         key = timing.signature(self.place['id'], box, include, cached_pbf, cached_tiles)
         estimate, reason = timing.estimate(self.sizes.get(self.place['id']), area, include,

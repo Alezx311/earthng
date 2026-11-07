@@ -553,6 +553,64 @@ class BuildLifecycleTests(unittest.TestCase):
                 country_fetch.fetch_dem({}, '.', cancel=cancel, emit=lambda _: None)
 
 
+class DemAheadTests(unittest.TestCase):
+    def test_box_ahead_covers_every_cell_the_cut_can_keep(self):
+        import fast_dem
+        import osm_tiles
+        box = [30.40, 50.38, 30.62, 50.52]
+        ahead = country_fetch.dem_ahead_index(box)
+        pw, ps, pe, pn = osm_tiles.source_box(box)
+        cut = {k for k in ((x, y) for x in range(int(pw // osm_tiles.CELL) - 1, int(pe // osm_tiles.CELL) + 2)
+                           for y in range(int(ps // osm_tiles.CELL) - 1, int(pn // osm_tiles.CELL) + 2))
+               if pw <= osm_tiles.coverage(k)[0] and osm_tiles.coverage(k)[2] <= pe
+               and ps <= osm_tiles.coverage(k)[1] and osm_tiles.coverage(k)[3] <= pn}
+        self.assertEqual(sorted(t['coverage'] for t in ahead['tiles'].values()), sorted(osm_tiles.coverage(k) for k in cut))
+        # a cut keeps some of those cells (where data is): their DEM is inside the one fetched ahead
+        some = {'tiles': {str(i): {'coverage': osm_tiles.coverage(k)} for i, k in enumerate(sorted(cut)[::3])}}
+        self.assertLessEqual(set(fast_dem.audit(some, 'dem')), set(fast_dem.audit(ahead, 'dem')))
+
+    def test_country_ahead_follows_the_outline(self):
+        from shapely.geometry import Polygon
+        outline = Polygon([(30.0, 50.0), (30.3, 50.0), (30.0, 50.3)])          # a triangle
+        tiles = country_fetch.dem_ahead_index(outline=outline)['tiles'].values()
+        self.assertTrue(tiles)
+        self.assertLess(len(tiles), 7 * 7)                                  # its bounds hold 7 x 7 cells
+        self.assertIsNone(country_fetch.dem_ahead_index())
+
+    def test_ahead_stops_with_the_build_and_elevation_waits_for_it(self):
+        import fast_dem
+        started, release = threading.Event(), threading.Event()
+        cancel = threading.Event()
+        calls = []
+
+        def slow_fetch(index, dem, emit=print, cancel=None):
+            calls.append(index)
+            started.set()
+            while not cancel.is_set() and not release.is_set():
+                cancel.wait(0.01)
+            if cancel.is_set():
+                raise InterruptedError('build stopped')
+        index = country_fetch.dem_ahead_index([30.40, 50.38, 30.45, 50.42])
+        with patch.object(country_fetch, 'fetch_dem', side_effect=slow_fetch), \
+                patch.object(fast_dem, 'audit', return_value=[Path('missing-test-dem.png')]):
+            with country_fetch._dem_ahead(index, 'dem', lambda _: None, cancel) as ahead:
+                ahead.join()                                   # not started: nothing to wait for
+                self.assertEqual(calls, [])
+                ahead.start()
+                self.assertTrue(started.wait(5))
+            self.assertFalse(ahead.thread.is_alive())          # leaving the build stopped it
+            self.assertIsInstance(ahead.error, InterruptedError)
+            self.assertFalse(cancel.is_set())                 # without stopping the build itself
+            lines = []
+            with country_fetch._dem_ahead(index, 'dem', lines.append, cancel) as ahead:
+                ahead.start()
+                release.set()
+                ahead.join()
+                self.assertFalse(ahead.thread.is_alive())
+            self.assertTrue(any('while the tiles were cut' in line for line in lines))
+            self.assertEqual(len(calls), 2)
+
+
 class PreviewTests(unittest.TestCase):
     def test_native_srgb_dds_decodes_without_altering_file(self):
         from PIL import Image

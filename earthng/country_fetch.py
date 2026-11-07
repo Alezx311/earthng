@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 from itertools import islice
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -134,7 +136,43 @@ def download(url, dest, emit=print, cancel=None):
         # still the server's, so it is not fetched again
         emit(f'already have {dest.name} (unchanged on the server)')
         return dest
-    check_cancel()
+    for attempt in range(DOWNLOAD_RESUMES + 1):
+        check_cancel()
+        try:
+            return _transfer(url, dest, total, emit, check_cancel)
+        except (InterruptedError, TransferError):   # Stop (an OSError too); a server answering wrong
+            raise
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500 or attempt == DOWNLOAD_RESUMES:
+                raise
+            problem = f'HTTP {exc.code}'
+        except (OSError, http.client.HTTPException) as exc:
+            if attempt == DOWNLOAD_RESUMES:
+                raise
+            problem = str(exc) or type(exc).__name__
+        part = dest.with_suffix(dest.suffix + '.part')
+        have = part.stat().st_size if part.exists() else 0
+        emit(f'{dest.name}: the connection broke ({problem}); resuming at {have / 2**20:.0f} MB')
+        if cancel is not None:
+            if cancel.wait(min(30, 2 * attempt)):
+                raise InterruptedError('download stopped')
+        else:
+            time.sleep(min(30, 2 * attempt))
+
+
+# Times a broken or stalled transfer is picked up where it stopped, in one build. A connection
+# that sends nothing for DOWNLOAD_STALL seconds counts as broken (a minute of waiting each time
+# was the old timeout).
+DOWNLOAD_RESUMES = 8
+DOWNLOAD_STALL = 20
+
+
+class TransferError(OSError):
+    """The server answered a resumed download wrongly: asking again in this build will not help."""
+
+
+def _transfer(url, dest, total, emit, check_cancel):
+    """One request: from the validated part file on, or from the start."""
     part = dest.with_suffix(dest.suffix + '.part')
     metadata = part.with_suffix(part.suffix + '.json')
     have = part.stat().st_size if part.exists() else 0
@@ -151,7 +189,7 @@ def download(url, dest, emit=print, cancel=None):
         headers['If-Range'] = validator
     request = urllib.request.Request(url, headers=headers)
     try:
-        response = urllib.request.urlopen(request, timeout=60, context=tls.context())
+        response = urllib.request.urlopen(request, timeout=DOWNLOAD_STALL, context=tls.context())
     except urllib.error.HTTPError as exc:
         if exc.code != 416 or not have:
             raise
@@ -159,7 +197,7 @@ def download(url, dest, emit=print, cancel=None):
         check_cancel()
         have = 0
         request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
-        response = urllib.request.urlopen(request, timeout=60, context=tls.context())
+        response = urllib.request.urlopen(request, timeout=DOWNLOAD_STALL, context=tls.context())
     with response:
         check_cancel()
         status = getattr(response, 'status', 200)
@@ -173,19 +211,19 @@ def download(url, dest, emit=print, cancel=None):
         elif status == 206:
             match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', response_headers.get('Content-Range', ''))
             if not match:
-                raise OSError('invalid Content-Range in resumed download')
+                raise TransferError('invalid Content-Range in resumed download')
             start, end, total = map(int, match.groups())
             if start != have or end < start or end >= total:
-                raise OSError('invalid Content-Range in resumed download')
+                raise TransferError('invalid Content-Range in resumed download')
             expected = end - start + 1
             if length is not None and length != expected:
-                raise OSError('Content-Length does not match Content-Range')
+                raise TransferError('Content-Length does not match Content-Range')
         else:
-            raise OSError(f'{url}: HTTP {status}')
+            raise TransferError(f'{url}: HTTP {status}')
         etag = response_headers.get('ETag', '')
         current_validator = etag if etag and not etag.startswith('W/') else response_headers.get('Last-Modified')
         if status == 206 and have and current_validator and current_validator != validator:
-            raise OSError('source changed during resumed download; retry the download')
+            raise TransferError('source changed during resumed download; retry the download')
         mode = 'ab' if status == 206 and have else 'wb'
         chunk = 1024 * 256
         last = time.monotonic()
@@ -290,13 +328,90 @@ def tiles_dir(root, slug_id, box):
     return Path(root) / 'data' / 'osm_tiles' / name
 
 
-def tiles_current(tiles):
-    """A finished cut made by today's selection rules (osm_select.VERSION)."""
+def tiles_current(tiles, box=None):
+    """A finished cut made by today's selection rules (osm_select.VERSION). For a selection box:
+    not one the native cut made from the bare selection (5-7.11.2026, before package_box): that cut
+    kept only the cells wholly inside the selection and nothing round its edges."""
     import osm_select
     try:
-        return json.loads((Path(tiles) / 'index.json').read_text(encoding='utf-8')).get('select') == osm_select.VERSION
+        index = json.loads((Path(tiles) / 'index.json').read_text(encoding='utf-8'))
     except (OSError, ValueError, AttributeError):
         return False
+    if not isinstance(index, dict) or index.get('select') != osm_select.VERSION:
+        return False
+    if box is not None and index.get('cutter') == 'earthng-mapbuilder':
+        import osm_tiles
+        cut = index.get('package_box') or []
+        bare = len(cut) == 4 and all(abs(float(a) - float(b)) < 1e-9 for a, b in zip(cut, box))
+        if bare and [float(v) for v in box] != osm_tiles.source_box(box):
+            return False
+    return True
+
+
+def tiles_from_cover(root, slug_id, box, tiles, emit=print):
+    """A selection's tiles taken from a finished cut of the same country that covers it (the whole
+    country, or a larger selection): a tile is the same bytes whichever box it was cut for, so the
+    PBF is not downloaded or cut again. Files are hard links where the disk allows. False when no
+    cut covers the selection."""
+    import osm_tiles
+    need = osm_tiles.source_box(box)
+    folder = Path(root) / 'data' / 'osm_tiles'
+    best = None
+    for candidate in sorted(folder.glob(f'{slug_id}-user*')):
+        if candidate == Path(tiles) or candidate.name.endswith(('.recut', '.part', '.work')) or not candidate.is_dir():
+            continue
+        whole = candidate.name == f'{slug_id}-user'          # the country: its package box is the extract
+        if not tiles_current(candidate, None if whole else box):
+            continue
+        try:
+            index = json.loads((candidate / 'index.json').read_text(encoding='utf-8'))
+            cw, cs, ce, cn = index['package_box']
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if whole:
+            # cut today, the selection would be clipped to the extract the same way
+            package = [max(need[0], cw), max(need[1], cs), min(need[2], ce), min(need[3], cn)]
+        elif cw <= need[0] and cs <= need[1] and need[2] <= ce and need[3] <= cn:
+            package = need
+        else:
+            continue
+        if package[0] >= package[2] or package[1] >= package[3]:
+            continue
+        if best is None or len(index['tiles']) < len(best[1]['tiles']):
+            best = (candidate, index, package)
+    if best is None:
+        return False
+    candidate, index, package = best
+    pw, ps, pe, pn = package
+    keep = {key: tile for key, tile in index['tiles'].items()
+            if pw <= tile['coverage'][0] and tile['coverage'][2] <= pe and ps <= tile['coverage'][1] and tile['coverage'][3] <= pn}
+    target = Path(tiles)
+    part = target.with_name(target.name + '.part')
+    shutil.rmtree(part, ignore_errors=True)
+    part.mkdir(parents=True)
+    for tile in keep.values():
+        try:
+            os.link(candidate / tile['file'], part / tile['file'])
+        except OSError:
+            shutil.copy2(candidate / tile['file'], part / tile['file'])
+    subset = {k: v for k, v in index.items() if k not in ('tiles', 'package_box', 'seconds')}
+    subset.update(package_box=package, tiles=keep, seconds=0.0, taken_from=candidate.name)
+    (part / 'index.json').write_text(json.dumps(subset, indent=1), encoding='utf-8')
+    if target.exists():
+        shutil.rmtree(target)
+    os.replace(part, target)
+    emit(f'Source tiles: {len(keep)} taken from {candidate.name}; no PBF download or cut needed.')
+    return True
+
+
+def package_box(pbf, box):
+    """The box a cut keeps for a selection, as osm_tiles_country takes it: the selection grown to
+    whole cells and their buffer, clipped to the extract's own box (the PBF header)."""
+    import osmium
+    import osm_tiles
+    header = osmium.io.Reader(str(pbf), osmium.osm.osm_entity_bits.NOTHING).header().box()
+    extract = [header.bottom_left.lon, header.bottom_left.lat, header.top_right.lon, header.top_right.lat] if header.valid() else None
+    return osm_tiles.source_box(box, extract)
 
 
 def map_cache_dir(root, slug_id, pbf):
@@ -323,14 +438,14 @@ def cut_tiles(pbf, tiles, box=None, jobs=None, emit=print, cancel=None, heavy_jo
     jobs = jobs or sysmem.jobs(2, 12)
     heavy_jobs = min(jobs, heavy_jobs or sysmem.jobs(whole, 4))
     target = tiles.with_name(tiles.name + '.recut') if tiles.exists() else tiles
-    if not tiles_current(target):
+    if not tiles_current(target, box):
         if target.exists():
             shutil.rmtree(target)
         emit(f'cutting tiles into {tiles.name}')
         import native_tool
         # the native cut: the same tiles in one read of the PBF on every core (Kyiv's centre
         # from Ukraine: 12 s instead of 21 min)
-        command = native_tool.cut_command(pbf, target, box)
+        command = native_tool.cut_command(pbf, target, package_box(pbf, box) if box else None)
         if command is not None:
             try:
                 run_step(command, emit, cancel)
@@ -427,6 +542,110 @@ def fetch_dem(index, dem, emit=print, cancel=None):
                 future.cancel()
 
 
+def dem_ahead_index(box=None, outline=None):
+    """An index-like {'tiles': {key: {'coverage'}}} of the cells a cut may keep, known before the
+    PBF is here: every cell inside the box's package box (osm_tiles.source_box), or, for a whole
+    country, every cell touching its extract outline. A superset of the cut where the box holds
+    sea or empty land; the Elevation stage fetches what the real cut adds."""
+    import osm_tiles
+    if box is not None:
+        pw, ps, pe, pn = osm_tiles.source_box(box)
+    elif outline is not None:
+        pw, ps, pe, pn = outline.bounds
+    else:
+        return None
+    keys = [(x, y) for x in range(math.floor(pw / osm_tiles.CELL), math.floor(pe / osm_tiles.CELL) + 1)
+            for y in range(math.floor(ps / osm_tiles.CELL), math.floor(pn / osm_tiles.CELL) + 1)]
+    covers = {k: osm_tiles.coverage(k) for k in keys}
+    if box is not None:
+        keys = [k for k in keys if pw <= covers[k][0] and covers[k][2] <= pe and ps <= covers[k][1] and covers[k][3] <= pn]
+    else:
+        import numpy as np
+        import shapely
+        c = np.array([covers[k] for k in keys])
+        hit = shapely.intersects(shapely.box(c[:, 0], c[:, 1], c[:, 2], c[:, 3]), outline)
+        keys = [k for k, h in zip(keys, hit) if h]
+    return {'tiles': {f'{x}_{y}': {'coverage': covers[(x, y)]} for x, y in keys}}
+
+
+class _DemAhead:
+    """Elevation tiles downloaded while the PBF is cut (start() once it is here): the line is idle
+    during the cut. Beside the PBF download itself they only slowed it, since one stream of it
+    already fills the line (8.2 of ~8.5 MB/s from Kyiv, 2026-11-07). join() waits for it; the
+    Elevation stage then fetches anything the real cut needs beyond it."""
+
+    def __init__(self, index, dem, emit, cancel):
+        import threading
+        self.stop = threading.Event()
+        self.error = None
+        self.count = 0
+        self.emit = emit
+        self.started = time.monotonic()
+
+        def run():
+            import fast_dem
+            try:
+                self.count = sum(1 for p in fast_dem.audit(index, dem) if not p.exists())
+                fetch_dem(index, dem, emit=lambda _line: None, cancel=self)
+            except Exception as exc:       # the Elevation stage asks again for what is missing
+                self.error = exc
+        self.cancel = cancel
+        self.thread = threading.Thread(target=run, name='dem-ahead', daemon=True)
+
+    def start(self):
+        self.started = time.monotonic()
+        self.thread.start()
+
+    # fetch_dem's cancel: the build's Stop, or this job's own stop
+    def is_set(self):
+        return self.stop.is_set() or (self.cancel is not None and self.cancel.is_set())
+
+    def wait(self, seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if self.is_set():
+                return True
+            time.sleep(min(0.2, max(0., deadline - time.monotonic())))
+        return self.is_set()
+
+    def join(self):
+        if self.thread.ident is None:              # never started: the Elevation stage fetches it all
+            return
+        self.thread.join()
+        if self.count:
+            spent = time.monotonic() - self.started
+            note = f'; {self.error}' if self.error and not isinstance(self.error, InterruptedError) else ''
+            self.emit(f'Elevation fetched while the tiles were cut: {self.count} tiles in {spent:.0f} s{note}')
+
+    def close(self):
+        self.stop.set()
+        if self.thread.ident is not None:
+            self.thread.join()
+
+
+@contextmanager
+def _dem_ahead(index, dem, emit, cancel):
+    """A _DemAhead for index (None: nothing to fetch ahead), stopped when the build leaves."""
+    ahead = _DemAhead(index, dem, emit, cancel) if index and index['tiles'] else None
+    try:
+        yield ahead
+    finally:
+        if ahead is not None:
+            ahead.close()
+
+
+def _outline(root, place):
+    """The extract's outline from the region picker's cached index-v1.json, or None (offline,
+    never opened the picker): nothing is downloaded for it."""
+    path = Path(root) / 'data' / 'geofabrik' / 'index-v1.json'
+    if not path.is_file():
+        return None
+    try:
+        return places.load_boundaries(root).get(place['id'])
+    except (OSError, ValueError, KeyError, ImportError):
+        return None
+
+
 @contextmanager
 def build_lock(work):
     """One build at a time per checkout: two windows wrote the same out/world job and region
@@ -498,59 +717,68 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
 
     pbf = pbf_path(root, slug_id)
     tiles = tiles_dir(root, slug_id, box)
-    cached_tiles = tiles_current(tiles)
-    with stage('Sources'):
-        if cached_tiles:
-            emit('Reusing completed source tiles; no PBF download or scan needed.')
-        else:
-            if (tiles / 'index.json').is_file():
-                emit('The cached source tiles predate the points the generator now reads '
-                     '(lamps, trees, stops, entrances): cutting them again.')
-            emit(f"PBF {place['name']}: {place['pbf']}")
-            try:
-                size = pbf.stat().st_size if pbf.is_file() else content_length(place['pbf'])
-            except (OSError, ValueError):
-                size = None
-            if size:
-                share = 1 if box is None else 0.3       # a selection keeps part of the country
-                ensure_space(Path(root) / 'data', int(size * SPACE_PER_PBF_BYTE * share), f"Building {place['name']}")
-            download(place['pbf'], pbf, emit, cancel)
-    with stage('Cut tiles'):
-        if not cached_tiles:
-            cut_tiles(pbf, tiles, box, jobs, emit, cancel, min(jobs, 4) if jobs else None)
-    if road_register:
-        with stage('Road register'):
-            import est_roads
-            box_of = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))['package_box']
-            tiles = est_roads.enrich(tiles, est_roads.fetch(box_of, Path(root) / 'data', emit), emit)
-    index = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))
-    map_data = tiles / 'map'
-    map_job = None
-    if section is not None:
-        map_data = None       # the offline map is the country's: the country pack carries it
-    elif not (map_data / 'index.json').is_file():
-        if pbf.is_file():
-            # It reads only the PBF: it runs beside the elevation and the index (Ukraine's
-            # 90 s were waited for after a city's 40 s index), and the export waits for it.
-            map_data = map_cache_dir(root, slug_id, pbf)
-            map_job = _Background('Map detail', [_python(), str(HERE / 'build_map.py'), '--pbf', str(pbf),
-                                                 '--out', str(map_data)], emit, cancel, progress)
-        else:
-            emit('No original PBF/map sidecar in this cache: using base map labels and close-up roads.')
-            map_data = None
-    try:
-        return _build_rest(place, mods, root, look, include, jobs, landing, emit, cancel, stage, slug_id, tiles,
-                           index, map_data, map_job, local_dem, road_register, section)
-    finally:
-        if map_job is not None:
-            map_job.stop()
+    cached_tiles = tiles_current(tiles, box)
+    if not cached_tiles and box is not None:
+        cached_tiles = tiles_from_cover(root, slug_id, box, tiles, emit)
+    # elevation under the box (or the country's outline) downloads while the PBF is cut
+    with _dem_ahead(None if cached_tiles else dem_ahead_index(box, None if box is not None else _outline(root, place)),
+                    Path(root) / 'out' / 'world' / 'cache', emit, cancel) as ahead:
+        with stage('Sources'):
+            if cached_tiles:
+                emit('Reusing completed source tiles; no PBF download or scan needed.')
+            else:
+                if (tiles / 'index.json').is_file():
+                    emit('The cached source tiles predate the points the generator now reads '
+                         '(lamps, trees, stops, entrances): cutting them again.')
+                emit(f"PBF {place['name']}: {place['pbf']}")
+                try:
+                    size = pbf.stat().st_size if pbf.is_file() else content_length(place['pbf'])
+                except (OSError, ValueError):
+                    size = None
+                if size:
+                    share = 1 if box is None else 0.3       # a selection keeps part of the country
+                    ensure_space(Path(root) / 'data', int(size * SPACE_PER_PBF_BYTE * share), f"Building {place['name']}")
+                download(place['pbf'], pbf, emit, cancel)
+            if ahead is not None:
+                ahead.start()
+        with stage('Cut tiles'):
+            if not cached_tiles:
+                cut_tiles(pbf, tiles, box, jobs, emit, cancel, min(jobs, 4) if jobs else None)
+        if road_register:
+            with stage('Road register'):
+                import est_roads
+                box_of = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))['package_box']
+                tiles = est_roads.enrich(tiles, est_roads.fetch(box_of, Path(root) / 'data', emit), emit)
+        index = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))
+        map_data = tiles / 'map'
+        map_job = None
+        if section is not None:
+            map_data = None       # the offline map is the country's: the country pack carries it
+        elif not (map_data / 'index.json').is_file():
+            if pbf.is_file():
+                # It reads only the PBF: it runs beside the elevation and the index (Ukraine's
+                # 90 s were waited for after a city's 40 s index), and the export waits for it.
+                map_data = map_cache_dir(root, slug_id, pbf)
+                map_job = _Background('Map detail', [_python(), str(HERE / 'build_map.py'), '--pbf', str(pbf),
+                                                     '--out', str(map_data)], emit, cancel, progress)
+            else:
+                emit('No original PBF/map sidecar in this cache: using base map labels and close-up roads.')
+                map_data = None
+        try:
+            return _build_rest(place, mods, root, look, include, jobs, landing, emit, cancel, stage, slug_id, tiles,
+                               index, map_data, map_job, local_dem, road_register, section, ahead)
+        finally:
+            if map_job is not None:
+                map_job.stop()
 
 
 def _build_rest(place, mods, root, look, include, jobs, landing, emit, cancel, stage, slug_id, tiles, index,
-                map_data, map_job, local_dem, road_register, section):
+                map_data, map_job, local_dem, road_register, section, ahead=None):
     import sysmem
     dem = Path(root) / 'out' / 'world' / 'cache'
     with stage('Elevation'):
+        if ahead is not None:
+            ahead.join()
         fetch_dem(index, dem, emit, cancel)
         if local_dem:
             import est_dem
