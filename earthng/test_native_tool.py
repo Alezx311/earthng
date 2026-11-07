@@ -383,6 +383,94 @@ class NativeCellsTests(unittest.TestCase):
             store.db.close()
 
 
+class NativeIndexTests(unittest.TestCase):
+    """The index's native parts: read_ways (earthng-mapbuilder ways) is osmium's dicts, key order
+    and all; crossings (earthng_native.dll) is the numpy one bit for bit."""
+
+    @unittest.skipUnless(native_tool.tool(), 'native tool not built (cargo build --release in rust/)')
+    def test_native_read_ways_is_osmium(self):
+        import hashlib
+        from osmium.osm.mutable import Node, Way
+        import fast_sources
+        self.assertEqual(native_tool.ways_fingerprint(), native_tool.WAYS)
+        nodes, ways, ident = [], [], [100]
+
+        def node(dx, dy):
+            ident[0] += 1
+            nodes.append(Node(id=ident[0], location=(30.5 + dx * 1e-5, 50.45 + dy * 1e-5)))
+            return ident[0]
+        a, b, c, d = node(0, 0), node(100, 0), node(100, 100), node(0, 100)
+        ways.append(Way(id=10, nodes=[a, b, c], tags={'highway': 'residential', 'name': 'Вулиця', 'lanes': '2'}))
+        ways.append(Way(id=11, nodes=[c, d], tags={'highway': 'primary_link'}))
+        ways.append(Way(id=12, nodes=[a, d], tags={'highway': 'footway', 'bridge': 'yes'}))           # a foot bridge
+        ways.append(Way(id=13, nodes=[a, b], tags={'highway': 'footway'}))                           # not a bridge
+        ways.append(Way(id=14, nodes=[b, c], tags={'highway': 'service', 'access': 'no'}))
+        ways.append(Way(id=15, nodes=[a, b, c, d, a], tags={'man_made': 'bridge', 'highway': 'pedestrian', 'area': 'yes'}))
+        ways.append(Way(id=16, nodes=[a, b, a], tags={'man_made': 'bridge'}))                         # too short a ring
+        ways.append(Way(id=17, nodes=[a], tags={'highway': 'tertiary'}))                              # one node
+        ways.append(Way(id=18, nodes=[b, d], tags={'highway': 'cycleway', 'bridge': 'viaduct', 'indoor': 'yes'}))
+        ways.append(Way(id=19, nodes=[d, a], tags={'highway': 'unclassified', 'tunnel': 'yes', 'layer': '-1'}))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'tile.osm.pbf'
+            with osmium.SimpleWriter(str(path)) as writer:
+                for o in nodes:
+                    writer.add_node(o)
+                for o in ways:
+                    writer.add_way(o)
+            sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            native = native_tool.read_ways([path, path], [sha, sha])
+            python = fast_sources.read_ways(path, sha)
+            self.assertIsNotNone(native)
+            for part in native:
+                for got, want in zip(part, python):
+                    self.assertEqual(list(got.items()), list(want.items()))
+                    for k in got:
+                        if isinstance(got[k], tuple):
+                            self.assertEqual(list(got[k][0].items()), list(want[k][0].items()))
+            self.assertEqual(sorted(python[0]), [10, 11, 19])
+            self.assertEqual(list(python[1]), [12])
+            self.assertEqual(list(python[2]), [15])
+            # a way with a node the tile lacks is Python's error: the native read leaves it
+            ways.append(Way(id=20, nodes=[a, 999], tags={'highway': 'residential'}))
+            with osmium.SimpleWriter(str(path), overwrite=True) as writer:
+                for o in nodes:
+                    writer.add_node(o)
+                for o in ways:
+                    writer.add_way(o)
+            sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            self.assertIsNone(native_tool.read_ways([path], [sha]))
+            with self.assertRaises(ValueError):
+                fast_sources.read_ways(path, sha)
+
+    @unittest.skipUnless(native_tool.kernels(), 'native kernels not built (cargo build --release in rust/)')
+    def test_native_crossings_are_numpy_bits(self):
+        import numpy as np
+        import fast_profile
+        rng = np.random.default_rng(7)
+        # a grid of streets and bridges over it: stations 20 m apart, segments of 2-9 stations
+        counts = rng.integers(2, 10, 400)
+        seg_of = np.repeat(np.arange(len(counts)), counts)
+        starts = rng.uniform(-800, 800, (len(counts), 2))
+        heads = rng.normal(size=(len(counts), 2))
+        heads /= np.linalg.norm(heads, axis=1)[:, None]
+        k = np.arange(len(seg_of)) - np.repeat(np.cumsum(counts) - counts, counts)
+        pos = starts[seg_of] + heads[seg_of] * (k * 19.7)[:, None]
+        pos[5] = pos[4]                                     # a zero-length edge
+        same = seg_of[1:] == seg_of[:-1]
+        kinds = rng.choice([0, 0, 0, 1], len(counts))
+        layers = rng.choice([1., 1., 2.], len(counts))
+        widths = rng.uniform(3, 30, len(counts))[seg_of]
+        levels = (kinds * layers)[seg_of]
+        upper = kinds[seg_of] > 0
+        lower = np.ones(len(seg_of), bool)
+        got = fast_profile.crossings(pos, seg_of, same, upper, lower, widths, levels)
+        want = fast_profile.python_crossings(pos, seg_of, same, upper, lower, widths, levels)
+        self.assertGreater(len(want[0]), 100)
+        for g, w in zip(got, want):
+            w = np.asarray(w, dtype=g.dtype)
+            self.assertEqual(g.view(np.int64).tolist(), w.view(np.int64).tolist())
+
+
 def _scene_fixture(path):
     """A raw tile with what Store.build_scene reads: buildings and their parts (covered, in the
     air), retail sites with and without their surveyed node, a multipolygon relation, rings

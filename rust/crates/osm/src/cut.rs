@@ -185,11 +185,11 @@ pub(crate) fn decode<'a>(blob: &'a MmapBlob<'a>) -> Result<Option<PrimitiveBlock
     })
 }
 
-const HAS_NODES: u8 = 1;
-const HAS_WAYS: u8 = 2;
-const HAS_RELATIONS: u8 = 4;
+pub(crate) const HAS_NODES: u8 = 1;
+pub(crate) const HAS_WAYS: u8 = 2;
+pub(crate) const HAS_RELATIONS: u8 = 4;
 
-fn kinds(block: &PrimitiveBlock) -> u8 {
+pub(crate) fn kinds(block: &PrimitiveBlock) -> u8 {
     let mut k = 0;
     for g in block.groups() {
         if g.dense_nodes().next().is_some() || g.nodes().next().is_some() {

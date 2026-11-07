@@ -697,7 +697,12 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
 
     files = [Path(source) / entry['file'] for entry in index['tiles'].values()]
     shas = [entry['sha256'] for entry in index['tiles'].values()]
-    if len(files) > 24:
+    import native_tool
+    # the same dicts read by earthng-mapbuilder (rust/crates/osm ways.rs), all tiles in threads
+    parts = native_tool.read_ways(files, shas)
+    if parts is not None:
+        pass
+    elif len(files) > 24:
         # tiles parse in parallel; merged in tile order, first copy of a way wins (as before)
         from concurrent.futures import ProcessPoolExecutor
         with ProcessPoolExecutor(PARSE_WORKERS) as pool:

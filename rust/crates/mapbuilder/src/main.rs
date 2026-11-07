@@ -61,6 +61,12 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Read the ways of raw OSM tiles as fast_sources.read_ways (task JSON on stdin from
+    /// native_tool.read_ways: {"files", "drivable", "foot"}); prints "ok <ways>" or "python <reason>"
+    Ways {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Encode cells dumped as JSON lines ({"origin": [x, y], "cell": {...}}) into hex lines
     /// (a check against earthng/country_format.py)
     #[command(hide = true)]
@@ -85,8 +91,27 @@ fn main() -> Result<()> {
         }
         Command::Compile { task, out } => compile(&task, &out)?,
         Command::Scene { out } => scene(&out)?,
+        Command::Ways { out } => ways(&out)?,
         Command::EncodeCells { input, output } => encode_cells(&input, &output)?,
         Command::Routing { pack, out, region } => routing(&pack, &out, &region)?,
+    }
+    Ok(())
+}
+
+fn ways(out: &std::path::Path) -> Result<()> {
+    use rayon::prelude::*;
+    #[derive(serde::Deserialize)]
+    struct Task {
+        files: Vec<PathBuf>,
+        drivable: Vec<String>,
+        foot: Vec<String>,
+    }
+    let task: Task = serde_json::from_reader(std::io::stdin().lock())?;
+    let rules = osm::ways::Rules { drivable: task.drivable, foot: task.foot };
+    let read: Result<Vec<_>> = task.files.par_iter().map(|f| osm::ways::read(f, &rules)).collect();
+    match read {
+        Ok(tiles) => println!("ok {}", osm::ways::write(&tiles, out)?),
+        Err(e) => println!("python {e:#}"),
     }
     Ok(())
 }

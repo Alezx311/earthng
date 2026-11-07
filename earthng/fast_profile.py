@@ -63,6 +63,16 @@ def crossings(pos, seg_of, same, upper, lower, widths, levels):
     a wide road's edges and bridges that overlap a road without their axes crossing.
     Returns edge starts (a, b) and longitudinal parameters (u, t) at each vertex.
     """
+    import native_tool
+    native = native_tool.kernels()
+    if native is not None and native.has_crossings:
+        # the same arithmetic and order in earthng_native.dll (15 of Tokyo's 117 s index here)
+        return native.crossings(pos, seg_of, same, upper, lower, widths, levels)
+    return python_crossings(pos, seg_of, same, upper, lower, widths, levels)
+
+
+def python_crossings(pos, seg_of, same, upper, lower, widths, levels):
+    """crossings in numpy (and the reference for the native one)."""
     e0 = np.flatnonzero(same)
     top, bottom = e0[upper[e0]], e0[lower[e0]]
     if not len(top) or not len(bottom):

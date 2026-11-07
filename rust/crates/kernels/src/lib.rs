@@ -11,6 +11,7 @@ use std::slice;
 
 use rayon::prelude::*;
 
+pub mod crossings;
 pub mod terrain;
 
 const BLOCK: usize = 4096;
@@ -67,6 +68,60 @@ impl Springs<'_> {
             bincount_add(self.xv[i], (0..n).map(|k| self.weight * self.active[k] * self.xc[i][k] * self.xc[i][k]), &mut total, &mut scratch);
         }
         diag0.iter().zip(&total).map(|(d, t)| d + t).collect()
+    }
+}
+
+/// The springs' bincounts with their bins found once: bins[i] lists the bins of xv[i], each with
+/// its entries k in increasing order, as bincount_add sums them. A CG iteration adds the springs
+/// without the sort (5 of its 10 ms on Tokyo), the same sums in the same order.
+struct Bins {
+    /// per i: (bin, start) runs over order[i]; order[i] holds k sorted by (bin, k)
+    runs: [Vec<(usize, usize)>; 4],
+    order: [Vec<u32>; 4],
+}
+
+impl Bins {
+    fn of(springs: &Springs) -> Bins {
+        let one = |v: &[i64]| {
+            let mut order: Vec<u32> = (0..v.len() as u32).collect();
+            order.sort_by_key(|&k| (v[k as usize], k));
+            let mut runs = Vec::new();
+            for (at, &k) in order.iter().enumerate() {
+                let j = v[k as usize] as usize;
+                if runs.last().is_none_or(|&(b, _): &(usize, usize)| b != j) {
+                    runs.push((j, at));
+                }
+            }
+            (runs, order)
+        };
+        let (r0, o0) = one(springs.xv[0]);
+        let (r1, o1) = one(springs.xv[1]);
+        let (r2, o2) = one(springs.xv[2]);
+        let (r3, o3) = one(springs.xv[3]);
+        Bins { runs: [r0, r1, r2, r3], order: [o0, o1, o2, o3] }
+    }
+
+    /// Springs::add through the bins
+    fn add(&self, springs: &Springs, h: &[f64], out: &mut [f64], g: &mut Vec<f64>) {
+        let n = springs.active.len();
+        g.clear();
+        g.extend((0..n).map(|k| {
+            let gap = 0.0 + springs.xc[0][k] * h[springs.xv[0][k] as usize] + springs.xc[1][k] * h[springs.xv[1][k] as usize]
+                + springs.xc[2][k] * h[springs.xv[2][k] as usize] + springs.xc[3][k] * h[springs.xv[3][k] as usize];
+            springs.weight * springs.active[k] * gap
+        }));
+        for i in 0..4 {
+            let (runs, order, c) = (&self.runs[i], &self.order[i], springs.xc[i]);
+            for (r, &(j, start)) in runs.iter().enumerate() {
+                let end = runs.get(r + 1).map_or(order.len(), |&(_, e)| e);
+                let mut sum = 0.0;
+                for &k in &order[start..end] {
+                    let k = k as usize;
+                    sum += g[k] * c[k];
+                }
+                out[j] += sum;
+            }
+        }
     }
 }
 
@@ -166,35 +221,64 @@ pub fn cg(a: &Csr, diag0: &[f64], springs: &Springs, b: &[f64], iterations: i64,
     let mut rz = dot(&r, &z);
     let mut ap = vec![0.0; n];
     let norm0 = { let v = dot(b, b).sqrt(); if v == 0.0 { 1.0 } else { v } };
-    let springs_on = springs.any();
-    let mut scratch = Vec::new();
+    let bins = springs.any().then(|| Bins::of(springs));
+    let mut g = Vec::new();
     let narrow = Narrow::of(a);
     let mut it = 0i64;
+    // r.r of the current r: the loop's test and the end both read it (dot gives the same sum
+    // for the same r, so it is kept rather than summed again)
+    let mut rr = dot(&r, &r);
     for i in 0..iterations.max(0) {
         it = i;
-        if dot(&r, &r).sqrt() < tol * norm0 || rz <= 0.0 {
+        if rr.sqrt() < tol * norm0 || rz <= 0.0 {
             break;
         }
         match &narrow {
             Some(m) => m.matvec(&p, &mut ap),
             None => a.matvec(&p, &mut ap),
         }
-        if springs_on {
-            springs.add(&p, &mut ap, &mut scratch);
+        if let Some(bins) = &bins {
+            bins.add(springs, &p, &mut ap, &mut g);
         }
         let alpha = rz / dot(&p, &ap);
-        x.par_iter_mut().zip(&p).for_each(|(x, p)| *x += p * alpha);
-        r.par_iter_mut().zip(&ap).for_each(|(r, ap)| *r -= ap * alpha);
-        if dot(&r, &r).sqrt() < tol * norm0 {
+        // x += alpha p, r -= alpha ap and r.r in one pass, r.r in dot's blocks and order
+        let parts: Vec<f64> = x
+            .par_chunks_mut(BLOCK)
+            .zip(r.par_chunks_mut(BLOCK))
+            .zip(p.par_chunks(BLOCK).zip(ap.par_chunks(BLOCK)))
+            .map(|((x, r), (p, ap))| {
+                let mut s = 0.0;
+                for i in 0..x.len() {
+                    x[i] += p[i] * alpha;
+                    r[i] -= ap[i] * alpha;
+                    s += r[i] * r[i];
+                }
+                s
+            })
+            .collect();
+        rr = parts.iter().sum();
+        if rr.sqrt() < tol * norm0 {
             break;
         }
-        z.par_iter_mut().zip(&r).zip(&diag).for_each(|((z, r), d)| *z = r / d);
-        let rz2 = dot(&r, &z);
+        // z = r / diag and r.z in one pass
+        let parts: Vec<f64> = z
+            .par_chunks_mut(BLOCK)
+            .zip(r.par_chunks(BLOCK).zip(diag.par_chunks(BLOCK)))
+            .map(|(z, (r, d))| {
+                let mut s = 0.0;
+                for i in 0..z.len() {
+                    z[i] = r[i] / d[i];
+                    s += r[i] * z[i];
+                }
+                s
+            })
+            .collect();
+        let rz2: f64 = parts.iter().sum();
         let beta = rz2 / rz;
         p.par_iter_mut().zip(&z).for_each(|(p, z)| *p = *p * beta + z);
         rz = rz2;
     }
-    let residual = dot(&r, &r).sqrt() / norm0;
+    let residual = rr.sqrt() / norm0;
     (x, it + 1, residual)
 }
 
@@ -266,6 +350,49 @@ pub unsafe extern "C" fn earthng_profile_cg(system: *const System, b: *const f64
         *residual = res;
     }
     0
+}
+
+/// fast_profile.crossings over n stations (pos n x 2; same n - 1; the rest n). Returns a handle
+/// holding the crossings: their count by earthng_crossings_len, copied out and freed by
+/// earthng_crossings_take.
+///
+/// # Safety
+/// Every pointer must hold the lengths named.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_profile_crossings(n: usize, pos: *const f64, seg_of: *const i64, same: *const u8, upper: *const u8,
+                                                   lower: *const u8, widths: *const f64, levels: *const f64) -> *mut crossings::Crossings {
+    unsafe {
+        let pos: &[[f64; 2]] = if n == 0 { &[] } else { slice::from_raw_parts(pos as *const [f64; 2], n) };
+        let flags = |p: *const u8, len: usize| -> Vec<bool> { view(p, len).iter().map(|&b| b != 0).collect() };
+        let found = crossings::crossings(pos, view(seg_of, n), &flags(same, n.saturating_sub(1)), &flags(upper, n), &flags(lower, n),
+                                         view(widths, n), view(levels, n));
+        Box::into_raw(Box::new(found))
+    }
+}
+
+/// # Safety
+/// `handle` from earthng_profile_crossings, not yet taken.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_crossings_len(handle: *const crossings::Crossings) -> usize {
+    unsafe { (*handle).a.len() }
+}
+
+/// Copy the crossings out (each array earthng_crossings_len long) and free the handle.
+///
+/// # Safety
+/// `handle` from earthng_profile_crossings, taken once; the arrays hold its length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earthng_crossings_take(handle: *mut crossings::Crossings, a: *mut i64, b: *mut i64, u: *mut f64, t: *mut f64) {
+    unsafe {
+        let c = Box::from_raw(handle);
+        let n = c.a.len();
+        if n > 0 {
+            slice::from_raw_parts_mut(a, n).copy_from_slice(&c.a);
+            slice::from_raw_parts_mut(b, n).copy_from_slice(&c.b);
+            slice::from_raw_parts_mut(u, n).copy_from_slice(&c.u);
+            slice::from_raw_parts_mut(t, n).copy_from_slice(&c.t);
+        }
+    }
 }
 
 /// Worker threads of the kernels (0: all cores). Only the first call takes effect.

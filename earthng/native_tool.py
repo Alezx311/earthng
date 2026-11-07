@@ -48,8 +48,18 @@ class Kernels:
                                                 P, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(ctypes.c_double)]
         self.lib.earthng_profile_cg.restype = ctypes.c_int32
 
-        D = ctypes.c_void_p
         lib = self.lib
+        # a library from before crossings.rs: fast_profile keeps its numpy crossings
+        self.has_crossings = hasattr(lib, 'earthng_profile_crossings')
+        if self.has_crossings:
+            lib.earthng_profile_crossings.argtypes = [ctypes.c_size_t, P, P, P, P, P, P, P]
+            lib.earthng_profile_crossings.restype = P
+            lib.earthng_crossings_len.argtypes = [P]
+            lib.earthng_crossings_len.restype = ctypes.c_size_t
+            lib.earthng_crossings_take.argtypes = [P, P, P, P, P]
+            lib.earthng_crossings_take.restype = None
+
+        D = ctypes.c_void_p
         lib.earthng_dem_open.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int32, ctypes.c_uint32,
                                          ctypes.c_double, ctypes.c_double, ctypes.c_double]
         lib.earthng_dem_open.restype = D
@@ -93,6 +103,22 @@ class Kernels:
         out = np.empty(s.nvar)
         self.lib.earthng_profile_matvec(self.ctypes.byref(s), h.ctypes.data, out.ctypes.data, int(bool(springs)))
         return out
+
+    def crossings(self, pos, seg_of, same, upper, lower, widths, levels):
+        """fast_profile.crossings, the same arrays (rust/crates/kernels crossings.rs)."""
+        import numpy as np
+        n = len(pos)
+        keep = [np.ascontiguousarray(pos, dtype=np.float64).reshape(n, 2), np.ascontiguousarray(seg_of, dtype=np.int64),
+                np.ascontiguousarray(same, dtype=np.uint8), np.ascontiguousarray(upper, dtype=np.uint8),
+                np.ascontiguousarray(lower, dtype=np.uint8), np.ascontiguousarray(widths, dtype=np.float64),
+                np.ascontiguousarray(levels, dtype=np.float64)]
+        assert len(keep[2]) == max(0, n - 1) and all(len(k) == n for k in keep[3:])
+        handle = self.lib.earthng_profile_crossings(n, *[k.ctypes.data for k in keep])
+        m = self.lib.earthng_crossings_len(handle)
+        a, b = np.empty(m, dtype=np.int64), np.empty(m, dtype=np.int64)
+        u, t = np.empty(m), np.empty(m)
+        self.lib.earthng_crossings_take(handle, a.ctypes.data, b.ctypes.data, u.ctypes.data, t.ctypes.data)
+        return a, b, u, t
 
     def cg(self, system, b, iterations, tol):
         import numpy as np
@@ -443,3 +469,77 @@ def build_scene(store, entry, out):
     if result.returncode:
         return 'native scene failed: ' + result.stderr.decode('utf-8', 'replace').strip()[-500:]
     return None if said.startswith('ok') else said.removeprefix('python ').strip()
+
+
+# ways_fingerprint() of the read_ways osm/src/ways.rs follows; a change in Python turns it off
+WAYS = 'c35e1433d79fc412'
+
+
+def ways_fingerprint():
+    """sha256 of fast_sources.read_ways and foot_bridge, or None where their source is not here."""
+    import hashlib
+    import inspect
+    import fast_sources
+    digest = hashlib.sha256()
+    try:
+        for f in (fast_sources.read_ways, fast_sources.foot_bridge):
+            digest.update(inspect.getsource(f).encode('utf-8'))
+    except (OSError, TypeError):
+        return None
+    return digest.hexdigest()[:16]
+
+
+def read_ways(files, shas):
+    """[fast_sources.read_ways(file, sha) for each file], read by earthng-mapbuilder ways (all
+    tiles at once, in threads), or None where it cannot (no tool, read_ways changed in Python,
+    a tile it leaves to Python: Python reads them all again and raises its own errors)."""
+    import hashlib
+    import json
+    import subprocess
+    import tempfile
+    import numpy as np
+    import fast_sources
+    exe = tool()
+    if exe is None or not files:
+        return None
+    fingerprint = ways_fingerprint()
+    if fingerprint is not None and fingerprint != WAYS:
+        return None
+    for path, sha in zip(files, shas):
+        if hashlib.sha256(Path(path).read_bytes()).hexdigest() != sha:
+            raise ValueError(f'OSM checksum mismatch: {path}')
+    task = {'files': [str(f) for f in files], 'drivable': sorted(fast_sources.DRIVABLE),
+            'foot': sorted(fast_sources.FOOT_WIDTH)}
+    with tempfile.TemporaryDirectory(prefix='earthng-ways-') as folder:
+        out = Path(folder) / 'ways.bin'
+        result = subprocess.run([str(exe), 'ways', '--out', str(out)], input=json.dumps(task).encode('utf-8'),
+                                capture_output=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if result.returncode or not result.stdout.startswith(b'ok'):
+            return None
+        data = out.read_bytes()
+    if data[:4] != b'EWY1':
+        return None
+    count = int.from_bytes(data[4:8], 'little')
+    at = 8
+
+    def take(dtype, n):
+        nonlocal at
+        array = np.frombuffer(data, dtype=dtype, count=n, offset=at)
+        at += array.nbytes
+        return array
+    tile, kind, ident, nodes = take('<u4', count).tolist(), take('u1', count).tolist(), take('<i8', count).tolist(), take('<u4', count)
+    total = int(take('<u8', 1)[0])
+    refs = take('<i8', total).tolist()
+    lon = (take('<i4', total).astype(np.float64) / 1e7).tolist()
+    lat = (take('<i4', total).astype(np.float64) / 1e7).tolist()
+    tags = json.loads(data[at:])
+    start = np.concatenate([[0], np.cumsum(nodes, dtype=np.int64)]).tolist()
+    parts = [({}, {}, {}) for _ in files]
+    for k in range(count):
+        a, b = start[k], start[k + 1]
+        roads, feet, decks = parts[tile[k]]
+        if kind[k] == 2:
+            decks[ident[k]] = list(zip(lon[a:b], lat[a:b]))
+        else:
+            (roads if kind[k] == 0 else feet)[ident[k]] = (dict(tags[k]), list(zip(refs[a:b], lon[a:b], lat[a:b])))
+    return parts

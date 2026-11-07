@@ -4,3 +4,4 @@ pub mod cut;
 pub mod mapsrc;
 pub mod pbfwrite;
 pub mod select;
+pub mod ways;
