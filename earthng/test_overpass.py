@@ -42,16 +42,23 @@ class OverpassTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_a_selection_comes_from_overpass_until_the_pbf_is_allowed_or_on_disk(self):
-        source = country_fetch.tile_source(self.root, PLACE, SELECTION)
-        self.assertEqual(source.name, 'overpass')
-        self.assertEqual(source.tiles, country_fetch.tiles_dir(self.root, 'land', SELECTION))
-        self.assertEqual(country_fetch.tile_source(self.root, PLACE, SELECTION, allow_pbf=True).name, 'geofabrik')
-        self.assertEqual(country_fetch.tile_source(self.root, PLACE).name, 'geofabrik')     # a whole region
+    def test_a_selection_comes_from_overpass_unless_the_pbf_is_small_allowed_or_on_disk(self):
+        with patch.object(country_fetch, 'content_length', return_value=900 * 2**20):
+            source = country_fetch.tile_source(self.root, PLACE, SELECTION)
+            self.assertEqual(source.name, 'overpass')
+            self.assertEqual(source.tiles, country_fetch.tiles_dir(self.root, 'land', SELECTION))
+            self.assertEqual(country_fetch.tile_source(self.root, PLACE, SELECTION, allow_pbf=True).name, 'geofabrik')
+            self.assertEqual(country_fetch.tile_source(self.root, PLACE).name, 'geofabrik')     # a whole region
+        with patch.object(country_fetch, 'content_length', side_effect=OSError('offline')):
+            self.assertEqual(country_fetch.tile_source(self.root, PLACE, SELECTION).name, 'overpass')
+        # a small country file downloads faster than Overpass answers: taken at once
+        with patch.object(country_fetch, 'content_length', return_value=52 * 2**20):
+            self.assertEqual(country_fetch.tile_source(self.root, PLACE, SELECTION).name, 'geofabrik')
         pbf = country_fetch.pbf_path(self.root, 'land')
         pbf.parent.mkdir(parents=True)
         pbf.write_bytes(b'x')
-        self.assertEqual(country_fetch.tile_source(self.root, PLACE, SELECTION).name, 'geofabrik')
+        with patch.object(country_fetch, 'content_length', side_effect=AssertionError('asked the server')):
+            self.assertEqual(country_fetch.tile_source(self.root, PLACE, SELECTION).name, 'geofabrik')
 
     def test_the_query_asks_for_what_the_cut_keeps(self):
         query = country_fetch.overpass_query(country_fetch.overpass_box(SELECTION), 600)

@@ -331,7 +331,7 @@ class Service:
             size = country_fetch.content_length(self.by_id[place]['pbf'])
         except OSError:
             pass
-        source = self.source_of(box, cached_pbf, cached_tiles)
+        source = self.source_of(box, cached_pbf, cached_tiles, size)
         times, reason = timing.estimate(size, box, include, cached_pbf, cached_tiles,
                                         overpass=country_fetch.overpass_km2(box) if source == 'overpass' else None)
         stages, seconds = list(timing.STAGES), [round(t) for t in times] if times else None
@@ -342,15 +342,19 @@ class Service:
                 seconds.insert(0, PLANET_SECONDS)
         return {'seconds': seconds, 'stages': stages, 'planet': planet,
                 'reason': reason, 'pbf_bytes': size, 'cached_pbf': cached_pbf, 'cached_tiles': cached_tiles,
-                'source': source, 'pbf_seconds': self.pbf_seconds(size, box, include)}
+                'source': source, 'pbf_seconds': self.pbf_seconds(size, box, include),
+                # the page asks before a large country file is downloaded; a small one just comes
+                'ask_pbf': source == 'pbf' and not cached_pbf and not country_fetch.small_pbf(size)}
 
     @staticmethod
-    def source_of(box, cached_pbf, cached_tiles):
+    def source_of(box, cached_pbf, cached_tiles, size=None):
         """Where a build's OSM data comes from (country_fetch.tile_source): 'tiles' already cut,
-        'overpass' for the area alone, or 'pbf', the country's file (downloaded or on disk)."""
+        'overpass' for the area alone, or 'pbf', the country's file (on disk, small, or large and
+        asked for)."""
         if cached_tiles:
             return 'tiles'
-        if box is None or cached_pbf or country_fetch.overpass_km2(box) > country_fetch.OVERPASS_MAX_KM2:
+        if box is None or cached_pbf or country_fetch.small_pbf(size) \
+                or country_fetch.overpass_km2(box) > country_fetch.OVERPASS_MAX_KM2:
             return 'pbf'
         return 'overpass'
 

@@ -56,7 +56,7 @@ function mockService(m) {
     case 'covering': return answer({ place: { id: 'ukraine', name: 'Ukraine', parent: 'Europe' }, km2: 120.4 });
     case 'estimate': return answer({ seconds: [30, 110, 12, 3, 20, 13, 1], stages: ['Planet', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'],
       reason: 'rough estimate', cached_tiles: false, cached_pbf: false, pbf_bytes: 54466814, planet: 'missing',
-      source: m.box ? 'overpass' : 'pbf', pbf_seconds: 40 });
+      source: m.box ? 'overpass' : 'pbf', pbf_seconds: 40, ask_pbf: !m.box });
     case 'projects': return answer({ projects: [] });
     case 'build': case 'install_planet': {   // a pretend job: stages one by one, then done
       answer({ job: m.cmd });
@@ -332,7 +332,7 @@ function drawProgress() {
 async function build(allowPbf = false) {
   if (!state.place) return;
   const est = state.estimate;
-  if (!allowPbf && est && est.source === 'pbf' && !est.cached_pbf) {    // known before trying: ask first
+  if (!allowPbf && est && est.ask_pbf) {    // a large country file, known before trying: ask first
     showPbfOffer({ lead: state.box ? 'pbf.bigLead' : 'pbf.wholeLead', name: state.place.name,
       pbf_bytes: est.pbf_bytes, pbf_seconds: est.pbf_seconds });
     return;

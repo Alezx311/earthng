@@ -64,7 +64,8 @@ Windows 10 and 11 already have.
 4. Watch the stages. When it says **The map is installed**, start BeamNG.drive and
    open **Freeroam → EarthNG - Planet**.
 
-The OSM data of a drawn area comes from the public Overpass API first. When no
+The OSM data of a drawn area comes from the public Overpass API first, unless the
+country's Geofabrik file is small (up to 100 MB): that one is simply downloaded. When no
 Overpass server answers, or the area is too large for it, the window asks before
 downloading the smallest Geofabrik extract that covers the area and shows its size
 and the expected time. The extract is kept, so later maps in that region need no

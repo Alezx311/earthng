@@ -180,18 +180,23 @@ class ServiceTests(unittest.TestCase):
     def test_the_estimate_names_the_source(self):
         self.albania()
         town = [19.8, 41.3, 19.84, 41.33]
-        with patch.object(app_service.country_fetch, 'content_length', return_value=54_466_814):
+        with patch.object(app_service.country_fetch, 'content_length', return_value=900 * 2**20):
             small = self.ask(cmd='estimate', place='albania', box=town)
             big = self.ask(cmd='estimate', place='albania', box=[19.5, 41.0, 20.0, 41.5])
             whole = self.ask(cmd='estimate', place='albania')
+        with patch.object(app_service.country_fetch, 'content_length', return_value=54_466_814):
+            little = self.ask(cmd='estimate', place='albania', box=town)      # a small country file
             pbf = app_service.country_fetch.pbf_path(self.service.root, 'albania')
             pbf.parent.mkdir(parents=True, exist_ok=True)
             pbf.write_bytes(b'x')
             cached = self.ask(cmd='estimate', place='albania', box=town)
-        self.assertEqual([small['source'], big['source'], whole['source'], cached['source']],
-                         ['overpass', 'pbf', 'pbf', 'pbf'])
+        self.assertEqual([a['source'] for a in (small, big, whole, little, cached)],
+                         ['overpass', 'pbf', 'pbf', 'pbf', 'pbf'])
+        # asked first: only a large file not on disk, known to be needed before Overpass is tried
+        self.assertEqual([a['ask_pbf'] for a in (small, big, whole, little, cached)],
+                         [False, True, True, False, False])
         self.assertTrue(cached['cached_pbf'])
-        for answer in (small, big, whole):
+        for answer in (small, big, whole, little):
             self.assertGreater(answer['pbf_seconds'], 0)
             self.assertTrue(answer['seconds'])
 

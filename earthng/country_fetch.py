@@ -715,6 +715,21 @@ OVERPASS_MAX_KM2 = 300          # of whole cells with their buffer; a dense cent
 OVERPASS_BUDGET = 240           # seconds of trying servers before the build asks for the PBF
 OVERPASS_WAIT = 150             # seconds a server may stay silent (queue, query, a stalled stream)
 OVERPASS_QUERY_SECONDS = 600    # the query's own limit on the server
+# A country file this small downloads and cuts faster than Overpass answers (Albania: 52 MB, about
+# 25 s): it is taken at once, without Overpass and without asking (user's choice, 8.11.2026).
+SMALL_PBF_BYTES = 100 * 2**20
+
+
+def small_pbf(size):
+    return bool(size) and size <= SMALL_PBF_BYTES
+
+
+def pbf_size(place, timeout=15):
+    """The country file's size from the server, or None when it does not say."""
+    try:
+        return content_length(place['pbf'], timeout)
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
 
 
 def overpass_box(box):
@@ -855,10 +870,10 @@ class OverpassSource(GeofabrikSource):
 
 def tile_source(root, place, box=None, allow_pbf=False):
     """The tile source of a build. A selection without the country's PBF on disk comes from
-    Overpass first; the PBF (Geofabrik) only for a whole region, when it is already downloaded,
-    or once the user allowed it (allow_pbf, after NeedsPbf)."""
+    Overpass first; the PBF (Geofabrik) for a whole region, when it is already downloaded, when
+    it is small (SMALL_PBF_BYTES), or once the user allowed it (allow_pbf, after NeedsPbf)."""
     geofabrik = GeofabrikSource(root, place, box)
-    if box is None or allow_pbf or geofabrik.pbf.is_file():
+    if box is None or allow_pbf or geofabrik.pbf.is_file() or small_pbf(pbf_size(place)):
         return geofabrik
     return OverpassSource(root, place, box)
 
