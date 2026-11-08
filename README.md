@@ -64,8 +64,11 @@ Windows 10 and 11 already have.
 4. Watch the stages. When it says **The map is installed**, start BeamNG.drive and
    open **Freeroam → EarthNG - Planet**.
 
-The smallest Geofabrik extract covering the whole area is downloaded once and cut
-into tiles; later builds in that region reuse the tiles. A town builds in a few
+The OSM data of a drawn area comes from the public Overpass API first. When no
+Overpass server answers, or the area is too large for it, the window asks before
+downloading the smallest Geofabrik extract that covers the area and shows its size
+and the expected time. The extract is kept, so later maps in that region need no
+download, and finished tiles are reused either way. A town builds in a few
 minutes. Large countries can require many GB of source data and hours of processing;
 the estimate shown before building is a broad range. **Stop** cancels before the pack
 is installed, and building again continues where it stopped.

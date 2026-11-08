@@ -152,6 +152,49 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(answer['ok'])
         self.assertIn('BeamNG user folder', answer['error'])
 
+    def albania(self):
+        self.service.places = [{'id': 'albania', 'name': 'Albania', 'pbf': 'https://x/albania.osm.pbf'}]
+        self.service.by_id = {'albania': self.service.places[0]}
+        self.service.boundaries = {}
+
+    def test_without_overpass_the_build_asks_to_download_the_pbf(self):
+        self.albania()
+        calls = []
+
+        def fake_build(place, mods, **kw):
+            calls.append(kw['allow_pbf'])
+            if not kw['allow_pbf']:
+                raise app_service.country_fetch.NeedsPbf('Overpass did not answer: overpass-api.de: HTTP Error 504')
+            return Path(mods) / 'mods' / 'earthng_albania.zip'
+        with patch.object(self.service, 'planet_needed', return_value=None),                 patch.object(app_service.country_fetch, 'content_length', return_value=54_466_814),                 patch.object(app_service.country_fetch, 'build_place', side_effect=fake_build):
+            self.assertTrue(self.ask(cmd='build', place='albania', box=[19.8, 41.3, 19.84, 41.33])['ok'])
+            done = self.wait_done()
+            self.assertEqual(done['result'], 'needs_pbf', done)
+            self.assertIn('504', done['reason'])
+            self.assertEqual((done['place'], done['name'], done['pbf_bytes']), ('albania', 'Albania', 54_466_814))
+            self.assertGreater(done['pbf_seconds'], 0)
+            self.assertTrue(self.ask(cmd='build', place='albania', box=[19.8, 41.3, 19.84, 41.33], allow_pbf=True)['ok'])
+            self.assertEqual(self.wait_done()['result'], 'complete')
+        self.assertEqual(calls, [False, True])
+
+    def test_the_estimate_names_the_source(self):
+        self.albania()
+        town = [19.8, 41.3, 19.84, 41.33]
+        with patch.object(app_service.country_fetch, 'content_length', return_value=54_466_814):
+            small = self.ask(cmd='estimate', place='albania', box=town)
+            big = self.ask(cmd='estimate', place='albania', box=[19.5, 41.0, 20.0, 41.5])
+            whole = self.ask(cmd='estimate', place='albania')
+            pbf = app_service.country_fetch.pbf_path(self.service.root, 'albania')
+            pbf.parent.mkdir(parents=True, exist_ok=True)
+            pbf.write_bytes(b'x')
+            cached = self.ask(cmd='estimate', place='albania', box=town)
+        self.assertEqual([small['source'], big['source'], whole['source'], cached['source']],
+                         ['overpass', 'pbf', 'pbf', 'pbf'])
+        self.assertTrue(cached['cached_pbf'])
+        for answer in (small, big, whole):
+            self.assertGreater(answer['pbf_seconds'], 0)
+            self.assertTrue(answer['seconds'])
+
     def test_geocode_turns_nominatim_rows_into_boxes(self):
         rows = [{'display_name': 'Tirana, Albania', 'lat': '41.3275', 'lon': '19.8189', 'type': 'city',
                  'boundingbox': ['41.28', '41.37', '19.75', '19.88']},

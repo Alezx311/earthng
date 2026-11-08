@@ -55,12 +55,19 @@ function mockService(m) {
     case 'geocode': return answer({ results: [{ name: 'Тирана, Albania', lat: 41.3275, lon: 19.8189, bounds: [19.75, 41.28, 19.88, 41.37], kind: 'city' }] });
     case 'covering': return answer({ place: { id: 'ukraine', name: 'Ukraine', parent: 'Europe' }, km2: 120.4 });
     case 'estimate': return answer({ seconds: [30, 110, 12, 3, 20, 13, 1], stages: ['Planet', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'],
-      reason: 'rough estimate', cached_tiles: false, cached_pbf: false, pbf_bytes: 54466814, planet: 'missing' });
+      reason: 'rough estimate', cached_tiles: false, cached_pbf: false, pbf_bytes: 54466814, planet: 'missing',
+      source: m.box ? 'overpass' : 'pbf', pbf_seconds: 40 });
     case 'projects': return answer({ projects: [] });
     case 'build': case 'install_planet': {   // a pretend job: stages one by one, then done
       answer({ job: m.cmd });
       const stages = m.cmd === 'build' ? ['Planet', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'] : ['Planet'];
       const send = (msg, ms) => setTimeout(() => window.earthng.receive(msg), ms);
+      if (m.cmd === 'build' && m.box && !m.allow_pbf) {      // Overpass busy: the page asks for the PBF
+        send({ event: 'stage', name: 'Sources', seconds: null }, 300);
+        send({ event: 'done', job: 'build', result: 'needs_pbf', reason: 'Overpass did not answer: overpass-api.de: HTTP Error 504: Gateway Timeout',
+          place: 'albania', name: 'Albania', pbf_bytes: 54466814, pbf_seconds: 40 }, 1200);
+        return undefined;
+      }
       stages.forEach((name, i) => {
         send({ event: 'stage', name, seconds: null }, 300 + i * 700);
         send({ event: 'log', text: `${name}…` }, 350 + i * 700);
@@ -197,6 +204,7 @@ async function refreshEstimate() {
     state.estimate = est;
     const notes = [];
     if (est.cached_tiles) notes.push(t('area.cached'));
+    else if (est.source === 'overpass') notes.push(t('area.overpass'));
     else if (est.cached_pbf) notes.push(t('area.pbfCached'));
     else if (est.pbf_bytes) notes.push(t('area.download', Math.round(est.pbf_bytes / 2 ** 20)));
     if (est.seconds) {
@@ -319,14 +327,22 @@ function drawProgress() {
   $('progress-bar').style.width = `${Math.min(100, (100 * done) / total).toFixed(1)}%`;
 }
 
-async function build() {
+// allowPbf: the user agreed to download the country's PBF. Without it a drawn area comes from
+// Overpass, and the service answers 'needs_pbf' when no Overpass server gives it.
+async function build(allowPbf = false) {
   if (!state.place) return;
-  saveProject(true);
   const est = state.estimate;
+  if (!allowPbf && est && est.source === 'pbf' && !est.cached_pbf) {    // known before trying: ask first
+    showPbfOffer({ lead: state.box ? 'pbf.bigLead' : 'pbf.wholeLead', name: state.place.name,
+      pbf_bytes: est.pbf_bytes, pbf_seconds: est.pbf_seconds });
+    return;
+  }
+  saveProject(true);
   const stages = (est && est.stages) || ['Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'];
   startProgress('build', stages, est && est.seconds ? est.seconds.map(v => Math.max(1, v)) : null);
+  job.allowPbf = allowPbf;
   try {
-    await call('build', { place: state.place.id, box: state.box, look: state.look, include: state.include });
+    await call('build', { place: state.place.id, box: state.box, look: state.look, include: state.include, allow_pbf: allowPbf });
     jobStarted();
   } catch (err) {
     finishBuild('failed', err.message);
@@ -389,6 +405,28 @@ function finishBuild(result, error, path) {
   appendLog(text);
   $('build-error').replaceChildren(el('p', { className: `note ${result === 'stopped' ? 'info' : 'bad'}`, textContent: text }));
   if (result !== 'stopped') $('log-box').open = true;
+}
+
+// The country's PBF, with its size and time, before it is downloaded (the user's choice).
+function showPbfOffer(offer) {
+  showCard('pbf');
+  $('pbf-lead').textContent = t(offer.lead);
+  $('pbf-reason').textContent = offer.reason || '';
+  $('pbf-reason').hidden = !offer.reason;
+  $('pbf-file').textContent = offer.name || (state.place && state.place.name) || '—';
+  $('pbf-size').textContent = offer.pbf_bytes ? t('pbf.mb', Math.round(offer.pbf_bytes / 2 ** 20).toLocaleString()) : t('pbf.unknown');
+  const s = offer.pbf_seconds;
+  $('pbf-time').textContent = s ? `${duration(s * 0.5)}–${duration(s * 2.5)}` : '—';
+}
+
+function needsPbf(message) {
+  setBuilding(false);
+  clearInterval(elapsedTimer);
+  appendLog(`${t('build.needsPbf')} ${message.reason || ''}`);
+  refreshStatus().catch(() => {});           // the planet may have been installed before Overpass was asked
+  const big = /^the area is/.test(message.reason || '');
+  showPbfOffer({ lead: big ? 'pbf.bigLead' : 'pbf.busyLead', reason: big ? '' : message.reason,
+    name: message.name, pbf_bytes: message.pbf_bytes, pbf_seconds: message.pbf_seconds });
 }
 
 function showDone(kind, path) {
@@ -581,7 +619,7 @@ document.addEventListener('click', e => { if (!e.target.closest('.search')) $('s
 
 // ------------------------------------------------------------------ layout
 function showCard(name) {
-  ['empty', 'area', 'build', 'done'].forEach(n => { $(`card-${n}`).hidden = n !== name; });
+  ['empty', 'area', 'pbf', 'build', 'done'].forEach(n => { $(`card-${n}`).hidden = n !== name; });
 }
 
 function showSection(name) {
@@ -609,6 +647,7 @@ function backFromJob() {
 listeners.push(message => {
   if (message.event === 'log') appendLog(message.text);
   else if (message.event === 'stage') onStage(message.name, message.seconds);
+  else if (message.event === 'done' && message.result === 'needs_pbf') needsPbf(message);
   else if (message.event === 'done') finishBuild(message.result, message.error, message.path);
   else if (message.event === 'ready') refreshStatus().catch(() => {});
   else if (message.event === 'service_exit') {
@@ -623,11 +662,13 @@ $('tool-box').onclick = () => setMode('box');
 $('tool-edit').onclick = () => setMode('edit');
 $('empty-draw').onclick = () => { if (state.mode !== 'box') setMode('box'); };
 $('area-clear').onclick = clearArea;
-$('build').onclick = build;
+$('build').onclick = () => build(false);
+$('pbf-go').onclick = () => build(true);
+$('pbf-back').onclick = () => showCard(state.place ? 'area' : 'empty');
 $('save-project').onclick = () => saveProject(false);
 $('stop').onclick = () => call('stop').catch(() => {});
 $('build-back').onclick = backFromJob;
-$('build-retry').onclick = () => (job && job.kind === 'install_planet' ? installPlanet() : build());
+$('build-retry').onclick = () => (job && job.kind === 'install_planet' ? installPlanet() : build(!!(job && job.allowPbf)));
 $('open-mods').onclick = () => call('open_folder', { which: 'mods' }).catch(() => {});
 $('launch-game').onclick = () => call('open_url', { url: 'steam://rungameid/284160' }, 'app').catch(() => {});
 $('done-another').onclick = () => { if (job && job.kind === 'install_planet') backFromJob(); else clearArea(); };

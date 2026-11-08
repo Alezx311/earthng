@@ -26,11 +26,15 @@ DOWNLOAD, SCAN, CUT, DEM, INDEX, EXPORT, INSTALL = .3, .65, 1.15, .45, 2.75, 3.3
 # The native cut (earthng-mapbuilder cut, docs/MAPBUILDER_RS.md) reads the PBF on every core: Kyiv's
 # box from Ukraine's 843 MB in 12 s, the whole country in about a minute.
 NATIVE_SCAN, NATIVE_CUT = .014, .07
+# Overpass (country_fetch.OverpassSource): 23 MB of XML for Kyiv's 9 km2 in 43 s on 8.11.2026,
+# queue included; the area's PBF is cut without a whole-country scan.
+OVERPASS_START, OVERPASS_KM2 = 15, 5
 
 
-def estimate(size, box, include, cached_pbf=False, cached_tiles=False, native=None):
+def estimate(size, box, include, cached_pbf=False, cached_tiles=False, native=None, overpass=None):
     """Seconds per stage (timing.STAGES), or None without the source size. native: the Rust cut
-    is there (default: native_tool finds it)."""
+    is there (default: native_tool finds it). overpass: km2 fetched from Overpass instead of the
+    PBF (country_fetch.overpass_km2: whole cells with their buffer); the size is not needed then."""
     if native is None:
         try:
             import native_tool
@@ -38,13 +42,20 @@ def estimate(size, box, include, cached_pbf=False, cached_tiles=False, native=No
         except ImportError:
             native = False
     scan, cut = (NATIVE_SCAN, NATIVE_CUT) if native else (SCAN, CUT)
+    layers = .55 + .45 * sum(include.values()) / max(1, len(include))
+    if overpass and box:
+        part = overpass / KM2_PER_MB
+        times = [2 if cached_tiles else OVERPASS_START + overpass * OVERPASS_KM2,
+                 1 if cached_tiles else 2 + part * (cut + scan),
+                 5 + part * DEM, 10 + part * INDEX,
+                 15 + part * EXPORT * layers, 3 + part * INSTALL]
+        return times, 'rough estimate; Overpass servers are often busy'
     if not size:
         return None, 'waiting for source size'
     mb = size / 2**20
     # the part of the source a selection keeps: its area at Ukraine's density, at most all of it
     share = min(1., area_km2(box) / (mb * KM2_PER_MB)) if box else 1.
     part = mb * share
-    layers = .55 + .45 * sum(include.values()) / max(1, len(include))
     # Broad planning baseline, deliberately displayed as a range (0.5–2.5x).
     # Even a tiny selection requires scanning the entire source PBF on first use.
     times = [2 if cached_pbf or cached_tiles else 5 + mb * DOWNLOAD,

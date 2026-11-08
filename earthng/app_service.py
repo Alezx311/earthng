@@ -120,6 +120,10 @@ class Service:
             try:
                 path = target(cancel)
                 done.update(result='complete', path=str(path) if path else None)
+            except country_fetch.NeedsPbf as exc:
+                # not a failure: the page asks whether to download the country's PBF
+                done.update(result='needs_pbf', reason=exc.reason, **getattr(exc, 'offer', {}))
+                self.log(f'Overpass: {exc.reason}')
             except InterruptedError:
                 done.update(result='stopped')
                 self.log('Stopped. Finished source data is kept for the next build.')
@@ -327,7 +331,9 @@ class Service:
             size = country_fetch.content_length(self.by_id[place]['pbf'])
         except OSError:
             pass
-        times, reason = timing.estimate(size, box, include, cached_pbf, cached_tiles)
+        source = self.source_of(box, cached_pbf, cached_tiles)
+        times, reason = timing.estimate(size, box, include, cached_pbf, cached_tiles,
+                                        overpass=country_fetch.overpass_km2(box) if source == 'overpass' else None)
         stages, seconds = list(timing.STAGES), [round(t) for t in times] if times else None
         planet = self.planet_needed()
         if planet:                                   # the build installs it first
@@ -335,10 +341,29 @@ class Service:
             if seconds:
                 seconds.insert(0, PLANET_SECONDS)
         return {'seconds': seconds, 'stages': stages, 'planet': planet,
-                'reason': reason, 'pbf_bytes': size, 'cached_pbf': cached_pbf, 'cached_tiles': cached_tiles}
+                'reason': reason, 'pbf_bytes': size, 'cached_pbf': cached_pbf, 'cached_tiles': cached_tiles,
+                'source': source, 'pbf_seconds': self.pbf_seconds(size, box, include)}
+
+    @staticmethod
+    def source_of(box, cached_pbf, cached_tiles):
+        """Where a build's OSM data comes from (country_fetch.tile_source): 'tiles' already cut,
+        'overpass' for the area alone, or 'pbf', the country's file (downloaded or on disk)."""
+        if cached_tiles:
+            return 'tiles'
+        if box is None or cached_pbf or country_fetch.overpass_km2(box) > country_fetch.OVERPASS_MAX_KM2:
+            return 'pbf'
+        return 'overpass'
+
+    @staticmethod
+    def pbf_seconds(size, box, include):
+        """Download and cut of the country's PBF: what the page shows before asking to download it."""
+        times, _ = timing.estimate(size, box, include)
+        return round(times[0] + times[1]) if times else None
 
     # ------------------------------------------------------------------ build
-    def cmd_build(self, place, box=None, look=None, include=None, project=None):
+    def cmd_build(self, place, box=None, look=None, include=None, project=None, allow_pbf=False):
+        """allow_pbf: the user agreed to download the country's PBF. Without it a selection comes
+        from Overpass, and a done event with result 'needs_pbf' asks for that agreement."""
         self.ensure_places()
         if place not in self.by_id:
             raise ValueError(f'unknown place: {place}')
@@ -367,8 +392,19 @@ class Service:
                 self.fetch_planet(Path(mods), cancel)
                 progress(PLANET_STAGE, time.monotonic() - start)
             self.log(f"Building {chosen['name']}" + (f' {box}' if box else ''))
-            return country_fetch.build_place(chosen, mods, root=self.root, look=look, include=include, box=box,
-                                             by_id=self.by_id, emit=self.log, cancel=cancel, progress=progress)
+            try:
+                return country_fetch.build_place(chosen, mods, root=self.root, look=look, include=include, box=box,
+                                                 by_id=self.by_id, emit=self.log, cancel=cancel, progress=progress,
+                                                 allow_pbf=bool(allow_pbf))
+            except country_fetch.NeedsPbf as exc:
+                size = None
+                try:
+                    size = country_fetch.content_length(chosen['pbf'])
+                except OSError:
+                    pass
+                exc.offer = {'place': place, 'name': chosen['name'], 'pbf_bytes': size,
+                             'pbf_seconds': self.pbf_seconds(size, box, looks.canonical_include(include or {}))}
+                raise
         return self.start_job('build', target)
 
     # ------------------------------------------------------------------ projects

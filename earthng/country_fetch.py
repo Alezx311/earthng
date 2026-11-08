@@ -705,9 +705,162 @@ class GeofabrikSource:
         cut_tiles(self.pbf, self.tiles, self.box, jobs, emit, cancel, min(jobs, 4) if jobs else None)
 
 
-def tile_source(root, place, box=None):
-    """The tile source of a build: a Geofabrik extract until a tile server exists."""
-    return GeofabrikSource(root, place, box)
+# Overpass: the OSM objects of one area, without the country's PBF (docs/MAPBUILDER_APP.md).
+# Public servers, tried in turn; each is often busy (8.11.2026: 504 from all three for a 3 x 3 km
+# box, then 23 MB in 43 s from the first), so the build asks for the PBF when none answers.
+OVERPASS_SERVERS = ('https://overpass-api.de/api/interpreter',
+                    'https://overpass.private.coffee/api/interpreter',
+                    'https://overpass.kumi.systems/api/interpreter')
+OVERPASS_MAX_KM2 = 300          # of whole cells with their buffer; a dense centre is ~2.5 MB of XML per km2
+OVERPASS_BUDGET = 240           # seconds of trying servers before the build asks for the PBF
+OVERPASS_WAIT = 150             # seconds a server may stay silent (queue, query, a stalled stream)
+OVERPASS_QUERY_SECONDS = 600    # the query's own limit on the server
+
+
+def overpass_box(box):
+    """The box asked from Overpass: the selection's cells with their buffer, as a cut keeps them."""
+    import osm_tiles
+    region = osm_tiles.region(box)
+    return osm_tiles.package_of(sorted(osm_tiles.region_keys(region)), region)
+
+
+def overpass_km2(box):
+    from builder_estimate import area_km2
+    return area_km2(overpass_box(box))
+
+
+class NeedsPbf(Exception):
+    """The area's data cannot come from Overpass: the user may allow the country's PBF."""
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def overpass_query(box, timeout):
+    """What a cut of the country's PBF keeps for this box (osm_tiles.cut): every node and way in
+    it, the multipolygon, restriction and landmark relations with a member in it and the landmark
+    or multipolygon relations holding those, each completed down to the last node."""
+    from osm_select import LANDMARK_TAGS
+    w, s, e, n = box
+    b = f'{s:.6f},{w:.6f},{n:.6f},{e:.6f}'
+    kinds = ['[type~"^(multipolygon|restriction)$"]'] + [
+        f'["{key}"~"^({"|".join(sorted(values))})$"]' for key, values in LANDMARK_TAGS.items()]
+    return (f'[out:xml][timeout:{int(timeout)}][maxsize:2147483648];\n'
+            f'(node({b}); way({b});)->.p;\n'
+            '(' + ' '.join(f'rel({b}){k};' for k in kinds) + ')->.r;\n'
+            '(' + ' '.join(f'rel(br.r){k};' for k in kinds) + ')->.u;\n'
+            '(.p; .p >; .r; .r >>; .u; .u >>;);\n'
+            'out body;')
+
+
+def overpass_fetch(url, box, dest, wait=OVERPASS_WAIT, emit=print, cancel=None):
+    """POST the query and stream the XML to dest. wait bounds every silence (the server queues and
+    runs the query before the first byte), not the whole download: a large area may stream for
+    minutes. An answer Overpass cut short (it says so in a remark, with status 200) is refused."""
+    import urllib.parse
+    data = urllib.parse.urlencode({'data': overpass_query(box, OVERPASS_QUERY_SECONDS)}).encode()
+    request = urllib.request.Request(url, data=data, headers={'User-Agent': USER_AGENT})
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    size, reported = 0, 0
+    with urllib.request.urlopen(request, timeout=wait, context=tls.context()) as response, \
+            dest.open('wb') as out:
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise InterruptedError('download stopped')
+            chunk = response.read(1 << 20)
+            if not chunk:
+                break
+            out.write(chunk)
+            size += len(chunk)
+            if size - reported >= 16 << 20:
+                reported = size
+                emit(f'Overpass: {size / 2**20:.0f} MB')
+    with dest.open('rb') as written:
+        written.seek(max(0, size - 4096))
+        tail = written.read().decode('utf-8', 'replace')
+    if '</osm>' not in tail:
+        raise ValueError('the answer ended early')
+    if 'runtime error' in tail or 'runtime remark' in tail:
+        raise ValueError('the server gave up on the query: ' + tail[tail.find('<remark'):][:160].strip())
+    return size
+
+
+def osm_xml_to_pbf(xml, pbf, box):
+    """Overpass XML as a PBF whose header box is the area fetched: the cut clips its region to it
+    (cut_region) exactly as to a Geofabrik extract's own box."""
+    import osmium
+    pbf = Path(pbf)
+    part = pbf.with_name(pbf.name + '.part')
+    part.unlink(missing_ok=True)
+    header = osmium.io.Header()
+    header.add_box(osmium.osm.Box(osmium.osm.Location(box[0], box[1]), osmium.osm.Location(box[2], box[3])))
+    header.set('generator', 'EarthNG from Overpass API')
+    writer = osmium.SimpleWriter(osmium.io.File(str(part), 'pbf'), header=header)
+    try:
+        for obj in osmium.FileProcessor(str(xml)):
+            writer.add(obj)
+    finally:
+        writer.close()
+    os.replace(part, pbf)
+    return pbf
+
+
+class OverpassSource(GeofabrikSource):
+    """The selection's OSM objects from Overpass, kept as a small PBF and cut like an extract.
+    The tiles are the same files a Geofabrik cut would write (osm_select keeps the same objects),
+    so a later build reuses them either way. fetch() raises NeedsPbf when no server answers or
+    the area is larger than Overpass serves."""
+    name = 'overpass'
+
+    def __init__(self, root, place, box):
+        super().__init__(root, place, box)
+        digest = hashlib.sha1(','.join(f'{float(v):.5f}' for v in box).encode()).hexdigest()[:8]
+        self.pbf = Path(root) / 'data' / 'overpass' / f'{self.slug}-{digest}.osm.pbf'
+        self.fetch_box = overpass_box(box)
+
+    def fetch(self, emit=print, cancel=None):
+        if self.pbf.is_file():
+            emit(f'Reusing the area fetched from Overpass ({self.pbf.name}).')
+            return
+        km2 = overpass_km2(self.box)
+        if km2 > OVERPASS_MAX_KM2:
+            raise NeedsPbf(f'the area is {km2:.0f} km2; Overpass serves up to {OVERPASS_MAX_KM2} km2')
+        xml = self.pbf.with_name(self.pbf.name.replace('.osm.pbf', '.osm'))
+        deadline = time.monotonic() + OVERPASS_BUDGET
+        failures = []
+        try:
+            for url in OVERPASS_SERVERS:
+                if time.monotonic() > deadline:
+                    break
+                host = url.split('/')[2]
+                emit(f'Overpass: asking {host} for {km2:.0f} km2 of OSM data')
+                started = time.monotonic()
+                try:
+                    size = overpass_fetch(url, self.fetch_box, xml, OVERPASS_WAIT, emit, cancel)
+                    osm_xml_to_pbf(xml, self.pbf, self.fetch_box)
+                except InterruptedError:
+                    raise
+                # HTTP 429/504, timeouts, dropped streams, cut-short or unreadable answers
+                except (OSError, ValueError, RuntimeError, http.client.HTTPException) as exc:
+                    failures.append(f'{host}: {exc}')
+                    emit(f'Overpass: {host} failed after {time.monotonic() - started:.0f} s ({exc})')
+                    continue
+                emit(f'Overpass: {size / 2**20:.1f} MB from {host} in {time.monotonic() - started:.0f} s')
+                return
+            raise NeedsPbf('Overpass did not answer: ' + ('; '.join(failures) or 'no time left'))
+        finally:
+            xml.unlink(missing_ok=True)
+
+
+def tile_source(root, place, box=None, allow_pbf=False):
+    """The tile source of a build. A selection without the country's PBF on disk comes from
+    Overpass first; the PBF (Geofabrik) only for a whole region, when it is already downloaded,
+    or once the user allowed it (allow_pbf, after NeedsPbf)."""
+    geofabrik = GeofabrikSource(root, place, box)
+    if box is None or allow_pbf or geofabrik.pbf.is_file():
+        return geofabrik
+    return OverpassSource(root, place, box)
 
 
 def build_place(place, mods, root=ROOT, **options):
@@ -719,8 +872,9 @@ def build_place(place, mods, root=ROOT, **options):
 
 def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs=None,
                  landing=None, by_id=None, emit=print, cancel=None, progress=None, local_dem=False,
-                 road_register=False, section=None):
+                 road_register=False, section=None, allow_pbf=False):
     """Download sources if needed and write the country zip, then copy it into mods.
+    allow_pbf: the user agreed to download the country's PBF (tile_source).
     local_dem: burn the Estonian Land Board's 10 m LiDAR terrain into the elevation tiles.
     road_register: join Transpordiamet's road register (state road widths, shoulders, guard
     rails) onto the source tiles.
@@ -755,7 +909,7 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
         if progress:
             progress(name, time.monotonic() - start)
 
-    source = tile_source(root, place, box)
+    source = tile_source(root, place, box, allow_pbf)
     pbf, tiles = source.pbf, source.tiles
     cached_tiles = source.ready(emit)
     # elevation under the box (or the country's outline) downloads while the PBF is cut
