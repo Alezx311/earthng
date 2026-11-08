@@ -3,8 +3,9 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const el = (tag, props = {}, ...children) => {
+const el = (tag, { dataset, ...props } = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
+  if (dataset) Object.assign(node.dataset, dataset);       // dataset itself is read-only
   children.flat().forEach(c => node.append(c));
   return node;
 };
@@ -53,9 +54,21 @@ function mockService(m) {
     case 'places': return answer({ places: [{ id: 'ukraine', name: 'Ukraine', parent: 'Europe' }, { id: 'albania', name: 'Albania', parent: 'Europe' }] });
     case 'geocode': return answer({ results: [{ name: 'Тирана, Albania', lat: 41.3275, lon: 19.8189, bounds: [19.75, 41.28, 19.88, 41.37], kind: 'city' }] });
     case 'covering': return answer({ place: { id: 'ukraine', name: 'Ukraine', parent: 'Europe' }, km2: 120.4 });
-    case 'estimate': return answer({ seconds: [110, 12, 3, 20, 13, 1], stages: ['Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'],
-      reason: 'rough estimate', cached_tiles: false, cached_pbf: true });
+    case 'estimate': return answer({ seconds: [30, 110, 12, 3, 20, 13, 1], stages: ['Planet', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'],
+      reason: 'rough estimate', cached_tiles: false, cached_pbf: false, pbf_bytes: 54466814, planet: 'missing' });
     case 'projects': return answer({ projects: [] });
+    case 'build': case 'install_planet': {   // a pretend job: stages one by one, then done
+      answer({ job: m.cmd });
+      const stages = m.cmd === 'build' ? ['Planet', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'] : ['Planet'];
+      const send = (msg, ms) => setTimeout(() => window.earthng.receive(msg), ms);
+      stages.forEach((name, i) => {
+        send({ event: 'stage', name, seconds: null }, 300 + i * 700);
+        send({ event: 'log', text: `${name}…` }, 350 + i * 700);
+        send({ event: 'stage', name, seconds: 0.6 }, 900 + i * 700);
+      });
+      send({ event: 'done', job: m.cmd, result: 'complete', path: 'C:\\Users\\you\\AppData\\Local\\BeamNG\\BeamNG.drive\\current\\mods\\earthng_albania.zip' }, 1000 + stages.length * 700);
+      return undefined;
+    }
     default: return answer({});
   }
 }
@@ -124,18 +137,26 @@ function drawEdits() {
 }
 
 // ------------------------------------------------------------------ selection
-async function selectBox(box) {
+const BIG_KM2 = 2500;
+
+async function selectBox(box, name) {
   state.box = box;
+  state.areaName = name || null;
   if (boxLayer) boxLayer.remove();
   boxLayer = L.rectangle([[box[1], box[0]], [box[3], box[2]]], { color: getComputedStyle(document.body).getPropertyValue('--box'), weight: 2 }).addTo(map);
   showCard('area');
+  $('area-title').textContent = name || t('area.title');
+  $('area-km2').textContent = '…';
   $('area-source').textContent = '…';
   $('area-time').textContent = '…';
+  state.place = null; state.estimate = null; state.km2 = null;
+  renderNotes();
+  updateBuildButton();
   try {
     const cover = await call('covering', { box });
+    state.km2 = cover.km2;
     $('area-km2').textContent = `${cover.km2.toLocaleString()} km²`;
     if (!cover.place) {
-      state.place = null;
       $('area-source').textContent = t('area.noSource');
     } else {
       await choosePlace(cover.place, false);
@@ -143,13 +164,15 @@ async function selectBox(box) {
   } catch (err) {
     $('area-source').textContent = err.message;
   }
+  renderNotes();
   updateBuildButton();
 }
 
 async function choosePlace(place, fit) {
   state.place = place;
   $('area-source').textContent = place.parent ? `${place.name} — ${place.parent}` : place.name;
-  if (!$('project-title').value) $('project-title').value = place.name;
+  if (!state.box) $('area-title').textContent = place.name;
+  if (!$('project-title').value) $('project-title').value = areaName();
   if (fit || !state.box) {
     call('boundary', { place: place.id }).then(r => {
       if (boundaryLayer) boundaryLayer.remove();
@@ -160,7 +183,11 @@ async function choosePlace(place, fit) {
     }).catch(() => {});
   }
   await loadOptions(place.id);
-  refreshEstimate();
+  await refreshEstimate();
+}
+
+function areaName() {
+  return state.areaName || (state.place && state.place.name) || t('area.title');
 }
 
 async function refreshEstimate() {
@@ -169,16 +196,42 @@ async function refreshEstimate() {
     const est = await call('estimate', { place: state.place.id, box: state.box, include: state.include });
     state.estimate = est;
     const notes = [];
-    if (est.cached_tiles) notes.push(t('area.cached')); else if (est.cached_pbf) notes.push(t('area.pbfCached'));
+    if (est.cached_tiles) notes.push(t('area.cached'));
+    else if (est.cached_pbf) notes.push(t('area.pbfCached'));
+    else if (est.pbf_bytes) notes.push(t('area.download', Math.round(est.pbf_bytes / 2 ** 20)));
     if (est.seconds) {
       const total = est.seconds.reduce((a, b) => a + b, 0);
-      $('area-time').textContent = `${duration(total * 0.5)}–${duration(total * 2.5)}` + (notes.length ? ` · ${notes.join(', ')}` : '');
+      $('area-time').textContent = `${duration(total * 0.5)}–${duration(total * 2.5)}`;
     } else {
       $('area-time').textContent = est.reason;
     }
+    $('area-source').textContent = `${state.place.parent ? `${state.place.name} — ${state.place.parent}` : state.place.name}` + (notes.length ? ` · ${notes.join(', ')}` : '');
   } catch (err) {
     $('area-time').textContent = err.message;
   }
+  renderNotes();
+}
+
+// What the user should know before pressing Create: the mod comes too, the area is large, no game.
+function renderNotes() {
+  const notes = [];
+  const s = state.status;
+  if (s && !s.game_folder_ok) notes.push(['bad', t('area.noGame')]);
+  const planet = (state.estimate && state.estimate.planet) || planetNeeded();
+  if (planet === 'old') notes.push(['info', t('area.planetOld', s ? s.planet.version : '')]);
+  else if (planet) notes.push(['info', t('area.planet')]);
+  if (state.km2 > BIG_KM2) notes.push(['warn', t('area.big')]);
+  $('area-notes').replaceChildren(...notes.map(([kind, text]) => el('p', { className: `note ${kind}`, textContent: text })));
+}
+
+function planetNeeded() {
+  const s = state.status;
+  if (!s) return null;
+  const planet = s.planet;
+  if (!planet.installed) return 'missing';
+  if (planet.error) return 'unreadable';
+  if (planet.expected && planet.version !== planet.expected) return 'old';
+  return null;
 }
 
 function duration(s) {
@@ -189,10 +242,13 @@ function duration(s) {
 }
 
 function clearArea() {
-  state.box = null; state.place = null;
+  state.box = null; state.place = null; state.areaName = null; state.estimate = null; state.km2 = null;
+  state.projectId = null;
+  $('project-title').value = '';
   if (boxLayer) { boxLayer.remove(); boxLayer = null; }
   if (boundaryLayer) { boundaryLayer.remove(); boundaryLayer = null; }
   showCard('empty');
+  renderRecent();
 }
 
 // ------------------------------------------------------------------ options (look and layers)
@@ -228,38 +284,66 @@ function renderOptions() {
 
 // ------------------------------------------------------------------ build
 function updateBuildButton() {
-  const planet = state.status && state.status.planet;
-  $('build').disabled = state.building || !state.place || !(planet && planet.installed);
+  const s = state.status;
+  $('build').disabled = state.building || !state.place || !(s && s.game_folder_ok);
 }
 
-const stageTimes = {};
 let buildStarted = 0;
 let elapsedTimer = null;
+let job = null;            // {kind: 'build' | 'install_planet', name, stages, weights}
+
+function startProgress(kind, stages, weights) {
+  // a drawn box has no name of its own: the region's name would mislead ("a point in Ukraine")
+  job = { kind, name: state.areaName || (state.box ? null : state.place && state.place.name), stages, weights: weights || stages.map(() => 1), done: new Set(), active: null };
+  showCard('build');
+  $('build-title').textContent = t(kind === 'build' ? 'build.title' : 'build.planetTitle') + (kind === 'build' && job.name ? ` — ${job.name}` : '');
+  $('stages').replaceChildren(...stages.map(name => el('li', { dataset: { stage: name } },
+    el('span', { className: 'dot' }), el('span', { textContent: t(`stage.${name}`) }), el('span', { className: 't' }))));
+  $('log').textContent = '';
+  $('log-box').open = false;
+  $('build-error').replaceChildren();
+  $('build-elapsed').textContent = '';
+  $('stop').hidden = false;
+  ['build-retry', 'build-back'].forEach(id => { $(id).hidden = true; });
+  drawProgress();
+}
+
+function drawProgress() {
+  if (!job) return;
+  const total = job.weights.reduce((a, b) => a + b, 0) || 1;
+  let done = 0;
+  job.stages.forEach((name, i) => {
+    if (job.done.has(name)) done += job.weights[i];
+    else if (job.active === name) done += job.weights[i] / 3;
+  });
+  $('progress-bar').style.width = `${Math.min(100, (100 * done) / total).toFixed(1)}%`;
+}
 
 async function build() {
   if (!state.place) return;
   saveProject(true);
-  showCard('build');
-  const stages = (state.estimate && state.estimate.stages) || ['Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'];
-  $('stages').replaceChildren(...stages.map(name => el('li', { dataset: { stage: name } },
-    el('span', { className: 'dot' }), el('span', { textContent: t(`stage.${name}`) }), el('span', { className: 't' }))));
-  $('log').textContent = '';
-  ['stop'].forEach(id => { $(id).hidden = false; });
-  ['build-back', 'open-mods'].forEach(id => { $(id).hidden = true; });
+  const est = state.estimate;
+  const stages = (est && est.stages) || ['Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'];
+  startProgress('build', stages, est && est.seconds ? est.seconds.map(v => Math.max(1, v)) : null);
   try {
     await call('build', { place: state.place.id, box: state.box, look: state.look, include: state.include });
-    setBuilding(true);
-    buildStarted = Date.now();
-    elapsedTimer = setInterval(() => { $('build-elapsed').textContent = duration((Date.now() - buildStarted) / 1000); }, 1000);
+    jobStarted();
   } catch (err) {
-    appendLog(`${t('build.failed')}: ${err.message}`);
-    finishBuild('failed');
+    finishBuild('failed', err.message);
   }
+}
+
+function jobStarted() {
+  setBuilding(true);
+  buildStarted = Date.now();
+  clearInterval(elapsedTimer);
+  elapsedTimer = setInterval(() => { $('build-elapsed').textContent = duration((Date.now() - buildStarted) / 1000); }, 1000);
 }
 
 function setBuilding(on) {
   state.building = on;
   $('st-task').textContent = on ? t('busy') : '';
+  $('tool-box').disabled = on;
   updateBuildButton();
 }
 
@@ -273,24 +357,48 @@ function appendLog(text) {
 
 function onStage(name, seconds) {
   const row = document.querySelector(`#stages li[data-stage="${CSS.escape(name)}"]`);
-  if (!row) return;
+  if (!row) return;            // a background stage the list does not show (Map detail)
   if (seconds == null) {
     row.classList.add('active');
+    if (job) job.active = name;
   } else {
     row.classList.remove('active');
     row.classList.add('done');
     row.querySelector('.t').textContent = duration(seconds);
+    if (job) { job.done.add(name); if (job.active === name) job.active = null; }
   }
+  drawProgress();
 }
 
-function finishBuild(result, error) {
+function finishBuild(result, error, path) {
   setBuilding(false);
   clearInterval(elapsedTimer);
+  document.querySelectorAll('#stages li.active').forEach(li => li.classList.remove('active'));
+  const kind = job ? job.kind : 'build';
+  if (result === 'complete') {
+    appendLog(t('build.complete'));
+    if (job) { job.stages.forEach(n => job.done.add(n)); drawProgress(); }
+    showDone(kind, path);
+    refreshStatus().catch(() => {});
+    return;
+  }
   $('stop').hidden = true;
   $('build-back').hidden = false;
-  $('open-mods').hidden = result !== 'complete';
-  appendLog(result === 'complete' ? t('build.complete') : result === 'stopped' ? t('build.stopped') : `${t('build.failed')}: ${error || ''}`);
-  document.querySelectorAll('#stages li.active').forEach(li => li.classList.remove('active'));
+  $('build-retry').hidden = false;
+  const text = result === 'stopped' ? t('build.stopped') : `${t('build.failed')}: ${error || ''}`;
+  appendLog(text);
+  $('build-error').replaceChildren(el('p', { className: `note ${result === 'stopped' ? 'info' : 'bad'}`, textContent: text }));
+  if (result !== 'stopped') $('log-box').open = true;
+}
+
+function showDone(kind, path) {
+  showCard('done');
+  const planet = kind === 'install_planet';
+  $('done-title').textContent = t(planet ? 'done.planetTitle' : 'done.title');
+  $('done-body').textContent = planet ? t('done.planetBody') : t('done.body', job && job.name);
+  $('done-path').textContent = path || '';
+  $('launch-game').hidden = planet;
+  $('done-another').textContent = t(planet ? 'build.back' : 'done.another');
 }
 
 // ------------------------------------------------------------------ projects
@@ -331,61 +439,64 @@ async function openProject(name) {
   state.look = project.options && project.options.look || null;
   state.include = project.options && project.options.include || null;
   state.lookFor = project.selection.place;
-  $('project-title').value = project.title || project.id;
   drawEdits();
   if (project.selection.box) {
     const b = project.selection.box;
     map.fitBounds([[b[1], b[0]], [b[3], b[2]]], { padding: [40, 40] });
-    await selectBox(b);
+    await selectBox(b, project.title);
+    $('project-title').value = project.title || project.id;
+    state.projectId = project.id;
   }
 }
 
 // ------------------------------------------------------------------ status, settings
+function setupRow(ok, text, action, onAction) {
+  const row = [el('span', { className: `mark ${ok === true ? 'ok' : ok === false ? 'bad' : 'info'}`, textContent: ok === true ? '✓' : ok === false ? '!' : '↓' }),
+    el('span', { className: 'grow', textContent: text })];
+  if (action) row.push(Object.assign(el('button', { className: 'link', textContent: action }), { onclick: onAction }));
+  return row;
+}
+
 async function refreshStatus() {
   const s = await call('status');
   state.status = s;
   const planet = s.planet;
-  const expected = planet.expected;
-  const old = planet.installed && expected && planet.version !== expected;
+  const need = planetNeeded();
   $('st-game').innerHTML = '';
   $('st-game').append(el('span', { className: s.game_folder_ok ? 'ok' : 'bad', textContent: s.game_folder_ok ? `● ${t('game.ok')}` : `● ${t('game.missing')}` }));
-  $('st-planet').textContent = planet.installed ? t('planet.ok', planet.version || '?') : t('planet.missing');
-  $('st-planet').className = planet.installed && !old ? 'ok' : 'bad';
+  $('st-planet').textContent = need === 'old' ? t('setup.planetOld', planet.version) : need ? t('setup.planetMissing') : t('planet.ok', planet.version || '?');
+  $('st-planet').className = need ? 'pending' : 'ok';
   $('st-disk').textContent = s.free_gb != null ? t('disk.free', s.free_gb) : '';
-  const banner = $('banner');
-  banner.replaceChildren();
-  if (!s.game_folder_ok) {
-    banner.append(el('div', { className: 'banner bad' }, el('h4', { textContent: t('game.missing') }),
-      el('p', { className: 'small', textContent: t('game.missingBody') })));
-  } else if (!planet.installed || old) {
-    const install = el('button', { className: 'primary', textContent: t(old ? 'planet.update' : 'planet.install') });
-    install.onclick = installPlanet;
-    banner.append(el('div', { className: 'banner warn' },
-      el('h4', { textContent: old ? t('planet.old', planet.version) : t('planet.missing') }),
-      el('p', { className: 'small', textContent: t('planet.missingBody') }), el('div', { className: 'actions' }, install)));
-  }
+
+  $('setup-game').replaceChildren(...setupRow(s.game_folder_ok, t(s.game_folder_ok ? 'setup.gameOk' : 'setup.gameMissing'),
+    t(s.game_folder_ok ? 'setup.change' : 'setup.gameFix'), () => showSection('settings')));
+  $('setup-game').title = s.mods;
+  $('setup-planet').replaceChildren(...setupRow(need ? null : true,
+    need === 'old' ? t('setup.planetOld', planet.version) : need ? t('setup.planetMissing') : t('setup.planetOk', planet.version || '?'),
+    need && s.game_folder_ok && !state.building ? t('setup.planetNow') : null, installPlanet));
+  $('setup').classList.toggle('attention', !s.game_folder_ok);
+
   $('game-folders').replaceChildren(...[...new Set([s.mods, ...s.folders])].map(f => el('option', { value: f, textContent: f, selected: f === s.mods })));
   $('game-folder-state').textContent = s.game_folder_ok ? '✓' : t('game.missingBody');
   $('planet-state').textContent = planet.installed ? `${t('planet.ok', planet.version || '?')} — ${planet.path}` : t('planet.missing');
   $('planet-install').textContent = t(planet.installed ? 'planet.update' : 'planet.install');
   $('home-path').textContent = s.home;
   $('about').textContent = `EarthNG ${s.build.version || 'dev'}${s.build.sourceCommit ? ' · ' + s.build.sourceCommit.slice(0, 7) : ''}`;
-  if (s.busy) setBuilding(true);
+  if (s.busy && !state.building) setBuilding(true);
+  renderNotes();
   updateBuildButton();
 }
 
 async function installPlanet() {
   showSection('map');
-  showCard('build');
-  $('stages').replaceChildren();
-  $('log').textContent = '';
-  $('stop').hidden = false;
-  ['build-back', 'open-mods'].forEach(id => { $(id).hidden = true; });
+  const back = state.place ? 'area' : 'empty';
+  startProgress('install_planet', ['Planet']);
+  job.back = back;
+  onStage('Planet', null);
   try {
     await call('install_planet');
-    setBuilding(true);
+    jobStarted();
   } catch (err) {
-    appendLog(err.message);
     finishBuild('failed', err.message);
   }
 }
@@ -427,7 +538,7 @@ function geoItem(r, list) {
     $('search').value = head;
     const { box, km2 } = geoBox(r);
     map.fitBounds([[box[1], box[0]], [box[3], box[2]]], { padding: [40, 40] });
-    if (km2 <= 2500) selectBox(box);
+    if (km2 <= 2500) selectBox(box, head);
   };
   return li;
 }
@@ -470,7 +581,7 @@ document.addEventListener('click', e => { if (!e.target.closest('.search')) $('s
 
 // ------------------------------------------------------------------ layout
 function showCard(name) {
-  ['empty', 'area', 'build'].forEach(n => { $(`card-${n}`).hidden = n !== name; });
+  ['empty', 'area', 'build', 'done'].forEach(n => { $(`card-${n}`).hidden = n !== name; });
 }
 
 function showSection(name) {
@@ -480,14 +591,26 @@ function showSection(name) {
   if (name === 'settings') refreshStatus();
 }
 
+async function renderRecent() {
+  try {
+    const { projects } = await call('projects');
+    const recent = projects.slice(-4).reverse();
+    $('recent').replaceChildren(...(recent.length ? [el('h3', { textContent: t('empty.recent') }),
+      el('div', { className: 'chips' }, recent.map(p => Object.assign(el('button', { className: 'chip', textContent: p.title }), { onclick: () => openProject(p.id) })))] : []));
+  } catch (err) { /* no projects yet */ }
+}
+
+function backFromJob() {
+  const back = job && job.back;
+  showCard(back || (state.place ? 'area' : 'empty'));
+}
+
 // ------------------------------------------------------------------ events from the service
 listeners.push(message => {
   if (message.event === 'log') appendLog(message.text);
   else if (message.event === 'stage') onStage(message.name, message.seconds);
-  else if (message.event === 'done') {
-    finishBuild(message.result, message.error);
-    if (message.job === 'install_planet') refreshStatus();
-  } else if (message.event === 'ready') refreshStatus();
+  else if (message.event === 'done') finishBuild(message.result, message.error, message.path);
+  else if (message.event === 'ready') refreshStatus().catch(() => {});
   else if (message.event === 'service_exit') {
     setBuilding(false);
     $('banner').replaceChildren(el('div', { className: 'banner bad' }, el('p', { textContent: t('service.down') })));
@@ -498,24 +621,36 @@ listeners.push(message => {
 document.querySelectorAll('.rail-btn[data-section]').forEach(b => { b.onclick = () => showSection(b.dataset.section); });
 $('tool-box').onclick = () => setMode('box');
 $('tool-edit').onclick = () => setMode('edit');
+$('empty-draw').onclick = () => { if (state.mode !== 'box') setMode('box'); };
 $('area-clear').onclick = clearArea;
 $('build').onclick = build;
 $('save-project').onclick = () => saveProject(false);
 $('stop').onclick = () => call('stop').catch(() => {});
-$('build-back').onclick = () => showCard(state.place ? 'area' : 'empty');
+$('build-back').onclick = backFromJob;
+$('build-retry').onclick = () => (job && job.kind === 'install_planet' ? installPlanet() : build());
 $('open-mods').onclick = () => call('open_folder', { which: 'mods' }).catch(() => {});
+$('launch-game').onclick = () => call('open_url', { url: 'steam://rungameid/284160' }, 'app').catch(() => {});
+$('done-another').onclick = () => { if (job && job.kind === 'install_planet') backFromJob(); else clearArea(); };
 $('open-home').onclick = () => call('open_folder', { which: 'home' }).catch(() => {});
 $('planet-install').onclick = installPlanet;
 $('game-folders').onchange = e => setGameFolder(e.target.value);
 $('game-folder-set').onclick = () => setGameFolder($('game-folder').value.trim());
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (dragStart) { dragStart = null; if (boxLayer && !state.box) { boxLayer.remove(); boxLayer = null; } }
+  if (state.mode) setMode(state.mode);
+});
 $('lang').onclick = () => {
   LANG = LANG === 'uk' ? 'en' : 'uk';
   try { localStorage.setItem('lang', LANG); } catch (e) { /* storage off */ }
   $('lang').textContent = LANG === 'uk' ? 'УК' : 'EN';
   applyI18n(); renderOptions(); drawEdits(); setMode(state.mode); setMode(state.mode);
+  refreshStatus().catch(() => {}); renderRecent();
+  if (state.box || state.place) $('area-title').textContent = areaName();
 };
 $('lang').textContent = LANG === 'uk' ? 'УК' : 'EN';
 applyI18n();
 drawEdits();
 showCard('empty');
 refreshStatus().catch(() => {});
+renderRecent();

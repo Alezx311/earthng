@@ -33,17 +33,23 @@
 <aside class="panel" id="panel">
   <!-- section: map -->
   <section data-panel="map">
+    <div class="setup" id="setup">
+      <div class="setup-row" id="setup-game"></div>
+      <div class="setup-row" id="setup-planet"></div>
+    </div>
     <div id="banner"></div>
 
     <div class="card" id="card-empty">
-      <h2 data-i18n="empty.title"></h2>
+      <div class="step"><span class="num">1</span><h2 data-i18n="empty.title"></h2></div>
       <p class="muted" data-i18n="empty.body"></p>
+      <button class="primary big" id="empty-draw" data-i18n="empty.draw"></button>
+      <p class="muted small" data-i18n="empty.tip"></p>
       <div id="recent"></div>
     </div>
 
     <div class="card" id="card-area" hidden>
       <div class="row between">
-        <h2 id="area-title" data-i18n="area.title"></h2>
+        <div class="step"><span class="num">2</span><h2 id="area-title"></h2></div>
         <button class="link" id="area-clear" data-i18n="area.clear"></button>
       </div>
       <dl class="facts">
@@ -51,35 +57,53 @@
         <dt data-i18n="area.source"></dt><dd id="area-source">—</dd>
         <dt data-i18n="area.time"></dt><dd id="area-time">—</dd>
       </dl>
-      <label class="field"><span data-i18n="area.name"></span><input id="project-title"></label>
+      <div id="area-notes"></div>
+      <button class="primary big" id="build" data-i18n="area.build"></button>
 
-      <h3 data-i18n="look.title"></h3>
-      <label class="field"><span data-i18n="look.block"></span><select id="look-block"></select></label>
-      <div id="look-slots" class="grid2"></div>
+      <details class="more" id="more-look">
+        <summary data-i18n="look.title"></summary>
+        <label class="field"><span data-i18n="look.block"></span><select id="look-block"></select></label>
+        <div id="look-slots" class="grid2"></div>
+        <h3 data-i18n="layers.title"></h3>
+        <div id="layers" class="toggles"></div>
+      </details>
 
-      <h3 data-i18n="layers.title"></h3>
-      <div id="layers" class="toggles"></div>
-
-      <h3 data-i18n="edits.title"></h3>
-      <p class="muted small" id="edits-count"></p>
-
-      <div class="actions">
-        <button class="primary" id="build" data-i18n="area.build"></button>
-        <button id="save-project" data-i18n="area.save"></button>
-      </div>
+      <details class="more" id="more-project">
+        <summary data-i18n="project.title"></summary>
+        <label class="field"><span data-i18n="area.name"></span><input id="project-title"></label>
+        <p class="muted small" id="edits-count"></p>
+        <div class="actions"><button id="save-project" data-i18n="area.save"></button></div>
+      </details>
     </div>
 
     <div class="card" id="card-build" hidden>
       <div class="row between">
-        <h2 data-i18n="build.title"></h2>
+        <div class="step"><span class="num">3</span><h2 id="build-title" data-i18n="build.title"></h2></div>
         <span class="muted" id="build-elapsed"></span>
       </div>
+      <div class="progress"><div id="progress-bar"></div></div>
       <ol id="stages" class="stages"></ol>
-      <pre id="log" class="log"></pre>
+      <div id="build-error"></div>
+      <details class="more" id="log-box">
+        <summary data-i18n="build.log"></summary>
+        <pre id="log" class="log"></pre>
+      </details>
       <div class="actions">
         <button class="danger" id="stop" data-i18n="build.stop"></button>
+        <button class="primary" id="build-retry" data-i18n="build.retry" hidden></button>
         <button id="build-back" data-i18n="build.back" hidden></button>
-        <button id="open-mods" data-i18n="build.open" hidden></button>
+      </div>
+    </div>
+
+    <div class="card" id="card-done" hidden>
+      <div class="done-mark">✓</div>
+      <h2 id="done-title" data-i18n="done.title"></h2>
+      <p id="done-body"></p>
+      <p class="muted small path" id="done-path"></p>
+      <div class="actions column">
+        <button class="primary big" id="launch-game" data-i18n="done.launch"></button>
+        <button id="open-mods" data-i18n="build.open"></button>
+        <button class="link" id="done-another" data-i18n="done.another"></button>
       </div>
     </div>
   </section>

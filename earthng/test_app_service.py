@@ -108,13 +108,49 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(self.ask(cmd='stop')['stopping'])
         self.assertEqual(self.wait_done()['result'], 'stopped')
 
-    def test_build_needs_the_planet(self):
+    def test_a_build_installs_a_missing_planet_first(self):
         self.service.places = [{'id': 'albania', 'name': 'Albania', 'pbf': 'https://x/albania.osm.pbf'}]
         self.service.by_id = {'albania': self.service.places[0]}
         self.service.boundaries = {}
-        answer = self.ask(cmd='build', place='albania', box=[19.8, 41.3, 19.9, 41.35])
+        source = planet_zip(self.root / 'served.zip', '0.7.0')
+        order = []
+
+        def fake_download(url, dest, emit=print, cancel=None):
+            order.append('planet')
+            Path(dest).parent.mkdir(parents=True, exist_ok=True)
+            Path(dest).write_bytes(source.read_bytes())
+            return dest
+
+        def fake_build(place, mods, **kw):
+            order.append(('build', (Path(mods) / 'mods' / 'earthng_planet.zip').is_file()))
+            return Path(mods) / 'mods' / 'earthng_albania.zip'
+        with patch.object(app_service, 'build_info', return_value={'planetVersion': '0.7.0'}),                 patch.object(app_service.country_fetch, 'download', side_effect=fake_download),                 patch.object(app_service.country_fetch, 'build_place', side_effect=fake_build):
+            self.assertEqual(self.service.planet_needed(), 'missing')
+            self.assertTrue(self.ask(cmd='build', place='albania', box=[19.8, 41.3, 19.9, 41.35])['ok'])
+            done = self.wait_done()
+            self.assertEqual(done['result'], 'complete', done)
+            self.assertEqual(order, ['planet', ('build', True)])
+            stages = [(m['name'], m['seconds'] is None) for m in self.out.messages() if m.get('event') == 'stage']
+            self.assertEqual(stages, [('Planet', True), ('Planet', False)])
+            self.assertIsNone(self.service.planet_needed())
+            # an installed planet of the expected version is not fetched again
+            self.assertTrue(self.ask(cmd='build', place='albania', box=[19.8, 41.3, 19.9, 41.35])['ok'])
+            self.wait_done()
+            self.assertEqual(order.count('planet'), 1)
+
+    def test_an_older_planet_is_replaced_by_the_build(self):
+        planet_zip(self.game / 'mods' / 'earthng_planet.zip', '0.6.0')
+        with patch.object(app_service, 'build_info', return_value={'planetVersion': '0.7.0'}):
+            self.assertEqual(self.service.planet_needed(), 'old')
+
+    def test_a_build_needs_a_game_folder(self):
+        self.service.places = [{'id': 'albania', 'name': 'Albania', 'pbf': 'https://x/albania.osm.pbf'}]
+        self.service.by_id = {'albania': self.service.places[0]}
+        self.service.boundaries = {}
+        with patch.object(app_service, 'game_folder_ok', return_value=False):
+            answer = self.ask(cmd='build', place='albania', box=[19.8, 41.3, 19.9, 41.35])
         self.assertFalse(answer['ok'])
-        self.assertIn('planet', answer['error'])
+        self.assertIn('BeamNG user folder', answer['error'])
 
     def test_geocode_turns_nominatim_rows_into_boxes(self):
         rows = [{'display_name': 'Tirana, Albania', 'lat': '41.3275', 'lon': '19.8189', 'type': 'city',
@@ -178,6 +214,7 @@ out.flush()
         finally:
             process.stdin.close()
             process.wait(20)
+            process.stdout.close()
         self.assertEqual(out, 'child said 42')
 
     def test_the_service_speaks_utf8_json_lines(self):

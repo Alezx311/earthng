@@ -43,8 +43,8 @@ input, select {
 
 .map-wrap { grid-area: map; position: relative; min-width: 0; }
 #map { position: absolute; inset: 0; background: var(--surface2); }
-.map-tools { position: absolute; top: 10px; left: 54px; right: 10px; z-index: 500; display: flex; gap: 8px; align-items: flex-start; }
-.search { position: relative; width: min(360px, 50%); }
+.map-tools { position: absolute; top: 10px; left: 54px; right: 10px; z-index: 500; display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.search { position: relative; flex: 0 1 360px; min-width: 120px; }
 .search input { box-shadow: 0 1px 4px rgba(0,0,0,.2); }
 #search-results { position: absolute; left: 0; right: 0; top: 34px; margin: 0; padding: 4px 0; list-style: none;
   background: var(--surface); border: 1px solid var(--line); border-radius: 6px; max-height: 50vh; overflow: auto; }
@@ -54,7 +54,7 @@ input, select {
 #search-results li.group { cursor: default; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding-top: 8px; }
 #search-results li.group:hover, #search-results li.muted:hover { background: none; }
 #search-results li.muted { cursor: default; color: var(--muted); font-size: 12px; }
-.tool { box-shadow: 0 1px 4px rgba(0,0,0,.2); background: var(--surface); }
+.tool { box-shadow: 0 1px 4px rgba(0,0,0,.2); background: var(--surface); white-space: nowrap; flex: none; }
 .tool.on { background: var(--accent); color: var(--accent-text); }
 .legend { position: absolute; left: 10px; bottom: 22px; z-index: 500; background: var(--surface); border: 1px solid var(--line);
   border-radius: 6px; padding: 5px 10px; color: var(--muted); max-width: 70%; }
@@ -103,4 +103,37 @@ p { margin: 6px 0; }
   background: var(--surface); border-top: 1px solid var(--line); color: var(--muted); white-space: nowrap; overflow: hidden; }
 .status .ok { color: var(--accent); }
 .status .bad { color: var(--danger); }
+.status .pending { color: var(--muted); }
 .leaflet-container { font: inherit; }
+
+/* guided flow: game and mod state, then area, then create */
+.setup { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface2); }
+.setup.attention { background: color-mix(in srgb, var(--danger) 10%, var(--surface2)); }
+.setup-row { display: flex; gap: 8px; align-items: center; padding: 2px 0; font-size: 12.5px; }
+.mark { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; flex: none; }
+.mark.ok { background: var(--accent); color: var(--accent-text); }
+.mark.bad { background: var(--danger); color: #fff; }
+.mark.info { background: var(--line); color: var(--text); }
+.step { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.step h2 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step .num { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-text);
+  display: grid; place-items: center; font-weight: 700; font-size: 13px; flex: none; }
+#card-empty p { margin: 10px 0; }
+button.big { width: 100%; padding: 11px 14px; font-size: 15px; margin: 12px 0 4px; border-radius: 8px; }
+.note { margin: 8px 0; padding: 7px 10px; border-radius: 6px; font-size: 12.5px; border-left: 3px solid var(--line); background: var(--surface2); }
+.note.info { border-left-color: var(--accent); }
+.note.warn { border-left-color: var(--warn); }
+.note.bad { border-left-color: var(--danger); }
+details.more { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+details.more > summary { cursor: pointer; color: var(--muted); font-weight: 600; padding: 4px 0; user-select: none; }
+details.more[open] > summary { color: var(--text); }
+.progress { height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; margin: 12px 0 4px; }
+#progress-bar { height: 100%; width: 0; background: var(--accent); transition: width .4s ease; }
+.done-mark { width: 44px; height: 44px; border-radius: 50%; background: var(--accent); color: var(--accent-text);
+  display: grid; place-items: center; font-size: 24px; font-weight: 700; margin: 6px 0 10px; }
+#card-done p { margin: 8px 0; }
+.path { word-break: break-all; }
+.actions.column { flex-direction: column; align-items: stretch; }
+.actions.column button.big { margin: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border-radius: 14px; padding: 4px 12px; font-size: 12.5px; }

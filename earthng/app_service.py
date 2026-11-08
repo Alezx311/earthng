@@ -33,6 +33,8 @@ import looks  # noqa: E402
 import places  # noqa: E402
 
 RELEASE_URL = 'https://github.com/Alezx311/earthng/releases/download/EarthNG'
+PLANET_STAGE = 'Planet'         # first build stage when the planet is missing or older than the packs
+PLANET_SECONDS = 30             # ~170 MB from GitHub
 PLANET = 'earthng_planet.zip'
 PROJECT_SCHEMA = 'earthng-project-v1'
 
@@ -194,19 +196,42 @@ class Service:
         return {'path': str(folder)}
 
     # ------------------------------------------------------------------ planet
-    def cmd_install_planet(self, url=None):
+    def planet_needed(self):
+        """None when the installed planet is the one this build's packs expect, else why not."""
+        state = self.planet_state()
+        if not state['installed']:
+            return 'missing'
+        if state.get('error'):
+            return 'unreadable'
+        if state['expected'] and state['version'] != state['expected']:
+            return 'old'
+        return None
+
+    def fetch_planet(self, mods, cancel, url=None):
+        """Download earthng_planet.zip from the release (a complete earlier download is reused when
+        it still matches the server's size) and install it into <user folder>/mods."""
         url = url or f'{RELEASE_URL}/{PLANET}'
         if not url.startswith('https://'):
+            raise ValueError('the planet is downloaded over https only')
+        dest = self.root / 'downloads' / PLANET
+        self.log(f'Downloading {PLANET} from GitHub Releases')
+        country_fetch.download(url, dest, self.log, cancel)
+        target = install_planet(dest, mods, cancel)
+        state = self.planet_state()
+        if state['expected'] and state['version'] != state['expected']:
+            self.log(f"warning: the release has planet {state['version']}, this EarthNG expects {state['expected']}")
+        self.log(f"installed {PLANET} {state['version'] or ''}".rstrip())
+        return target
+
+    def cmd_install_planet(self, url=None):
+        if url is not None and not str(url).startswith('https://'):
             raise ValueError('the planet is downloaded over https only')
         mods = self.mods
 
         def target(cancel):
             if not game_folder_ok(mods):
                 raise ValueError(f'{mods} is not a BeamNG user folder (it has no mods folder or settings)')
-            dest = self.root / 'downloads' / PLANET
-            self.log(f'Downloading {PLANET} from GitHub Releases')
-            country_fetch.download(url, dest, self.log, cancel)
-            return install_planet(dest, mods, cancel)
+            return self.fetch_planet(mods, cancel, url)
         return self.start_job('install_planet', target)
 
     def cmd_stop(self):
@@ -303,7 +328,13 @@ class Service:
         except OSError:
             pass
         times, reason = timing.estimate(size, box, include, cached_pbf, cached_tiles)
-        return {'seconds': [round(t) for t in times] if times else None, 'stages': list(timing.STAGES),
+        stages, seconds = list(timing.STAGES), [round(t) for t in times] if times else None
+        planet = self.planet_needed()
+        if planet:                                   # the build installs it first
+            stages.insert(0, PLANET_STAGE)
+            if seconds:
+                seconds.insert(0, PLANET_SECONDS)
+        return {'seconds': seconds, 'stages': stages, 'planet': planet,
                 'reason': reason, 'pbf_bytes': size, 'cached_pbf': cached_pbf, 'cached_tiles': cached_tiles}
 
     # ------------------------------------------------------------------ build
@@ -321,14 +352,20 @@ class Service:
                 if not boundary.covers(rectangle(*box)):
                     raise ValueError('the area reaches outside the chosen source region: pick the covering region '
                                      'or a smaller rectangle')
-        if not self.planet_state()['installed']:
-            raise ValueError('install the planet first: the pack is read through earthng_planet.zip')
+        if not game_folder_ok(self.mods):
+            raise ValueError(f'{self.mods} is not a BeamNG user folder: choose it in Settings')
         chosen, mods = self.by_id[place], str(self.mods)
+        planet = self.planet_needed()
 
         def progress(name, seconds):
             self.send({'event': 'stage', 'name': name, 'seconds': seconds})
 
         def target(cancel):
+            if planet:          # the pack is read through earthng_planet.zip: install it with the pack
+                progress(PLANET_STAGE, None)
+                start = time.monotonic()
+                self.fetch_planet(Path(mods), cancel)
+                progress(PLANET_STAGE, time.monotonic() - start)
             self.log(f"Building {chosen['name']}" + (f' {box}' if box else ''))
             return country_fetch.build_place(chosen, mods, root=self.root, look=look, include=include, box=box,
                                              by_id=self.by_id, emit=self.log, cancel=cancel, progress=progress)

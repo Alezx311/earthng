@@ -141,8 +141,11 @@ fn asset(ui: &Path, path: &str) -> Response<Cow<'static, [u8]>> {
     }
 }
 
+/// Pages and BeamNG.drive through Steam ("Start BeamNG.drive" after a build); nothing else.
+const STEAM_BEAMNG: &str = "steam://rungameid/284160";
+
 fn open_external(url: &str) {
-    if url.starts_with("https://") {
+    if url.starts_with("https://") || url == STEAM_BEAMNG {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
