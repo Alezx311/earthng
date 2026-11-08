@@ -78,9 +78,9 @@ def _script_name(value):
     return value.replace('\\', '/').rsplit('/', 1)[-1][:-3]
 
 
-def builder_files(files):
+def builder_files(files, start=('launch_builder', 'country_ui', 'osm_tiles_country')):
     """Follow local imports and scripts started by file name (HERE / 'build_country.py')."""
-    pending = ['launch_builder', 'country_ui', 'osm_tiles_country']
+    pending = list(start)
     selected = set()
     while pending:
         module = pending.pop()

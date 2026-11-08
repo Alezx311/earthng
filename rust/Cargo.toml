@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/osm", "crates/geo", "crates/kernels", "crates/pack", "crates/mapbuilder", "crates/cells"]
+members = ["crates/osm", "crates/geo", "crates/kernels", "crates/pack", "crates/mapbuilder", "crates/cells", "crates/app"]
 
 [workspace.package]
 edition = "2024"

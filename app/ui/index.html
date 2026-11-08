@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<title>EarthNG — Map Builder</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<nav class="rail" aria-label="sections">
+  <div class="brand" title="EarthNG">E</div>
+  <button class="rail-btn active" data-section="map" data-i18n-title="nav.map">🗺</button>
+  <button class="rail-btn" data-section="projects" data-i18n-title="nav.projects">📁</button>
+  <button class="rail-btn" data-section="settings" data-i18n-title="nav.settings">⚙</button>
+  <div class="grow"></div>
+  <button class="rail-btn small" id="lang" title="Мова / Language">УК</button>
+</nav>
+
+<main class="map-wrap">
+  <div id="map"></div>
+  <div class="map-tools">
+    <div class="search">
+      <input id="search" type="search" data-i18n-placeholder="search.placeholder" autocomplete="off">
+      <ul id="search-results" hidden></ul>
+    </div>
+    <button id="tool-box" class="tool" data-i18n="tool.box"></button>
+    <button id="tool-edit" class="tool" data-i18n="tool.edit"></button>
+  </div>
+  <div class="legend" id="hint" data-i18n="hint.select"></div>
+</main>
+
+<aside class="panel" id="panel">
+  <!-- section: map -->
+  <section data-panel="map">
+    <div id="banner"></div>
+
+    <div class="card" id="card-empty">
+      <h2 data-i18n="empty.title"></h2>
+      <p class="muted" data-i18n="empty.body"></p>
+      <div id="recent"></div>
+    </div>
+
+    <div class="card" id="card-area" hidden>
+      <div class="row between">
+        <h2 id="area-title" data-i18n="area.title"></h2>
+        <button class="link" id="area-clear" data-i18n="area.clear"></button>
+      </div>
+      <dl class="facts">
+        <dt data-i18n="area.size"></dt><dd id="area-km2">—</dd>
+        <dt data-i18n="area.source"></dt><dd id="area-source">—</dd>
+        <dt data-i18n="area.time"></dt><dd id="area-time">—</dd>
+      </dl>
+      <label class="field"><span data-i18n="area.name"></span><input id="project-title"></label>
+
+      <h3 data-i18n="look.title"></h3>
+      <label class="field"><span data-i18n="look.block"></span><select id="look-block"></select></label>
+      <div id="look-slots" class="grid2"></div>
+
+      <h3 data-i18n="layers.title"></h3>
+      <div id="layers" class="toggles"></div>
+
+      <h3 data-i18n="edits.title"></h3>
+      <p class="muted small" id="edits-count"></p>
+
+      <div class="actions">
+        <button class="primary" id="build" data-i18n="area.build"></button>
+        <button id="save-project" data-i18n="area.save"></button>
+      </div>
+    </div>
+
+    <div class="card" id="card-build" hidden>
+      <div class="row between">
+        <h2 data-i18n="build.title"></h2>
+        <span class="muted" id="build-elapsed"></span>
+      </div>
+      <ol id="stages" class="stages"></ol>
+      <pre id="log" class="log"></pre>
+      <div class="actions">
+        <button class="danger" id="stop" data-i18n="build.stop"></button>
+        <button id="build-back" data-i18n="build.back" hidden></button>
+        <button id="open-mods" data-i18n="build.open" hidden></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- section: projects -->
+  <section data-panel="projects" hidden>
+    <div class="card">
+      <h2 data-i18n="projects.title"></h2>
+      <p class="muted" data-i18n="projects.body"></p>
+      <ul id="projects" class="list"></ul>
+    </div>
+  </section>
+
+  <!-- section: settings -->
+  <section data-panel="settings" hidden>
+    <div class="card">
+      <h2 data-i18n="settings.title"></h2>
+      <label class="field"><span data-i18n="settings.game"></span>
+        <select id="game-folders"></select></label>
+      <label class="field"><span data-i18n="settings.other"></span>
+        <div class="row"><input id="game-folder"><button id="game-folder-set" data-i18n="settings.apply"></button></div></label>
+      <p class="muted small" id="game-folder-state"></p>
+      <h3 data-i18n="settings.planet"></h3>
+      <p id="planet-state" class="small"></p>
+      <button id="planet-install" data-i18n="planet.install"></button>
+      <h3 data-i18n="settings.data"></h3>
+      <p class="muted small" id="home-path"></p>
+      <button id="open-home" data-i18n="settings.openHome"></button>
+      <p class="muted small" id="about"></p>
+    </div>
+  </section>
+</aside>
+
+<footer class="status">
+  <span id="st-game"></span>
+  <span id="st-planet"></span>
+  <span id="st-disk"></span>
+  <span class="grow"></span>
+  <span id="st-task"></span>
+</footer>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="i18n.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
