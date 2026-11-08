@@ -2,7 +2,7 @@
 
 Download a ready ZIP instead of generating a country. **Python and EarthNG.exe are not required to play.**
 
-**[Ukraine — 2.96 GB, 80 regions](https://drive.google.com/file/d/1WriRBq6pBBjSUyySV81RMgzRViK83NpJ/view)** is the recommended large demo. Its current ZIP exceeds GitHub Releases' [2 GiB per-file limit](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#storage-and-bandwidth-quotas), so it is hosted on Google Drive.
+**[Ukraine — 2.96 GB, 80 regions](https://drive.google.com/file/d/1W9C387RI-Tst6c3ZV2YwIEsZYE3QxtYr/view)** is the recommended large demo. Its current ZIP exceeds GitHub Releases' [2 GiB per-file limit](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#storage-and-bandwidth-quotas), so it is hosted on Google Drive.
 
 1. Download **earthng_planet.zip** from the [current GitHub release](https://github.com/Alezx311/earthng/releases/tag/EarthNG).
 2. Download one or more country ZIPs below. Keep each country ZIP packed.
@@ -39,6 +39,6 @@ If Drive wraps several files in a new download ZIP, extract that outer wrapper f
 | earthng_uk-northern-ireland.zip | [Download on Google Drive](https://drive.google.com/file/d/1O5XOGo52Vfla3RtMFZ2fdwB9-k_8os8q/view) |
 | earthng_uk-south-scotland.zip | [Download on Google Drive](https://drive.google.com/file/d/18FpRBS9v4a9S_-rWi2mFX7mv3iIvz1us/view) |
 | earthng_uk-wales.zip | [Download on Google Drive](https://drive.google.com/file/d/1YkypXeuevoXD0z5H2ugay7Mi2DUuBEJP/view) |
-| earthng_ukraine.zip | [Download on Google Drive](https://drive.google.com/file/d/1WriRBq6pBBjSUyySV81RMgzRViK83NpJ/view) |
+| earthng_ukraine.zip | [Download on Google Drive](https://drive.google.com/file/d/1W9C387RI-Tst6c3ZV2YwIEsZYE3QxtYr/view) |
 | earthng_vatican.zip | [Download on Google Drive](https://drive.google.com/file/d/1Bm6Y-4_D8GepFD_EXdYD97Yh_BxzGnvH/view) |
 | earthng_zanzibar.zip | [Download on Google Drive](https://drive.google.com/file/d/1UE0lTr691chSTb0iijzMHpSFbZQjHVFW/view) |
