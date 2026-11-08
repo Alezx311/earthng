@@ -1,6 +1,6 @@
 # Біличі, 1 км²: стан дослідження
 
-Знімок знань на 29.10.2026. Це проміжний експеримент, а не реліз і не підтверджена максимальна реконструкція. План продовження для Claude — [BILYCHI_OVERNIGHT.md](BILYCHI_OVERNIGHT.md). Процедура зміни світу — `.grok/skills/earthng-world/SKILL.md`; перед правками прочитати також [GENERATION_GAPS.md](GENERATION_GAPS.md), [CITY_DETAIL.md](CITY_DETAIL.md) та кореневий `AGENTS.md`.
+Знімок знань на 29.10.2026. Гілку `exp/bilychi-1km` злито в `master` 30.10 (через `feature/places`), деталізація вмикається прапорцями пака, які EarthNG.exe ставить на кожен пак. Нижче — запис експерименту: шляхи `out/experiments/…` і worktree Codex локальні й можуть бути відсутні. Процедура зміни світу — `.grok/skills/earthng-world/SKILL.md`; перед правками прочитати також [GENERATION_GAPS.md](GENERATION_GAPS.md), [CITY_DETAIL.md](CITY_DETAIL.md) та кореневий `AGENTS.md`.
 
 ## Рамка, версії та відтворюваність
 

@@ -9,8 +9,13 @@ of the following data and assets:
 - Geofabrik provides the regional OSM extracts: https://download.geofabrik.de/
 - ISRG Root X1 and ISRG Root X2 are bundled so the builder can verify Let's Encrypt
   chains when the system store cannot: https://letsencrypt.org/certificates/
-- Map Builder's optional street detail shows OpenStreetMap standard tiles, used
-  under the tile usage policy: https://operations.osmfoundation.org/policies/tiles/
+- EarthNG.exe's map shows OpenStreetMap standard tiles, used under the tile usage
+  policy: https://operations.osmfoundation.org/policies/tiles/ . Its town and address
+  search asks Nominatim (https://operations.osmfoundation.org/policies/nominatim/), and
+  the OSM data of a drawn area may come from public Overpass API servers
+  (overpass-api.de, overpass.private.coffee, overpass.kumi.systems).
+- Leaflet (`app/ui/vendor/leaflet`) draws EarthNG.exe's map: BSD 2-Clause, see its
+  LICENSE file there. https://leafletjs.com/
 - Terrarium elevation tiles: https://registry.opendata.aws/terrain-tiles/
   See the source attribution and terms there when redistributing elevation data.
 - Estonian elevation (`--local-dem`): Map data: Republic of Estonia Land and Spatial
@@ -52,5 +57,9 @@ of the following data and assets:
   game. They are not included in EarthNG release archives. BeamNG.drive is
   required and is not supplied by this project.
 
-Python packages retain their own licenses and are installed separately by pip.
+Python packages retain their own licenses. EarthNG.exe embeds CPython 3.13 (PSF License)
+and the packages of `requirements-fast.txt`, each under its own license. The Rust crates
+compiled into `earthng-mapbuilder.exe` and `earthng_native.dll` are listed with their
+licenses in `bin/THIRD_PARTY_RUST.txt` inside the exe's runtime; the native tools load
+GEOS (LGPL 2.1) from shapely and PROJ (MIT) from pyproj at run time.
 The planet builder uses `distributable=True` to avoid embedding game textures.

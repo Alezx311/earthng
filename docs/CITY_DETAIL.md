@@ -1,6 +1,6 @@
 # Street layout planner — 23 October 2026
 
-Branch: `codex/street-assets-experiments`. This continues the Forest experiment;
+Merged into `master` on 23 October (`ba417a2`). This continues the Forest experiment;
 it does not change country packs or the building generator. Stock meshes remain
 references to the player's installed game.
 
@@ -188,8 +188,7 @@ Building facade realism and new asset production are separate work.
 ## Біличі: джерела і фасади — 29 жовтня 2026
 
 Дослідний квадрат 1000 × 1000 м у EPSG:32636 має центр 50.460360, 30.344190;
-результати і стан роботи — [BILYCHI_EXPERIMENT.md](BILYCHI_EXPERIMENT.md),
-наступні кроки — [BILYCHI_OVERNIGHT.md](BILYCHI_OVERNIGHT.md). Мета — розширити
+результати і стан роботи — [BILYCHI_EXPERIMENT.md](BILYCHI_EXPERIMENT.md). Мета — розширити
 існуючий тайловий генератор, а не дублювати `YARD.build`, `VEG.streetProps`,
 парковки або дорожній рендер.
 

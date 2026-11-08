@@ -4,15 +4,23 @@
 
 ## Що вже є конвеєр
 
-Планета (`earthng_planet.zip`) тримає Lua, спільний арт і правила. Пак країни тримає компактні факти OSM і висоти, не готові міста. Під час гри `mod/lua/ge/extensions/e2r/generator.lua` будує тайл навколо авто. Стилі й класи пака готує `earthng/fast_style.py`. Клімат читає `biome.lua`.
+Три частини, одна гілка `master`:
 
-Нове наповнення розширює цей генератор і спільну маску зайнятого місця. Окремий сервер, статичний експорт міста чи другий рендер доріг не додавати.
+- **Планета** (`earthng_planet.zip`, збирає `earthng/build_mod.py` з `mod/`) тримає Lua, спільний арт, офлайн-мапу й правила. Під час гри `mod/lua/ge/extensions/e2r/generator.lua` будує тайл навколо авто, `native.lua` планує тайли, `world.lua` веде сцену, колізію й навграф. Трафік без фізики — `flow.lua` і `handoff.lua`, світлофори — `signals.lua`, маршрут — `routing.lua` і `navigator.lua`, рядок місця — `location.lua`. Клімат читає `biome.lua`, бюджети задає `quality.lua`.
+- **Пак країни** (`earthng_<id>.zip`) тримає компактні факти OSM і висоти, не готові міста. Збирає Python-конвеєр `earthng/` (`country_fetch.py` → `osm_tiles_country.py` → `fast_sources.py` → `build_country.py`, класи — `fast_style.py`). Важкі етапи (нарізка, індекс, клітинки, сцени, маршрути, `Map detail`) мають нативну копію в `rust/` (`earthng-mapbuilder.exe`, `earthng_native.dll`), яка пише ті самі байти; `EARTHNG_NATIVE=0` вимикає її.
+- **EarthNG.exe** (`rust/crates/app` + сторінка `app/ui/` + сервіс `earthng/app_service.py`) — вікно для гравця: вбудований Python, вибір області, збірка й встановлення пака разом із планетою. Runtime для exe збирає `earthng/prepare_app.py`.
+
+Нове наповнення розширює генератор і спільну маску зайнятого місця. Окремий сервер, статичний експорт міста чи другий рендер доріг не додавати.
 
 Стокові меші й текстури гри лишаються в установці гравця. Мод посилається на них через VFS і не копіює їх у ZIP.
 
-## Перед правкою наповнення
+## Перед правкою
 
-Прочитати реєстр `docs/GENERATION_GAPS.md` і один профільний документ: `docs/NATURE.md`, `docs/CITY_DETAIL.md`, `docs/STREET_PROPS.md` або `docs/PERFORMANCE.md`. Історичні числа в `PERFORMANCE.md` і `STREET_PROPS.md` не є поточним бюджетом. Бюджет брати з коду (`quality.lua`, генератор) і зі свіжого заміру.
+Карта документів — `docs/README.md`.
+
+Наповнення світу: прочитати реєстр `docs/GENERATION_GAPS.md` і один профільний документ: `docs/NATURE.md`, `docs/CITY_DETAIL.md`, `docs/VENUES.md`, `docs/SIGNS.md` або `docs/PERFORMANCE.md`. Історичні числа в `PERFORMANCE.md` і `STREET_PROPS.md` не є поточним бюджетом. Бюджет брати з коду (`quality.lua`, генератор) і зі свіжого заміру.
+
+Збирач паків і exe: `docs/MAPBUILDER_RS.md` (нативні етапи і правило «ті самі байти») і `docs/MAPBUILDER_APP.md` (exe, протокол сторінки, джерело тайлів).
 
 Процедура зміни світу: скіл `earthng-world`.
 
@@ -42,6 +50,8 @@
 ## Перевірка
 
 Юніт-тести: `.venv\Scripts\python.exe -m unittest discover -s earthng -p "test_*.py"` або вужчий `-p`. Якщо в `.venv` немає `lupa.luajit21`, тест із цим імпортом запустити тим інтерпретатором, де імпорт уже працює, і назвати його у звіті.
+
+Rust: `cargo test --release` у `rust/`. Тести нативних етапів у Python (`test_native_tool`) пропускаються, якщо `cargo build --release` ще не запускали. Зміна функції, яку дзеркалить Rust, ламає `test_rules_fingerprint`: перенести зміну в Rust або назвати розбіжність.
 
 Гра: один процес, окремий профіль `earthng/test_world.py`. Живу теку `mods`, на яку вказує локальний `launcher.json`, не перезаписувати, поки користувач не попросив встановити планету. Паки країн у живій теці не замінювати збіркою планети.
 

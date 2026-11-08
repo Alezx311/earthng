@@ -1,6 +1,6 @@
 # Ready country maps
 
-Download a ready ZIP instead of generating a country. **Python and Map Builder are not required to play.**
+Download a ready ZIP instead of generating a country. **Python and EarthNG.exe are not required to play.**
 
 **[Ukraine — 2.96 GB, 80 regions](https://drive.google.com/file/d/1WriRBq6pBBjSUyySV81RMgzRViK83NpJ/view)** is the recommended large demo. Its current ZIP exceeds GitHub Releases' [2 GiB per-file limit](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#storage-and-bandwidth-quotas), so it is hosted on Google Drive.
 

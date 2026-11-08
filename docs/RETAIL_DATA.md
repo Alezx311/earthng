@@ -7,7 +7,7 @@
 Знімок усієї України з локального Geofabrik `ukraine-260918.osm.pbf`:
 
 ```powershell
-.venv\Scripts\python.exe earthng\retail_cache.py C:\js\Earth2Road\out\districts\.inputs\geofabrik\ukraine-260918.osm.pbf data\retail\ukraine-260918.jsonl.gz
+.venv\Scripts\python.exe earthng\retail_cache.py data\pbf\ukraine.osm.pbf data\retail\ukraine-260918.jsonl.gz
 ```
 
 На повторному запуску за незмінних розміру й часу зміни джерела результат

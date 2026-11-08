@@ -1,7 +1,7 @@
-# MapBuilder на Rust — стан на 2026-11-06
+# MapBuilder на Rust — стан на 2026-11-08
 
-Гілка `feature/mapbuilder-rs`. Мета — щоб місто гравця збиралося за хвилину-дві, а не за 20+ хвилин.
-Дизайн вікна робиться окремо, промпт для Figma лежить у [MAPBUILDER_FIGMA_PROMPT.md](MAPBUILDER_FIGMA_PROMPT.md).
+Код у `master`, у гравця з релізом 0.8.0 (усередині EarthNG.exe). Мета — щоб місто гравця збиралося
+за хвилину-дві, а не за 20+ хвилин. Вікно, яке запускає цей конвеєр, описане в [MAPBUILDER_APP.md](MAPBUILDER_APP.md).
 
 ## Принцип
 
@@ -18,13 +18,14 @@
 | `kernels` | `earthng_native.dll` для ctypes: CG профілів доріг, DEM Terrarium (`terrain.rs`) |
 | `pack` | Формат клітинок EGB2 (`format.rs`), графи маршрутизації EGR1 (`routing.rs`) |
 | `cells` | `compile_cell` + кодер: індекс через SQLite, сцени, GEOS із shapely (`geos.rs`, завантажується під час роботи), семантика numpy (`numeric.rs`) |
-| `mapbuilder` | `earthng-mapbuilder.exe`: підкоманди `cut`, `routing`, `map-source`, `compile` |
+| `mapbuilder` | `earthng-mapbuilder.exe`: підкоманди `cut`, `routing`, `map-source`, `compile`, `scene` |
+| `app` | `EarthNG.exe`: вікно WebView2, сторінка `app/ui`, тайли підкладки, розпаковка runtime ([MAPBUILDER_APP.md](MAPBUILDER_APP.md)) |
 
 `earthng/native_tool.py` знаходить exe і dll: спершу в `bin/` (реліз), потім у `rust/target/release`
 (checkout, `cargo build --release` у `rust/`).
-`prepare_release.py` кладе їх у `bin/` ZIP-а MapBuilder: збирає `cargo build --release --locked` з чистого
-`rust/` тієї ж ревізії й додає `bin/THIRD_PARTY_RUST.txt` (ліцензії крейтів). `--no-native` залишає
-реліз лише на Python.
+`prepare_app.py` (через `prepare_release.py`) кладе їх у `bin/` runtime EarthNG.exe: збирає
+`cargo build --release --locked` з чистого `rust/` тієї ж ревізії й додає `bin/THIRD_PARTY_RUST.txt`
+(ліцензії крейтів). `--no-native` залишає exe лише на Python.
 
 ## Що вже нативне
 
@@ -243,7 +244,8 @@ Python (теги текстом прямо з `ways`, ширини в Rust).
 
 ## Наступні кроки, за виграшем
 
-1. **Тайли з сервера замість PBF країни.** Нарізка вже детермінована: `index.json` має sha256
+1. **Тайли з сервера замість PBF країни.** Поки що для виділеної області є Overpass (лише ця
+   область, [MAPBUILDER_APP.md](MAPBUILDER_APP.md)), але публічні сервери часто не відповідають. Нарізка вже детермінована: `index.json` має sha256
    кожного тайла 0.05°. Сервер тримає нарізку країн (або планети), а клієнт качає тільки тайли свого
    боксу (кілька МБ для міста). Так зникають кроки 1–2 і `Map detail`. Цей самий сервер потрібен
    для спільних правок і готових паків, тому це одна архітектура, а не дві.

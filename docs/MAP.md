@@ -19,10 +19,13 @@ long-distance route planner.
 
 ## Data compatibility
 
-The map update includes detailed OSM sidecars for **Ukraine and Albania**. Other
-older packs retain Natural Earth city/country labels and their existing local
-streets until a sidecar is built. New Map Builder and spot exports include a
-sidecar when their original PBF is available. The runtime stays fully offline.
+The planet (0.8.0) carries detailed OSM sidecars for **Ukraine, Albania and Estonia**.
+Other older packs retain Natural Earth city/country labels and their existing local
+streets until a sidecar is built. Packs built by EarthNG.exe or `country_fetch.py`,
+and spot exports, include a sidecar when their original PBF is available (an
+Overpass-only area has its own small PBF, which `build_map.py` reads too). With the
+Rust tools built, the PBF is read natively (`earthng-mapbuilder map-source`, see
+[MAPBUILDER_RS.md](MAPBUILDER_RS.md)). The runtime stays fully offline.
 
 Generate map detail independently of world geometry:
 
@@ -34,7 +37,7 @@ Generate map detail independently of world geometry:
 The output directory name must be the installed country's manifest ID. A matching
 source fingerprint reuses completed output. For a changed source use a fresh
 output directory. Planet builds embed completed `out/map-data/<id>/` directories.
-Country builds can supply `map_data=` to `build_country`; spot and Map Builder
+Country builds can supply `map_data=` to `build_country`; spot and EarthNG.exe
 pipelines do this automatically. Code-only planet refresh does not create data.
 
 Country sidecars live under `earthng/countries/<id>/map/`; planet fallback sidecars

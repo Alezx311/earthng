@@ -2,7 +2,7 @@
 
 # Продуктивність нативного світу
 
-Ніч і день 18.10.2026, гілка `codex/official-mod-packages`. BeamNG.drive 0.39.4 (build 20972),
+Перші розділи — ніч і день 18.10.2026, BeamNG.drive 0.39.4 (build 20972),
 Ryzen 7 3800X, RTX 2070 Super, 1280×720, «Normal». Усі заміри — в окремих тестових профілях,
 одна копія гри за раз.
 
@@ -13,7 +13,7 @@ Ryzen 7 3800X, RTX 2070 Super, 1280×720, «Normal». Усі заміри — в
 | `earthng/test_world.py ... --probe` + `earthng/probe.py --user <out>/user "lua"` | Lua всередині запущеної гри: заміри API рушія, знімки, задачі на N кадрів |
 | `Engine.Debug.getLastPerformanceMetrics(t)` | розклад останнього кадру рушія: `Lua`, `LuaGC`, `Ticking`, `Render`, `RenderShadows`, `PhysicsAndVLUA`… |
 | `earthng/native_route.py --pack <zip> --lat .. --lon .. --km 8 --min-rank 3` | маршрут дорогами пака для автопілота (`test_world.py --route`) |
-| `earthng/profile_generator.py`, `earthng/mesh_pairs.py` | гарячі місця генератора; об'єкти й пари «об'єкт × матеріал» на тайл |
+| `earthng/bench_native.py`, `earthng/alloc_profile.py`, `earthng/mesh_pairs.py` | генератор поза грою (LuaJIT): мс, сміття й найдовші шматки між `yield`; виділення пам'яті за функціями; об'єкти й пари «об'єкт × матеріал» на тайл |
 
 Контрольні маршрути: `out/routes/yaremche.json` (8,1 км, ліс і гори), `out/routes/kyiv-center.json`
 (8,1 км, центр Києва), `out/routes/transfagarasan.json` (Румунія, скелі). Заїзд: автопілот 20 м/с,
@@ -40,6 +40,8 @@ Ryzen 7 3800X, RTX 2070 Super, 1280×720, «Normal». Усі заміри — в
 | Що колізію не вимикає | матеріал (`translucent`, `alphaTest`, `groundType`), `setRenderEnabled(false)`, `disableCollision()`; `be:reloadStaticCollision` — той самий виклик і та сама ціна |
 | `castRayStatic` після перезбирання | бачить нову колізію лише з наступного кадру |
 | Склад перезбирання в центрі Києва (висадка) | 145 мс усього: горизонт ~6, далеке кільце ~58, ближні тайли ~67 (по ~6 мс на тайл) |
+| `getItemsBox` Forest | повертає елементи, чиї межі моделі перетинають запит, тож і якорі сусіднього тайла (запит до x = 499,99 дав лавки на 499, 499,995, 500 і 500,005). Вивантаження фільтрує якорі тим самим напіввідкритим прямокутником, що й генерація (23.10, BeamNG 0.40.3) |
+| Повторне `removeItem` того самого елемента Forest | валить гру; `pcall` помилку C++ не ловить. Черга видалень дедуплікується за ключем елемента |
 | Старт тестової їзди | один кадр 150–250 мс; наш Lua в ньому < 50 мс, решту тримає функція GE, яку викликає сам рушій. Знімок тесту (`createScreenshot2`) — лише ~30 мс |
 
 ### Багатоядерність

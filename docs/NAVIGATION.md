@@ -1,6 +1,6 @@
 # Навігація: вулиця згори і маршрут до мітки (аналіз, 27.10.2026)
 
-Гілка `feature/navigation`. Запит: issue #24 «Add an indicator where we are currently when driving
+Зроблене звідси в `master` (реліз 0.7.0 і злиття 5.11). Запит: issue #24 «Add an indicator where we are currently when driving
 (similarly to BeamNG.Earth)». Там просять рядок на кшталт «Park Ave W, Denver, Colorado» згори
 екрана. Користувач додав до цього мітки на мапі, до яких веде навігація.
 

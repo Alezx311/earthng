@@ -1,5 +1,37 @@
 # EarthNG native mod migration
 
+Newest first. How things work now: [docs/README.md](docs/README.md).
+
+## 2026-11-08: release 0.8.0, EarthNG.exe replaces the Tk Map Builder
+
+- One `EarthNG.exe` (Rust window, WebView2 page, embedded CPython 3.13) installs the planet and builds
+  map packs; the Tk window, `MapBuilder.bat`, `Setup.bat` and `EarthNG-MapBuilder.zip` are gone. The
+  first map installs or updates `earthng_planet.zip` too. Town and address search via Nominatim.
+- A drawn area's OSM comes from Overpass first; a country file up to 100 MB is downloaded at once;
+  a larger Geofabrik PBF only with the user's consent, with its size and time shown.
+- The cut keeps every cell a region overlaps: no data lost at an extract's edge (Tokyo spot 12 -> 34
+  tiles, London 24 -> 210, 0 road nodes outside the tiles).
+- Planet 0.8.0 and EarthNG.exe 0.8.0 from 6326cf2, checks in docs/RELEASE_CHECK.md. Details:
+  docs/MAPBUILDER_APP.md.
+
+## 2026-11-05 to 11-07: the pack builder's heavy stages in Rust
+
+- `rust/`: `earthng-mapbuilder.exe` and `earthng_native.dll` cut PBF tiles, solve road profiles,
+  build the index, compile cells, read scenes, write routing graphs and read the PBF for Map detail.
+  Each native stage writes the same bytes as the Python stage it replaces; `EARTHNG_NATIVE=0` keeps
+  Python. Kyiv from PBF to pack: ~26 min -> ~45 s without downloads. Details: docs/MAPBUILDER_RS.md.
+- Downloads: one kept-alive TLS connection per DEM thread, resumed PBF downloads, a box inside an
+  already cut country takes its tiles by hardlink.
+
+## 2026-11-05: branches merged, generator state across coroutines
+
+- `feature/places`, `feature/navigation`, `feature/traffic-flow`, `perf/streaming-250`, the signs and
+  lights of #23 and #24 and the two Claude worktree branches are in `master`. The flow takes the
+  phase from the scene's traffic lights where an approach matches a road.
+- The native scheduler saves and restores the generator's shared state (`ROADS`, `BLD`) when it
+  switches tile coroutines; extra yields at verges were removed again. Streamed geometry is released
+  from suspended coroutines. Notes in docs/GENERATION_GAPS.md and docs/PERFORMANCE.md.
+
 ## 2026-11-04: flow cars point along their lanes, four bodies
 
 - The user saw flow cars slide sideways. BeamNG's quaternions turn the other way round

@@ -3,8 +3,16 @@
 Drive through real places in BeamNG.drive. EarthNG builds roads, buildings and
 terrain from OpenStreetMap and elevation data as you drive.
 
-The game runs entirely in Lua with installed ZIP mods. Python is used only to
-prepare country packs locally. No companion server or Earth2Road checkout is required.
+The game runs entirely in Lua with installed ZIP mods. Map packs are prepared
+beforehand, either downloaded ready-made or built with EarthNG.exe. No companion
+server is required.
+
+What is generated on the road: roads with junctions, bridges, sidewalks and lane
+markings; buildings with roofs, windows and shop fronts; trees, grass and ground
+cover by climate; street furniture, signs and traffic lights that change. Optional
+traffic flow: hundreds of cars without physics queue at junctions and lights, and
+the nearest ones turn into real cars you can hit. A line at the top shows the
+street, town and region, and the map can route you to a marker.
 
 ## Install and play
 
@@ -33,8 +41,9 @@ wrapper; keep each `earthng_<country>.zip` inside packed.
 The widget searches cities, villages and countries in local, Ukrainian and English
 names. Use Enter or click a result, scroll to zoom and drag to pan. Main-road
 overviews remain visible when zooming out, and BeamNG's stock minimap shows nearby
-generated roads even with traffic off. Detailed village/overview data is currently
-included for Ukraine and Albania; see [map controls and data](docs/MAP.md).
+generated roads even with traffic off. The planet carries detailed village and
+road overview data for Ukraine, Albania and Estonia; packs built by EarthNG.exe
+carry their own. See [map controls and data](docs/MAP.md).
 
 Use BeamNG's launcher to find your user folder; custom locations are supported.
 Restart the game after replacing a ZIP. Remove the old companion-era
@@ -107,11 +116,33 @@ country building has not been validated for this release.
 
 ## Development
 
+The repository has three parts: the planet's Lua and art (`mod/`, built by
+`earthng/build_mod.py`), the Python pack builder (`earthng/`) with native Rust
+copies of its heavy stages (`rust/`), and EarthNG.exe (`rust/crates/app`, the page in
+`app/ui`, the service `earthng/app_service.py`). Documents are listed in
+[docs/README.md](docs/README.md).
+
 ```powershell
 py -3.13 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .venv\Scripts\python.exe -m unittest discover -s earthng -p "test_*.py"
 ```
+
+The native tools need [Rust](https://rustup.rs). Without them every stage runs in
+Python (slower, same output); `EARTHNG_NATIVE=0` forces that.
+
+```powershell
+cd rust
+cargo build --release
+cargo test --release
+```
+
+`rust\target\release\EarthNG.exe` started from the checkout uses `.venv`, the code in
+`earthng/` and the page in `app/ui` on disk, so page edits need no rebuild. A
+standalone EarthNG.exe with the embedded Python is built by
+`.venv\Scripts\python.exe earthng/prepare_app.py --out out/app` from committed source.
+How the exe and the native stages work: [EarthNG.exe](docs/MAPBUILDER_APP.md),
+[native builder](docs/MAPBUILDER_RS.md).
 
 To rebuild the planet, extract **earthng-developer-assets.zip** from the separate
 [developer resources](https://github.com/Alezx311/earthng/releases/tag/developer-assets-0.4.0) into

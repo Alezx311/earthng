@@ -1,5 +1,24 @@
 # Release verification
 
+Newest first. Each entry records what was checked before a release and what was not. Tools named
+in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
+`MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
+
+## 0.8.0 (2026-11-08): planet 0.8.0 and EarthNG.exe 0.8.0 from 6326cf2
+
+- Planet built by `build_mod.py` from a clean `git archive` of `mod/` (uncommitted experiments
+  left out); the offline map sidecars `earthng/planet/maps/{albania,estonia,ukraine}` copied from
+  the released 0.7.0 planet (sha256 9d34ccf7…, `build_map.VERSION` unchanged), since
+  `out/map-data` was cleaned. 268 365 265 bytes, sha256 790f58d4…; testzip clean; cache limits
+  32, 160, 80000, 240000, 500 as in 0.7.0.
+- EarthNG.exe 49 870 214 bytes, sha256 e11b956c…, runtime 0.8.0 / planet 0.8.0.
+- Clean profile (the exe's runtime, empty data home, temporary game folder with the planet):
+  status sees planet 0.8.0 as expected; estimate for a Tirana box takes Albania's 52 MB PBF at
+  once (`source: pbf`, `ask_pbf: false`); the build downloaded, cut and installed
+  `earthng_albania.zip` (6.5 MB) in 30 s.
+- Not run: the game itself with this planet, and a live Overpass answer (all three servers gave
+  502/504 or timed out on 8.11).
+
 ## Planet 0.7.0 and Map Builder — 2026-11-02
 
 The `EarthNG` player release gets a new `earthng_planet.zip` (manifest 0.7.0, 267 MB) and
@@ -61,7 +80,7 @@ fast_packs, materials in fast_style) changed since c7ac7be, so Refresh planet co
 the same Lua and materials. The previous Map Builder ZIP is kept in
 `out/release/mapbuilder-20261026-backup`.
 
-The overnight changes are in docs/MAPBUILDER_REVIEW.md: Ukraine from scratch builds in
+The overnight changes (docs/MAPBUILDER_REVIEW.md, removed with the Tk window; in Git at e70232b): Ukraine from scratch builds in
 1 h 25 min instead of about 4 h, the export resumes after Stop, and a build checks the
 disk, holds a lock and keeps a current PBF when HEAD fails.
 
@@ -81,7 +100,7 @@ Country packs on Drive are not replaced; the live mods folder is not touched.
 
 Since 0.6.1: the 0.6.2 lawns, yards of blocks of flats (cars on driveways,
 playgrounds, porches, front gardens), and an inferred lamp no longer stands within
-12 m of a lamp OSM maps. Map Builder: the fixes of docs/MAPBUILDER_REVIEW.md, packs
+12 m of a lamp OSM maps. Map Builder: the fixes of the 25.10 review, packs
 with point lamps and trees, lone stops and entrances, separate sidewalks and pedestrian
 squares, recut of tile caches made by older rules, parallel region index and worker
 counts sized to cores and free memory.
@@ -91,7 +110,7 @@ counts sized to cores and free memory.
   `test_country` 21, `test_country_setup` 24, `test_mapbuilder` 32, `test_tiles` 5, all
   OK; the window's modules import from that folder with `python -I`.
 - Ukraine built through Map Builder's own path into a disposable profile
-  (`out/mapbuilder-ukraine-20261025`): 3.32 GB, timings in docs/MAPBUILDER_REVIEW.md.
+  (`out/mapbuilder-ukraine-20261025`): 3.32 GB, timings in that review.
   That pack was not driven in BeamNG, and this planet was not driven in a disposable
   profile before publication.
 
@@ -237,7 +256,7 @@ to Albania. `prepare_release.py` reads committed source, leaving local work out.
 Target: `master` (the repository does not currently have a `main` branch).
 Candidate manifest version: 0.4.0. The following records the checks before publication.
 
-## Country builder
+### Country builder
 
 - Python 3.13.2, Windows. `Setup.bat` succeeded in a fresh source directory containing
   spaces; `Country.bat` started the Tk window with that checkout's interpreter.
@@ -259,7 +278,7 @@ Candidate manifest version: 0.4.0. The following records the checks before publi
 - Final unit suite: **159 tests passed** with local basemap resources. A source-only
   copy: **159 run, 2 skipped**, both tests requiring the optional generated basemap.
 
-## Dense-city benchmark
+### Dense-city benchmark
 
 Times Square / Manhattan, **40.758, -73.9855**. Existing native New York pack,
 BeamNG.drive **0.39.4.0.20972**, Direct3D12, fresh disposable profiles,
@@ -298,7 +317,7 @@ and is not an FPS estimate. Reports: [default](benchmarks/2026-10-18-nyc-default
 [Potato](benchmarks/2026-10-18-nyc-potato.json),
 [LuaJIT](benchmarks/2026-10-18-nyc-luajit.json).
 
-## Removed / retained
+### Removed / retained
 
 Removed the companion servers, launcher, all-in-one Python packager, startup scripts,
 Python mesh generator, v2/Earth2Road bridge, spike scripts and obsolete handoff docs.
@@ -310,7 +329,7 @@ The old implementations remain recoverable in Git history. Local PBFs, packs,
 caches and existing user data were not deleted. Original code is MIT; third-party
 attribution is kept separately. CI installs explicit tested dependencies on Python 3.13.
 
-## Release disposition
+### Release disposition
 
 Prepared for review as a **draft**, not a claim that every release gate passes.
 Before a stable release: repeat performance runs with background workloads closed
@@ -328,18 +347,3 @@ Reproduce/stage locally (after staging intended source changes in Git):
 
 The staging command writes native mod ZIPs, source ZIP, developer-assets ZIP,
 licenses and SHA256SUMS.txt. It does not publish, tag, merge or change a game profile.
-
-## 0.8.0 (2026-11-08): planet 0.8.0 and EarthNG.exe 0.8.0 from 6326cf2
-
-- Planet built by `build_mod.py` from a clean `git archive` of `mod/` (uncommitted experiments
-  left out); the offline map sidecars `earthng/planet/maps/{albania,estonia,ukraine}` copied from
-  the released 0.7.0 planet (sha256 9d34ccf7…, `build_map.VERSION` unchanged), since
-  `out/map-data` was cleaned. 268 365 265 bytes, sha256 790f58d4…; testzip clean; cache limits
-  32, 160, 80000, 240000, 500 as in 0.7.0.
-- EarthNG.exe 49 870 214 bytes, sha256 e11b956c…, runtime 0.8.0 / planet 0.8.0.
-- Clean profile (the exe's runtime, empty data home, temporary game folder with the planet):
-  status sees planet 0.8.0 as expected; estimate for a Tirana box takes Albania's 52 MB PBF at
-  once (`source: pbf`, `ask_pbf: false`); the build downloaded, cut and installed
-  `earthng_albania.zip` (6.5 MB) in 30 s.
-- Not run: the game itself with this planet, and a live Overpass answer (all three servers gave
-  502/504 or timed out on 8.11).

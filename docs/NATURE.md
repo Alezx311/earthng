@@ -387,15 +387,15 @@ source areas. Маніфест містить attribution, реліз, ліце�
 Без WorldCover достатньо звичайних `requirements-fast.txt`. Для імпорту растра:
 
 ```powershell
-& C:/js/Earth2Road/.venv/Scripts/python.exe -m pip install -r requirements-nature.txt
-& C:/js/Earth2Road/.venv/Scripts/python.exe earthng/build_mod.py --out out/p1-packs
+.venv\Scripts\python.exe -m pip install -r requirements-nature.txt
+.venv\Scripts\python.exe earthng/build_mod.py --out out/p1-packs
 ```
 
 Повторюваний тестовий експорт із підготовленого індексу Фегерашу:
 
 ```powershell
 $p1Index = Get-Content out/p1-source-index.txt
-& C:/js/Earth2Road/.venv/Scripts/python.exe earthng/build_country.py `
+.venv\Scripts\python.exe earthng/build_country.py `
   --id p1-fagaras --title 'Fagaras P1' --version 0.4.0 `
   --region $p1Index --bbox -8000 -8000 8000 8000 --jobs 2 `
   --landcover out/p1-data/ESA_WorldCover_10m_2021_v200_N45E024_Map.tif `
@@ -422,8 +422,8 @@ horizon, світові UV скель, кущі, межу лісу, водні �
 відсутність дублікатів на від'ємній межі та точний збіг far-рослин із near.
 
 ```powershell
-& C:/js/Earth2Road/.venv/Scripts/python.exe -m unittest discover -s earthng -p test_nature.py -q
-& C:/js/Earth2Road/.venv/Scripts/python.exe earthng/test_world.py --native --generator fast `
+.venv\Scripts\python.exe -m unittest discover -s earthng -p test_nature.py -q
+.venv\Scripts\python.exe earthng/test_world.py `
   --mod out/p1-packs/earthng_p1-fagaras.zip --lat 45.624927 --lon 24.613111 `
   --gallery --gallery-wait 15 --drive-seconds 12 --timeout 300 --out out/p1-game-new
 ```
@@ -594,7 +594,7 @@ GroundCover, splat, RGB-макротекстури й води досі нема
 far-тайлах, стежки й горизонт — ні.
 
 ```powershell
-& C:/js/Earth2Road/.venv/Scripts/python.exe -m unittest discover -s earthng -p test_nature.py -q
-& C:/js/Earth2Road/.venv/Scripts/python.exe -m unittest discover -s earthng -p test_generator.py -q
-& C:/js/Earth2Road/.venv/Scripts/python.exe -m unittest discover -s earthng -p test_styles.py -q
+.venv\Scripts\python.exe -m unittest discover -s earthng -p test_nature.py -q
+.venv\Scripts\python.exe -m unittest discover -s earthng -p test_generator.py -q
+.venv\Scripts\python.exe -m unittest discover -s earthng -p test_styles.py -q
 ```
