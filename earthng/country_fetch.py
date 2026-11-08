@@ -959,7 +959,7 @@ class _Background:
 
 
 def run_step(command, emit=print, cancel=None):
-    """Capture worker output even when MapBuilder.bat uses pythonw; cancel its process tree."""
+    """Capture worker output (the service has no console); cancel its process tree."""
     import threading
     check_stopped(cancel)
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0

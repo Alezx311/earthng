@@ -12,9 +12,9 @@ Choose your downloads from the [player release](https://github.com/Alezx311/eart
 
 | Download | Purpose |
 | --- | --- |
-| **earthng_planet.zip** (~87 MB) | Required native mod. Put in BeamNG's `mods` folder, keep packed. |
+| **earthng_planet.zip** (~270 MB) | Required native mod. Put in BeamNG's `mods` folder, keep packed. |
 | **[earthng_ukraine.zip](https://drive.google.com/file/d/1WriRBq6pBBjSUyySV81RMgzRViK83NpJ/view)** (2.96 GB, Google Drive) | Ready Ukraine map, 80 regions. Put beside the planet ZIP, keep packed. |
-| **EarthNG-MapBuilder.zip** (~300 KB) | Optional tool for making other maps. Extract to a separate writable folder and run **MapBuilder.bat**. |
+| **EarthNG.exe** (~48 MB) | Optional: makes a map of any area you choose and installs it, together with the planet. No Python needed. |
 
 **To play the demo, download only the first two files. Python is not required.**
 
@@ -46,70 +46,29 @@ not in Git. See [release verification](docs/RELEASE_CHECK.md) for the tested bui
 and performance limits. This is an experimental first release: OSM completeness,
 terrain detail and performance vary between places.
 
-## Build your own country (Windows)
+## Build your own map (Windows)
 
-Install **Python 3.13** from python.org, including the Python launcher and Tcl/Tk.
-Download **[EarthNG-MapBuilder.zip](https://github.com/Alezx311/earthng/releases/download/EarthNG/EarthNG-MapBuilder.zip)**,
-extract the entire archive to a writable folder, then open **MapBuilder.bat**.
-You can also clone this repository (Country.bat starts the same window). On first use it runs
-**Setup.bat** to create `.venv` and install the required packages. An internet
-connection is required for setup and new data. If the window does not open,
-MapBuilder.bat keeps its console open with the reason and saves it to
-`out\mapbuilder\startup.log`; attach that file when reporting a problem.
+Download **[EarthNG.exe](https://github.com/Alezx311/earthng/releases/download/EarthNG/EarthNG.exe)**
+and run it. It needs nothing else: Python and the build tools are inside, unpacked
+once to `%LOCALAPPDATA%\EarthNG\runtime`. Downloaded data and built packs live in
+`%LOCALAPPDATA%\EarthNG\data`. The window uses Microsoft Edge WebView2, which
+Windows 10 and 11 already have.
 
-In the country window:
+1. The top of the window shows whether BeamNG's user folder was found (choose it in
+   Settings if not) and whether the EarthNG mod is installed.
+2. **Choose an area**: search for a town or address (Enter), or press **Draw an area
+   on the map** and drag a rectangle. A town found by the search becomes the area.
+3. Press **Create the map**. If `earthng_planet.zip` is missing or older than the
+   packs need, it is downloaded from GitHub and installed first. Look, layers and
+   project options are folded under the button.
+4. Watch the stages. When it says **The map is installed**, start BeamNG.drive and
+   open **Freeroam → EarthNG - Planet**.
 
-**Download ready maps (Google Drive)** opens the collection in your browser.
-Download a country ZIP and put it in your BeamNG `mods` folder, then restart the game.
-
-1. Select your **BeamNG user folder** (the folder containing `mods`, not `mods` itself).
-2. Search for a country or smaller Geofabrik region, or use **Select area** and drag
-   a rectangle on the map. The smallest available extract covering the entire
-   selection is chosen automatically. Scroll to zoom, use **Move map** to pan,
-   or type in **Find city** (English or Ukrainian) and press Enter. **Use whole
-   region** clears the rectangle; coordinates remain available in the second tab.
-3. Check **Look & preview**, then choose **Install a ready pack** when available, or adjust the look/layers and
-   choose **Build my own**. Roads and terrain are always included.
-4. Watch the current stage, elapsed time and approximate remaining time. Wait for
-   the `installed ...` message. The ZIP is also retained in
-   `out/country-setup` for reuse or sharing.
-
-Map Builder reuses the offline Natural Earth map from `out/basemap/3` or the
-installed planet ZIP, with a coastline fallback. It is a regional map, without
-street-level detail. Tick **Street detail (online)** to see streets when zoomed
-past it (to zoom 17): OpenStreetMap's standard tiles, only those on screen, two
-at a time, cached for a week in `out/osm-tiles`. Until ticked, the map stays
-offline. City search requires the offline map's labels. Extract
-boundaries are downloaded once from Geofabrik and cached; selecting a source
-from the list still works if that download is unavailable.
-
-The preview is an illustrative 2D street using the selected materials from the
-installed planet, local developer assets, and game textures. Trees and props are
-schematic; missing textures are explicitly marked as fallback colours. It is not
-a BeamNG render: lighting, actual buildings, OSM tags and the in-game style can
-change the final appearance.
-
-Build estimates are broad planning ranges, not a completion guarantee. They
-account for source size, selected area, layers and cached source tiles. Successful
-stage timings are saved locally in `out/country-setup/build-times.json` and reused
-for the same selection, layers and source-cache state. Network speed, terrain
-cache, hardware and OSM density can change the duration.
-
-The planet ZIP must also be installed. **Refresh planet code** updates code in an
-existing planet ZIP; it does not create the base assets.
-
-For a small test, choose Liechtenstein. Large countries can require many GB of
-source data, temporary files and hours of processing. A custom bounding box limits
-the exported area, but still downloads and scans the selected region's complete PBF
-on the first build. Rebuilding an area with completed source tiles skips the PBF
-download and scan entirely; it uses that cached OSM snapshot. To deliberately
-update OSM data, use a fresh source-tile cache for that region under `data/osm_tiles`.
-The Stop button cancels the build before the pack is installed. Tile cutting stops
-at once. A download, the region index and the export stop at the next chunk, region
-or block. Closing the window requests cancellation and waits for the worker to stop.
-Settings are locked while a job runs. Elevation downloads use a bounded queue of
-eight workers, with cancellable retry delays; network requests already in flight
-may still need to finish or time out.
+The smallest Geofabrik extract covering the whole area is downloaded once and cut
+into tiles; later builds in that region reuse the tiles. A town builds in a few
+minutes. Large countries can require many GB of source data and hours of processing;
+the estimate shown before building is a broad range. **Stop** cancels before the pack
+is installed, and building again continues where it stopped.
 
 Console equivalent (also useful for Linux/macOS with a local Python environment):
 

@@ -70,13 +70,11 @@ def planet_version(source):
     return found.group(1)
 
 
-def runtime_files(ref='HEAD', native=True):
-    """{name in the runtime ZIP: bytes} of the pipeline from a committed snapshot."""
+def runtime_files(ref='HEAD', native=True, extra=None):
+    """{name in the runtime ZIP: bytes} of the pipeline from a committed snapshot; extra: files the
+    release adds (earthng/ready_packs.json)."""
     commit, source = prepare_release.source_snapshot(ref)
-    files = prepare_release.builder_files(source, start=('app_service', 'osm_tiles_country'))
-    for name in ('launch_builder.py', 'country_ui.py', 'MapBuilder.bat', 'Setup.bat'):
-        files.pop(f'earthng/{name}', None)
-        files.pop(name, None)
+    files = prepare_release.builder_files(source)
     files.update({n: data for n, data in source.items() if n.startswith('app/ui/')})
     if 'earthng/app_service.py' not in files or 'app/ui/index.html' not in files:
         raise ValueError(f'{ref} has no app_service.py or app/ui: commit them first')
@@ -84,6 +82,7 @@ def runtime_files(ref='HEAD', native=True):
         files.update(prepare_release.native_files(commit, source))
     info = {'version': app_version(source), 'sourceCommit': commit, 'planetVersion': planet_version(source),
             'python': PYTHON_VERSION}
+    files.update(extra or {})
     files['BUILD_INFO.json'] = json.dumps(info, indent=2).encode('utf-8')
     return info, files
 
@@ -124,25 +123,29 @@ def append_runtime(exe, payload, target):
     return digest.hex()
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument('--out', type=Path, required=True)
-    p.add_argument('--ref', default='HEAD', help='committed source snapshot of the pipeline')
-    p.add_argument('--no-native', action='store_true', help='leave out bin/ (every step in Python)')
-    a = p.parse_args()
-    info, files = runtime_files(a.ref, native=not a.no_native)
+def build(out, ref='HEAD', native=True, extra=None):
+    """out/EarthNG.exe from the snapshot ref: the window built by cargo, the runtime appended."""
+    info, files = runtime_files(ref, native, extra)
     cargo = prepare_release._cargo()
     if cargo is None:
         raise SystemExit('cargo not found (https://rustup.rs)')
     subprocess.run([cargo, 'build', '--release', '--locked', '-p', 'app'], cwd=ROOT / 'rust', check=True)
     requirements = (ROOT / 'requirements-fast.txt').read_text(encoding='utf-8')
     payload = build_runtime_zip(files, embedded_python(), site_packages(requirements))
-    exe = ROOT / 'rust' / 'target' / 'release' / 'EarthNG.exe'
-    target = a.out / 'EarthNG.exe'
-    digest = append_runtime(exe, payload, target)
-    size = target.stat().st_size
+    target = Path(out) / 'EarthNG.exe'
+    digest = append_runtime(ROOT / 'rust' / 'target' / 'release' / 'EarthNG.exe', payload, target)
     print(f"EarthNG.exe {info['version']} ({info['sourceCommit'][:7]}, planet {info['planetVersion']}): "
-          f"{size / 2**20:.1f} MB, runtime {len(payload) / 2**20:.1f} MB, sha256 {digest[:16]}")
+          f"{target.stat().st_size / 2**20:.1f} MB, runtime {len(payload) / 2**20:.1f} MB, sha256 {digest[:16]}")
+    return target, info, digest
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument('--out', type=Path, required=True)
+    p.add_argument('--ref', default='HEAD', help='committed source snapshot of the pipeline')
+    p.add_argument('--no-native', action='store_true', help='leave out bin/ (every step in Python)')
+    a = p.parse_args()
+    target, _, _ = build(a.out, a.ref, native=not a.no_native)
     print(f'Output: {target.resolve()}')
 
 

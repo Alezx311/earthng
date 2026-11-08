@@ -40,7 +40,7 @@ impl Runtime {
         let python = [root.join("python").join("python.exe"), root.join(".venv").join("Scripts").join("python.exe")]
             .into_iter()
             .find(|p| p.is_file())
-            .context("the checkout has no .venv (Setup.bat)")?;
+            .context("the checkout has no .venv (py -3.13 -m venv .venv, then pip install -r requirements-fast.txt)")?;
         Ok(Runtime { ui: root.join("app").join("ui"), python, home: std::env::var_os("EARTHNG_HOME").map(PathBuf::from), code: root })
     }
 }

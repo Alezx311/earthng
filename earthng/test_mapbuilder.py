@@ -10,7 +10,6 @@ from unittest.mock import Mock, patch
 from shapely.geometry import Polygon, box
 
 import builder_estimate as timing
-import builder_map
 import osm_select
 import country_fetch
 import looks
@@ -18,13 +17,6 @@ import places
 
 
 class SelectionTests(unittest.TestCase):
-    def test_mercator_roundtrip_and_pole_clamp(self):
-        for lon, lat in ((30.52, 50.45), (-73.99, 40.72), (179, -80)):
-            result = builder_map.unproject(*builder_map.project(lon, lat))
-            self.assertAlmostEqual(result[0], lon)
-            self.assertAlmostEqual(result[1], lat)
-        self.assertAlmostEqual(builder_map.unproject(*builder_map.project(0, 90))[1], builder_map.MAX_LAT)
-
     def test_smallest_source_must_cover_whole_rectangle(self):
         boundaries = {'country': box(0, 0, 10, 10), 'city': box(1, 1, 2, 2)}
         self.assertEqual(places.smallest_covering(boundaries, [1.1, 1.1, 1.9, 1.9], boundaries), 'city')
@@ -48,77 +40,6 @@ class SelectionTests(unittest.TestCase):
         self.assertLess(timing.area_km2([0, 60, 1, 61]), equator * .51)
 
 
-class OnlineTileTests(unittest.TestCase):
-    def test_close_releases_idle_download_threads(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tiles = builder_map.OnlineTiles(tmp)
-            tiles.close()
-            tiles.close()
-            for worker in tiles.workers:
-                worker.join(timeout=2)
-                self.assertFalse(worker.is_alive())
-
-    def test_fresh_cache_served_missing_queued_once_and_offscreen_dropped(self):
-        from PIL import Image
-        with tempfile.TemporaryDirectory() as tmp:
-            tiles = builder_map.OnlineTiles(tmp, workers=0)
-            cached = tiles.path((5, 1, 2))
-            cached.parent.mkdir(parents=True)
-            Image.new('RGB', (256, 256), 'red').save(cached)
-            self.assertEqual(tiles.get((5, 1, 2)).size, (256, 256))
-            self.assertIsNone(tiles.get((5, 1, 3)))
-            self.assertIsNone(tiles.get((5, 1, 3)))
-            self.assertEqual(tiles.todo.qsize(), 1)
-            with patch.object(tiles, 'download', side_effect=AssertionError('fetched off screen')):
-                tiles.fetch(tiles.todo.get())
-            self.assertFalse(tiles.drain())
-            self.assertEqual(tiles.queued, set())
-
-    def test_failure_waits_before_retry_and_error_pages_are_not_cached(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tiles = builder_map.OnlineTiles(tmp, workers=0)
-            key = (5, 1, 3)
-            tiles.visible = {key}
-            tiles.get(key)
-
-            class Page:
-                def __enter__(self): return self
-                def __exit__(self, *_): return False
-                def read(self): return b'<html>blocked</html>'
-            with patch.object(builder_map.urllib.request, 'urlopen', return_value=Page()) as opened:
-                tiles.fetch(tiles.todo.get())
-            self.assertIn('EarthNG', opened.call_args[0][0].get_header('User-agent'))
-            self.assertFalse(tiles.drain())
-            self.assertTrue(tiles.error)
-            self.assertFalse(tiles.path(key).exists())
-            tiles.get(key)
-            self.assertEqual(tiles.todo.qsize(), 0)
-            with patch.object(builder_map.time, 'time', return_value=time.time() + tiles.RETRY + 1):
-                tiles.get(key)
-            self.assertEqual(tiles.todo.qsize(), 1)
-
-    def test_stale_memory_tile_retries_after_a_failed_refresh(self):
-        from PIL import Image
-        with tempfile.TemporaryDirectory() as tmp:
-            tiles = builder_map.OnlineTiles(tmp, workers=0)
-            key = (5, 1, 2)
-            path = tiles.path(key)
-            path.parent.mkdir(parents=True)
-            Image.new('RGB', (256, 256), 'red').save(path)
-            import os
-            os.utime(path, (1, 1))
-            tiles.visible = {key}
-            self.assertIsNotNone(tiles.get(key))
-            with patch.object(tiles, 'download', side_effect=OSError('offline')):
-                tiles.fetch(tiles.todo.get())
-            tiles.drain()
-            tiles.get(key)
-            self.assertEqual(tiles.todo.qsize(), 0)
-            with patch.object(builder_map.time, 'time', return_value=time.time() + tiles.RETRY + 1):
-                self.assertIsNotNone(tiles.get(key))
-            self.assertEqual(tiles.todo.qsize(), 1)
-
-
 class EstimateTests(unittest.TestCase):
     def test_estimate_accounts_for_cache_source_scan_and_area(self):
         include = looks.canonical_include({})
@@ -133,24 +54,8 @@ class EstimateTests(unittest.TestCase):
         self.assertLess(native[1], 30)
         self.assertEqual(native[0], fresh[0])
 
-    def test_unknown_size_and_actual_history(self):
+    def test_unknown_size_has_no_estimate(self):
         self.assertIsNone(timing.estimate(None, None, {})[0])
-        actual = [1, 2, 3, 4, 5, 6]
-        self.assertEqual(timing.estimate(None, None, {}, previous=actual)[0], actual)
-        self.assertIsNone(timing.estimate(None, None, {}, previous=[float('nan')]*6)[0])
-        for previous in (42, True, {'bad': 'history'}, [True]*6):
-            with self.subTest(previous=previous):
-                self.assertIsNone(timing.estimate(None, None, {}, previous=previous)[0])
-
-    def test_history_corruption_and_retention(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'timings.json'
-            path.write_text('{broken')
-            self.assertEqual(timing.load_history(path), {})
-            timing.save_history(path, {str(i): [1]*6 for i in range(110)})
-            history = timing.load_history(path)
-            self.assertEqual(len(history), 100)
-            self.assertNotIn('0', history)
 
 
 class JobSizingTests(unittest.TestCase):
@@ -609,157 +514,6 @@ class DemAheadTests(unittest.TestCase):
                 self.assertFalse(ahead.thread.is_alive())
             self.assertTrue(any('while the tiles were cut' in line for line in lines))
             self.assertEqual(len(calls), 2)
-
-
-class PreviewTests(unittest.TestCase):
-    def test_native_srgb_dds_decodes_without_altering_file(self):
-        from PIL import Image
-        import builder_preview
-        import fast_dds
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'sample.color.dds'
-            fast_dds.save(Image.new('RGB', (16,16), (200,100,50)), path)
-            before = path.read_bytes()
-            decoded = builder_preview.decode_image(before)
-            self.assertEqual(decoded.size, (16,16))
-            self.assertGreater(decoded.getpixel((0,0))[0], 180)
-            self.assertEqual(before, path.read_bytes())
-
-    def test_all_choices_render_and_disabled_buildings_change_scene(self):
-        import builder_preview
-        from PIL import Image
-        baseline = looks.canonical({'block':'general'})
-        include = looks.canonical_include({})
-        with patch.object(builder_preview, 'material', return_value=(Image.new('RGB', (32,32), '#888888'), 'test')):
-            full, _ = builder_preview.render(baseline, include, '')
-            empty, _ = builder_preview.render(baseline, {k:False for k in include}, '')
-            self.assertNotEqual(full.tobytes(), empty.tobytes())
-            for slot, choices in looks.SLOTS.items():
-                for choice in choices:
-                    rendered, _ = builder_preview.render({**baseline, slot:choice}, include, '')
-                    self.assertEqual(rendered.size, (440, 230))
-
-
-class TkTests(unittest.TestCase):
-    def setUp(self):
-        import tkinter as tk
-        import country_ui
-        try:
-            self.root = tk.Tk()
-        except tk.TclError as exc:
-            self.skipTest(str(exc))
-        self.root.withdraw()
-        self.ui = country_ui.Setup(self.root, start_workers=False)
-        self.ui.set_places([{'id':'test', 'name':'Test', 'parent':'', 'pbf':'unused'}])
-        self.ui.set_boundaries({'test':box(0, 0, 10, 10)})
-
-    def tearDown(self):
-        if hasattr(self, 'ui'):
-            self.ui.progressbar.stop()
-            self.ui.pool.shutdown(wait=False, cancel_futures=True)
-            # Cancel scheduled Tk callbacks before destroying the interpreter.
-            if self.ui.map.pending:
-                self.ui.map.after_cancel(self.ui.map.pending)
-            for callback in self.root.tk.call('after', 'info'):
-                self.root.after_cancel(callback)
-            self.root.destroy()
-
-    def test_map_selection_updates_source_box_and_area(self):
-        self.ui.select_box([1, 1, 2, 2])
-        self.assertEqual(self.ui.place['id'], 'test')
-        self.assertEqual(self.ui.chosen_box(), [1, 1, 2, 2])
-        self.assertIn('km²', self.ui.selection_text.get())
-        self.ui.clear_box()
-        self.assertIsNone(self.ui.map.selection)
-
-    def test_late_size_response_cannot_replace_current_region(self):
-        self.ui.select_place(self.ui.by_id['test'])
-        before = self.ui.size.get()
-        self.ui.show_size(2**30, 'old-place')
-        self.assertEqual(self.ui.size.get(), before)
-        self.ui.show_size(2**20, 'test')
-        self.assertIn('1 MB', self.ui.size.get())
-
-    def test_controls_lock_during_build_and_restore_readonly(self):
-        self.ui.select_box([1, 1, 2, 2])
-        self.ui.busy(True)
-        self.ui.select_box([2, 2, 3, 3])
-        self.assertEqual(self.ui.chosen_box(), [1, 1, 2, 2])
-        self.assertEqual(str(self.ui.block_box.cget('state')), 'disabled')
-        self.ui.busy(False)
-        self.assertEqual(str(self.ui.block_box.cget('state')), 'readonly')
-        self.assertFalse(self.ui.running)
-
-    def test_worker_completion_records_timings_and_unlocks_controls(self):
-        import country_ui
-        def target():
-            for stage in timing.STAGES:
-                self.ui.stage_progress(stage, None)
-                self.ui.stage_progress(stage, .1)
-        with tempfile.TemporaryDirectory() as tmp, patch.object(country_ui, 'save_settings'), \
-                patch.object(country_ui, 'HISTORY', Path(tmp)/'times.json'):
-            self.ui.run(target, estimate=[1]*6, history_key='test-run')
-            deadline = time.monotonic()+3
-            while self.ui.running and time.monotonic() < deadline:
-                self.root.update()
-                time.sleep(.01)
-            self.assertFalse(self.ui.running)
-            self.assertIn('Complete', self.ui.progress_text.get())
-            self.assertEqual(timing.load_history(country_ui.HISTORY)['test-run'], [.1]*6)
-
-    def test_failed_worker_does_not_save_successful_history(self):
-        import country_ui
-        def target():
-            raise OSError('test failure')
-        with patch.object(country_ui, 'save_settings'), patch.object(timing, 'save_history') as save:
-            self.ui.run(target, history_key='bad-run')
-            deadline = time.monotonic()+3
-            while self.ui.running and time.monotonic() < deadline:
-                self.root.update()
-                time.sleep(.01)
-            self.assertIn('Failed', self.ui.progress_text.get())
-            self.assertFalse(self.ui.running)
-            save.assert_not_called()
-
-    def test_optional_stage_keeps_pump_alive_and_completion_is_delivered(self):
-        self.ui.started = time.monotonic()
-        self.ui.run_estimate = [1] * len(timing.STAGES)
-        self.ui.busy(True)
-        self.ui.stage_progress('Map detail', None)
-        self.ui.pump()
-        self.assertIn('Map detail', self.ui.progress_text.get())
-        self.ui.lines.put(lambda: self.ui.finished('Complete', None))
-        self.ui.pump()
-        self.assertFalse(self.ui.running)
-
-    def test_callback_failure_does_not_strand_the_build(self):
-        self.ui.started = time.monotonic()
-        self.ui.run_estimate = None
-        self.ui.busy(True)
-        def broken():
-            raise ValueError('bad background result')
-        self.ui.lines.put(broken)
-        self.ui.lines.put(lambda: self.ui.finished('Complete', None))
-        with patch.object(self.root, 'report_callback_exception') as report:
-            self.ui.pump()
-        report.assert_called_once()
-        self.assertFalse(self.ui.running)
-
-    def test_close_disposes_queued_and_late_map_archives(self):
-        import country_ui
-        queued, late = Mock(), Mock()
-        with patch.object(country_ui, 'MapData', return_value=queued):
-            self.ui.load_map(self.ui.map_version, '')
-        self.ui.close()
-        queued.close.assert_called_once()
-        with patch.object(country_ui, 'MapData', return_value=late):
-            self.ui.load_map(self.ui.map_version, '')
-        late.close.assert_called_once()
-        self.assertEqual(self.ui.map_results, {})
-
-
-if __name__ == '__main__':
-    unittest.main()
 
 
 class BackgroundStageTests(unittest.TestCase):
