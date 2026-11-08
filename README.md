@@ -21,7 +21,7 @@ Choose your downloads from the [player release](https://github.com/Alezx311/eart
 | Download | Purpose |
 | --- | --- |
 | **earthng_planet.zip** (~270 MB) | Required native mod. Put in BeamNG's `mods` folder, keep packed. |
-| **[earthng_ukraine.zip](https://drive.google.com/file/d/1WriRBq6pBBjSUyySV81RMgzRViK83NpJ/view)** (2.96 GB, Google Drive) | Ready Ukraine map, 80 regions. Put beside the planet ZIP, keep packed. |
+| **[earthng_ukraine.zip](https://drive.google.com/file/d/1W9C387RI-Tst6c3ZV2YwIEsZYE3QxtYr/view)** (2.96 GB, Google Drive) | Ready Ukraine map, 80 regions. Put beside the planet ZIP, keep packed. |
 | **EarthNG.exe** (~48 MB) | Optional: makes a map of any area you choose and installs it, together with the planet. No Python needed. |
 
 **To play the demo, download only the first two files. Python is not required.**
