@@ -128,10 +128,10 @@ Stage player downloads from committed source (excluding local uncommitted work):
 .venv\Scripts\python.exe earthng/prepare_release.py --out out/release/player --planet out/mod/earthng_planet.zip --country out/country-setup/earthng_albania.zip
 ```
 
-Use an empty output directory. The script produces the native mod, selected country
-pack and a focused Map Builder archive, and prints SHA-256 sums for the release
-description. It follows local Python imports, includes runtime resources and embeds
-a ready-pack catalog. Developer assets, tests and research notes are not player downloads.
+Use an empty output directory. The script copies the native mod and any selected
+country pack, builds EarthNG.exe from the committed source, and prints SHA-256 sums
+for the release description. The exe's runtime follows local Python imports,
+includes runtime resources and embeds a ready-pack catalog. Developer assets, tests and research notes are not player downloads.
 
 The basemap can regenerate from Natural Earth over the network. Rebuilding art
 requires the texture sources; the helper for seasonal textures alone does not
