@@ -34,7 +34,7 @@ import places  # noqa: E402
 
 RELEASE_URL = 'https://github.com/Alezx311/earthng/releases/download/EarthNG'
 PLANET_STAGE = 'Planet'         # first build stage when the planet is missing or older than the packs
-PLANET_SECONDS = 30             # ~170 MB from GitHub
+PLANET_SECONDS = 90             # ~270 MB from GitHub (97 s on 8.11)
 PLANET = 'earthng_planet.zip'
 PROJECT_SCHEMA = 'earthng-project-v1'
 
