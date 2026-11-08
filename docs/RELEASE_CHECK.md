@@ -328,3 +328,18 @@ Reproduce/stage locally (after staging intended source changes in Git):
 
 The staging command writes native mod ZIPs, source ZIP, developer-assets ZIP,
 licenses and SHA256SUMS.txt. It does not publish, tag, merge or change a game profile.
+
+## 0.8.0 (2026-11-08): planet 0.8.0 and EarthNG.exe 0.8.0 from 6326cf2
+
+- Planet built by `build_mod.py` from a clean `git archive` of `mod/` (uncommitted experiments
+  left out); the offline map sidecars `earthng/planet/maps/{albania,estonia,ukraine}` copied from
+  the released 0.7.0 planet (sha256 9d34ccf7…, `build_map.VERSION` unchanged), since
+  `out/map-data` was cleaned. 268 365 265 bytes, sha256 790f58d4…; testzip clean; cache limits
+  32, 160, 80000, 240000, 500 as in 0.7.0.
+- EarthNG.exe 49 870 214 bytes, sha256 e11b956c…, runtime 0.8.0 / planet 0.8.0.
+- Clean profile (the exe's runtime, empty data home, temporary game folder with the planet):
+  status sees planet 0.8.0 as expected; estimate for a Tirana box takes Albania's 52 MB PBF at
+  once (`source: pbf`, `ask_pbf: false`); the build downloaded, cut and installed
+  `earthng_albania.zip` (6.5 MB) in 30 s.
+- Not run: the game itself with this planet, and a live Overpass answer (all three servers gave
+  502/504 or timed out on 8.11).
