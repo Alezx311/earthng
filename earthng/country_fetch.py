@@ -667,6 +667,49 @@ def build_lock(work):
         handle.close()
 
 
+class GeofabrikSource:
+    """Where a build's OSM tiles come from (docs/MAPBUILDER_APP.md, "Джерело тайлів").
+
+    The contract a build relies on: tiles (a folder with index.json, tiles_current's rules) and
+    pbf (the original extract, if the source has one: Map detail reads it). ready() says whether
+    the tiles are there already (or were taken from a covering cut); fetch() gets what cut()
+    needs; cut() writes the tiles. Today's only source: a Geofabrik extract's PBF, cut here. A tile
+    server would fetch tiles by the sha256 in its index.json and have nothing to cut."""
+    name = 'geofabrik'
+
+    def __init__(self, root, place, box=None):
+        self.root, self.place, self.box = Path(root), place, box
+        self.slug = places.slug(place['id'])
+        self.pbf = pbf_path(root, self.slug)
+        self.tiles = tiles_dir(root, self.slug, box)
+
+    def ready(self, emit=print):
+        if tiles_current(self.tiles, self.box):
+            return True
+        return self.box is not None and tiles_from_cover(self.root, self.slug, self.box, self.tiles, emit)
+
+    def fetch(self, emit=print, cancel=None):
+        if (self.tiles / 'index.json').is_file():
+            emit("The cached source tiles predate today's cut rules: cutting them again.")
+        emit(f"PBF {self.place['name']}: {self.place['pbf']}")
+        try:
+            size = self.pbf.stat().st_size if self.pbf.is_file() else content_length(self.place['pbf'])
+        except (OSError, ValueError):
+            size = None
+        if size:
+            share = 1 if self.box is None else 0.3       # a selection keeps part of the country
+            ensure_space(self.root / 'data', int(size * SPACE_PER_PBF_BYTE * share), f"Building {self.place['name']}")
+        download(self.place['pbf'], self.pbf, emit, cancel)
+
+    def cut(self, jobs=None, emit=print, cancel=None):
+        cut_tiles(self.pbf, self.tiles, self.box, jobs, emit, cancel, min(jobs, 4) if jobs else None)
+
+
+def tile_source(root, place, box=None):
+    """The tile source of a build: a Geofabrik extract until a tile server exists."""
+    return GeofabrikSource(root, place, box)
+
+
 def build_place(place, mods, root=ROOT, **options):
     """Download sources if needed and write the country zip, then copy it into mods
     (_build_place), one build at a time per checkout."""
@@ -712,11 +755,9 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
         if progress:
             progress(name, time.monotonic() - start)
 
-    pbf = pbf_path(root, slug_id)
-    tiles = tiles_dir(root, slug_id, box)
-    cached_tiles = tiles_current(tiles, box)
-    if not cached_tiles and box is not None:
-        cached_tiles = tiles_from_cover(root, slug_id, box, tiles, emit)
+    source = tile_source(root, place, box)
+    pbf, tiles = source.pbf, source.tiles
+    cached_tiles = source.ready(emit)
     # elevation under the box (or the country's outline) downloads while the PBF is cut
     with _dem_ahead(None if cached_tiles else dem_ahead_index(box, None if box is not None else _outline(root, place)),
                     Path(root) / 'out' / 'world' / 'cache', emit, cancel) as ahead:
@@ -724,23 +765,12 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
             if cached_tiles:
                 emit('Reusing completed source tiles; no PBF download or scan needed.')
             else:
-                if (tiles / 'index.json').is_file():
-                    emit('The cached source tiles predate the points the generator now reads '
-                         '(lamps, trees, stops, entrances): cutting them again.')
-                emit(f"PBF {place['name']}: {place['pbf']}")
-                try:
-                    size = pbf.stat().st_size if pbf.is_file() else content_length(place['pbf'])
-                except (OSError, ValueError):
-                    size = None
-                if size:
-                    share = 1 if box is None else 0.3       # a selection keeps part of the country
-                    ensure_space(Path(root) / 'data', int(size * SPACE_PER_PBF_BYTE * share), f"Building {place['name']}")
-                download(place['pbf'], pbf, emit, cancel)
+                source.fetch(emit, cancel)
             if ahead is not None:
                 ahead.start()
         with stage('Cut tiles'):
             if not cached_tiles:
-                cut_tiles(pbf, tiles, box, jobs, emit, cancel, min(jobs, 4) if jobs else None)
+                source.cut(jobs, emit, cancel)
         if road_register:
             with stage('Road register'):
                 import est_roads
