@@ -306,16 +306,17 @@ def kernels():
     return _kernels[0]
 
 
-def cut_command(pbf, out, box=None, threads=None):
-    """The native tile cut (osm_tiles_country.py's result in one process), or None."""
+def cut_command(pbf, out, region=None, threads=None):
+    """The native tile cut (osm_tiles_country.py's result in one process), or None. region: keep
+    every tile whose cell overlaps it (osm_tiles.region_keys); default the PBF header's box."""
     exe = tool()
     if exe is None:
         return None
     command = [str(exe), 'cut', str(pbf), '--out', str(out)]
     if threads:
         command += ['--threads', str(threads)]
-    if box:
-        command += ['--package-box', *(repr(float(v)) for v in box)]
+    if region:
+        command += ['--region', *(repr(float(v)) for v in region)]
     return command
 
 

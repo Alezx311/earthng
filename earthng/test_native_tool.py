@@ -67,7 +67,7 @@ class NativeToolTests(unittest.TestCase):
         with patch.object(native_tool, 'tool', return_value=fake):
             command = native_tool.cut_command('a.osm.pbf', 'out', [-1.5, 2, 3, 4.25])
         self.assertEqual(command, [str(fake), 'cut', 'a.osm.pbf', '--out', 'out',
-                                   '--package-box', '-1.5', '2.0', '3.0', '4.25'])
+                                   '--region', '-1.5', '2.0', '3.0', '4.25'])
 
     @unittest.skipUnless(native_tool.tool(), 'native Map Builder not built (cargo build --release in rust/)')
     def test_native_cut_matches_python(self):
@@ -75,13 +75,16 @@ class NativeToolTests(unittest.TestCase):
             tmp = Path(tmp)
             pbf = tmp / 'fixture.osm.pbf'
             fixture(pbf)
-            box = [29.99, 49.99, 30.11, 50.11]
+            box = [29.993, 49.987, 30.107, 50.104]          # edges inside cells, as an extract's
             osm_tiles.cut(pbf, tmp / 'python', box)
             subprocess.run(native_tool.cut_command(pbf, tmp / 'native', box), check=True, capture_output=True)
             a = json.loads((tmp / 'python' / 'index.json').read_text(encoding='utf8'))
             b = json.loads((tmp / 'native' / 'index.json').read_text(encoding='utf8'))
             self.assertEqual(sorted(a['tiles']), sorted(b['tiles']))
             self.assertEqual(a['package_box'], b['package_box'])
+            self.assertEqual(a['region'], b['region'])
+            # the cells the box's edges cut through are kept (their buffered boxes reach past it)
+            self.assertIn('600_1000', a['tiles'])
             self.assertEqual(b['select'], osm_tiles.SELECT)
             self.assertTrue(a['tiles'])
             for key, tile in a['tiles'].items():
@@ -101,16 +104,19 @@ class NativeToolTests(unittest.TestCase):
             country_fetch.cut_tiles(pbf, tmp / 'tiles-cells', selection, emit=lambda _: None)
             index = json.loads((tmp / 'tiles-cells' / 'index.json').read_text(encoding='utf8'))
             self.assertEqual(index['cutter'], 'earthng-mapbuilder')
-            self.assertEqual(index['package_box'], country_fetch.package_box(pbf, selection))
-            osm_tiles.cut(pbf, tmp / 'python', country_fetch.package_box(pbf, selection))
+            self.assertEqual(index['region'], country_fetch.cut_region(pbf, selection))
+            self.assertEqual(index['package_box'], osm_tiles.source_box(selection))
+            osm_tiles.cut(pbf, tmp / 'python', country_fetch.cut_region(pbf, selection))
             python = json.loads((tmp / 'python' / 'index.json').read_text(encoding='utf8'))
             self.assertTrue(index['tiles'])
             self.assertEqual(sorted(index['tiles']), sorted(python['tiles']))
             self.assertTrue(country_fetch.tiles_current(tmp / 'tiles-cells', selection))
-            # a cut of the bare selection (the native cut before 7.11) is cut again
-            subprocess.run(native_tool.cut_command(pbf, tmp / 'bare', selection), check=True, capture_output=True)
-            self.assertFalse(country_fetch.tiles_current(tmp / 'bare', selection))
-            self.assertTrue(country_fetch.tiles_current(tmp / 'bare'))
+            # a cut without a region (before 8.11: cells crossing an edge were dropped) is cut again
+            old = dict(index)
+            old.pop('region')
+            (tmp / 'tiles-cells' / 'index.json').write_text(json.dumps(old), encoding='utf8')
+            self.assertFalse(country_fetch.tiles_current(tmp / 'tiles-cells', selection))
+            self.assertFalse(country_fetch.tiles_current(tmp / 'tiles-cells'))
 
     @unittest.skipUnless(native_tool.tool(), 'native Map Builder not built (cargo build --release in rust/)')
     def test_selection_from_a_covering_cut_is_its_own_cut(self):

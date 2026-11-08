@@ -1,6 +1,6 @@
 //! Cut an .osm.pbf into the static tile archive of earthng/osm_tiles.py.
 //!
-//! Same selection as osm_tiles.cut (one cut of the package box): tiles of CELL degrees grown by
+//! Same selection as osm_tiles.cut (one cut of a region): tiles of CELL degrees grown by
 //! BUFFER; every way with a node inside a tile's coverage goes to that tile complete; restriction,
 //! multipolygon and landmark relations with a member there, their nested parents, and all their
 //! members; every tagged node inside. A relation stays in a tile only when all its members are
@@ -41,7 +41,7 @@ pub fn coverage(x: i64, y: i64) -> [f64; 4] {
     [round6(w - BUFFER), round6(s - BUFFER), round6(e + BUFFER), round6(n + BUFFER)]
 }
 
-/// The tiles of a package box, in sorted (x, y) order, and a dense lookup over their range.
+/// The tiles of a region, in sorted (x, y) order, and a dense lookup over their range.
 pub struct Grid {
     pub keys: Vec<(i64, i64)>,
     x0: i64,
@@ -53,20 +53,46 @@ pub struct Grid {
 
 const NONE: u32 = u32::MAX;
 
-impl Grid {
-    pub fn new(package_box: [f64; 4]) -> Grid {
-        let [pw, ps, pe, pn] = package_box;
-        let (x0, x1) = ((pw / CELL).floor() as i64, (pe / CELL).floor() as i64);
-        let (y0, y1) = ((ps / CELL).floor() as i64, (pn / CELL).floor() as i64);
-        let mut keys = Vec::new();
-        for x in x0..=x1 {
-            for y in y0..=y1 {
-                let c = coverage(x, y);
-                if pw <= c[0] && c[2] <= pe && ps <= c[1] && c[3] <= pn {
-                    keys.push((x, y));
-                }
+/// osm_tiles.region_keys: every tile whose cell overlaps the region (west south east north) with
+/// positive area. A tile at the edge of the source keeps what the source has round it: cells only
+/// partly inside an extract used to be dropped with all their data (Narva, the edges of every spot
+/// extract).
+pub fn region_keys(region: [f64; 4]) -> Vec<(i64, i64)> {
+    let [rw, rs, re, rn] = region;
+    let (x0, x1) = ((rw / CELL).floor() as i64 - 1, (re / CELL).floor() as i64 + 1);
+    let (y0, y1) = ((rs / CELL).floor() as i64 - 1, (rn / CELL).floor() as i64 + 1);
+    let mut keys = Vec::new();
+    for x in x0..=x1 {
+        for y in y0..=y1 {
+            let c = cell_box(x, y);
+            if c[0] < re && rw < c[2] && c[1] < rn && rs < c[3] {
+                keys.push((x, y));
             }
         }
+    }
+    keys
+}
+
+/// osm_tiles.package_of: the box the tiles cover (their buffered cells), the region when none.
+pub fn package_of(keys: &[(i64, i64)], region: [f64; 4]) -> [f64; 4] {
+    if keys.is_empty() {
+        return region;
+    }
+    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for &(x, y) in keys {
+        let c = coverage(x, y);
+        b = [b[0].min(c[0]), b[1].min(c[1]), b[2].max(c[2]), b[3].max(c[3])];
+    }
+    b
+}
+
+impl Grid {
+    pub fn new(region: [f64; 4]) -> Grid {
+        let keys = region_keys(region);
+        let x0 = keys.iter().map(|k| k.0).min().unwrap_or(0);
+        let x1 = keys.iter().map(|k| k.0).max().unwrap_or(-1);
+        let y0 = keys.iter().map(|k| k.1).min().unwrap_or(0);
+        let y1 = keys.iter().map(|k| k.1).max().unwrap_or(-1);
         let (w, h) = ((x1 - x0 + 1).max(0), (y1 - y0 + 1).max(0));
         let mut slot = vec![NONE; (w * h) as usize];
         for (i, &(x, y)) in keys.iter().enumerate() {
@@ -266,18 +292,19 @@ pub fn header_box(mmap: &Mmap) -> Result<(Option<[f64; 4]>, bool)> {
     Ok((None, false))
 }
 
-pub fn cut(pbf: &Path, out: &Path, package_box: Option<[f64; 4]>, emit: &(dyn Fn(String) + Sync)) -> Result<CutReport> {
+pub fn cut(pbf: &Path, out: &Path, region: Option<[f64; 4]>, emit: &(dyn Fn(String) + Sync)) -> Result<CutReport> {
     let t0 = Instant::now();
     if out.exists() {
         bail!("{} exists", out.display());
     }
     let mmap = unsafe { Mmap::from_path(pbf) }.with_context(|| format!("open {}", pbf.display()))?;
     let (header, sorted) = header_box(&mmap)?;
-    let package_box = match package_box.or(header) {
+    let region = match region.or(header) {
         Some(b) => b,
-        None => bail!("{} has no bounding box: give --package-box", pbf.display()),
+        None => bail!("{} has no bounding box: give --region", pbf.display()),
     };
-    let grid = Grid::new(package_box);
+    let grid = Grid::new(region);
+    let package_box = package_of(&grid.keys, region);
     let data: Vec<MmapBlob> = mmap
         .blob_iter()
         .filter_map(|b| match b {
@@ -670,6 +697,7 @@ pub fn cut(pbf: &Path, out: &Path, package_box: Option<[f64; 4]>, emit: &(dyn Fn
     index.insert("buffer".into(), json!(BUFFER));
     index.insert("source".into(), json!(pbf.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
     index.insert("package_box".into(), json!(package_box));
+    index.insert("region".into(), json!(region));
     index.insert("select".into(), json!(select::VERSION));
     index.insert("tiles".into(), Value::Object(tiles));
     index.insert("seconds".into(), json!(seconds));
@@ -697,14 +725,21 @@ mod tests {
     }
 
     #[test]
-    fn grid_keeps_whole_coverages() {
-        // the Kyiv spot package: 30 tiles
-        let g = Grid::new([30.39, 50.29, 30.71, 50.56]);
+    fn grid_keeps_every_cell_of_the_region() {
+        // the Kyiv spot selection grown to whole cells: 30 tiles, its package box as before
+        let g = Grid::new([30.4, 50.3, 30.7, 50.55]);
         assert_eq!(g.keys.len(), 30);
         assert_eq!(g.keys[0], (608, 1006));
+        assert_eq!(package_of(&g.keys, [30.4, 50.3, 30.7, 50.55]), [30.39, 50.29, 30.71, 50.56]);
         // a point in the buffer between two cells belongs to both
         let t = g.tiles_of(304_500_000 + 50_000, 503_200_000);
         assert_eq!(t.len(), 2);
+        // an extract's edge inside a cell keeps that cell (the spot extract of Tokyo starts at 139.6165)
+        let g = Grid::new([139.6165, 35.5591, 139.9478, 35.7836]);
+        assert!(g.keys.contains(&(2792, 711)) && g.keys.contains(&(2798, 715)));
+        assert_eq!(g.keys.len(), 7 * 5);
+        // touching an edge is not overlapping
+        assert_eq!(region_keys([30.4, 50.3, 30.45, 50.35]), vec![(608, 1006)]);
     }
 
     #[test]

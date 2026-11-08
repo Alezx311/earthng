@@ -53,28 +53,54 @@ class MaskTests(unittest.TestCase):
 
 
 class SourceBoxTests(unittest.TestCase):
-    def tiles_kept(self, package_box):
-        """The cells osm_tiles.cut keeps for a package box (its coverage-inside rule)."""
-        w, s, e, n = package_box
-        return {(x, y) for x in range(int(w // osm_tiles.CELL) - 1, int(e // osm_tiles.CELL) + 2)
-                for y in range(int(s // osm_tiles.CELL) - 1, int(n // osm_tiles.CELL) + 2)
-                if w <= osm_tiles.coverage((x, y))[0] and osm_tiles.coverage((x, y))[2] <= e
-                and s <= osm_tiles.coverage((x, y))[1] and osm_tiles.coverage((x, y))[3] <= n}
+    def kept(self, selection, extract=None):
+        return set(osm_tiles.region_keys(osm_tiles.region(selection, extract)))
 
     def test_every_cell_under_a_selection_is_cut(self):
         # Map Builder selection south-east of Tallinn: the raw box kept 3 cells and lost
         # Assaku (59.3726 N) and Kurna (24.8405 E), both inside the selection.
         selection = [24.793289, 59.274507, 25.016449, 59.374695]
-        self.assertEqual(len(self.tiles_kept(selection)), 3)
-        kept = self.tiles_kept(osm_tiles.source_box(selection))
+        kept = self.kept(selection)
         self.assertEqual(kept, {(x, y) for x in range(495, 501) for y in range(1185, 1188)})
         for lon, lat in [(24.8418, 59.3726), (24.8405, 59.3411), (24.9752, 59.2882)]:
             self.assertIn((int(lon // osm_tiles.CELL), int(lat // osm_tiles.CELL)), kept)
+        # the package box (what the tiles cover) is the one these cuts always had
+        self.assertEqual(osm_tiles.source_box(selection), [24.74, 59.24, 25.06, 59.41])
 
-    def test_the_extract_box_still_limits_the_cut(self):
-        box = osm_tiles.source_box([24.793, 59.274, 25.016, 59.374], extract=[24.8, 59.0, 26.0, 60.0])
-        self.assertEqual(box[0], 24.8)
-        self.assertNotIn(495, {x for x, _ in self.tiles_kept(box)})
+    def test_a_cell_the_extract_edge_cuts_through_is_kept(self):
+        # cells whose buffered box crossed the extract's edge were dropped with their data:
+        # Narva (28.2 E) at the edge of Estonia's extract, 43 % of the Tokyo spot extract
+        self.assertIn(496, {x for x, _ in self.kept([24.793, 59.274, 25.016, 59.374], extract=[24.82, 59.0, 26.0, 60.0])})
+        # an edge on the cell line takes nothing beyond it
+        self.assertNotIn(495, {x for x, _ in self.kept([24.793, 59.274, 25.016, 59.374], extract=[24.8, 59.0, 26.0, 60.0])})
+        estonia = [20.85166, 57.49764, 28.21426, 59.99705]
+        keys = set(osm_tiles.region_keys(estonia))
+        self.assertIn((564, 1187), keys)                    # Narva
+        self.assertIn((417, 1149), keys)                    # the south-west corner cell
+
+    def test_no_selection_loses_a_cell_anywhere_on_the_grid(self):
+        import random
+        rng = random.Random(8)
+        for _ in range(4000):
+            w = rng.uniform(-179.5, 179.0)
+            s = rng.uniform(-85.0, 84.0)
+            selection = [w, s, w + rng.choice([1e-6, rng.uniform(0, .4)]), s + rng.choice([1e-6, rng.uniform(0, .4)])]
+            if rng.random() < .3:                           # selections on the cell lines
+                selection = [round(v / osm_tiles.CELL) * osm_tiles.CELL for v in selection]
+                selection[2] += osm_tiles.CELL
+                selection[3] += osm_tiles.CELL
+            extract = None
+            if rng.random() < .5:                           # an extract edge through the selection
+                extract = [selection[0] + rng.uniform(-.1, .05), selection[1] + rng.uniform(-.1, .05), 180, 85]
+            kept = self.kept(selection, extract)
+            w, s, e, n = selection
+            if extract:
+                w, s = max(w, extract[0]), max(s, extract[1])
+            for x in range(int(w // osm_tiles.CELL) - 1, int(e // osm_tiles.CELL) + 2):
+                for y in range(int(s // osm_tiles.CELL) - 1, int(n // osm_tiles.CELL) + 2):
+                    cw, cs, ce, cn = osm_tiles.cell_box((x, y))
+                    if min(e, ce) - max(w, cw) > 1e-9 and min(n, cn) - max(s, cs) > 1e-9:
+                        self.assertIn((x, y), kept, (selection, extract))
 
 
 class SelectTests(unittest.TestCase):

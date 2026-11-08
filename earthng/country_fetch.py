@@ -329,9 +329,10 @@ def tiles_dir(root, slug_id, box):
 
 
 def tiles_current(tiles, box=None):
-    """A finished cut made by today's selection rules (osm_select.VERSION). For a selection box:
-    not one the native cut made from the bare selection (5-7.11.2026, before package_box): that cut
-    kept only the cells wholly inside the selection and nothing round its edges."""
+    """A finished cut made by today's rules: osm_select.VERSION, and a 'region' whose every
+    overlapping cell is kept. Older cuts dropped each cell whose buffered box crossed the edge of
+    the extract or of the selection: Narva in Estonia, 13-43 % of a spot extract, and (5-7.11.2026,
+    native cut of the bare selection) every cell round a selection's edges."""
     import osm_select
     try:
         index = json.loads((Path(tiles) / 'index.json').read_text(encoding='utf-8'))
@@ -339,13 +340,8 @@ def tiles_current(tiles, box=None):
         return False
     if not isinstance(index, dict) or index.get('select') != osm_select.VERSION:
         return False
-    if box is not None and index.get('cutter') == 'earthng-mapbuilder':
-        import osm_tiles
-        cut = index.get('package_box') or []
-        bare = len(cut) == 4 and all(abs(float(a) - float(b)) < 1e-9 for a, b in zip(cut, box))
-        if bare and [float(v) for v in box] != osm_tiles.source_box(box):
-            return False
-    return True
+    region = index.get('region')
+    return isinstance(region, list) and len(region) == 4
 
 
 def tiles_from_cover(root, slug_id, box, tiles, emit=print):
@@ -354,7 +350,7 @@ def tiles_from_cover(root, slug_id, box, tiles, emit=print):
     PBF is not downloaded or cut again. Files are hard links where the disk allows. False when no
     cut covers the selection."""
     import osm_tiles
-    need = osm_tiles.source_box(box)
+    need = osm_tiles.region(box)
     folder = Path(root) / 'data' / 'osm_tiles'
     best = None
     for candidate in sorted(folder.glob(f'{slug_id}-user*')):
@@ -365,26 +361,27 @@ def tiles_from_cover(root, slug_id, box, tiles, emit=print):
             continue
         try:
             index = json.loads((candidate / 'index.json').read_text(encoding='utf-8'))
-            cw, cs, ce, cn = index['package_box']
+            cw, cs, ce, cn = index['region']
         except (OSError, ValueError, KeyError, TypeError):
             continue
         if whole:
-            # cut today, the selection would be clipped to the extract the same way
-            package = [max(need[0], cw), max(need[1], cs), min(need[2], ce), min(need[3], cn)]
+            # the country's region is its extract box: cut today, the selection would be
+            # clipped to it the same way
+            region = [max(need[0], cw), max(need[1], cs), min(need[2], ce), min(need[3], cn)]
         elif cw <= need[0] and cs <= need[1] and need[2] <= ce and need[3] <= cn:
-            package = need
+            region = need
         else:
             continue
-        if package[0] >= package[2] or package[1] >= package[3]:
+        if region[0] >= region[2] or region[1] >= region[3]:
             continue
         if best is None or len(index['tiles']) < len(best[1]['tiles']):
-            best = (candidate, index, package)
+            best = (candidate, index, region)
     if best is None:
         return False
-    candidate, index, package = best
-    pw, ps, pe, pn = package
-    keep = {key: tile for key, tile in index['tiles'].items()
-            if pw <= tile['coverage'][0] and tile['coverage'][2] <= pe and ps <= tile['coverage'][1] and tile['coverage'][3] <= pn}
+    candidate, index, region = best
+    keys = osm_tiles.region_keys(region)
+    wanted = {f'{x}_{y}' for x, y in keys}
+    keep = {key: tile for key, tile in index['tiles'].items() if key in wanted}
     target = Path(tiles)
     part = target.with_name(target.name + '.part')
     shutil.rmtree(part, ignore_errors=True)
@@ -394,8 +391,9 @@ def tiles_from_cover(root, slug_id, box, tiles, emit=print):
             os.link(candidate / tile['file'], part / tile['file'])
         except OSError:
             shutil.copy2(candidate / tile['file'], part / tile['file'])
-    subset = {k: v for k, v in index.items() if k not in ('tiles', 'package_box', 'seconds')}
-    subset.update(package_box=package, tiles=keep, seconds=0.0, taken_from=candidate.name)
+    subset = {k: v for k, v in index.items() if k not in ('tiles', 'package_box', 'region', 'seconds')}
+    subset.update(package_box=osm_tiles.package_of(sorted(keys), region), region=region, tiles=keep,
+                  seconds=0.0, taken_from=candidate.name)
     (part / 'index.json').write_text(json.dumps(subset, indent=1), encoding='utf-8')
     if target.exists():
         shutil.rmtree(target)
@@ -404,14 +402,14 @@ def tiles_from_cover(root, slug_id, box, tiles, emit=print):
     return True
 
 
-def package_box(pbf, box):
-    """The box a cut keeps for a selection, as osm_tiles_country takes it: the selection grown to
-    whole cells and their buffer, clipped to the extract's own box (the PBF header)."""
+def cut_region(pbf, box):
+    """The region a cut keeps for a selection (osm_tiles.region): the selection grown to whole
+    cells, clipped to the extract's own box (the PBF header)."""
     import osmium
     import osm_tiles
     header = osmium.io.Reader(str(pbf), osmium.osm.osm_entity_bits.NOTHING).header().box()
     extract = [header.bottom_left.lon, header.bottom_left.lat, header.top_right.lon, header.top_right.lat] if header.valid() else None
-    return osm_tiles.source_box(box, extract)
+    return osm_tiles.region(box, extract)
 
 
 def map_cache_dir(root, slug_id, pbf):
@@ -445,7 +443,8 @@ def cut_tiles(pbf, tiles, box=None, jobs=None, emit=print, cancel=None, heavy_jo
         import native_tool
         # the native cut: the same tiles in one read of the PBF on every core (Kyiv's centre
         # from Ukraine: 12 s instead of 21 min)
-        command = native_tool.cut_command(pbf, target, package_box(pbf, box) if box else None)
+        region = cut_region(pbf, box) if box else None
+        command = native_tool.cut_command(pbf, target, region)
         if command is not None:
             try:
                 run_step(command, emit, cancel)
@@ -458,8 +457,8 @@ def cut_tiles(pbf, tiles, box=None, jobs=None, emit=print, cancel=None, heavy_jo
         if command is None:
             command = [_python(), str(HERE / 'osm_tiles_country.py'), str(pbf), '--out', str(target),
                        '--jobs', str(jobs), '--heavy-jobs', str(heavy_jobs)]
-            if box:
-                command += ['--package-box', *(str(v) for v in box)]
+            if region:
+                command += ['--region', *(repr(float(v)) for v in region)]
             run_step(command, emit, cancel)
     if target != tiles:
         shutil.rmtree(tiles)
@@ -544,27 +543,25 @@ def fetch_dem(index, dem, emit=print, cancel=None):
 
 def dem_ahead_index(box=None, outline=None):
     """An index-like {'tiles': {key: {'coverage'}}} of the cells a cut may keep, known before the
-    PBF is here: every cell inside the box's package box (osm_tiles.source_box), or, for a whole
+    PBF is here: every cell of the box's region (osm_tiles.region), or, for a whole
     country, every cell touching its extract outline. A superset of the cut where the box holds
     sea or empty land; the Elevation stage fetches what the real cut adds."""
     import osm_tiles
     if box is not None:
-        pw, ps, pe, pn = osm_tiles.source_box(box)
-    elif outline is not None:
+        keys = osm_tiles.region_keys(osm_tiles.region(box))
+        return {'tiles': {f'{x}_{y}': {'coverage': osm_tiles.coverage((x, y))} for x, y in keys}}
+    if outline is not None:
         pw, ps, pe, pn = outline.bounds
     else:
         return None
     keys = [(x, y) for x in range(math.floor(pw / osm_tiles.CELL), math.floor(pe / osm_tiles.CELL) + 1)
             for y in range(math.floor(ps / osm_tiles.CELL), math.floor(pn / osm_tiles.CELL) + 1)]
     covers = {k: osm_tiles.coverage(k) for k in keys}
-    if box is not None:
-        keys = [k for k in keys if pw <= covers[k][0] and covers[k][2] <= pe and ps <= covers[k][1] and covers[k][3] <= pn]
-    else:
-        import numpy as np
-        import shapely
-        c = np.array([covers[k] for k in keys])
-        hit = shapely.intersects(shapely.box(c[:, 0], c[:, 1], c[:, 2], c[:, 3]), outline)
-        keys = [k for k, h in zip(keys, hit) if h]
+    import numpy as np
+    import shapely
+    c = np.array([covers[k] for k in keys])
+    hit = shapely.intersects(shapely.box(c[:, 0], c[:, 1], c[:, 2], c[:, 3]), outline)
+    keys = [k for k, h in zip(keys, hit) if h]
     return {'tiles': {f'{x}_{y}': {'coverage': covers[(x, y)]} for x, y in keys}}
 
 

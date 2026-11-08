@@ -46,34 +46,59 @@ def coverage(key):
     return [round(w - BUFFER, 6), round(s - BUFFER, 6), round(e + BUFFER, 6), round(n + BUFFER, 6)]
 
 
-def source_box(selection, extract=None):
-    """The package box that cuts every tile under a selected area (west, south, east, north).
+def region_keys(region):
+    """Tile keys whose cell overlaps the region (west, south, east, north) with positive area.
 
-    cut() keeps only tiles whose buffered coverage lies inside the package box. Used as is, a
-    custom selection kept just the cells wholly inside it: 12.7 x 11 km round Tallinn became
-    three cells (8.5 x 5.6 km). The selection grows to whole cells plus the buffer, clipped to
-    the extract's own box where the source has no data."""
+    A tile keeps everything the source has within its coverage, so a tile at the edge of the
+    source is as complete as the source is. Cuts used to keep only tiles whose whole coverage lay
+    inside the package box: every cell an extract's box cut through was dropped with its data
+    (Narva at Estonia's edge, 13-43 % of the London and Tokyo spot extracts)."""
+    rw, rs, re, rn = region
+    keys = []
+    for x in range(math.floor(rw / CELL) - 1, math.floor(re / CELL) + 2):
+        for y in range(math.floor(rs / CELL) - 1, math.floor(rn / CELL) + 2):
+            w, s, e, n = cell_box((x, y))
+            if w < re and rw < e and s < rn and rs < n:
+                keys.append((x, y))
+    return keys
+
+
+def package_of(keys, region):
+    """The box the tiles of keys cover (their buffered cells); the region when there are none."""
+    if not keys:
+        return list(region)
+    c = [coverage(k) for k in keys]
+    return [min(v[0] for v in c), min(v[1] for v in c), max(v[2] for v in c), max(v[3] for v in c)]
+
+
+def region(selection, extract=None):
+    """The region a cut keeps for a selected area: the selection grown to whole cells, clipped to
+    the extract's own box where the source has no data. A selection kept as is lost the cells
+    round its edges: 12.7 x 11 km round Tallinn became three cells (8.5 x 5.6 km)."""
     w, s, e, n = selection
-    box = [round(math.floor(w / CELL) * CELL - BUFFER, 6), round(math.floor(s / CELL) * CELL - BUFFER, 6),
-           round((math.floor(e / CELL) + 1) * CELL + BUFFER, 6), round((math.floor(n / CELL) + 1) * CELL + BUFFER, 6)]
+    box = [round(math.floor(w / CELL) * CELL, 6), round(math.floor(s / CELL) * CELL, 6),
+           round((math.floor(e / CELL) + 1) * CELL, 6), round((math.floor(n / CELL) + 1) * CELL, 6)]
     if extract is not None:
         box = [max(box[0], extract[0]), max(box[1], extract[1]), min(box[2], extract[2]), min(box[3], extract[3])]
     return box
 
 
-def cut(pbf, out, package_box=None):
+def source_box(selection, extract=None):
+    """The package box of a selection's cut (west, south, east, north): what its tiles cover."""
+    r = region(selection, extract)
+    return package_of(region_keys(r), r)
+
+
+def cut(pbf, out, region=None):
+    """Tiles of every cell overlapping region (default: the PBF header's box)."""
     t0 = time.monotonic()
     out.mkdir(parents=True)
-    if package_box is None:
+    if region is None:
         box = osmium.io.Reader(str(pbf), osmium.osm.osm_entity_bits.NOTHING).header().box()
-        package_box = [box.bottom_left.lon, box.bottom_left.lat, box.top_right.lon, box.top_right.lat]
-    pw, ps, pe, pn = package_box
-    # Only tiles whose coverage lies inside the package are complete; the rest would claim
-    # coverage the package does not have.
-    keys = sorted({(x, y) for x in range(math.floor(pw / CELL), math.floor(pe / CELL) + 1)
-                   for y in range(math.floor(ps / CELL), math.floor(pn / CELL) + 1)
-                   if pw <= coverage((x, y))[0] and coverage((x, y))[2] <= pe
-                   and ps <= coverage((x, y))[1] and coverage((x, y))[3] <= pn})
+        region = [box.bottom_left.lon, box.bottom_left.lat, box.top_right.lon, box.top_right.lat]
+    region = list(region)
+    keys = sorted(region_keys(region))
+    package_box = package_of(keys, region)
     bit = {k: 1 << i for i, k in enumerate(keys)}
 
     def mask(lon, lat):
@@ -188,7 +213,7 @@ def cut(pbf, out, package_box=None):
         for w in writers.values():
             w.close()
     index = {'cell': CELL, 'buffer': BUFFER, 'source': Path(pbf).name, 'package_box': package_box,
-             'select': SELECT, 'tiles': {}}
+             'region': region, 'select': SELECT, 'tiles': {}}
     for k in keys:
         part = out / f'{k[0]}_{k[1]}.osm.pbf.part'
         if counts[k]['ways'] == 0:
@@ -250,12 +275,12 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('pbf', type=Path)
     p.add_argument('--out', type=Path, required=True, help='new directory')
-    p.add_argument('--package-box', type=float, nargs=4, metavar=('W', 'S', 'E', 'N'),
-                   help='declared coverage of the package when its header has no bounding box')
+    p.add_argument('--region', type=float, nargs=4, metavar=('W', 'S', 'E', 'N'),
+                   help='cut every tile whose cell overlaps this box (default: the header box)')
     a = p.parse_args()
     if a.out.exists():
         raise SystemExit(f'{a.out} exists')
-    cut(a.pbf, a.out, a.package_box)
+    cut(a.pbf, a.out, a.region)
 
 
 if __name__ == '__main__':

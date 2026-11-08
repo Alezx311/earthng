@@ -122,12 +122,16 @@ class OnlineTileTests(unittest.TestCase):
 class EstimateTests(unittest.TestCase):
     def test_estimate_accounts_for_cache_source_scan_and_area(self):
         include = looks.canonical_include({})
-        fresh, _ = timing.estimate(2**30, [30, 50, 30.1, 50.1], include)
-        cached, _ = timing.estimate(2**30, [30, 50, 30.1, 50.1], include, True, True)
-        large, _ = timing.estimate(2**30, [30, 50, 31, 51], include)
+        fresh, _ = timing.estimate(2**30, [30, 50, 30.1, 50.1], include, native=False)
+        cached, _ = timing.estimate(2**30, [30, 50, 30.1, 50.1], include, True, True, native=False)
+        large, _ = timing.estimate(2**30, [30, 50, 31, 51], include, native=False)
         self.assertGreater(sum(fresh), sum(cached))
         self.assertGreater(sum(large), sum(fresh))
         self.assertGreater(fresh[1], 500)  # tiny box still scans full PBF
+        # the native cut reads a GB in seconds: Kyiv's box from Ukraine took 12 s
+        native, _ = timing.estimate(2**30, [30, 50, 30.1, 50.1], include, native=True)
+        self.assertLess(native[1], 30)
+        self.assertEqual(native[0], fresh[0])
 
     def test_unknown_size_and_actual_history(self):
         self.assertIsNone(timing.estimate(None, None, {})[0])
@@ -296,7 +300,7 @@ class BuildLifecycleTests(unittest.TestCase):
                 self.assertNotEqual(out, tiles)                     # the old cut stays until this one is done
                 self.assertTrue((tiles / 'old.osm.pbf').exists())
                 out.mkdir()
-                (out / 'index.json').write_text(json.dumps({'select': osm_select.VERSION, 'tiles': {}}))
+                (out / 'index.json').write_text(json.dumps({'select': osm_select.VERSION, 'region': [0, 0, 1, 1], 'tiles': {}}))
 
             with patch.object(country_fetch, 'run_step', side_effect=fake_cut):
                 country_fetch.cut_tiles(root / 'test.osm.pbf', tiles, emit=lambda _: None)
@@ -320,7 +324,7 @@ class BuildLifecycleTests(unittest.TestCase):
             root = Path(tmp)
             tiles = country_fetch.tiles_dir(root, 'test', None)
             tiles.mkdir(parents=True)
-            (tiles / 'index.json').write_text(json.dumps({'select': osm_select.VERSION}))
+            (tiles / 'index.json').write_text(json.dumps({'select': osm_select.VERSION, 'region': [0, 0, 1, 1]}))
             events = []
             commands = []
             jobs = []
@@ -363,7 +367,7 @@ class BuildLifecycleTests(unittest.TestCase):
             tiles = country_fetch.tiles_dir(root, 'test', None)
             tiles.mkdir(parents=True)
             index = {'tiles': {'a': {'coverage': [24.70, 59.40, 24.71, 59.41]}}, 'package_box': [24.7, 59.4, 24.71, 59.41],
-                     'select': osm_select.VERSION}
+                     'select': osm_select.VERSION, 'region': [24.7, 59.4, 24.71, 59.41]}
             (tiles / 'index.json').write_text(json.dumps(index))
             dem = root / 'out' / 'world' / 'cache'
             first = fast_dem.audit(index, dem)[0]
@@ -559,11 +563,7 @@ class DemAheadTests(unittest.TestCase):
         import osm_tiles
         box = [30.40, 50.38, 30.62, 50.52]
         ahead = country_fetch.dem_ahead_index(box)
-        pw, ps, pe, pn = osm_tiles.source_box(box)
-        cut = {k for k in ((x, y) for x in range(int(pw // osm_tiles.CELL) - 1, int(pe // osm_tiles.CELL) + 2)
-                           for y in range(int(ps // osm_tiles.CELL) - 1, int(pn // osm_tiles.CELL) + 2))
-               if pw <= osm_tiles.coverage(k)[0] and osm_tiles.coverage(k)[2] <= pe
-               and ps <= osm_tiles.coverage(k)[1] and osm_tiles.coverage(k)[3] <= pn}
+        cut = set(osm_tiles.region_keys(osm_tiles.region(box)))
         self.assertEqual(sorted(t['coverage'] for t in ahead['tiles'].values()), sorted(osm_tiles.coverage(k) for k in cut))
         # a cut keeps some of those cells (where data is): their DEM is inside the one fetched ahead
         some = {'tiles': {str(i): {'coverage': osm_tiles.coverage(k)} for i, k in enumerate(sorted(cut)[::3])}}

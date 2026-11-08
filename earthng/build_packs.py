@@ -132,14 +132,14 @@ def prepare(p, log, cut_jobs):
     stale = (tiles / 'index.json').exists() and not country_fetch.tiles_current(tiles)
     if stale and not source.exists():
         # the PBF was deleted after the cut: the pack builds without lone points (lamps, trees)
-        log.say(pid, f'{tiles.name} predates osm_select.VERSION and {source.name} is gone: building from it')
+        log.say(pid, f"{tiles.name} predates today's cut rules and {source.name} is gone: building from it")
         stale = False
     if stale or not (tiles / 'index.json').exists():
         while not source.exists():                      # build_packs runs beside the downloader
             log.set(pid, stage='waiting for pbf')
             time.sleep(30)
         log.set(pid, stage='cutting tiles')
-        log.say(pid, f'cut {source.name}' + (' again (older selection rules)' if stale else ''))
+        log.say(pid, f'cut {source.name}' + (' again (older cut rules)' if stale else ''))
         # a stale cut stays in place until its replacement is done
         target = tiles.with_name(tiles.name + '.recut') if stale else tiles
         if target.exists():
@@ -147,7 +147,8 @@ def prepare(p, log, cut_jobs):
         cmd = [sys.executable, str(HERE / 'osm_tiles_country.py'), str(source), '--out', str(target),
                '--jobs', str(cut_jobs), '--block', str(p['block'])]
         if p['box']:
-            cmd += ['--package-box', *map(str, p['box'])]
+            # the selection grown to whole cells within the extract (osm_tiles.region)
+            cmd += ['--region', *map(repr, country_fetch.cut_region(source, p['box']))]
         with open(log.out / f'{pid}.log', 'a', encoding='utf8') as f:
             code = subprocess.call(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=ROOT)
         if code:

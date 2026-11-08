@@ -38,9 +38,21 @@ def signature(place_id, box, include, cached_pbf, cached_tiles):
 # reads the whole PBF once (SCAN) and writes the part kept (CUT); DEM is a first download.
 KM2_PER_MB = 718        # Ukraine: 603 600 km2 in 841 MB
 DOWNLOAD, SCAN, CUT, DEM, INDEX, EXPORT, INSTALL = .3, .65, 1.15, .45, 2.75, 3.3, .005
+# The native cut (earthng-mapbuilder cut, docs/MAPBUILDER_RS.md) reads the PBF on every core: Kyiv's
+# box from Ukraine's 843 MB in 12 s, the whole country in about a minute.
+NATIVE_SCAN, NATIVE_CUT = .014, .07
 
 
-def estimate(size, box, include, cached_pbf=False, cached_tiles=False, previous=None):
+def estimate(size, box, include, cached_pbf=False, cached_tiles=False, previous=None, native=None):
+    """Seconds per stage (timing.STAGES), or None without the source size. native: the Rust cut
+    is there (default: native_tool finds it)."""
+    if native is None:
+        try:
+            import native_tool
+            native = native_tool.tool() is not None
+        except ImportError:
+            native = False
+    scan, cut = (NATIVE_SCAN, NATIVE_CUT) if native else (SCAN, CUT)
     if isinstance(previous, (list, tuple)) and len(previous) == len(STAGES) and all(
             not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in previous):
         return list(previous), 'previous successful build'
@@ -54,7 +66,7 @@ def estimate(size, box, include, cached_pbf=False, cached_tiles=False, previous=
     # Broad planning baseline, deliberately displayed as a range (0.5–2.5x).
     # Even a tiny selection requires scanning the entire source PBF on first use.
     times = [2 if cached_pbf or cached_tiles else 5 + mb * DOWNLOAD,
-             1 if cached_tiles else 20 + mb * SCAN + part * CUT,
+             1 if cached_tiles else (2 if native else 20) + mb * scan + part * cut,
              5 + part * DEM, 10 + part * INDEX,
              15 + part * EXPORT * layers, 3 + part * INSTALL]
     return times, 'rough estimate; network, disk and OSM density vary'

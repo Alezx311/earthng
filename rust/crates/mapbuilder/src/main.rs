@@ -23,10 +23,10 @@ enum Command {
         /// new directory
         #[arg(long)]
         out: PathBuf,
-        /// declared coverage of the package (west south east north) when the header has none,
-        /// or to cut only part of the file
+        /// the region to cut (west south east north): every tile whose cell overlaps it.
+        /// Default: the header's box
         #[arg(long, num_args = 4, allow_negative_numbers = true, value_names = ["W", "S", "E", "N"])]
-        package_box: Option<Vec<f64>>,
+        region: Option<Vec<f64>>,
     },
     /// Routing graphs of every region of a pack ZIP (earthng/build_routing.py's files):
     /// <out>/<region>.bin, one JSON line per region on stdout
@@ -80,9 +80,9 @@ fn main() -> Result<()> {
     }
     let emit = |line: String| println!("{line}");
     match cli.command {
-        Command::Cut { pbf, out, package_box } => {
-            let package_box = package_box.map(|b| [b[0], b[1], b[2], b[3]]);
-            osm::cut::cut(&pbf, &out, package_box, &emit)?;
+        Command::Cut { pbf, out, region } => {
+            let region = region.map(|b| [b[0], b[1], b[2], b[3]]);
+            osm::cut::cut(&pbf, &out, region, &emit)?;
         }
         Command::MapSource { pbf, places, roads } => {
             let found = osm::mapsrc::extract(&pbf, &|line| eprintln!("{line}"))?;
