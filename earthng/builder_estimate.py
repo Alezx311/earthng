@@ -26,9 +26,10 @@ DOWNLOAD, SCAN, CUT, DEM, INDEX, EXPORT, INSTALL = .3, .65, 1.15, .45, 2.75, 3.3
 # The native cut (earthng-mapbuilder cut, docs/MAPBUILDER_RS.md) reads the PBF on every core: Kyiv's
 # box from Ukraine's 843 MB in 12 s, the whole country in about a minute.
 NATIVE_SCAN, NATIVE_CUT = .014, .07
-# Overpass (country_fetch.OverpassSource): 23 MB of XML for Kyiv's 9 km2 in 43 s on 8.11.2026,
-# queue included; the area's PBF is cut without a whole-country scan.
-OVERPASS_START, OVERPASS_KM2 = 15, 5
+# Overpass (country_fetch.OverpassSource): 23 MB of XML for Kyiv's centre, 9 km2, in 43 s on
+# 8.11.2026, 28 s of them in the queue (a dense centre streams ~1.7 s per km2); the area's PBF is
+# cut without a whole-country scan.
+OVERPASS_START, OVERPASS_KM2 = 30, 2
 
 
 def estimate(size, box, include, cached_pbf=False, cached_tiles=False, native=None, overpass=None):
