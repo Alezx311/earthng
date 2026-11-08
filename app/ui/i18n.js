@@ -3,7 +3,12 @@
 const STRINGS = {
   uk: {
     'nav.map': 'Карта', 'nav.projects': 'Проєкти', 'nav.settings': 'Налаштування',
-    'search.placeholder': 'Країна чи регіон Geofabrik…',
+    'search.placeholder': 'Місто, адреса чи регіон…',
+    'search.enter': 'Enter — шукати міста й адреси',
+    'search.looking': 'Шукаю…',
+    'search.found': 'Місця OpenStreetMap',
+    'search.regions': 'Регіони Geofabrik',
+    'search.none': 'Нічого не знайдено',
     'tool.box': 'Рамка', 'tool.edit': 'Правки',
     'hint.select': 'Натисніть «Рамка» і протягніть по карті, або Shift + перетягування.',
     'hint.drawing': 'Протягніть рамку навколо потрібної області.',
@@ -36,7 +41,12 @@ const STRINGS = {
   },
   en: {
     'nav.map': 'Map', 'nav.projects': 'Projects', 'nav.settings': 'Settings',
-    'search.placeholder': 'Country or Geofabrik region…',
+    'search.placeholder': 'Town, address or region…',
+    'search.enter': 'Enter: search towns and addresses',
+    'search.looking': 'Searching…',
+    'search.found': 'OpenStreetMap places',
+    'search.regions': 'Geofabrik regions',
+    'search.none': 'Nothing found',
     'tool.box': 'Box', 'tool.edit': 'Edits',
     'hint.select': 'Click “Box” and drag on the map, or Shift + drag.',
     'hint.drawing': 'Drag a box around the area you want.',

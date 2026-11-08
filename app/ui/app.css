@@ -51,6 +51,9 @@ input, select {
 #search-results li { padding: 5px 10px; cursor: pointer; }
 #search-results li:hover, #search-results li.active { background: var(--surface2); }
 #search-results .parent { color: var(--muted); font-size: 12px; }
+#search-results li.group { cursor: default; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding-top: 8px; }
+#search-results li.group:hover, #search-results li.muted:hover { background: none; }
+#search-results li.muted { cursor: default; color: var(--muted); font-size: 12px; }
 .tool { box-shadow: 0 1px 4px rgba(0,0,0,.2); background: var(--surface); }
 .tool.on { background: var(--accent); color: var(--accent-text); }
 .legend { position: absolute; left: 10px; bottom: 22px; z-index: 500; background: var(--surface); border: 1px solid var(--line);

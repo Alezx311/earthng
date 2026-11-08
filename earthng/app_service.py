@@ -49,6 +49,9 @@ def build_info():
         return {}
 
 
+NETWORK = {'geocode'}
+
+
 class Service:
     def __init__(self, out=None, root=None):
         self.out = out or sys.stdout
@@ -58,6 +61,8 @@ class Service:
         self.cancel = None
         self.places = None
         self.boundaries = None
+        self.geocode_lock = threading.Lock()
+        self.geocoded = 0.0
         self.settings_path = self.root / 'app_settings.json'
         self.settings = self.load_settings()
 
@@ -95,7 +100,10 @@ class Service:
             except ValueError as exc:
                 self.send({'id': None, 'ok': False, 'error': f'bad request: {exc}'})
                 continue
-            self.handle(request)
+            if request.get('cmd') in NETWORK:     # a slow web request never holds up status or stop
+                threading.Thread(target=self.handle, args=(request,), daemon=True).start()
+            else:
+                self.handle(request)
 
     def start_job(self, name, target):
         """Run target(cancel) on a thread; report its end as a done event."""
@@ -218,6 +226,35 @@ class Service:
         found = places.search(self.ensure_places(bool(refresh)), query or '', limit)
         return {'places': [{'id': p['id'], 'name': p['name'], 'parent': places.parent_name(p, self.by_id)}
                            for p in found]}
+
+    def cmd_geocode(self, query, lang='en'):
+        """Cities and addresses from OpenStreetMap's Nominatim: one request per search (Enter),
+        never per keystroke, as its usage policy asks."""
+        import urllib.parse
+        import urllib.request
+        import tls
+        query = str(query).strip()
+        if not query:
+            return {'results': []}
+        with self.geocode_lock:                                  # at most one request a second
+            wait = self.geocoded + 1.0 - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            self.geocoded = time.monotonic()
+        url = 'https://nominatim.openstreetmap.org/search?' + urllib.parse.urlencode(
+            {'q': query, 'format': 'jsonv2', 'limit': 6, 'accept-language': lang})
+        request = urllib.request.Request(url, headers={'User-Agent': f'{places.USER_AGENT} EarthNG.exe'})
+        with urllib.request.urlopen(request, timeout=20, context=tls.context()) as response:
+            found = json.loads(response.read())
+        out = []
+        for item in found:
+            try:
+                s, n, w, e = (float(v) for v in item['boundingbox'])
+                out.append({'name': item.get('display_name', ''), 'lat': float(item['lat']), 'lon': float(item['lon']),
+                            'bounds': [w, s, e, n], 'kind': item.get('type') or item.get('category') or ''})
+            except (KeyError, TypeError, ValueError):
+                continue
+        return {'results': out}
 
     def ensure_boundaries(self):
         if self.boundaries is None:
@@ -390,13 +427,28 @@ def install_planet(source, mods, cancel=None):
     return target
 
 
+def protocol_streams():
+    """Private copies of the page's pipes; fds 0 and 1 then point at NUL and at stderr (the log).
+    Every child of this service inherits the standard handles. A child that gets our stdin pipe
+    hangs in its interpreter start-up: it seeks the handle, and Windows holds that query until the
+    read our main thread has pending on the same pipe returns, i.e. until the page sends a line.
+    A child's stray print to our stdout would also land in the protocol."""
+    inp = os.fdopen(os.dup(0), 'r', encoding='utf-8', errors='replace')
+    out = os.fdopen(os.dup(1), 'w', encoding='utf-8', newline='\n')
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0)
+    os.close(null)
+    os.dup2(2, 1)
+    sys.stdin = open(os.devnull, encoding='utf-8')
+    sys.stdout = sys.stderr
+    return inp, out
+
+
 def main():
-    # the page reads UTF-8 lines; Windows pipes default to the ANSI code page
-    sys.stdin.reconfigure(encoding='utf-8')
-    sys.stdout.reconfigure(encoding='utf-8', newline='\n')
-    service = Service()
+    inp, out = protocol_streams()       # the page reads UTF-8 lines, not the ANSI code page
+    service = Service(out=out)
     service.send({'event': 'ready', 'home': str(service.root), 'pid': os.getpid()})
-    service.serve(sys.stdin)
+    service.serve(inp)
     if service.cancel is not None:
         service.cancel.set()
 

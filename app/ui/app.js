@@ -51,6 +51,7 @@ function mockService(m) {
       blocks: [{ id: 'general', title: 'General', look }, { id: 'postsoviet', title: 'Post-Soviet', look }],
       layers: ['buildings', 'water', 'cover', 'barriers', 'treeRows', 'stops'].map(id => ({ id, label: id, default: true })), recommended: look });
     case 'places': return answer({ places: [{ id: 'ukraine', name: 'Ukraine', parent: 'Europe' }, { id: 'albania', name: 'Albania', parent: 'Europe' }] });
+    case 'geocode': return answer({ results: [{ name: 'Тирана, Albania', lat: 41.3275, lon: 19.8189, bounds: [19.75, 41.28, 19.88, 41.37], kind: 'city' }] });
     case 'covering': return answer({ place: { id: 'ukraine', name: 'Ukraine', parent: 'Europe' }, km2: 120.4 });
     case 'estimate': return answer({ seconds: [110, 12, 3, 20, 13, 1], stages: ['Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'],
       reason: 'rough estimate', cached_tiles: false, cached_pbf: true });
@@ -399,7 +400,37 @@ async function setGameFolder(path) {
 }
 
 // ------------------------------------------------------------------ search
+// Typing filters Geofabrik regions locally; Enter asks OpenStreetMap's Nominatim for towns and
+// addresses, once per Enter (its usage policy forbids search-as-you-type).
 let searchTimer = null;
+function regionItem(p, list) {
+  const li = el('li', {}, el('div', { textContent: p.name }), el('div', { className: 'parent', textContent: p.parent || '' }));
+  li.onclick = () => { list.hidden = true; $('search').value = p.name; clearArea(); showCard('area'); $('area-km2').textContent = '—'; choosePlace(p, true).then(updateBuildButton); };
+  return li;
+}
+// A found town becomes the selection when it is a sensible map size; an address or a point gets
+// a 2 x 2 km box around it; a whole country or state is only shown, to be boxed by hand.
+function geoBox(r) {
+  let [w, s, e, n] = r.bounds;
+  const kmX = (e - w) * 111.32 * Math.cos((s + n) / 2 * Math.PI / 180), kmY = (n - s) * 110.57;
+  if (kmX < 2 && kmY < 2) {
+    const dy = 1 / 110.57, dx = 1 / (111.32 * Math.cos(r.lat * Math.PI / 180));
+    [w, s, e, n] = [r.lon - dx, r.lat - dy, r.lon + dx, r.lat + dy];
+  }
+  return { box: [w, s, e, n].map(v => +v.toFixed(6)), km2: kmX * kmY };
+}
+function geoItem(r, list) {
+  const [head, ...rest] = r.name.split(', ');
+  const li = el('li', {}, el('div', { textContent: head }), el('div', { className: 'parent', textContent: rest.join(', ') }));
+  li.onclick = () => {
+    list.hidden = true;
+    $('search').value = head;
+    const { box, km2 } = geoBox(r);
+    map.fitBounds([[box[1], box[0]], [box[3], box[2]]], { padding: [40, 40] });
+    if (km2 <= 2500) selectBox(box);
+  };
+  return li;
+}
 $('search').addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(async () => {
@@ -408,17 +439,32 @@ $('search').addEventListener('input', () => {
     if (!query) { list.hidden = true; return; }
     try {
       const { places } = await call('places', { query, limit: 30 });
-      list.replaceChildren(...places.map(p => {
-        const li = el('li', {}, el('div', { textContent: p.name }), el('div', { className: 'parent', textContent: p.parent || '' }));
-        li.onclick = () => { list.hidden = true; $('search').value = p.name; clearArea(); showCard('area'); $('area-km2').textContent = '—'; choosePlace(p, true).then(updateBuildButton); };
-        return li;
-      }));
-      list.hidden = !places.length;
+      list.replaceChildren(...places.map(p => regionItem(p, list)), el('li', { className: 'muted hint-row', textContent: t('search.enter') }));
+      list.hidden = false;
     } catch (err) {
       list.replaceChildren(el('li', { className: 'muted', textContent: err.message }));
       list.hidden = false;
     }
   }, 250);
+});
+$('search').addEventListener('keydown', async e => {
+  if (e.key !== 'Enter') return;
+  clearTimeout(searchTimer);
+  const query = $('search').value.trim();
+  const list = $('search-results');
+  if (!query) return;
+  list.replaceChildren(el('li', { className: 'muted', textContent: t('search.looking') }));
+  list.hidden = false;
+  try {
+    const [{ results }, { places }] = await Promise.all([call('geocode', { query, lang: LANG }), call('places', { query, limit: 10 })]);
+    const rows = [];
+    if (results.length) rows.push(el('li', { className: 'group', textContent: t('search.found') }), ...results.map(r => geoItem(r, list)));
+    if (places.length) rows.push(el('li', { className: 'group', textContent: t('search.regions') }), ...places.map(p => regionItem(p, list)));
+    if (!rows.length) rows.push(el('li', { className: 'muted', textContent: t('search.none') }));
+    list.replaceChildren(...rows);
+  } catch (err) {
+    list.replaceChildren(el('li', { className: 'muted', textContent: err.message }));
+  }
 });
 document.addEventListener('click', e => { if (!e.target.closest('.search')) $('search-results').hidden = true; });
 

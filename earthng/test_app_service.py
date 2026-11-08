@@ -116,6 +116,33 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(answer['ok'])
         self.assertIn('planet', answer['error'])
 
+    def test_geocode_turns_nominatim_rows_into_boxes(self):
+        rows = [{'display_name': 'Tirana, Albania', 'lat': '41.3275', 'lon': '19.8189', 'type': 'city',
+                 'boundingbox': ['41.28', '41.37', '19.75', '19.88']},
+                {'display_name': 'broken'}]
+
+        class Reply(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        seen = []
+
+        def urlopen(request, timeout, context):
+            seen.append(request)
+            return Reply(json.dumps(rows).encode())
+
+        with patch('urllib.request.urlopen', urlopen):
+            answer = self.ask(cmd='geocode', query='Тирана', lang='uk')
+        self.assertTrue(answer['ok'], answer)
+        self.assertEqual(answer['results'], [{'name': 'Tirana, Albania', 'lat': 41.3275, 'lon': 19.8189,
+                                              'bounds': [19.75, 41.28, 19.88, 41.37], 'kind': 'city'}])
+        self.assertIn('format=jsonv2', seen[0].full_url)
+        self.assertIn('EarthNG', seen[0].get_header('User-agent'))
+        self.assertEqual(self.ask(cmd='geocode', query='  ')['results'], [])
+
     def test_projects_round_trip_with_their_edit_layer(self):
         project = {'schema': app_service.PROJECT_SCHEMA, 'id': 'tirana-centre', 'title': 'Tirana',
                    'selection': {'place': 'albania', 'box': [19.8, 41.3, 19.85, 41.34]},
@@ -129,6 +156,30 @@ class ServiceTests(unittest.TestCase):
 
 
 class ProcessTests(unittest.TestCase):
+    CHILD_WHILE_READING = """
+import subprocess, sys, threading
+import app_service
+inp, out = app_service.protocol_streams() if sys.argv[1] == 'fixed' else (sys.stdin, sys.stdout)
+threading.Thread(target=inp.readline, daemon=True).start()     # the page's pipe, a read pending
+try:
+    child = subprocess.run([sys.executable, '-c', 'print(42)'], stdout=subprocess.PIPE, timeout=8)
+    out.write('child said ' + child.stdout.decode().strip() + '\\n')
+except subprocess.TimeoutExpired:
+    out.write('child hung\\n')
+out.flush()
+"""
+
+    def test_a_child_starts_while_the_page_pipe_has_a_read_pending(self):
+        # Windows: a child inheriting our stdin pipe hangs in start-up until the pending read returns
+        process = subprocess.Popen([sys.executable, '-c', self.CHILD_WHILE_READING, 'fixed'], cwd=HERE,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            out = process.stdout.readline().decode().strip()
+        finally:
+            process.stdin.close()
+            process.wait(20)
+        self.assertEqual(out, 'child said 42')
+
     def test_the_service_speaks_utf8_json_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = dict(os.environ, EARTHNG_HOME=tmp, PYTHONIOENCODING='')
