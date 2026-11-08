@@ -88,11 +88,23 @@ class NativeTests(unittest.TestCase):
             return {read=function() return data end, close=function() end}
           end
           jsonWriteFile=function() error('native provider must not write files') end
+          logs={}; log=function(level, source, message) logs[#logs+1]={level, source, message} end
           -- every read moves the clock: the generator's pause reads it at every pause point
           hptimer=function() local elapsed=0; return {stop=function() elapsed=elapsed+0.2; return elapsed end} end
-          buildCalls=0; fakeTriangles=0; fakeFarTriangles=0
+          buildCalls=0; fakeTriangles=0; fakeFarTriangles=0; seenManual={}; seenEditor={}
           stubGenerator={build=function(cells,i,j,options)
             buildCalls=buildCalls+1
+            if options.manualPlan then
+              local t = options.tileSize
+              local plan = options.manualPlan({i*t,j*t,(i+1)*t,(j+1)*t}, {}, {}, {items={}}, {})
+              for _, p in ipairs(plan) do seenManual[#seenManual+1] = p end
+            end
+            if options.editorPlan then
+              local t = options.tileSize
+              for _, p in ipairs(options.editorPlan({i*t,j*t,(i+1)*t,(j+1)*t})) do
+                seenEditor[#seenEditor+1] = p
+              end
+            end
             for n=1,5 do options.pause() end
             local t=options.tileSize
             local road={items=fakeTriangles>0 and {{triangles=fakeTriangles,meshes={}}} or {},mats={'earthng_ground'},drivable=true,
@@ -118,7 +130,9 @@ class NativeTests(unittest.TestCase):
         coordinate_path = ROOT / 'mod/lua/ge/extensions/e2r/coordinates.lua'
         lua.globals().coordinates = lua.execute(coordinate_path.read_text(encoding='utf8')) if coordinate_path.exists() else lua.table()
         lua.globals().cellformat = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/cellformat.lua').read_text(encoding='utf8'))
-        lua.execute("require=function(name) if name=='ge/extensions/e2r/countries' then return countries elseif name=='ge/extensions/e2r/coordinates' then return coordinates elseif name=='ge/extensions/e2r/cellformat' then return cellformat else return stubGenerator end end")
+        lua.globals().manual = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/manual.lua').read_text(encoding='utf8'))
+        lua.globals().manualEditor = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/manual_editor.lua').read_text(encoding='utf8'))
+        lua.execute("require=function(name) if name=='ge/extensions/e2r/countries' then return countries elseif name=='ge/extensions/e2r/coordinates' then return coordinates elseif name=='ge/extensions/e2r/cellformat' then return cellformat elseif name=='ge/extensions/e2r/manual' then return manual elseif name=='ge/extensions/e2r/manual_editor' then return manualEditor else return stubGenerator end end")
         lua.globals().quality = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/quality.lua').read_text(encoding='utf8'))
         lua.execute("local old=require; require=function(n) if n=='ge/extensions/e2r/quality' then return quality else return old(n) end end")
         mod = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/native.lua').read_text(encoding='utf8'))
@@ -131,6 +145,81 @@ class NativeTests(unittest.TestCase):
             if job and job.state != 'working':
                 return job
         self.fail('native landing did not finish')
+
+    def test_manual_override_is_opt_in_and_uses_active_region_projection(self):
+        lat, lon = geographic(1750, 1750)
+        files = fixture()
+        path = 'settings/earthng-overrides.json'
+        bench = '/levels/east_coast_usa/art/shapes/clutter/clutter_city_bench_wood.dae'
+        files[path] = {'schema': 'earthng-object-overrides-v1', 'objects': [
+            {'id': 'a07fe504-2403-4129-81b7-53724bf21874', 'lat': lat, 'lon': lon, 'shape': bench,
+             'altitude': {'mode': 'terrain', 'meters': .5}, 'yaw_degrees': 90, 'scale': 1}]}
+        files[bench] = True
+        lua, mod, cv = self.make(files)
+        mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
+        self.pump(mod)
+        self.assertIsNone(mod.status().stream.manualError)
+        self.assertGreater(len(lua.globals().seenManual), 0)
+        p = lua.globals().seenManual[1]
+        self.assertAlmostEqual(p.x, 1750, places=5)
+        self.assertAlmostEqual(p.y, 1750, places=5)
+        self.assertTrue(any('accepted a07fe504' in entry[3] for entry in lua.globals().logs.values()))
+
+        files[path]['objects'][0]['scale'] = -1
+        lua, mod, cv = self.make(files)
+        mod.land(cv(dict(seq=2, lat=lat, lon=lon)))
+        self.pump(mod)
+        self.assertIn('invalid object', mod.status().stream.manualError)
+        self.assertEqual(len(lua.globals().seenManual), 0)
+        self.assertTrue(any('Cannot load' in entry[3] for entry in lua.globals().logs.values()))
+
+    def test_editor_objects_load_at_landing_in_active_region(self):
+        lat, lon = geographic(1750, 1750)
+        files = fixture()
+        files['settings/earthng-editor-objects.json'] = {
+            'schema': 'earthng-editor-objects-v1', 'objects': [{
+                'id': 'a07fe504-2403-4129-81b7-53724bf21874', 'lat': lat, 'lon': lon,
+                'z': 60, 'shape': '/some/model.dae', 'rotation': [0, 0, 0, 1],
+                'scale': [1, 2, 1], 'radius': 3}]}
+        lua, mod, cv = self.make(files)
+        mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
+        self.pump(mod)
+        self.assertIsNone(mod.status().stream.editorObjectsError)
+        self.assertGreater(len(lua.globals().seenEditor), 0)
+        p = lua.globals().seenEditor[1]
+        self.assertAlmostEqual(p.x, 1750, places=5)
+        self.assertAlmostEqual(p.y, 1750, places=5)
+        self.assertEqual(p.z, 60)
+
+    def test_saved_editor_objects_reload_without_a_new_landing(self):
+        lat, lon = geographic(1750, 1750)
+        path = 'settings/earthng-editor-objects.json'
+        def row(uid, z):
+            return {'id': uid, 'lat': lat, 'lon': lon, 'z': z, 'shape': '/some/model.dae',
+                    'rotation': [0, 0, 0, 1], 'scale': [1, 1, 1], 'radius': 3}
+        a, b = 'a07fe504-2403-4129-81b7-53724bf21874', 'b07fe504-2403-4129-81b7-53724bf21874'
+        files = fixture()
+        files[path] = {'schema': 'earthng-editor-objects-v1', 'objects': [row(a, 60)]}
+        lua, mod, cv = self.make(files)
+        mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
+        self.pump(mod)
+        first = mod.editorObjects()[1]
+        self.assertTrue(mod.editorObjectCurrent(a, first.rev))
+        # the editor saves: a moved up, b added; the read stub serves the new file
+        def lua_value(value):
+            if isinstance(value, dict):
+                return lua.table_from({k: lua_value(v) for k, v in value.items()})
+            if isinstance(value, list):
+                return lua.table_from([lua_value(v) for v in value])
+            return value
+        lua.globals().files[path] = lua_value({'schema': 'earthng-editor-objects-v1',
+                                               'objects': [row(a, 61), row(b, 60)]})
+        count, err = mod.reloadEditorObjects()
+        self.assertEqual((count, err), (2, None))
+        self.assertFalse(mod.editorObjectCurrent(a, first.rev), 'a scene built before the save must not spawn it')
+        self.assertTrue(mod.editorObjectCurrent(a, mod.editorObjects()[1].rev))
+        self.assertTrue(mod.editorObjectCurrent(b, mod.editorObjects()[2].rev))
+        self.assertFalse(mod.editorObjectCurrent('c07fe504-2403-4129-81b7-53724bf21874', 1))
 
     def test_section_places_are_counties_not_grid_tiles(self):
         _, mod, cv = self.make()

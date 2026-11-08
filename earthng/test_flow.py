@@ -210,6 +210,21 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(out[2], 0)
         self.assertEqual(out[3], 60)
 
+    def test_thousand_car_target_can_be_reduced_without_overlaps(self):
+        lua = self.lua()
+        out = lua.execute('''
+          local F = flow.new{seed = 11, paints = {1, 1}}
+          flow.sync(F, grid(16, 100, '--++'))
+          flow.setTarget(F, 1000)
+          for t = 1, 600 do flow.step(F, 1 / 60, 750, 750) end
+          local full, fullOverlaps = F.count, overlaps(F)
+          flow.setTarget(F, 200)
+          for t = 1, 120 do flow.step(F, 1 / 60, 750, 750) end
+          return {full, fullOverlaps, F.count, overlaps(F)}
+        ''')
+        self.assertEqual((out[1], out[2]), (1000, 0))
+        self.assertEqual((out[3], out[4]), (200, 0))
+
     def test_four_hundred_cars_step_in_a_fraction_of_a_frame(self):
         lua = self.lua()
         lua.execute('''

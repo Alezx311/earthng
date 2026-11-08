@@ -300,6 +300,62 @@ class DetailTests(unittest.TestCase):
           assert(made==4 and #state.queue==0)
         ''')
 
+    def test_editor_objects_keep_full_transform_and_bypass_detail_and_forest(self):
+        lua = self.world()
+        lua.execute('''
+          local queue=up(up(up(world.tick,'updateTiles'),'startScene'),'queueItems')
+          local spawn=up(up(world.tick,'stepQueue'),'spawnItem')
+          local added, scale, pose
+          vec3=function(x,y,z) return {x,y,z} end
+          createObject=function(kind)
+            assert(kind=='TSStatic')
+            return {setField=function() end, registerObject=function() end,
+              setPosRot=function(_,...) pose={...} end,
+              setScale=function(_,s) scale=s end, getID=function() return 77 end}
+          end
+          local group={addObject=function(_,obj) added=obj end}
+          local it={kind='static',editorObject=true,shape='/3d_grass/a.dae',
+            pos={1,2,3},rot={.1,.2,.3,.9},scale={2,3,4},name='editor'}
+          local tile={}
+          assert(queue({it},tile,'0_0','scene')==1)
+          assert(state.queue[1].item==it, 'editor item must bypass detail and forest batching')
+          assert(spawn(it,group,function() end,tile,'scene')==77 and added)
+          assert(scale[1]==2 and scale[2]==3 and scale[3]==4)
+          assert(pose[1]==1 and pose[3]==3 and pose[4]==.1 and pose[7]==.9)
+        ''')
+
+    def test_editor_object_is_drawn_once_and_never_from_a_stale_record(self):
+        lua = self.world()
+        lua.execute('''
+          local spawn=up(up(world.tick,'stepQueue'),'spawnItem')
+          local made=0
+          vec3=function(x,y,z) return {x,y,z} end
+          createObject=function()
+            made=made+1
+            return {setField=function() end, registerObject=function() end, setPosRot=function() end,
+              setScale=function() end, getID=function() return made end}
+          end
+          local group={addObject=function() end}
+          local function item() return {kind='static',editorObject=true,shape='/a.dae',pos={1,2,3},
+            rot={0,0,0,1},scale={1,1,1},name='earthng_obj_x',editorId='x',editorRev=2} end
+          current=2
+          native.editorObjectCurrent=function(id, rev) return id=='x' and rev==current end
+          local standing={getGroup=function() return {getName=function() return 'E2R_editor' end} end,
+            setName=function(self, n) self.name=n end}
+          scenetree.findObject=function(name) if name=='earthng_obj_x' then return standing end end
+          spawn(item(),group,function() end,{},'scene')
+          assert(made==0, 'the editor copy is standing: no second object')
+          local buried={getGroup=function() return {getName=function() return '' end} end,
+            setName=function(self, n) self.name=n end}
+          scenetree.findObject=function(name) if name=='earthng_obj_x' then return buried end end
+          spawn(item(),group,function() end,{},'scene')
+          assert(made==1 and buried.name=='', 'a leaving tile gives the name up')
+          scenetree.findObject=function() end
+          current=3
+          spawn(item(),group,function() end,{},'scene')
+          assert(made==1, 'built before the save moved it: dropped')
+        ''')
+
     def test_batching_crowns_into_forest_jobs_rocks_stay_static(self):
         lua = self.world()
         lua.execute('''

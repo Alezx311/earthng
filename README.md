@@ -45,6 +45,13 @@ generated roads even with traffic off. The planet carries detailed village and
 road overview data for Ukraine, Albania and Estonia; packs built by EarthNG.exe
 carry their own. See [map controls and data](docs/MAP.md).
 
+**Place your own objects.** In an EarthNG world open the World Editor (F11), place
+stock meshes from the Asset Browser, move, rotate, scale, duplicate or delete them as
+usual, and press **Ctrl+S**: EarthNG keeps them at once, without a restart, for every
+landing and the next game start (`settings/earthng-editor-objects.json` in your user
+folder). Generated streets, buildings and trees are not saved. See
+[World Editor objects](docs/WORLD_EDITOR.md).
+
 Use BeamNG's launcher to find your user folder; custom locations are supported.
 Restart the game after replacing a ZIP. Remove the old companion-era
 `earth2road_world.zip` if it is installed. Old all-in-one Python packages cannot

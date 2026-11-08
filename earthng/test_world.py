@@ -107,6 +107,8 @@ def main():
     p.add_argument('--display', default='Window', choices=('Window', 'Borderless', 'Fullscreen'))
     p.add_argument('--manual', action='store_true', help='land, then hand the car to the player; runs until the game is closed')
     p.add_argument('--probe', action='store_true', help='add the e2rprobe mod (earthng/probe.py runs Lua in the game)')
+    p.add_argument('--seed-editor-objects', type=Path,
+                   help='copy a saved EarthNG editor-object file into this new test profile before landing')
     p.add_argument('--min-distance', type=float, default=20, help='physics test fails below this, m')
     p.add_argument('--native', action='store_true', default=True, help='native mode (default; retained for existing commands)')
     p.add_argument('--planet', type=Path, help='test an existing planet ZIP (for repeatable before/after runs)')
@@ -155,6 +157,22 @@ def main():
         except OSError:
             shutil.copy2(extra, profile / 'mods' / extra.name)
     (profile / 'settings').mkdir()
+    # A second isolated test run can replay the first run's saved objects.  The
+    # game's first-start cleanup may remove unknown settings, so restore a
+    # missing seed until landing, just like e2r-world-test.json below.
+    seed_path = profile / 'settings' / 'earthng-editor-objects.json'
+    seed_text = a.seed_editor_objects.read_text(encoding='utf8') if a.seed_editor_objects else None
+    if seed_text is not None:
+        json.loads(seed_text)  # reject a malformed fixture before launching the game
+
+    def ensure_editor_seed():
+        if seed_text is not None and not seed_path.exists():
+            seed_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = seed_path.with_suffix('.json.seed-tmp')
+            tmp.write_text(seed_text, encoding='utf8')
+            tmp.replace(seed_path)
+
+    ensure_editor_seed()
     width, height = (int(v) for v in a.resolution.lower().split('x'))
     (profile / 'settings/settings.json').write_text(json.dumps({
         'GraphicDisplayResolutions': f'{width} {height}', 'GraphicDisplayModes': a.display,
@@ -263,9 +281,10 @@ def main():
             # the test ends with the game's shutdown(), which sometimes leaves the game open
             # (native-final-kyiv, native-hops-03): a final status 15 s old ends it from here
             try:
-                status = json.loads(res_path.read_text(encoding='utf8')).get('status') if res_path.exists() else None
+                progress = json.loads(res_path.read_text(encoding='utf8')) if res_path.exists() else {}
             except (OSError, ValueError):
-                status = None
+                progress = {}
+            status = progress.get('status')
             if status in ('passed', 'failed'):
                 finished = finished or time.perf_counter()
                 if time.perf_counter() - finished > 15:
@@ -277,6 +296,8 @@ def main():
                 test_file.write_text(json.dumps(test), encoding='utf8')
                 if a.route and not (profile / 'e2r-route.json').exists():
                     shutil.copy2(a.route, profile / 'e2r-route.json')
+            if not progress.get('landedAt'):
+                ensure_editor_seed()
             m = memory(game.pid)
             if m:
                 peak = max(peak, m[0])

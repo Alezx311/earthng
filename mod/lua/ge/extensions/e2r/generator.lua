@@ -7222,6 +7222,9 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   for _, p in ipairs(context.signs or NONE) do
     band(occupied, {p[1] - .001, p[2]}, {p[1] + .001, p[2]}, .6)
   end
+  for _, p in ipairs(context.manual or NONE) do
+    band(occupied, {p.x - .001, p.y}, {p.x + .001, p.y}, p.radius + .4)
+  end
   -- paths on the ground (their paving and 0.3 m more; a crossing 2 m either side) and the
   -- streets' sidewalks (a footway's prop does not stand on them)
   local paths, walks = {}, {}
@@ -7579,6 +7582,9 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   local reserved = {}
   for _, p in ipairs(context.signs or NONE) do
     band(reserved, {p[1] - .001, p[2]}, {p[1] + .001, p[2]}, 2.6)
+  end
+  for _, p in ipairs(context.manual or NONE) do
+    band(reserved, {p.x - .001, p.y}, {p.x + .001, p.y}, p.radius + .4)
   end
   for index, c in ipairs(candidates) do
     local clear = true
@@ -11656,6 +11662,35 @@ local function build(cells, i, j, options)
       for material in pairs(mesh.used) do scene.used[material] = true end
     end
   end
+  -- User objects are resolved after mapped points and signs, and before the
+  -- procedural furniture/yard/vegetation planners. Include neighbours in the
+  -- plan so their keep-out area crosses tile boundaries; draw only one tile.
+  OFFROAD.manual = not distant and options.manualPlan and options.manualPlan(rect, lists, segments, scene, OFFROAD.signs) or NONE
+  if not distant and options.editorPlan then
+    local authored = options.editorPlan(rect)
+    if #authored > 0 then
+      -- Do not mutate the shared empty sentinel or a result owned by the caller.
+      local both = {}
+      for _, p in ipairs(OFFROAD.manual) do both[#both + 1] = p end
+      for _, p in ipairs(authored) do both[#both + 1] = p end
+      OFFROAD.manual = both
+    end
+  end
+  for _, p in ipairs(OFFROAD.manual) do
+    if p.x >= rect[1] and p.x < rect[3] and p.y >= rect[2] and p.y < rect[4] then
+      if p.editorObject then
+        -- one name per object (manual_editor.objectName): the spawner skips it while the
+        -- editor's own copy or another tile's copy is in the scene. Not decor: the scene
+        -- group is in the MissionGroup, so the object collides and the editor can pick it.
+        scene.items[#scene.items + 1] = {kind = 'static', name = 'earthng_obj_' .. (p.id:gsub('-', '_')),
+          pos = {p.x, p.y, p.z}, rot = p.rotation, scale = p.scale, shape = p.shape,
+          layer = 'scene', collision = 'Collision Mesh', editorObject = true,
+          editorId = p.id, editorRev = p.rev}
+      else
+        static('manual_' .. p.id:gsub('-', '_'), p.shape, p.x, p.y, ground(p.x, p.y) + p.height, p.yaw, p.scale)
+      end
+    end
+  end
   if wantLamps and not distant then
     local function treeAt(x, y)
       local p = bio.at(x, y)
@@ -11677,7 +11712,7 @@ local function build(cells, i, j, options)
     end
     local _, reserved = VEG.streetProps(strips, lists.lines, lists.buildings, segmentBins, rect,
       options.propSpacing, lift, tune.sidewalk, ground, put, pause,
-      {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points, signs = OFFROAD.signs, look = look,
+      {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points, signs = OFFROAD.signs, manual = OFFROAD.manual, look = look,
         shopLinks = shops.links})
     local yardCtx = {rect = rect, scene = scene, decor = sceneDecor, ground = ground, drapeRings = drapeRings,
       put = put, lists = lists, strips = strips, segmentBins = segmentBins, reserved = reserved,
@@ -11702,6 +11737,12 @@ local function build(cells, i, j, options)
     scene.streetReservations = scene.streetReservations or {}
     for _, p in ipairs(OFFROAD.signs) do
       YARD.reserve(scene.streetReservations, {p[1] - .001, p[2]}, {p[1] + .001, p[2]}, 2.6)
+    end
+  end
+  if not wantLamps and #OFFROAD.manual > 0 then
+    scene.streetReservations = scene.streetReservations or {}
+    for _, p in ipairs(OFFROAD.manual) do
+      YARD.reserve(scene.streetReservations, {p.x - .001, p.y}, {p.x + .001, p.y}, p.radius + .4)
     end
   end
   -- The scene as the renderer takes it: everything collected so far, the parked cars and the

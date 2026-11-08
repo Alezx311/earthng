@@ -2,6 +2,25 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-09: release 0.8.1, your own objects through the World Editor
+
+- In an EarthNG world Ctrl+S / File > Save Level saves the player's own meshes into
+  `settings/earthng-editor-objects.json` instead of serializing the level (which would write the
+  generated world into the user's `levels/e2r_world/main`); level autosave is off there. One save adds
+  placed, duplicated or pasted meshes, updates moved, rotated, scaled or re-shaped saved ones and
+  removes saved ones deleted in the editor (undo included). No selection, no restart:
+  `native.reloadEditorObjects()` runs after the write.
+- One scene name per object (`earthng_obj_<uuid>`) and the `E2R_editor` group keep tiles from drawing
+  a second copy; a record's `rev` keeps scenes built before a save from bringing back a moved or
+  removed object. Rotation is stored north-up (Bilychi's UTM grid is -2.05 deg off north). Records
+  outside a landing's frame are skipped.
+- Window **EarthNG objects** with the save state; a reminder when the editor closes with unsaved
+  changes. Engine facts found in game: `SimGroup:getObject(i)` needs `Sim.upcast`; the stock Delete
+  clears the selection without the selection hook.
+- Checked in game with probes at Bilychi (quality 50): save, move, delete, undo, restart, editing the
+  restored objects. Details and limits: docs/WORLD_EDITOR.md. Also in the planet: the opt-in
+  experimental `settings/earthng-overrides.json` layer (`manual.lua`, off unless that file exists).
+
 ## 2026-11-08: release 0.8.0, EarthNG.exe replaces the Tk Map Builder
 
 - One `EarthNG.exe` (Rust window, WebView2 page, embedded CPython 3.13) installs the planet and builds

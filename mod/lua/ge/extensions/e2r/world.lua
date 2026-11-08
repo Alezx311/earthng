@@ -212,7 +212,13 @@ local function request(tbl)
   S.seq = S.seq + 1
   tbl.seq = S.seq
   if NATIVE then
-    if tbl.type == 'land' then native.land(tbl) end
+    if tbl.type == 'land' then
+      -- Objects saved from the World Editor this session stand in the old landing's frame.
+      -- The new landing's tiles bring them back from the saved records where they belong.
+      local saved = scenetree and scenetree.findObject and scenetree.findObject('E2R_editor')
+      if saved then saved:deleteAllObjects(); saved:delete() end
+      native.land(tbl)
+    end
     return S.seq
   end
   jsonWriteFile(string.format('e2r_world/request_%d.json', S.seq), tbl, false)
@@ -645,7 +651,22 @@ local function spawnItem(it, group, pause, tile, layer)
     local ms = t:stop()
     if ms > (result.createMeshMs or 0) then result.createMeshMs, result.createMeshItem = ms, it.name end
   else
-    if tile and (it.prop or vegetationShape(it.shape)) and spawnForestItem(it, tile) then return end
+    if it.editorObject then
+      -- Built before a save that moved or removed it: the record has a newer version.
+      if native and native.editorObjectCurrent and it.editorId
+        and not native.editorObjectCurrent(it.editorId, it.editorRev) then return end
+      -- One object, one name: the World Editor's own copy (E2R_editor) or another tile's
+      -- copy is already standing. A buried tile's copy is leaving: take its name over.
+      local existing = scenetree and scenetree.findObject and scenetree.findObject(it.name)
+      if existing then
+        local g = existing.getGroup and existing:getGroup()
+        local gname = g and g:getName()
+        if g and (gname == nil or gname == '') then existing:setName('') else return end
+      end
+    end
+    -- An editor object has an exact user-authored quaternion and possibly non-uniform
+    -- scale. Forest instances only carry yaw and uniform scale; keep these TSStatic.
+    if tile and not it.editorObject and (it.prop or vegetationShape(it.shape)) and spawnForestItem(it, tile) then return end
     -- Forest lamps register on successful commit; fallback statics register here.
     if it.shape == LAMP_SHAPE then
       S.lamps = S.lamps or {}
@@ -661,7 +682,11 @@ local function spawnItem(it, group, pause, tile, layer)
     obj:setField('decalType', 0, it.decal or 'None')
     obj.useInstanceRenderData = true
     obj:setPosRot(it.pos[1], it.pos[2], it.pos[3], it.rot[1], it.rot[2], it.rot[3], it.rot[4])
-    if it.scale then obj:setScale(vec3(it.scale, it.scale, it.scale)) end
+    if type(it.scale) == 'table' then
+      obj:setScale(vec3(it.scale[1], it.scale[2], it.scale[3]))
+    elseif it.scale then
+      obj:setScale(vec3(it.scale, it.scale, it.scale))
+    end
     obj:registerObject(it.name)
     group:addObject(obj)
     return obj:getID()
@@ -713,8 +738,8 @@ end
 local function queueItems(items, tile, key, layer)
   local count, batch = 0, nil
   for _, it in ipairs(items) do
-    if not getDetailStream():add(tile, it) then
-      if it.kind ~= 'proc' and (it.prop or vegetationShape(it.shape)) then
+    if it.editorObject or not getDetailStream():add(tile, it) then
+      if not it.editorObject and it.kind ~= 'proc' and (it.prop or vegetationShape(it.shape)) then
         if not batch or #batch.items >= LIMIT.plantBatch then
           batch = {kind='plants', name='plants_' .. key, decor=true, items={}}
           S.queue[#S.queue+1] = {tile=tile, key=key, item=batch, scene=layer=='scene', far=layer=='far', grass=layer=='grass'}

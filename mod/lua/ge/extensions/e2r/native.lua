@@ -7,6 +7,8 @@ local catalog = require('ge/extensions/e2r/countries')
 local generator = require('ge/extensions/e2r/generator')
 local coordinates = require('ge/extensions/e2r/coordinates')
 local cellformat = require('ge/extensions/e2r/cellformat')
+local manual = require('ge/extensions/e2r/manual')
+local manualEditor = require('ge/extensions/e2r/manual_editor')
 local liveOk, liveMod = pcall(require, 'ge/extensions/e2r/live')
 local live = liveOk and type(liveMod) == 'table' and type(liveMod.sync) == 'function' and liveMod or nil
 -- TILE_LIMIT holds the whole wanted set (1 km near plus the 3 km far ring, ~130 tiles): a
@@ -159,6 +161,17 @@ local function localPoint(r, lat, lon)
   local determinant = g[5] * g[8] - g[6] * g[7]
   return g[1] + (dx * g[8] - dy * g[6]) / determinant,
     g[2] + (dy * g[5] - dx * g[7]) / determinant
+end
+
+-- A saved editor object's point in this landing, or nil when the region's frame does
+-- not reach it: a transverse Mercator far from its meridian returns finite numbers
+-- that are not the place, so the point must come back to itself.
+local function editorPoint(r, lat, lon)
+  local x, y = localPoint(r, lat, lon)
+  if not (finite(x) and finite(y)) or math.abs(x) > 2e6 or math.abs(y) > 2e6 then return nil end
+  local lon2, lat2 = geographic(r, x, y)
+  if not (finite(lat2) and finite(lon2)) or math.abs(lat2 - lat) > 1e-5 or math.abs(lon2 - lon) > 1e-5 then return nil end
+  return x, y
 end
 
 local function affineAt(r, x, y)
@@ -830,6 +843,19 @@ local function land(req)
     spentMs = {road = 0, scene = 0, grass = 0, far = 0, horizon = 0}, stageMs = {}, lost = {scene = 0, grass = 0},
     ioStats = {readCount = 0, readMs = 0, readMaxMs = 0, concatCount = 0, concatMs = 0, concatMaxMs = 0},
     horizonRadius = HORIZON_RADIUS, horizonDem = true}
+  -- Read once per landing. Missing is a no-op; malformed files never break a world.
+  active.manual, state.stream.manualError = manual.load(function(lat, lon) return localPoint(r, lat, lon) end)
+  active.editorRev = 0
+  active.editorObjects, state.stream.editorObjectsError = manualEditor.load(function(lat, lon) return editorPoint(r, lat, lon) end)
+  active.editorObjects, active.editorRev = manualEditor.reconcile(nil, active.editorObjects, active.editorRev)
+  if state.stream.editorObjectsError and type(log) == 'function' then
+    log('E', 'e2r_manual_editor', 'Cannot load ' .. manualEditor.path .. ': ' .. state.stream.editorObjectsError)
+  end
+  if state.stream.manualError and type(log) == 'function' then
+    log('E', 'e2r_manual', 'Cannot load ' .. manual.path .. ': ' .. state.stream.manualError)
+  elseif #active.manual > 0 and type(log) == 'function' then
+    log('I', 'e2r_manual', 'loaded ' .. #active.manual .. ' objects from ' .. manual.path)
+  end
   if pendingTune then
     active.tune = pendingTune
     state.stream.loadRadius = pendingTune.nearM
@@ -1271,6 +1297,27 @@ local function buildTile(key, wanted)
       maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
       groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = tune.propSpacing,
       detail = tune.detail, roadReady = roadReady or nil, sceneReady = sceneReady or nil,
+      editorPlan = #active.editorObjects > 0 and function(rect)
+        return manualEditor.plan(active.editorObjects, rect)
+      end or nil,
+      manualPlan = #active.manual > 0 and function(rect, lists, segments, scene, signs)
+        local accepted, rejected = manual.plan(active.manual, rect, lists, segments, scene, signs, active.pause)
+        -- Only the owning half-open tile reports a result; halo objects may be
+        -- processed on neighbours too, without appearing there a second time.
+        if type(log) == 'function' then
+          for _, p in ipairs(accepted) do
+            if p.x >= rect[1] and p.x < rect[3] and p.y >= rect[2] and p.y < rect[4] then
+              log('I', 'e2r_manual', 'accepted ' .. p.id .. ' tile ' .. key)
+            end
+          end
+          for _, p in ipairs(rejected) do
+            if p.x >= rect[1] and p.x < rect[3] and p.y >= rect[2] and p.y < rect[4] then
+              log('W', 'e2r_manual', 'rejected ' .. p.id .. ' tile ' .. key .. ': ' .. p.reason)
+            end
+          end
+        end
+        return accepted
+      end or nil,
       -- the storefront experiment: only a pack whose data asks for it (docs/BILYCHI_EXPERIMENT.md)
       experimentalShopfront = type(r.data.experiments) == 'table' and r.data.experiments.shopfront == true or nil,
       experimentalDetail = type(r.data.experiments) == 'table' and r.data.experiments.detail == true or nil,
@@ -2000,6 +2047,29 @@ end
 M.unload = unload
 M.setTune = setTune
 M.localPoint = function(lat, lon) if active then return localPoint(active.region, lat, lon) end end
+-- The World Editor layer (editor/earthngSave.lua) saves, then calls this: tiles built
+-- from now on carry the new records without a restart. Unchanged records keep their
+-- tables, so scenes already built keep spawning them.
+M.reloadEditorObjects = function()
+  if not active then return nil, 'no landing' end
+  local r = active.region
+  local records, err = manualEditor.load(function(lat, lon) return editorPoint(r, lat, lon) end)
+  active.editorObjects, active.editorRev = manualEditor.reconcile(active.editorObjects, records, active.editorRev or 0)
+  state.stream.editorObjectsError = err
+  if err and type(log) == 'function' then
+    log('E', 'e2r_manual_editor', 'Cannot load ' .. manualEditor.path .. ': ' .. err)
+  end
+  return #active.editorObjects, err
+end
+M.editorObjects = function() return active and active.editorObjects or {} end
+-- false for an item built from a record that has since been moved or removed
+M.editorObjectCurrent = function(id, rev)
+  if not active then return false end
+  for _, p in ipairs(active.editorObjects or {}) do
+    if p.id == id then return p.rev == rev end
+  end
+  return false
+end
 M.nav = function(key) local entry = active and active.tiles[key]; return entry and entry.nav end
 -- The routing graph of the region driven now (routing/<region>.bin beside regions/, from
 -- earthng/build_routing.py; a companion zip may bring it): path, a key that changes with the region.
