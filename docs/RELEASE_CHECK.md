@@ -4,6 +4,25 @@ Newest first. Each entry records what was checked before a release and what was 
 in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
 `MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
 
+## 0.8.1 (2026-11-09): planet 0.8.1 and EarthNG.exe 0.8.1 from b7b65f6
+
+- Planet built from a clean `git archive HEAD mod` (out/release/build_planet_0_8_1.py), language
+  `en`; map sidecars `earthng/planet/maps/*` (2004 entries) copied from planet 0.8.0. 268 379 165
+  bytes, sha256 aef4b986…; testzip clean. Against 0.8.0 only these entries differ: new
+  `e2r/manual.lua`, `e2r/manual_editor.lua`, `editor/earthngSave.lua`; changed `generator.lua`,
+  `native.lua`, `world.lua`, the manifest (0.8.1) and THIRD_PARTY_NOTICES.md (c7d045b). Cache
+  limits 32, 160, 80000, 240000, 500 unchanged.
+- EarthNG.exe 0.8.1 (47.6 MB, sha256 decb44ee…): BUILD_INFO version 0.8.1, planet 0.8.1, source
+  b7b65f6; its runtime carries the new mod Lua. Its service, started from the unpacked runtime with
+  an empty data home, reports planet 0.8.1 as expected.
+- Game (BeamNG 0.40.5, isolated profile, the release planet ZIP and the Ukraine pack, Bilychi
+  50.460360, 30.344190, quality 50): landed; `earthng/probe/editor_save.lua` passed (place, Ctrl+S's
+  function, move and turn, second object, editor delete, save, undo, save). No EarthNG errors in
+  the log. The restart check (`editor_verify.lua`) ran on the same code before packaging.
+- Unit tests: full discover 819 green before the two in-game fixes; the touched files after them
+  200/200.
+- Not run: mouse and keyboard in the editor, a drive over a saved object, a pack build by the exe.
+
 ## 0.8.0 (2026-11-08): planet 0.8.0 and EarthNG.exe 0.8.0 from 6326cf2
 
 - Planet built by `build_mod.py` from a clean `git archive` of `mod/` (uncommitted experiments
