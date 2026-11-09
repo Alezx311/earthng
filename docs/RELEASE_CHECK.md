@@ -4,6 +4,38 @@ Newest first. Each entry records what was checked before a release and what was 
 in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
 `MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
 
+## 0.8.2 (2026-11-09): planet 0.8.2 and EarthNG.exe 0.8.2 from d729e02
+
+Since 0.8.1: real cars of the traffic hand-off keep the flow car's body and paint (1c86c1f);
+MaGE principles merged from `feature/mage-detail` (hidden party walls, sills, raised curbs, paving
+to mapped footways, bridge railings); paving to a mapped footway runs round junctions and on the
+left of one-way streets (f30d54c).
+
+- Planet built from a clean `git archive HEAD mod` (out/release/build_planet_0_8_2.py), language
+  `en`; map sidecars (2004 entries) copied from planet 0.8.1. 268 391 871 bytes, sha256
+  881823bc…; testzip clean. Against 0.8.1 only the manifest (0.8.2), `generator.lua`, `flow.lua`,
+  `handoff.lua` and `world.lua` differ; `native.lua` and its cache limits are unchanged.
+- EarthNG.exe 0.8.2 (49 895 805 bytes, sha256 dbada880…): BUILD_INFO version 0.8.2, planet
+  0.8.2, source d729e02; its Lua equals the planet's. Its service, started from the unpacked
+  runtime with an empty data home, reads the installed planet 0.8.1 and expects 0.8.2, so the first
+  map replaces it.
+- Unit tests at f30d54c: full discover 833 OK (1 skipped), `cargo test --release` OK.
+- Game (BeamNG 0.40.5, isolated profiles, the Ukraine pack of 4.11, Normal 1280×720):
+  - Sidewalks, quality 80, 1600×900, views w1–w5 and j1 round 50.4473, 30.5199 (CITY_DETAIL.md):
+    w3 (a one-way residential street, footways mapped both sides, yard drives) is paved from the
+    kerb to the footways on both sides and on across the drives; before, grass gaps at every
+    junction and grass on the left. A first version left grass bands across the paving (ring
+    verges across mouths on sloping ground); fixed and shot again.
+  - The release planet, Kyiv centre 50.4501, 30.5234, 400 flow cars and 8 real, 60 s: functional
+    status passed, no EarthNG errors in the log; 29 hand-offs, 8 with another body (no free car of
+    its own), 20 preempted; flow step mean 1.6 / worst 9.3 ms, drawing 0.33 / 4.0 ms. Frames mean
+    34 ms, p99 79.5, 13 over 100 ms in 390 m. The same command with the traffic-only planet
+    (1c86c1f): 27.1 ms, p99 54.5, 3 over 100 ms, but the car stopped after 180 m.
+  - Without traffic, same command, traffic-only planet → 0.8.2: mean 20.9 → 22.6 ms, p99 52.5 →
+    54, over 100 ms 6 → 7 (startup), while the 0.8.2 car drove 323 m instead of 179 m. The
+    physics test drives into a wall; where it meets one differs between the two planets.
+- Not run: BeamNG 0.39, a pack build by the exe, mouse and keyboard in the World Editor.
+
 ## 0.8.1 (2026-11-09): planet 0.8.1 and EarthNG.exe 0.8.1 from b7b65f6
 
 - Planet built from a clean `git archive HEAD mod` (out/release/build_planet_0_8_1.py), language
