@@ -202,8 +202,19 @@ class GeneratorTests(unittest.TestCase):
         road = self.build([{'roads': roads}])[0]
         walks = list(self.triangles(road, 'e2rf_sidewalk')) + list(self.triangles(road, 'e2rf_curb'))
         self.assertTrue(walks)
-        for tri in walks:
-            self.assertTrue(all(abs(p[2] - 10.1) < 1e-6 for p in tri))  # flush with the road
+        # raised a curb above the road (10.1); the rest are the curb's faces, down to 3 cm under it
+        tops = [t for t in walks if max(p[2] for p in t) - min(p[2] for p in t) < 1e-6]
+        faces = [t for t in walks if t not in tops]
+        self.assertTrue(tops and faces)
+        for tri in tops:
+            self.assertTrue(all(abs(p[2] - 10.22) < 1e-6 for p in tri))
+        for tri in faces:
+            self.assertTrue(all(10.07 - 1e-6 < p[2] < 10.22 + 1e-6 for p in tri))
+        # the kerb turns every corner: faces along both streets' edges inside the crossing's square
+        def face_along(axis, at):
+            return any(all(abs(p[axis] - at) < .05 for p in t) and abs(t[0][1 - axis] - 250) < 30 for t in faces)
+        self.assertTrue(face_along(0, 254) or face_along(0, 246))
+        self.assertTrue(face_along(1, 254) or face_along(1, 246))
         # no sidewalk anywhere on either carriageway near the crossing
         for x in range(200, 301, 2):
             for y in (246.5, 250, 253.5):
@@ -296,7 +307,17 @@ class GeneratorTests(unittest.TestCase):
         self.assertAlmostEqual(min(p[2] for t in street for p in t if p[2] > 15), lift - 1.2, places=2)
         zs = [p[2] for t in deck for p in t]
         ys = [p[1] for t in deck for p in t]
-        self.assertAlmostEqual(max(zs), lift + .9, places=2)         # the parapet's top
+        self.assertAlmostEqual(max(zs), lift + .45, places=2)        # the kerb wall's top
+        # over it the railing to the old parapet's height: a mesh panel, a handrail and posts
+        scene = self.build([{'roads': [{'id': 'b', 'nodes': ['a', 'b'], 'width': 8, 'points': [[0, 250, 20], [500, 250, 20]],
+                                        'tags': {'highway': 'trunk', 'sidewalk': 'no', 'bridge': 'viaduct', 'layer': '1'}}]}])[1]
+        rail = [p[2] for t in self.triangles(scene, 'e2rf_pipe') for p in t]
+        mesh = [p[2] for t in self.triangles(scene, 'e2rf_fence_mesh') for p in t]
+        self.assertAlmostEqual(max(rail), lift + .9, places=2)
+        self.assertAlmostEqual(min(mesh), lift + .45, places=2)
+        self.assertAlmostEqual(max(mesh), lift + .84, places=2)
+        posts = {round(p[0]) for t in self.triangles(scene, 'e2rf_pipe') for p in t if p[2] < lift + .5}
+        self.assertGreater(len(posts), 300 / 2.5)                     # one every ~2.5 m along both sides
         self.assertLess(min(zs), 0)                                   # piers down into the ground
         self.assertAlmostEqual(max(ys), 254 + .3, places=3)          # the abutments, a parapet wider
         self.assertAlmostEqual(min(ys), 246 - .3, places=3)
@@ -312,7 +333,7 @@ class GeneratorTests(unittest.TestCase):
 
         def parapets(roads):
             tops = [t for t in self.triangles(self.build([{'roads': roads}])[1], 'e2rf_fence_wall')
-                    if all(abs(p[2] - 21.0) < .02 for p in t)]                  # the parapet tops
+                    if all(abs(p[2] - 20.55) < .02 for p in t)]                  # the kerb walls' tops
             return sorted({round(p[1], 1) for t in tops for p in t})
         pair = parapets([deck('n', 254.85), deck('s', 245.15)])
         self.assertTrue(pair)
@@ -340,7 +361,7 @@ class GeneratorTests(unittest.TestCase):
         asphalt, walls = built([bridge('s', 250), bridge('n', 262)])
         self.assertAlmostEqual(self.surface_at(asphalt, 200, 256), 20.1, places=2)  # the gap is paved
         self.assertIsNotNone(self.surface_at(walls, 200, 256))                        # one soffit across it
-        tops = [p[1] for t in walls for p in t if all(abs(q[2] - 21.0) < .02 for q in t)]
+        tops = [p[1] for t in walls for p in t if all(abs(q[2] - 20.55) < .02 for q in t)]
         self.assertTrue(any(y < 247 for y in tops) and any(y > 265 for y in tops), tops)
         self.assertFalse([y for y in tops if 250 < y < 262], tops)
         # a converging ramp is not one deck: the wide end keeps a hole between the soffits
@@ -349,7 +370,7 @@ class GeneratorTests(unittest.TestCase):
         # far enough apart to be two bridges
         _, walls = built([bridge('s', 250), bridge('n', 280)])
         self.assertIsNone(self.surface_at(walls, 200, 265))
-        tops = [p[1] for t in walls for p in t if all(abs(q[2] - 21.0) < .02 for q in t)]
+        tops = [p[1] for t in walls for p in t if all(abs(q[2] - 20.55) < .02 for q in t)]
         self.assertTrue(any(250 < y < 258 for y in tops) and any(272 < y < 280 for y in tops), tops)
 
     def test_staggered_carriageway_bridges_leave_no_hole_past_the_longer_ones_end(self):
@@ -438,7 +459,7 @@ class GeneratorTests(unittest.TestCase):
                 'tags': {'highway': 'trunk_link', 'oneway': 'yes', 'sidewalk': 'no', 'bridge': 'yes', 'layer': '1'}}
         def tops(roads):
             return [t for t in self.triangles(self.build([{'roads': roads}])[1], 'e2rf_fence_wall')
-                    if all(abs(p[2] - 21.0) < .05 for p in t)]
+                    if all(abs(p[2] - 20.55) < .05 for p in t)]
         def across(found):
             return [t for t in found if all(255.5 < p[1] < 256.2 for p in t) and any(256 < p[0] < 266 for p in t)]
         self.assertTrue(across(tops([main])))                     # alone the deck has its parapet there
@@ -912,10 +933,15 @@ class GeneratorTests(unittest.TestCase):
             ys = [sum(p[1] for p in t) / 3 for t in walks]
             return {'left' for y in ys if y > 250} | {'right' for y in ys if y < 250}
         # left of the node order is +y here
-        self.assertEqual(sides({'sidewalk:right': 'separate', 'sidewalk:left': 'no'}), {'right'})
+        # 'separate': the footway mapped beside the road is the sidewalk, the street draws none
+        self.assertEqual(sides({'sidewalk:right': 'separate', 'sidewalk:left': 'no'}), set())
+        self.assertEqual(sides({'sidewalk:right': 'separate', 'sidewalk:left': 'yes'}), {'left'})
         self.assertEqual(sides({'sidewalk:left': 'yes'}), {'left'})
         self.assertEqual(sides({'sidewalk': 'both', 'sidewalk:left': 'no'}), {'right'})
-        self.assertEqual(sides({'sidewalk:both': 'separate'}), {'left', 'right'})
+        self.assertEqual(sides({'sidewalk:both': 'separate'}), set())
+        self.assertEqual(sides({'sidewalk': 'separate'}), set())
+        # a bridge keeps its own: the footway mapped on it is not drawn at the deck's height
+        self.assertEqual(sides({'sidewalk:both': 'separate', 'bridge': 'yes', 'layer': '1'}), {'left', 'right'})
         self.assertEqual(sides({'sidewalk:both': 'no'}), set())
 
     def test_ground_never_reaches_the_asphalt_in_a_dip(self):
@@ -1179,7 +1205,8 @@ class GeneratorTests(unittest.TestCase):
         lamps = [item for item in scene['items'].values() if item.kind == 'static' and item.shape.endswith('lamp1.dae')]
         self.assertEqual(len(lamps), 16)
         self.assertTrue(all(item.shape == '/art/shapes/objects/lamp1.dae' for item in lamps))
-        self.assertTrue(all(item.decor and abs(item.pos[3] - 10.1) < 1e-8 for item in lamps))
+        # on the raised sidewalk: the road (10.1) and a curb (ROADS.curbSlab)
+        self.assertTrue(all(item.decor and abs(item.pos[3] - 10.22) < 1e-8 for item in lamps))
 
     def test_surveyed_lamps_replace_the_inferred_row_beside_them(self):
         # OSM maps Kyiv's lamps (203 k in its region): the street's own row must not double them
@@ -1227,7 +1254,7 @@ class GeneratorTests(unittest.TestCase):
         scene = self.build([{'roads': [deck], 'points': [lamp]}], terrainStep=100)[1]
         item = next(item for item in scene['items'].values() if item.kind == 'static' and '_point_' in item.name)
         self.assertAlmostEqual(item.pos[2], 254 - .15, places=3)     # in the parapet, 0.3 m thick
-        self.assertAlmostEqual(item.pos[3], 20 + .1 + .9, places=2)  # its top, over the deck
+        self.assertAlmostEqual(item.pos[3], 20 + .1 + .45, places=2) # its kerb wall's top, the railing round the pole
 
     def test_a_foot_bridge_is_a_deck_for_people(self):
         deck = {'id': 'deck', 'nodes': ['fa', 'fb'], 'width': 16, 'points': line(0, 250, 500, 250, 20),
@@ -1241,7 +1268,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertAlmostEqual(max(p[1] for p in walls), 258 + .3, places=3)         # no sidewalks on it
         item = next(item for item in scene['items'].values() if item.kind == 'static' and '_point_' in item.name)
         self.assertAlmostEqual(item.pos[2], 258 - .15, places=3)                     # the lamp on its parapet
-        self.assertAlmostEqual(item.pos[3], 20 + .1 + .9, places=2)
+        self.assertAlmostEqual(item.pos[3], 20 + .1 + .45, places=2)
         self.assertFalse(road['nav']['segments'] if 'nav' in road else None)
 
     def test_a_foot_bridge_moves_no_road_and_no_car_lands_on_it(self):
@@ -1413,8 +1440,9 @@ class GeneratorTests(unittest.TestCase):
         self.assertFalse([p for p in placed if 'sign_' in p[2]])
 
     def test_street_props_skip_a_separate_sidewalk_and_stay_off_the_street_band(self):
-        # the north sidewalk is a footway of its own 7 m from the axis: only that footway's
-        # outer row has props there; its inner row would stand on the road's drawn sidewalk
+        # the north sidewalk is a footway of its own 7 m from the axis: the street paves out to it
+        # (walkAt's kerb, 4 m) and furnishes that paving; the footway keeps only its outer row, on
+        # the ground past the paving (its inner row stood buried under it)
         road = {'id': 'street', 'width': 8, 'points': [[0, 250, 10], [500, 250, 10]],
                 'tags': {'highway': 'residential', 'sidewalk:left': 'separate', 'sidewalk:right': 'yes'}}
         walk = {'id': 'walk', 'kind': 'path', 'tags': {'highway': 'footway', 'footway': 'sidewalk'},
@@ -1422,7 +1450,9 @@ class GeneratorTests(unittest.TestCase):
         placed = self.street_props([{'roads': [road], 'lines': [walk]}])
         north = [p for p in placed if p[1] > 250]
         self.assertTrue(north)
-        self.assertTrue(all(258.5 < y < 259.01 for _x, y, _s in north), sorted({round(p[1], 2) for p in north}))
+        rows = sorted({round(p[1], 2) for p in north})
+        self.assertTrue(all(254.3 < y < 258 or 258.5 < y < 259.01 for _x, y, _s in north), rows)
+        self.assertTrue([y for y in rows if y < 258] and [y for y in rows if y > 258.5], rows)
         self.assertTrue([p for p in placed if p[1] < 250])
         for k, a in enumerate(placed):
             for b in placed[k + 1:]:
@@ -1938,16 +1968,64 @@ class GeneratorTests(unittest.TestCase):
         road = self.build([dict(self.edge_cell(street), buildings=houses)])[0]
         self.assertFalse(list(self.triangles(road, 'e2rf_curb')))
 
+    def test_a_mapped_sidewalk_way_replaces_the_streets_own_sidewalk(self):
+        # central Kyiv: an untagged street and its sidewalk mapped as a footway=sidewalk way 5.5 m
+        # off its axis on the north side. The street drew its own 2 m pavement as well, a second
+        # sidewalk with grass between (decals-kyiv-11); now the north side is paved to the footway.
+        houses = [{'id': f'h{side}{x}', 'height': 6,
+                   'rings': [[[x, 250 + side * 10], [x + 16, 250 + side * 10], [x + 16, 250 + side * 26],
+                              [x, 250 + side * 26]]]}
+                  for side in (1, -1) for x in range(-100, 600, 20)]
+        street = {'id': 'street', 'width': 7, 'nodes': [1, 2], 'points': line(-50, 250, 550, 250),
+                  'tags': {'highway': 'residential'}}
+        def walk_sides(lines):
+            cell = dict(self.edge_cell(street), buildings=houses, lines=lines)
+            ys = [sum(p[1] for p in t) / 3 for t in self.triangles(self.build([cell])[0], 'e2rf_sidewalk')]
+            return {'north' for y in ys if y > 250} | {'south' for y in ys if y < 250}
+        self.assertEqual(walk_sides([]), {'north', 'south'})
+        footway = {'id': 'fw', 'kind': 'path', 'points': line(-60, 255.5, 560, 256.5),
+                   'tags': {'highway': 'footway', 'footway': 'sidewalk'}}
+        # the mapped side: a kerb, then paving out to the footway's far edge (6.5-7.5 m off the
+        # axis), not a 2 m strip of its own with grass up to the footway; the verge starts there
+        cell = dict(self.edge_cell(street), buildings=houses, lines=[footway])
+        road = self.build([cell])[0]
+        curb = list(self.triangles(road, 'e2rf_curb'))
+        north = [t for t in curb if min(p[1] for p in t) > 250]
+        self.assertTrue(north)
+        self.assertLessEqual(max(p[1] for t in north for p in t), 253.5 + .25 + 1e-6)
+        self.assertTrue(any(max(p[2] for p in t) - min(p[2] for p in t) > .1 for t in north))
+        paving = [t for t in self.triangles(road, 'e2rf_sidewalk') if min(p[1] for p in t) > 250]
+        reach = max(p[1] for t in paving for p in t if 100 < p[0] < 400)
+        self.assertGreater(reach, 256.4)
+        self.assertLess(reach, 257.6)
+        # no footway beside: the kerb stone alone
+        tagged = dict(street, tags={'highway': 'residential', 'sidewalk:left': 'separate', 'sidewalk:right': 'yes'})
+        road = self.build([dict(self.edge_cell(tagged), buildings=houses)])[0]
+        self.assertFalse([t for t in self.triangles(road, 'e2rf_sidewalk') if min(p[1] for p in t) > 250])
+        self.assertTrue([t for t in self.triangles(road, 'e2rf_curb') if min(p[1] for p in t) > 250])
+        # a path across the street, a park footway 20 m off and a sidewalk way underground do not count
+        across = dict(footway, id='x', points=line(250, 200, 251, 300))
+        park = dict(footway, id='p', points=line(-60, 274, 560, 274))
+        under = dict(footway, id='u', tags=dict(footway['tags'], layer='-1'))
+        self.assertEqual(walk_sides([across, park, under]), {'north', 'south'})
+
     def test_curb_runs_along_the_top_row_of_the_trim_sheet(self):
         street = {'id': 'street', 'width': 7, 'nodes': [1, 2], 'points': line(-50, 250, 550, 250),
                   'tags': {'highway': 'residential', 'sidewalk': 'both'}}
         manifest = self.build([self.edge_cell(street)])[0]
         corners = list(self.uv_corners(manifest, 'e2rf_curb'))
         self.assertTrue(corners)
-        for x, y, _z, u, v in corners:
-            # v across: .005 at the carriageway, .195 at the sidewalk; u along, 2 m a repeat
-            self.assertAlmostEqual(v, .005 + (abs(y - 250) - 3.5) / .25 * .19, places=5)
+        top = max(z for _x, _y, z, _u, _v in corners)
+        for x, y, z, u, v in corners:
+            # u along, 2 m a repeat, on the top and on the face alike
             self.assertAlmostEqual(cyclic(u - (x + 50) / 2), 0, places=4)
+            if abs(z - top) < 1e-6:
+                # v across: .005 at the carriageway, .195 at the sidewalk
+                self.assertAlmostEqual(v, .005 + (abs(y - 250) - 3.5) / .25 * .19, places=5)
+            else:
+                # the face below the carriageway's edge: the stone's top row, .005 at its arris
+                self.assertAlmostEqual(abs(y - 250), 3.5, places=4)
+                self.assertAlmostEqual(v, .005 if z > top - 1e-6 else .095, places=5)
 
     def test_a_track_stops_at_the_edge_of_the_road_it_crosses(self):
         # the road's profile sits 0.4 m under the DEM (a cut); the track's two source vertices
@@ -2126,6 +2204,107 @@ class GeneratorTests(unittest.TestCase):
         deck = [p for t in self.triangles(bal, 'e2rf_gable') for p in t
                 if 13 < p[2] < 14.2 and past(p, .5)]
         self.assertTrue(deck, bid)
+
+    def wall_corners(self, scene, x=130):
+        """(x, y, z, material) of the corners of wall faces (walls, end walls, plinth) in the plane x."""
+        out = []
+        for item, mesh in self.meshes(scene):
+            name = str(mesh.material)
+            if name.startswith(('e2rf_wall_', 'e2rf_hw_', 'e2rf_plinth')):
+                for k in range(1, len(mesh.faces) + 1, 3):
+                    tri = [mesh.verts[mesh.faces[n].v + 1] for n in range(k, k + 3)]
+                    tri = [(p.x + item.pos[1], p.y + item.pos[2], p.z + item.pos[3], name) for p in tri]
+                    if all(abs(c[0] - x) < 1e-6 for c in tri):
+                        out += tri
+        return out
+
+    def test_adjoining_buildings_hide_their_shared_wall(self):
+        # MaGE's overlap pass for terraces: a wall on a neighbour's wall is inside the neighbour
+        # up to its top. Above a lower neighbour it stays, blank.
+        def block(bid, x0, y0, x1, y1, height, **tags):
+            tags = {'building': 'apartments', 'building:material': 'plaster', **tags}
+            return {'id': bid, 'height': height, 'tags': tags,
+                    'rings': [[[x0, y0, 10], [x1, y0, 10], [x1, y1, 10], [x0, y1, 10]]]}
+
+        def on_seam(corners):
+            return corners
+
+        alone = self.wall_corners(self.build([{'buildings': [block('a', 100, 100, 130, 112, 15)]}], terrainStep=100)[1])
+        self.assertTrue(on_seam(alone))
+        # equal neighbours: nothing on the seam, and fewer wall corners than two lone blocks
+        pair = self.build([{'buildings': [block('a', 100, 100, 130, 112, 15), block('b', 130, 100, 160, 112, 15)]}],
+                          terrainStep=100)[1]
+        corners = self.wall_corners(pair)
+        self.assertFalse(on_seam(corners))
+        # a lower neighbour: the taller wall only from the neighbour's top up, in bare brick
+        step = self.build([{'buildings': [block('a', 100, 100, 130, 112, 15), block('b', 130, 100, 160, 112, 9)]}],
+                          terrainStep=100)[1]
+        seam = on_seam(self.wall_corners(step))
+        self.assertTrue(seam)
+        self.assertAlmostEqual(min(c[2] for c in seam), 19)
+        self.assertAlmostEqual(max(c[2] for c in seam), 25)
+        self.assertEqual({c[3] for c in seam if c[2] > 19.5}, {'e2rf_wall_brk_red_end'})
+        # a narrower neighbour hides only its own run of the wall
+        part = self.build([{'buildings': [block('a', 100, 100, 130, 112, 15), block('c', 130, 104, 140, 110, 15)]}],
+                          terrainStep=100)[1]
+        seam = [c for c in on_seam(self.wall_corners(part)) if c[3].startswith('e2rf_wall_')]
+        self.assertTrue(any(c[1] < 104 - 1e-6 for c in seam) and any(c[1] > 110 + 1e-6 for c in seam))
+        self.assertFalse([c for c in seam if 104 + 1e-6 < c[1] < 110 - 1e-6])
+        # a lifted neighbour (a bridge between blocks) and a part inside the footprint hide nothing
+        lifted = self.build([{'buildings': [block('a', 100, 100, 130, 112, 15),
+                                            block('d', 130, 100, 160, 112, 15, min_height='6')]}], terrainStep=100)[1]
+        self.assertTrue([c for c in on_seam(self.wall_corners(lifted)) if c[2] < 16])
+        inner = self.build([{'buildings': [block('a', 100, 100, 130, 112, 15), block('e', 120, 100, 130, 112, 15)]}],
+                           terrainStep=100)[1]
+        self.assertTrue([c for c in on_seam(self.wall_corners(inner)) if c[0] == 130 and c[2] < 16])
+
+    def test_terraced_houses_have_no_windows_in_the_party_wall(self):
+        def house(bid, x0):
+            return {'id': bid, 'height': 6, 'tags': {'building': 'house', 'building:levels': '2'},
+                    'rings': [[[x0, 100, 10], [x0 + 12, 100, 10], [x0 + 12, 108, 10], [x0, 108, 10]]]}
+
+        scene = self.build([{'buildings': [house('h1', 100), house('h2', 112)]}], terrainStep=100)[1]
+        windows = [p for name in ('e2rf_win_pvc', 'e2rf_win_wood', 'e2rf_door_house')
+                   for t in self.triangles(scene, name) for p in t]
+        self.assertTrue(windows)
+        self.assertFalse([p for p in windows if abs(p[0] - 112) < .05])
+        # each house keeps its door, on an open wall
+        self.assertEqual(len(list(self.triangles(scene, 'e2rf_door_house'))) // 2, 2)
+
+    def test_house_windows_have_sills_and_wooden_ones_a_casing(self):
+        def house(bid):
+            return {'id': bid, 'height': 6, 'tags': {'building': 'house', 'building:levels': '2'},
+                    'rings': [[[100, 100, 10], [112, 100, 10], [112, 108, 10], [100, 108, 10]]]}
+
+        seen = set()
+        for k in range(40):
+            scene = self.build([{'buildings': [house(f'f{k}')]}], terrainStep=100)[1]
+            for win, sill in (('e2rf_win_pvc', 'e2rf_pipe'), ('e2rf_win_wood', 'e2rf_gable')):
+                windows = [t for t in self.triangles(scene, win) if max(p[2] for p in t) < 16]
+                if not windows or win in seen:
+                    continue
+                seen.add(win)
+                bottoms = {round(min(p[2] for p in t), 6) for t in windows}
+                sills = [p for t in self.triangles(scene, sill) for p in t]
+                # every window floor has a sill top at the window's foot, proud of the wall
+                for z in bottoms:
+                    self.assertTrue([p for p in sills if abs(p[2] - z) < 1e-6 and
+                                     min(abs(p[0] - 100), abs(p[0] - 112), abs(p[1] - 100), abs(p[1] - 108)) > .05])
+                if win == 'e2rf_win_pvc':
+                    self.assertEqual(len(list(self.triangles(scene, sill))), 4 * len(windows) // 2)
+                else:
+                    # the casing's head (its top 14 cm over the window) only from detail 65
+                    tops = {round(max(p[2] for p in t), 6) for t in windows}
+                    high = self.build([{'buildings': [house(f'f{k}')]}], terrainStep=100, detail=80)[1]
+                    heads = [p for t in self.triangles(high, sill) for p in t]
+                    for z in tops:
+                        self.assertTrue([p for p in heads if abs(p[2] - z - .14) < 1e-6])
+                        self.assertFalse([p for p in sills if abs(p[2] - z - .14) < 1e-6])
+            if len(seen) == 2:
+                break
+        self.assertEqual(seen, {'e2rf_win_pvc', 'e2rf_win_wood'})
+        potato = self.build([{'buildings': [house('f0')]}], terrainStep=100, detail=0)[1]
+        self.assertFalse(list(self.triangles(potato, 'e2rf_pipe')))
 
     def test_city_blocks_gain_a_rim_a_crown_and_a_canopy(self):
         # Flat city blocks, near tiles, detail >= 40. Photo walls stay one quad. The new parts
