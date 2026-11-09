@@ -19,7 +19,7 @@ long-distance route planner.
 
 ## Data compatibility
 
-The planet (0.8.0) carries detailed OSM sidecars for **Ukraine, Albania and Estonia**.
+The planet (0.8.x) carries detailed OSM sidecars for **Ukraine, Albania and Estonia**.
 Other older packs retain Natural Earth city/country labels and their existing local
 streets until a sidecar is built. Packs built by EarthNG.exe or `country_fetch.py`,
 and spot exports, include a sidecar when their original PBF is available (an

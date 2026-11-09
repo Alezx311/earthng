@@ -7,12 +7,13 @@ The game runs entirely in Lua with installed ZIP mods. Map packs are prepared
 beforehand, either downloaded ready-made or built with EarthNG.exe. No companion
 server is required.
 
-What is generated on the road: roads with junctions, bridges, sidewalks and lane
-markings; buildings with roofs, windows and shop fronts; trees, grass and ground
-cover by climate; street furniture, signs and traffic lights that change. Optional
-traffic flow: hundreds of cars without physics queue at junctions and lights, and
-the nearest ones turn into real cars you can hit. A line at the top shows the
-street, town and region, and the map can route you to a marker.
+What is generated on the road: roads with junctions, bridges with railings, raised
+sidewalks with kerbs and lane markings; buildings with roofs, windows and shop fronts;
+trees, grass and ground cover by climate; street furniture, signs and traffic lights
+that change. Optional traffic flow: hundreds of cars without physics queue at junctions
+and lights, and the nearest ones turn into real cars of the same body and paint that
+you can hit. A line at the top shows the street, town and region, and the map can
+route you to a marker.
 
 ## Install and play
 
