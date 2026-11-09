@@ -1181,6 +1181,44 @@ end
 -- `thick` along the road, kept `clear` m off any road under it; abutments `thick` deep.
 ROADS.deck = {depth = 1, footDepth = .5, parapet = .9, thick = .3, repeatU = 2.5,
   pier = {every = 25, min = 16, across = .85, thick = 1.6, clear = 1.5, gap = 1, sink = .5, span = 1.5, tall = 30}}
+-- A deck's parapet. MaGE builds bridge walls low, rails between posts, not one solid fence;
+-- Kyiv's overpasses have a concrete kerb wall under a steel railing. A 0.9 m wall the full
+-- length, plus its 1 m fascia, read from the street as a concrete band 2 m tall (decals-kyiv-11).
+-- Now: the fascia from the soffit up to the kerb wall `base` over the road, the wall's inner face
+-- and top, and on its middle a railing to the parapet's height: a mesh panel (alpha tested,
+-- double sided, solid for the car like the wall it replaces), a handrail and a post every `post` m.
+-- at(w, dz, f, v): the point at fraction w across the wall (0 its road side, 1 its outer face),
+-- dz over the road, fraction f along the piece, u along from the deck's repeat.
+ROADS.deck.rail = {base = .45, post = 2.5, size = .05, cap = .06, hand = .04, metal = 'pipe'}
+function ROADS.parapet(face, at, low, f0, f1, ox, oy)
+  local deck, r = ROADS.deck, ROADS.deck.rail
+  local top, base, R = deck.parapet, r.base, deck.repeatU
+  face({at(1, base, f0, 0), at(1, base, f1, 0), at(1, low, f1, (base - low) / R), at(1, low, f0, (base - low) / R)}, ox, oy, 0)
+  face({at(0, base, f0, 0), at(0, base, f1, 0), at(0, 0, f1, base / R), at(0, 0, f0, base / R)}, -ox, -oy, 0)
+  face({at(0, base, f0, 0), at(0, base, f1, 0), at(1, base, f1, deck.thick / R), at(1, base, f0, deck.thick / R)}, 0, 0, 1)
+  local rail = top - r.cap
+  local function mesh(dz, f, v)
+    local p = at(.5, dz, f, 0)
+    p[4], p[5] = p[4] * R / 2, v
+    return p
+  end
+  face({mesh(rail, f0, 0), mesh(rail, f1, 0), mesh(base, f1, (rail - base) / 2), mesh(base, f0, (rail - base) / 2)},
+    -ox, -oy, 0, 'fence_mesh')
+  local wi, wo = .5 - r.hand / deck.thick, .5 + r.hand / deck.thick
+  face({at(wi, top, f0, 0), at(wi, top, f1, 0), at(wo, top, f1, .03), at(wo, top, f0, .03)}, 0, 0, 1, r.metal)
+  face({at(wi, top, f0, 0), at(wi, top, f1, 0), at(wi, rail, f1, .03), at(wi, rail, f0, .03)}, -ox, -oy, 0, r.metal)
+  face({at(wo, top, f0, 0), at(wo, top, f1, 0), at(wo, rail, f1, .03), at(wo, rail, f0, .03)}, ox, oy, 0, r.metal)
+  local a, b = at(.5, 0, f0, 0), at(.5, 0, f1, 0)
+  local tx, ty = b[1] - a[1], b[2] - a[2]
+  local l = math.sqrt(tx * tx + ty * ty)
+  if l < .1 then return end
+  tx, ty = tx / l, ty / l
+  local n = math.max(1, floor(l / r.post + .5))
+  for i = 0, n do
+    local p = at(.5, base, f0 + (f1 - f0) * i / n, 0)
+    ROADS.box(face, r.metal, p[1], p[2], tx, ty, r.size, r.size, p[3], p[3] + rail - base, 1)
+  end
+end
 -- How many spans a bridge strip `length` m long is split into by its piers. heightAt(f) is the
 -- soffit's height over the ground at fraction f of the strip. A pier every `every` m stood as a
 -- wall under a deck high over a bay (the Golden Gate read as a fence 70 m tall): past `tall` m
@@ -1234,6 +1272,79 @@ function ROADS.orient(polygon, material, poly, ox, oy, oz)
     poly = flipped
   end
   polygon(material, poly, false)
+end
+
+-- Raised sidewalks (MaGE's curb principle: a kerb shows ~15 cm above the carriageway; a painted
+-- band flush with the asphalt read as a road marking, decals-kyiv-11). A sidewalk piece is drawn
+-- `height` above the profile, and a curb face drops from its edge to `drop` under the road on
+-- the quad's sides listed in `faces` (the carriageway's edge) and on every edge the carriageway
+-- clip made (a side street, a driveway, a junction plate: the kerb turns the corner). Sides
+-- where the slab runs on at its own height (the next segment, the verge, the paving behind
+-- the curb) get none. quad: the unclipped piece, its side i from quad[i] to quad[i % 4 + 1].
+ROADS.CURB = {height = .12, drop = .03, row = .09, tiny = .05}
+local function onSide(a, b, p, q)
+  local dx, dy = b[1] - a[1], b[2] - a[2]
+  local l = math.sqrt(dx * dx + dy * dy)
+  if l < EPS then return false end
+  local dp = math.abs((p[1] - a[1]) * dy - (p[2] - a[2]) * dx) / l
+  local dq = math.abs((q[1] - a[1]) * dy - (q[2] - a[2]) * dx) / l
+  return dp < .02 and dq < .02
+end
+-- onAsphalt(x, y): whether a carriageway or a junction covers the point. The clip splits a piece
+-- along the lines of the asphalt's edges; a seam between two pieces has paving on both sides
+-- and no face (a third of a city's curb faces were such seams).
+function ROADS.curbSlab(polygon, material, pieces, quad, faces, height, onAsphalt)
+  local c = ROADS.CURB
+  height = height or c.height
+  local tiny = 0
+  for _, piece in ipairs(pieces) do
+    local n = #piece
+    local top, cx, cy, area = {}, 0, 0, 0
+    for k, p in ipairs(piece) do
+      local q = piece[k % n + 1]
+      area = area + p[1] * q[2] - q[1] * p[2]
+      top[k] = {p[1], p[2], (p[3] or 0) + height, p[4], p[5]}
+      cx, cy = cx + p[1], cy + p[2]
+    end
+    -- a sliver the clip left (a star's corner, a mitre) stays flush: a 12 cm tooth in a lane
+    if math.abs(area) / 2 < c.tiny then
+      polygon(material, piece, 'flat')
+      tiny = tiny + 1
+    else
+      polygon(material, top, 'flat')
+      cx, cy = cx / n, cy / n
+      for k = 1, n do
+        local p, q = piece[k], piece[k % n + 1]
+        local face, keep = false, false
+        for side = 1, 4 do
+          if onSide(quad[side], quad[side % 4 + 1], p, q) then
+            if faces[side] then face = true else keep = true end
+          end
+        end
+        local len = math.sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2)
+        if not face and not keep and onAsphalt and len > .02 then
+          -- 5 cm out of the piece, square to the edge, away from its middle
+          local mx, my = (p[1] + q[1]) / 2, (p[2] + q[2]) / 2
+          local nx, ny = (q[2] - p[2]) / len, -(q[1] - p[1]) / len
+          if nx * (mx - cx) + ny * (my - cy) < 0 then nx, ny = -nx, -ny end
+          keep = not onAsphalt(mx + nx * .05, my + ny * .05)
+        end
+        if face or not keep then
+          if len > .02 then
+            -- the band's own u along the street where the edge has one, else from the plan
+            local u0 = p[4] or ((p[1] + p[2]) / DECAL.curbRepeat) % 1
+            local u1 = q[4] or u0 + len / DECAL.curbRepeat
+            local zp, zq = p[3] or 0, q[3] or 0
+            local v0, v1 = DECAL.curbRow[1], DECAL.curbRow[1] + c.row
+            ROADS.orient(polygon, 'curb', {{p[1], p[2], zp - c.drop, u0, v1}, {q[1], q[2], zq - c.drop, u1, v1},
+              {q[1], q[2], zq + height, u1, v0}, {p[1], p[2], zp + height, u0, v0}},
+              (p[1] + q[1]) / 2 - cx, (p[2] + q[2]) / 2 - cy, 0)
+          end
+        end
+      end
+    end
+  end
+  return tiny
 end
 
 -- A box's four sides round (x, y): `across` half width along the normal of (tx, ty), `along`
@@ -1824,15 +1935,9 @@ function ROADS.unitedDecks(ctx)
                   local e = s
                   while e < pieces and free[e + 1] do e = e + 1 end
                   local f0, f1 = (s - 1) / pieces, e / pieces
-                  ctx.face({line(f0, outerA, outerB, top, 0), line(f1, outerA, outerB, top, 0),
-                    line(f1, outerA, outerB, low, (top - low) / deck.repeatU),
-                    line(f0, outerA, outerB, low, (top - low) / deck.repeatU)}, ox, oy, 0)
-                  ctx.face({line(f0, edgeA, edgeB, top, 0), line(f1, edgeA, edgeB, top, 0),
-                    line(f1, edgeA, edgeB, 0, top / deck.repeatU),
-                    line(f0, edgeA, edgeB, 0, top / deck.repeatU)}, -ox, -oy, 0)
-                  ctx.face({line(f0, edgeA, edgeB, top, 0), line(f1, edgeA, edgeB, top, 0),
-                    line(f1, outerA, outerB, top, deck.thick / deck.repeatU),
-                    line(f0, outerA, outerB, top, deck.thick / deck.repeatU)}, 0, 0, 1)
+                  ROADS.parapet(ctx.face, function(w, dz, f, v)
+                    return line(f, edgeA + (outerA - edgeA) * w, edgeB + (outerB - edgeB) * w, dz, v)
+                  end, low, f0, f1, ox, oy)
                   s = e + 1
                 else
                   s = s + 1
@@ -2178,16 +2283,19 @@ local function walkSides(tags)
   local v = tags.sidewalk
   local both, left, right = tags['sidewalk:both'], tags['sidewalk:left'], tags['sidewalk:right']
   if both or left or right then
-    -- per-side tags win; 'separate' is a footway mapped beside the road, which is not drawn
-    local function on(side) return side ~= nil and side ~= 'no' and side ~= 'none' end
-    local base = v == 'both' or v == 'yes' or v == 'separate'
+    -- per-side tags win; 'separate' is a footway mapped beside the road: the footway is drawn,
+    -- the street gets no second sidewalk of its own (two parallel pavements, decals-kyiv-11)
+    -- A deck keeps it: a footway mapped on a bridge is not drawn at the deck's height.
+    local deck = ROADS.bridge(tags) or ROADS.tunnel(tags)
+    local function on(side) return side ~= nil and side ~= 'no' and side ~= 'none' and (deck or side ~= 'separate') end
+    local base = v == 'both' or v == 'yes' or deck and v == 'separate'
     local sides = {}
     if on(left or both) or (left == nil and both == nil and (base or v == 'left')) then sides[1] = true end
     if on(right or both) or (right == nil and both == nil and (base or v == 'right')) then sides[-1] = true end
     return sides
   end
   if v == nil and ROADS.oneway(tags) then return {[-1] = true} end
-  if v == 'no' or v == 'none' then return {} end
+  if v == 'no' or v == 'none' or v == 'separate' and not (ROADS.bridge(tags) or ROADS.tunnel(tags)) then return {} end
   if v == 'left' then return {[1] = true} end
   if v == 'right' then return {[-1] = true} end
   return {[1] = true, [-1] = true}
@@ -2202,11 +2310,47 @@ end
 -- prospect between far-apart blocks); streets from WALK_STREET (a town, not a village).
 local WALK_MAIN, WALK_STREET = .04, .12
 local MAIN_ROADS = {primary = true, secondary = true, tertiary = true}
-local function walkAt(tags, sides, a, b, builtAt)
+-- A side with its own footway=sidewalk way beside it (ROADS.mappedWalk) gets none either: most of
+-- central Kyiv's sidewalks are mapped as ways while the streets carry no sidewalk tag.
+-- The second value: the sides whose sidewalk is that footway (tagged 'separate' or found
+-- beside), {[side] = metres}: paving from the carriageway's kerb out to the footway's far edge
+-- (MAPPED_WALK.wide at most), or the kerb stone alone where no footway is near. The footway itself
+-- is draped on the ground; the verge from a raised kerb buried it within 3 m of the road.
+local function kerbSide(tags, side)
+  local v = tags[side == 1 and 'sidewalk:left' or 'sidewalk:right'] or tags['sidewalk:both']
+  if v == nil and tags['sidewalk:left'] == nil and tags['sidewalk:right'] == nil then v = tags.sidewalk end
+  return v == 'separate'
+end
+local function kerbWidth(mapped, a, b, hw, side)
+  local found, outer = ROADS.mappedWalk(mapped, a, b, hw, side)
+  if not found then return TUNE.curb end
+  return math.max(TUNE.curb, math.min(ROADS.MAPPED_WALK.wide, outer - hw))
+end
+local function walkAt(tags, sides, a, b, builtAt, mapped, hw)
+  local deck = ROADS.bridge(tags) or ROADS.tunnel(tags)
   if tags.sidewalk ~= nil or tags['sidewalk:both'] ~= nil or tags['sidewalk:left'] ~= nil
-      or tags['sidewalk:right'] ~= nil or not next(sides) then return sides end
+      or tags['sidewalk:right'] ~= nil then
+    if not WALKS[tags.highway] or roadGrade(tags) >= 2 or deck then return sides end
+    local l, r = kerbSide(tags, 1), kerbSide(tags, -1)
+    if not (l or r) then return sides end
+    return sides, {[1] = l and kerbWidth(mapped, a, b, hw, 1) or nil, [-1] = r and kerbWidth(mapped, a, b, hw, -1) or nil}
+  end
+  if not next(sides) then return sides end
   local least = MAIN_ROADS[tags.highway] and WALK_MAIN or WALK_STREET
-  return builtAt((a[1] + b[1]) / 2, (a[2] + b[2]) / 2) >= least and sides or NONE
+  if builtAt((a[1] + b[1]) / 2, (a[2] + b[2]) / 2) < least then return NONE end
+  if not mapped or deck then return sides end
+  local kerb
+  for _, side in ipairs({1, -1}) do
+    if sides[side] then
+      local found, outer = ROADS.mappedWalk(mapped, a, b, hw, side)
+      if found then
+        kerb = kerb or {}
+        kerb[side] = math.max(TUNE.curb, math.min(ROADS.MAPPED_WALK.wide, outer - hw))
+      end
+    end
+  end
+  if not kerb then return sides end
+  return {[1] = not kerb[1] and sides[1] or nil, [-1] = not kerb[-1] and sides[-1] or nil}, kerb
 end
 
 -- Road details at OSM way nodes (fast_style.ROAD_DETAILS, kept 30 m round the tile by the cell
@@ -3951,8 +4095,37 @@ function BLD.slot(n, shape)
   return 1
 end
 
+-- A window's frame (MaGE's frames, as the house's dress has them), kept to few triangles: a
+-- sill under every window, its top and its front (galvanised under a PVC window, a board under
+-- a wooden one), 4 triangles; from detail 65 a wooden window also has a village house's casing,
+-- flat jambs and a head with its top, 8 more. Window s across, w wide, z0..z1.
+BLD.FRAME = {sill = {over = .07, out = .1, drop = .05}, board = .1, out = .045, head = .14, casing = 65}
+function BLD.frame(scene, a, b, length, s, w, z0, z1, wood, detail)
+  local F, P = BLD.FRAME, BLD.wallPoint
+  local s0, s1 = s - w / 2 - F.sill.over, s + w / 2 + F.sill.over
+  local kind, o, zs = wood and 'gable' or 'pipe', F.sill.out, z0 - F.sill.drop
+  scene.polygon(kind, {P(a, b, length, s0, .01, z0, 0, 0), P(a, b, length, s0, o, z0, 0, o),
+    P(a, b, length, s1, o, z0, s1 - s0, o), P(a, b, length, s1, .01, z0, s1 - s0, 0)}, true)
+  scene.polygon(kind, {P(a, b, length, s0, o, zs, 0, 0), P(a, b, length, s1, o, zs, s1 - s0, 0),
+    P(a, b, length, s1, o, z0, s1 - s0, F.sill.drop), P(a, b, length, s0, o, z0, 0, F.sill.drop)}, false)
+  if not wood or (detail or 50) < F.casing then return 4 end
+  local d, out = F.board, F.out
+  local function board(t0, t1, za, zb, o0)
+    scene.polygon('gable', {P(a, b, length, t0, o0, za, 0, 0), P(a, b, length, t1, o0, za, (t1 - t0) / 1.5, 0),
+      P(a, b, length, t1, o0, zb, (t1 - t0) / 1.5, (zb - za) / 1.5), P(a, b, length, t0, o0, zb, 0, (zb - za) / 1.5)}, false)
+  end
+  local l, r = s - w / 2, s + w / 2
+  board(l - d, l, z0, z1, out)
+  board(r, r + d, z0, z1, out)
+  board(l - d - .03, r + d + .03, z1, z1 + F.head, out + .02)
+  scene.polygon('gable', {P(a, b, length, l - d - .03, .01, z1 + F.head, 0, 0), P(a, b, length, l - d - .03, out + .02, z1 + F.head, 0, .07),
+    P(a, b, length, r + d + .03, out + .02, z1 + F.head, 1, .07), P(a, b, length, r + d + .03, .01, z1 + F.head, 1, 0)}, true)
+  return 12
+end
+
 -- Windows on every floor of an outer wall a -> b (inside on its left), evenly spaced, 3 cm out;
--- the door in one slot of the door wall's ground floor.
+-- the door in one slot of the door wall's ground floor. With dress.mass each window has its
+-- frame (BLD.frame).
 function BLD.openings(scene, a, b, length, base, height, dress, door, detail)
   local n = BLD.bays(length, detail)
   if n == 0 then return end
@@ -3977,6 +4150,7 @@ function BLD.openings(scene, a, b, length, base, height, dress, door, detail)
         quad('door_house', s, BLD.doors.w, base + .1, base + .1 + BLD.doors.h, dress.door)
       else
         quad(dress.win, s, style.w, z0, z0 + style.h, dress.cell)
+        if dress.mass then BLD.frame(scene, a, b, length, s, style.w, z0, z0 + style.h, dress.win == 'win_wood', detail) end
       end
     end
   end
@@ -5115,7 +5289,9 @@ end
 -- Downpipes at the outer corners of a low brick or plaster block: a pipe 0.3 m round the
 -- corner on the incoming wall, a hopper under the eaves, a kick-out at the foot. At most
 -- pipeMax, the corners between the longest walls first.
-function BLD.downpipes(scene, rings, base, top, height, kind)
+-- hidden: {a, b, length, runs} of the walls an adjoining building hides (BLD.hidden). A pipe
+-- there would stand inside the neighbour.
+function BLD.downpipes(scene, rings, base, top, height, kind, hidden)
   local D = BLD.DETAIL
   if height > D.pipeHeight or not (kind:find('wall_brk_', 1, true) == 1 or kind:find('wall_pls_', 1, true) == 1) then return 0 end
   local ring = BLD.orient(rings[1], rings)
@@ -5126,7 +5302,16 @@ function BLD.downpipes(scene, rings, base, top, height, kind)
     local a, p, b = ring[(k - 2) % n + 1], ring[k], ring[k % n + 1]
     local ux, uy, vx, vy = p[1] - a[1], p[2] - a[2], b[1] - p[1], b[2] - p[2]
     local lu, lv = math.sqrt(ux * ux + uy * uy), math.sqrt(vx * vx + vy * vy)
-    if lu >= 3 and lv >= 3 and (ux * vy - uy * vx) / (lu * lv) > .5 then
+    local function blocked(c, d, s)
+      for _, w in ipairs(hidden or NONE) do
+        if math.abs(w[1][1] - c[1]) + math.abs(w[1][2] - c[2]) < 1e-3 and math.abs(w[2][1] - d[1]) + math.abs(w[2][2] - d[2]) < 1e-3 then
+          return BLD.coveredAt(w[4], s)
+        end
+      end
+      return false
+    end
+    if lu >= 3 and lv >= 3 and (ux * vy - uy * vx) / (lu * lv) > .5
+      and not blocked(a, p, lu - .3) and not blocked(p, b, .3) then
       corners[#corners + 1] = {a = a, p = p, len = lu, weight = lu + lv, k = k}
     end
   end
@@ -5683,6 +5868,13 @@ function BLD.gableWin(scene, frame, top, rise, dress)
   local function p(v, z, uu, vv)
     return {frame.u1 * frame.ax + v * frame.bx + ox, frame.u1 * frame.ay + v * frame.by + oy, z, uu, vv}
   end
+  -- a gable on a party wall (BLD.hidden) is inside the next house's roof
+  local x, y = frame.u1 * frame.ax + mid * frame.bx, frame.u1 * frame.ay + mid * frame.by
+  for _, w in ipairs(dress.hidden or NONE) do
+    local a, b, length = w[1], w[2], w[3]
+    local ux, uy = (b[1] - a[1]) / length, (b[2] - a[2]) / length
+    if math.abs((x - a[1]) * uy - (y - a[2]) * ux) < .1 and BLD.coveredAt(w[4], (x - a[1]) * ux + (y - a[2]) * uy) then return end
+  end
   scene.polygon(dress.win, {p(mid - hw, z0, cell[1], cell[4]), p(mid + hw, z0, cell[3], cell[4]),
     p(mid + hw, z1, cell[3], cell[2]), p(mid - hw, z1, cell[1], cell[2])}, false)
 end
@@ -5730,6 +5922,186 @@ function BLD.partWalls(height, tags, footprint, far)
   if far and tags['roof:shape'] == 'skillion' then return height end
   local rise = number(tags['roof:height'], spec and math.sqrt(footprint / math.pi) * spec.rise or 0)
   return math.max(2.2, height - rise)
+end
+
+-- A building's vertical extent, as its walls draw it: the datum (the footprint's mean exported Z,
+-- else the ground under its middle), the lowest ground, the wall height, the bottom and the top.
+-- Far tiles use the footprint's box, as the walls do.
+function BLD.span(building, ground, far)
+  local tags = building.tags or {}
+  local rings = building.rings or NONE
+  local exterior = cleanRing(rings[1])
+  if #exterior < 3 then return nil end
+  local twice = 0
+  for k, p in ipairs(exterior) do local q = exterior[k % #exterior + 1]; twice = twice + p[1] * q[2] - q[1] * p[2] end
+  local footprint, h = math.abs(twice) / 2, hash(tostring(tags.e2r_of or building.id or ''))
+  -- Buildings can cross source-cell boundaries. Their full exported footprint Z
+  -- gives both tiles the same datum even when the centroid's DEM cell is absent.
+  local sourceLow, sourceSum, sourceCount = math.huge, 0, 0
+  for _, p in ipairs(exterior) do
+    if p[3] then sourceLow, sourceSum, sourceCount = math.min(sourceLow, p[3]), sourceSum + p[3], sourceCount + 1 end
+  end
+  local walls = exterior
+  if far then
+    local box = ringBounds(rings)
+    walls = {{box[1], box[2]}, {box[3], box[2]}, {box[3], box[4]}, {box[1], box[4]}}
+  end
+  local low, cx, cy = math.huge, 0, 0
+  for _, p in ipairs(walls) do low, cx, cy = math.min(low, ground(p[1], p[2])), cx + p[1], cy + p[2] end
+  local base = sourceCount > 0 and sourceSum / sourceCount or ground(cx / #walls, cy / #walls)
+  if sourceCount > 0 then low = sourceLow end
+  local height = BLD.partWalls(math.max(2.2, math.min(850, BLD.height(building, tags, footprint, h))), tags, footprint, far)
+  local raised = building.minHeight or number(tags.min_height, 0)
+  local lifted = raised > 0
+  return {exterior = exterior, footprint = footprint, h = h, base = base, low = low, height = height,
+    lifted = lifted, bottom = lifted and base + raised or low - .3, top = base + height}
+end
+
+-- MaGE's overlap pass, for terraces: a wall that lies on a neighbour's wall is inside the
+-- neighbour up to the neighbour's top. Drawing it costs triangles, and its windows, air
+-- conditioners and balconies stand inside the next house. BLD.cover indexes the outer walls of
+-- the tile's buildings (not outlines, open roofs or lifted parts); BLD.hidden gives the hidden
+-- runs of one wall. Above a lower neighbour the wall stays, blank, as a fire wall.
+BLD.COVER = {bin = 25, gap = .2, sin = .035, probe = .3, min = .4}
+
+function BLD.cover(buildings, ground, far)
+  local C = BLD.COVER
+  local index = {bins = {}, spans = {}, ground = ground, far = far}
+  for _, building in ipairs(buildings or NONE) do
+    local tags = building.tags or NONE
+    if not tags.e2r_outline and tags.building ~= 'roof' then
+      local ring = cleanRing((building.rings or NONE)[1])
+      if #ring >= 3 then
+        for k, a in ipairs(ring) do
+          local b = ring[k % #ring + 1]
+          local edge = {a, b, building}
+          for bx = math.floor((math.min(a[1], b[1]) - C.gap) / C.bin), math.floor((math.max(a[1], b[1]) + C.gap) / C.bin) do
+            for by = math.floor((math.min(a[2], b[2]) - C.gap) / C.bin), math.floor((math.max(a[2], b[2]) + C.gap) / C.bin) do
+              local id = bx * 65536 + by
+              local list = index.bins[id]
+              if not list then list = {}; index.bins[id] = list end
+              list[#list + 1] = edge
+            end
+          end
+        end
+      end
+    end
+  end
+  return index
+end
+
+function BLD.spanOf(index, building)
+  local span = index.spans[building]
+  if span == nil then
+    span = BLD.span(building, index.ground, index.far) or false
+    index.spans[building] = span
+  end
+  return span or nil
+end
+
+-- Hidden runs of wall a -> b (inside on its left) of `building`: a sorted list of
+-- {s0, s1, z}, z the height the wall is hidden up to. Nil when nothing hides it.
+function BLD.hidden(index, building, a, b, length, bottom)
+  local C = BLD.COVER
+  if not index or length < C.min then return nil end
+  local ux, uy = (b[1] - a[1]) / length, (b[2] - a[2]) / length
+  local runs, seen = nil, {}
+  for bx = math.floor((math.min(a[1], b[1]) - C.gap) / C.bin), math.floor((math.max(a[1], b[1]) + C.gap) / C.bin) do
+    for by = math.floor((math.min(a[2], b[2]) - C.gap) / C.bin), math.floor((math.max(a[2], b[2]) + C.gap) / C.bin) do
+      for _, edge in ipairs(index.bins[bx * 65536 + by] or NONE) do
+        local other = edge[3]
+        if other ~= building and not seen[edge] then
+          seen[edge] = true
+          local c, d = edge[1], edge[2]
+          local vx, vy = d[1] - c[1], d[2] - c[2]
+          local lv = math.sqrt(vx * vx + vy * vy)
+          if lv > C.min and math.abs(ux * vy - uy * vx) / lv < C.sin then
+            -- both ends near the wall's line
+            local oc = (c[1] - a[1]) * uy - (c[2] - a[2]) * ux
+            local od = (d[1] - a[1]) * uy - (d[2] - a[2]) * ux
+            if math.abs(oc) < C.gap and math.abs(od) < C.gap then
+              local t0 = (c[1] - a[1]) * ux + (c[2] - a[2]) * uy
+              local t1 = (d[1] - a[1]) * ux + (d[2] - a[2]) * uy
+              local s0, s1 = math.max(0, math.min(t0, t1)), math.min(length, math.max(t0, t1))
+              if s1 - s0 >= C.min then
+                -- the neighbour stands outside this wall, not inside the footprint
+                local m = (s0 + s1) / 2
+                local px, py = a[1] + ux * m + uy * C.probe, a[2] + uy * m - ux * C.probe
+                local span = inside({other.rings[1]}, px, py) and BLD.spanOf(index, other)
+                if span and not span.lifted and span.top > bottom + .5 then
+                  runs = runs or {}
+                  runs[#runs + 1] = {s0, s1, span.top}
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  if not runs then return nil end
+  -- elementary runs, each hidden up to the highest neighbour over it; equal neighbours merge
+  local cuts = {}
+  for _, r in ipairs(runs) do cuts[#cuts + 1] = r[1]; cuts[#cuts + 1] = r[2] end
+  table.sort(cuts)
+  local out = {}
+  for k = 1, #cuts - 1 do
+    local s0, s1 = cuts[k], cuts[k + 1]
+    if s1 - s0 > 1e-3 then
+      local z
+      for _, r in ipairs(runs) do
+        if r[1] <= s0 + 1e-3 and r[2] >= s1 - 1e-3 then z = math.max(z or -math.huge, r[3]) end
+      end
+      if z then
+        local last = out[#out]
+        if last and math.abs(last[2] - s0) < 1e-3 and math.abs(last[3] - z) < .05 then last[2] = s1
+        else out[#out + 1] = {s0, s1, z} end
+      end
+    end
+  end
+  return #out > 0 and out or nil
+end
+
+-- Wall a -> b in pieces: {a, b, length, s0, z}, z the hidden height or nil. Gaps under
+-- BLD.COVER.min between hidden runs join the hidden run before them.
+function BLD.pieces(a, b, length, runs)
+  if not runs then return {{a, b, length, 0, nil}} end
+  local C = BLD.COVER
+  local out, at = {}, 0
+  local function point(s) return {a[1] + (b[1] - a[1]) * s / length, a[2] + (b[2] - a[2]) * s / length} end
+  local function add(s0, s1, z)
+    local last = out[#out]
+    if last and not z and s1 - s0 < C.min and last[5] then last[2] = point(s1); last[3] = s1 - last[4]; return end
+    if s1 - s0 > 1e-3 then out[#out + 1] = {point(s0), point(s1), s1 - s0, s0, z} end
+  end
+  for _, r in ipairs(runs) do
+    if r[1] > at then add(at, r[1], nil) end
+    add(math.max(at, r[1]), r[2], r[3])
+    at = math.max(at, r[2])
+  end
+  if at < length then add(at, length, nil) end
+  out[1][1], out[#out][2] = a, b
+  return out
+end
+
+-- The blank material over a lower neighbour: a block's own end wall, bare brick behind plaster,
+-- cement behind glass and shops. Houses and blank kinds keep their walls.
+function BLD.fireWall(kind)
+  if kind:find('_end$') or kind:find('hw_', 1, true) == 1 or kind:find('clad_', 1, true) == 1
+    or kind == 'plinth' or kind == 'wall_block' or kind == 'gable' then return kind end
+  if kind:find('wall_pnl_', 1, true) == 1 or kind:find('wall_lgg_', 1, true) == 1 or kind:find('wall_brk_', 1, true) == 1 then
+    return kind .. '_end'
+  end
+  if kind:find('wall_pls_', 1, true) == 1 then return 'wall_brk_red_end' end
+  return 'plinth'
+end
+
+-- True when a point s along wall a -> b is in one of its hidden runs below z.
+function BLD.coveredAt(runs, s, z)
+  for _, r in ipairs(runs or NONE) do
+    if s >= r[1] - .05 and s <= r[2] + .05 and (not z or z < r[3]) then return true end
+  end
+  return false
 end
 
 -- A skillion: one plane falling along roof:direction, from the high side to the low, rise over
@@ -6973,6 +7345,91 @@ local function walkSeparate(tags, side)
   return v == 'separate'
 end
 
+-- Footways mapped as a street's sidewalk (footway=sidewalk, on the ground): their segments in
+-- square bins, for walkAt. A street side is mapped where such a segment runs parallel to it
+-- (within ~25 degrees) between just inside its edge and reach beyond, at two of three points along it.
+-- wide: the most paving a street side draws out to such a footway (walkAt).
+local MAPPED_WALK = {bin = 16, reach = 9, inside = 1, cos = .9, slack = 1.5, wide = 6}
+ROADS.MAPPED_WALK = MAPPED_WALK
+function ROADS.sidewalkIndex(lines)
+  local bins, any = {}, false
+  local size = MAPPED_WALK.bin
+  for _, line in ipairs(lines or NONE) do
+    local tags, p = line.tags or NONE, line.points or NONE
+    if line.kind == 'path' and tags.footway == 'sidewalk' and pathOnGround(tags) then
+      for k = 1, #p - 1 do
+        local a, b = p[k], p[k + 1]
+        local dx, dy = b[1] - a[1], b[2] - a[2]
+        local l = math.sqrt(dx * dx + dy * dy)
+        if l > .5 then
+          local seg = {a[1], a[2], b[1], b[2], dx / l, dy / l, l, (tonumber(tags.width) or 2) / 2}
+          for bx = floor(math.min(a[1], b[1]) / size), floor(math.max(a[1], b[1]) / size) do
+            for by = floor(math.min(a[2], b[2]) / size), floor(math.max(a[2], b[2]) / size) do
+              local key = (bx + 32768) * 65536 + by + 32768
+              local bin = bins[key] or {}
+              bins[key], bin[#bin + 1] = bin, seg
+              any = true
+            end
+          end
+        end
+      end
+    end
+  end
+  return any and bins or nil
+end
+-- A segment the footway search missed between two that found it (the footway bends to a door,
+-- a crossing breaks it) takes their mean paving: not a 2 m strip and grass inside a paved run.
+function ROADS.fillKerbs(walk)
+  local kerb = walk.kerb or NONE
+  for k = 2, #walk - 1 do
+    for _, side in ipairs({1, -1}) do
+      local a, b = (kerb[k - 1] or NONE)[side], (kerb[k + 1] or NONE)[side]
+      if a and b and a > TUNE.curb and b > TUNE.curb and not (kerb[k] or NONE)[side] and walk[k][side] then
+        local own, w = {}, {}
+        for s, v in pairs(kerb[k] or NONE) do own[s] = v end
+        for s, v in pairs(walk[k]) do w[s] = v end
+        own[side], w[side] = (a + b) / 2, nil
+        kerb[k], walk[k] = own, w
+      end
+    end
+  end
+end
+function ROADS.mappedWalk(bins, a, b, hw, side)
+  local dx, dy = b[1] - a[1], b[2] - a[2]
+  local l = math.sqrt(dx * dx + dy * dy)
+  if not bins or l < EPS then return false end
+  dx, dy = dx / l, dy / l
+  local nx, ny = -dy * side, dx * side
+  local m, size = MAPPED_WALK, MAPPED_WALK.bin
+  local far = hw + m.reach
+  local hits, outer = 0, 0
+  for n = 1, 3 do
+    local t = n * .25
+    local px, py = a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t
+    local found = false
+    for bx = floor((px - far) / size), floor((px + far) / size) do
+      for by = floor((py - far) / size), floor((py + far) / size) do
+        for _, s in ipairs(bins[(bx + 32768) * 65536 + by + 32768] or NONE) do
+          if math.abs(s[5] * dx + s[6] * dy) >= m.cos then
+            -- the segment's point abreast of p: along it, then across the street
+            local u = (px - s[1]) * s[5] + (py - s[2]) * s[6]
+            if u >= -m.slack and u <= s[7] + m.slack then
+              local qx, qy = s[1] + s[5] * u, s[2] + s[6] * u
+              local off = (qx - px) * nx + (qy - py) * ny
+              if off >= hw - m.inside and off <= far then found = off + s[8]; break end
+            end
+          end
+        end
+        if found then break end
+      end
+      if found then break end
+    end
+    if found then hits, outer = hits + 1, outer + found end
+  end
+  -- and the mean distance of its far edge from the street's axis
+  return hits >= 2, hits > 0 and outer / hits or 0
+end
+
 -- america when there is no block, or the block is the tested North American mix.
 function VEG.streetKit(look)
   local block = type(look) == 'table' and look.block or nil
@@ -7240,8 +7697,11 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
     pause()
     if strip.surface then
       for k = 1, #strip.points - 1 do
-        local w = strip.walk[k] or NONE
-        band(walks, strip.points[k], strip.points[k + 1], strip.hw + ((w[1] or w[-1]) and walkWidth or 0) + .3)
+        -- a side paved out to its mapped footway (walkAt's kerb) counts too: the footway's own
+        -- props, on the ground, stood buried under that paving
+        local w, kerb = strip.walk[k] or NONE, ((strip.walk.kerb or NONE)[k] or NONE)
+        band(walks, strip.points[k], strip.points[k + 1],
+          strip.hw + math.max((w[1] or w[-1]) and walkWidth or 0, kerb[1] or 0, kerb[-1] or 0) + .3)
       end
     end
   end
@@ -7335,7 +7795,8 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
               if sides(k, side) then
                 local t = d - dist[k]
                 place(seed, d + start, a, t, ux, uy, side, function(c) return offset(c, k, side) end,
-                  z or function() return (a[3] or 0) + t / seg * ((b[3] or 0) - (a[3] or 0)) + lift end,
+                  -- a street's own prop stands on its sidewalk, a curb over the road (ROADS.curbSlab)
+                  z or function() return (a[3] or 0) + t / seg * ((b[3] or 0) - (a[3] or 0)) + lift + ROADS.CURB.height end,
                   prefix .. '_' .. math.floor(d + start + .5) .. '_' .. side, footway, fixed)
               end
             end
@@ -7349,11 +7810,19 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   for s, strip in ipairs(strips) do
     if strip.surface and (strip.dist[#strip.dist] or 0) > 14 then
       local hw, tags, id, joints = strip.hw, strip.tags or NONE, tostring(strip.road.id or s), strip.joints or NONE
-      walk(strip.points, strip.dist, hash(id), function(k, side) return strip.walk[k][side] and not walkSeparate(tags, side) end,
-        joints[1] and 3 or 6, joints[2] and 3 or 6, strip.start or 0, function(prop)
+      -- the paving of a side out to its mapped footway (walkAt's kerb, 1.5 m and wider) is the
+      -- street's sidewalk too: its furniture is the street's
+      local function paved(k, side)
+        if strip.walk[k][side] then return not walkSeparate(tags, side) and walkWidth end
+        local kerb = ((strip.walk.kerb or NONE)[k] or NONE)[side]
+        return kerb and kerb >= 1.5 and kerb
+      end
+      walk(strip.points, strip.dist, hash(id), function(k, side) return paved(k, side) end,
+        joints[1] and 3 or 6, joints[2] and 3 or 6, strip.start or 0, function(prop, k, side)
+          local width = paved(k, side) or walkWidth
           -- A continuous 1.2 m pedestrian corridor; large objects use the outer verge.
-          if prop.near + prop.far + (prop.curb and .35 or .1) + 1.2 > walkWidth then return hw + walkWidth + .35 + prop.near, true end
-          return hw + (prop.curb and math.max(.45, .35 + prop.near) or walkWidth - math.max(.45, .1 + prop.far))
+          if prop.near + prop.far + (prop.curb and .35 or .1) + 1.2 > width then return hw + width + .35 + prop.near, true end
+          return hw + (prop.curb and math.max(.45, .35 + prop.near) or width - math.max(.45, .1 + prop.far))
         end, nil, 'prop_' .. id)
       local major = tags.highway == 'primary' or tags.highway == 'secondary' or tags.highway == 'tertiary' or tags.highway == 'trunk'
       if context.lamps and tags.lit ~= 'no' and (tags.lit == 'yes' or major) and (not FS or FS:fileExists(LAMP)) then
@@ -9522,6 +9991,8 @@ local function build(cells, i, j, options)
       end
     end
     lists.roads = kept
+    -- footway=sidewalk ways: the street sides they stand for get no sidewalk of their own (walkAt)
+    lists.mappedWalks = ROADS.sidewalkIndex(lists.lines)
   end
   local details = DETAIL.index(distant and NONE or lists.points, {turning_circle = true})
   local function along(points, dist, s)
@@ -9693,8 +10164,12 @@ local function build(cells, i, j, options)
       end
       -- The sides a segment has sidewalks on: the tags', or for an untagged street only where
       -- it is built up (walkAt).
-      local sides, walk = ROADS.walkSides(tags), {}
-      for k = 1, #points - 1 do walk[k] = walkAt(tags, sides, points[k], points[k + 1], builtAt) end
+      -- walk.kerb[k]: the sides with only a kerb, their sidewalk a footway way of its own
+      local sides, walk = ROADS.walkSides(tags), {kerb = {}}
+      for k = 1, #points - 1 do
+        walk[k], walk.kerb[k] = walkAt(tags, sides, points[k], points[k + 1], builtAt, lists.mappedWalks, hw)
+      end
+      ROADS.fillKerbs(walk)
       -- start: metres of the road cut off before points[1] (street props keep the road's lattice);
       -- joints: its ends that run on into the next way (no junction there)
       local strip = {road = road, points = points, normals = normals, hw = hw, tags = tags, dist = dist,
@@ -9869,14 +10344,8 @@ local function build(cells, i, j, options)
                   local e = s
                   while e < n and free[e + 1] do e = e + 1 end
                   local f0, f1 = (s - 1) / n, e / n
-                  -- the edge face, outside, from the parapet's top to the soffit
-                  face({along(outer, top, f0, 0), along(outer, top, f1, 0),
-                    along(outer, low, f1, (top - low) / deck.repeatU), along(outer, low, f0, (top - low) / deck.repeatU)}, ox, oy, 0)
-                  -- the parapet's inner face and its top
-                  face({along(inner, top, f0, 0), along(inner, top, f1, 0),
-                    along(inner, 0, f1, top / deck.repeatU), along(inner, 0, f0, top / deck.repeatU)}, -ox, -oy, 0)
-                  face({along(inner, top, f0, 0), along(inner, top, f1, 0),
-                    along(outer, top, f1, deck.thick / deck.repeatU), along(outer, top, f0, deck.thick / deck.repeatU)}, 0, 0, 1)
+                  ROADS.parapet(face, function(w, dz, f, v) return along(inner + (outer - inner) * w, dz, f, v) end,
+                    low, f0, f1, ox, oy)
                   s = e + 1
                 else
                   s = s + 1
@@ -10098,7 +10567,11 @@ local function build(cells, i, j, options)
         for k = 1, #corners do
           local n = k % #corners + 1
           if walks then plate.walks[#plate.walks + 1] = {corners[k], corners[n], mids[n], mids[k]} end
-          if tune.shoulder > 0 then plate.verges[#plate.verges + 1] = {mids[k], mids[n], outs[n], outs[k]} end
+          -- the verge starts at the raised ring's outer edge (ROADS.curbSlab)
+          if tune.shoulder > 0 then
+            plate.verges[#plate.verges + 1] = {walks and {mids[k][1], mids[k][2], mids[k][3] + ROADS.CURB.height} or mids[k],
+              walks and {mids[n][1], mids[n][2], mids[n][3] + ROADS.CURB.height} or mids[n], outs[n], outs[k]}
+          end
         end
       end
     end
@@ -10187,6 +10660,20 @@ local function build(cells, i, j, options)
     end
     return pieces
   end
+  -- whether any asphalt polygon covers (x, y) (ROADS.curbSlab); in `lists`: build() is at
+  -- LuaJIT's 200 locals
+  lists.onAsphalt = function(x, y)
+    for _, entry in ipairs(asphaltBins[(floor(x / ABIN) + 32768) * 65536 + floor(y / ABIN) + 32768] or NONE) do
+      local c, ccw, inside = entry.poly, entry.ccw, true
+      for k = 1, #c do
+        local a, b = c[k], c[k % #c + 1]
+        local sd = side(a[1], a[2], b[1], b[2], {x, y})
+        if (ccw and sd < 0) or (not ccw and sd > 0) then inside = false; break end
+      end
+      if inside then return true end
+    end
+    return false
+  end
   local function emit(collectorOf, material, poly, skip, up)
     -- Distant tiles skip the carriageway. The verge is the transition band: the same
     -- ground wedge the near tile cuts at this edge, so the shared border keeps its vertices.
@@ -10226,7 +10713,7 @@ local function build(cells, i, j, options)
       if boundsTouch(rect, box, hw + stripReach) then
         local near = function(entry) return entry.road == strip and math.abs(entry.index - k) <= 1 end
         for _, sign in ipairs({1, -1}) do
-          local walk = strip.walk[k][sign] and tune.sidewalk or 0
+          local walk = strip.walk[k][sign] and tune.sidewalk or ((strip.walk.kerb or NONE)[k] or NONE)[sign] or 0
           local outer = hw + walk
           if walk > 0 then
             local curb = math.min(tune.curb, walk)
@@ -10239,13 +10726,18 @@ local function build(cells, i, j, options)
                 local u1 = u0 + (strip.dist[k + 1] - strip.dist[k]) / DECAL.curbRepeat
                 band[1][4], band[1][5], band[2][4], band[2][5] = u0, DECAL.curbRow[1], u0, DECAL.curbRow[2]
                 band[3][4], band[3][5], band[4][4], band[4][5] = u1, DECAL.curbRow[2], u1, DECAL.curbRow[1]
-                emit(roads, 'curb', band, near, 'flat')
+                -- the quads run k, k+1 on the left and the other way round on the right: the
+                -- carriageway's edge is side 4 on both (band[4] -> band[1])
+                if visualRoads then ROADS.curbSlab(roads.polygon, 'curb', subtract(band, near), band, {[4] = true}, nil, lists.onAsphalt) end
               end
-              emit(roads, 'sidewalk', paved, near, 'flat')
+              if visualRoads and walk > curb then
+                ROADS.curbSlab(roads.polygon, 'sidewalk', subtract(paved, near), paved, {[4] = curb <= 0}, nil, lists.onAsphalt)
+              end
             end
           end
           if strip.surface and tune.shoulder > 0 then
-            local inner = {edge(k, sign * outer, -tune.vergeSink), edge(k + 1, sign * outer, -tune.vergeSink)}
+            local inner = {edge(k, sign * outer, (walk > 0 and ROADS.CURB.height or 0) - tune.vergeSink),
+              edge(k + 1, sign * outer, (walk > 0 and ROADS.CURB.height or 0) - tune.vergeSink)}
             local o1, o2 = edge(k, sign * (outer + tune.shoulder)), edge(k + 1, sign * (outer + tune.shoulder))
             local verge = {inner[1], o1, o2, inner[2]}
             -- a carriageway edge (no sidewalk) also gets an edge decal once the ground is final;
@@ -10264,7 +10756,10 @@ local function build(cells, i, j, options)
   mark('sidewalks')
   for _, plate in ipairs(plates) do
     for _, quad in ipairs(plate.walks or NONE) do
-      if boundsTouch(rect, ringBounds({quad}), 0) then emit(roads, 'sidewalk', quad, nil, 'flat') end
+      -- the ring's inner side (corner to corner) is the kerb round the corner
+      if visualRoads and boundsTouch(rect, ringBounds({quad}), 0) then
+        ROADS.curbSlab(roads.polygon, 'sidewalk', subtract(quad, nil), quad, {[1] = true}, nil, lists.onAsphalt)
+      end
     end
   end
   -- Press the lattice under every surface strip (road and sidewalk, sampled every 2 m from each
@@ -10278,8 +10773,8 @@ local function build(cells, i, j, options)
         local a, b = points[k], points[k + 1]
         local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
         if boundsTouch(rect, ringBounds({{a, b}}), hw + tune.sidewalk + step + 1) then
-          local left = hw + (strip.walk[k][1] and tune.sidewalk or 0)
-          local right = hw + (strip.walk[k][-1] and tune.sidewalk or 0)
+          local left = hw + (strip.walk[k][1] and tune.sidewalk or ((strip.walk.kerb or NONE)[k] or NONE)[1] or 0)
+          local right = hw + (strip.walk[k][-1] and tune.sidewalk or ((strip.walk.kerb or NONE)[k] or NONE)[-1] or 0)
           local na, nb = strip.normals[k], strip.normals[k + 1]
           local samples = math.max(1, math.ceil(length / 2))
           for s = 0, samples do
@@ -10856,29 +11351,21 @@ local function build(cells, i, j, options)
   local shops = {points = {}, own = {}, info = {}, roofs = {}, venue = {}, stands = {}}
   if decor and not distant then BLD.shopSites(shops, lists, rect, scene, ground, segmentBins, pause) end
   shops.links = decor and options.experimentalShopfront and not options.far and BLD.shopLinks(lists, options, pause) or nil
+  -- hidden walls between adjoining buildings (BLD.cover); far tiles draw boxes and keep them.
+  -- Kept in `shops`: build() is at Lua's 200 locals.
+  shops.cover = decor and not options.far and BLD.cover(lists.buildings, ground, false) or nil
   for _, building in ipairs(decor and lists.buildings or NONE) do
     local rings, tags = building.rings or {}, building.tags or {}
     local exterior = cleanRing(rings[1])
     if #exterior >= 3 and not tags.e2r_outline and ringsTouch(rings, rect) then
-      local footprint, h = math.abs(area2(exterior)) / 2, hash(tostring(tags.e2r_of or building.id or ''))
-      -- Buildings can cross source-cell boundaries. Their full exported footprint Z
-      -- gives both tiles the same datum even when the centroid's DEM cell is absent.
-      local sourceLow, sourceSum, sourceCount = math.huge, 0, 0
-      for _, p in ipairs(exterior) do
-        if p[3] then sourceLow, sourceSum, sourceCount = math.min(sourceLow, p[3]), sourceSum + p[3], sourceCount + 1 end
-      end
+      local span = shops.cover and BLD.spanOf(shops.cover, building) or BLD.span(building, ground, options.far)
       if options.far then
         local box = ringBounds(rings)
         rings = {{{box[1], box[2]}, {box[3], box[2]}, {box[3], box[4]}, {box[1], box[4]}}}
         exterior = rings[1]
       end
-      local low, cx, cy = math.huge, 0, 0
-      for _, p in ipairs(exterior) do low, cx, cy = math.min(low, ground(p[1], p[2])), cx + p[1], cy + p[2] end
-      local base = sourceCount > 0 and sourceSum / sourceCount or ground(cx / #exterior, cy / #exterior)
-      if sourceCount > 0 then low = sourceLow end
-      local height = BLD.partWalls(math.max(2.2, math.min(850, BLD.height(building, tags, footprint, h))), tags, footprint, options.far)
-      local lifted = (building.minHeight or number(tags.min_height, 0)) > 0
-      local bottom = lifted and base + (building.minHeight or number(tags.min_height, 0)) or low - .3
+      span.hiddenWalls = nil
+      local footprint, h, base, height, lifted, bottom = span.footprint, span.h, span.base, span.height, span.lifted, span.bottom
       local top, kind = base + height, BLD.wallMaterial(building, look, height, footprint)
       -- building=roof stands open on columns (BLD.shopCanopy); a canopy over pumps clears a
       -- lorry unless OSM gives its height
@@ -10947,21 +11434,50 @@ local function build(cells, i, j, options)
         -- Outer walls face away from CCW rings; courtyard walls face into clockwise rings.
         local reverse = (raw == rings[1] and signed < 0) or (raw ~= rings[1] and signed > 0)
         if reverse then local reversed = {}; for k = #ring, 1, -1 do reversed[#reversed + 1] = ring[k] end; ring = reversed end
-        -- a house's door goes on its longest outer wall
-        local doorWall = 0
-        if dress and raw == rings[1] and not options.far then
-          for k, a in ipairs(ring) do
-            local b = ring[k % #ring + 1]
-            doorWall = math.max(doorWall, (b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
-          end
-        end
+        -- Outer walls in pieces: a run inside an adjoining building (BLD.hidden) is drawn only
+        -- above it, blank. A storefront's spans are keyed by the whole wall: it stays whole.
+        local walls = {}
         for k, a in ipairs(ring) do
           local b = ring[k % #ring + 1]
-          local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+          local full = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+          local runs = shops.cover and raw == rings[1] and not lifted and not open and BLD.hidden(shops.cover, building, a, b, full, bottom) or nil
+          if runs and shopWalls and shopWalls[BLD.wallKey(a, b)] then runs = nil end
+          for _, piece in ipairs(BLD.pieces(a, b, full, runs)) do
+            piece.full, piece.runs = full, runs
+            walls[#walls + 1] = piece
+          end
+          if runs then
+            span.hiddenWalls = span.hiddenWalls or {}
+            span.hiddenWalls[#span.hiddenWalls + 1] = {a, b, full, runs}
+          end
+        end
+        -- a house's door goes on its longest open outer wall
+        local doorWall = 0
+        if dress and raw == rings[1] and not options.far then
+          for _, piece in ipairs(walls) do
+            if not piece[5] then doorWall = math.max(doorWall, piece[3] ^ 2) end
+          end
+        end
+        for k, piece in ipairs(walls) do
+          local a, b, length, hide = piece[1], piece[2], piece[3], piece[5]
           local wallKind = kind
-          if length < 16 and (kind:find('wall_pnl_', 1, true) == 1 or kind:find('wall_lgg_', 1, true) == 1 or kind:find('wall_brk_', 1, true) == 1) then wallKind = kind .. '_end' end
+          if piece.full < 16 and (kind:find('wall_pnl_', 1, true) == 1 or kind:find('wall_lgg_', 1, true) == 1 or kind:find('wall_brk_', 1, true) == 1) then wallKind = kind .. '_end' end
           local door = doors and ((use == 'garages' and length >= 8) or (use == 'garage' and length <= 4.5))
           local scale = BLD.facadeScale(wallKind)
+          if hide then
+            -- inside the neighbour up to its top; above a lower one, a blank fire wall
+            if hide < top - .05 then
+              local fire = BLD.fireWall(wallKind)
+              local sc, z0 = BLD.facadeScale(fire), math.max(hide, bottom)
+              scene.polygon(fire, {{a[1], a[2], z0, along / sc, (z0 - base) / sc},
+                {b[1], b[2], z0, (along + length) / sc, (z0 - base) / sc},
+                {b[1], b[2], top, (along + length) / sc, height / sc},
+                {a[1], a[2], top, along / sc, height / sc}}, false)
+              if dress and dress.mass and length > .4 then BLD.cornice(scene, a, b, length, top) end
+            end
+            if BLD.plane then BLD.skillionWall(scene, wallKind, a, b, top, along, length, base, scale) end
+            if type(options.detailReport) == 'table' then BLD.note('hidden_wall', a, b, length, 0, hide) end
+          else
           local seam = plinth and math.min(top, math.max(bottom, base + BLD.plinth)) or bottom
           if seam > bottom then
             scene.polygon(plinthKind, {{a[1], a[2], bottom, along / 3, (bottom - base) / 3},
@@ -11038,14 +11554,16 @@ local function build(cells, i, j, options)
             if dress.balcony and not isDoor and length >= 5 then BLD.balcony(scene, a, b, length, base, h); dress.balcony = false end
             if isDoor then doorWall = math.huge end
           end
+          end
           along = along + length
           if k % 32 == 0 then pause() end
         end
       end
-      if detailed then BLD.downpipes(scene, rings, base, top, height, kind) end
+      if detailed then BLD.downpipes(scene, rings, base, top, height, kind, span.hiddenWalls) end
       if options.experimentalDetail and not options.far and not lifted then
         BLD.addressPlate(scene, rings, tags, base, height, lists.roads)
       end
+      if dress then dress.hidden = span.hiddenWalls end
       if options.far or open or not BLD.pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet, BLD.region(look)), dress) then
         for _, tri in ipairs(triangulate(rings, pause, rect)) do
           for _, p in ipairs(tri) do p[3] = BLD.plane and BLD.plane(p[1], p[2]) or top end
@@ -11456,7 +11974,7 @@ local function build(cells, i, j, options)
       x, y = x + hit.nx * side * .5, y + hit.ny * side * .5
     end
     if not bridge and OFFROAD.nearAsphalt(x, y, .3) then return nil end
-    z = bridge and hit.z + ROADS.deck.parapet or ground(x, y)
+    z = bridge and hit.z + ROADS.deck.rail.base or ground(x, y)   -- on the kerb wall, its pole through the railing
     if OFFROAD.nearestOn(x, y, z, false, hit.road) or OFFROAD.nearestOn(x, y, z, true, hit.road) then return nil end
     return x, y, z
   end
@@ -12671,6 +13189,7 @@ M.FRONT = BLD.FRONT
 M.shopCell = BLD.shopCell
 M.shopMark = BLD.shopMark
 M.shopHeight = BLD.height
+M.coverIndex, M.hiddenRuns, M.wallPieces = BLD.cover, BLD.hidden, BLD.pieces
 M.shopStyle = BLD.shopStyle
 M.triangulate = triangulate
 M.clip = clip
