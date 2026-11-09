@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
-use tao::window::WindowBuilder;
+use tao::window::{Icon, WindowBuilder};
 use wry::http::{Request, Response, header::CONTENT_TYPE};
 use wry::{WebContext, WebViewBuilder};
 
@@ -158,8 +158,10 @@ fn main() -> Result<()> {
     std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
+    let icon = Icon::from_rgba(include_bytes!("../icon.rgba").to_vec(), 64, 64)?;
     let window = WindowBuilder::new()
         .with_title("EarthNG — Map Builder")
+        .with_window_icon(Some(icon))
         .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 860.0))
         .with_min_inner_size(tao::dpi::LogicalSize::new(960.0, 640.0))
         .build(&event_loop)?;
