@@ -2,6 +2,22 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-09: pedestrians, and a physical body in their place before a hit
+
+- Pedestrians (`walkers.lua`): walkers on both sidewalks of every street of the loaded tiles' graph
+  slower than 60 km/h, cut back at junctions to the corner; at the end of a sidewalk a walker goes
+  round the corner or across the road to another street of the node. Each is 8 static pose shapes
+  of our own (`earthng/people_art.py`, built into the planet), one shown, with its own clothes and
+  skin colours. Traffic widget row "Pedestrians: Off / 100 / 200 / 400"; `test_world.py --walkers`.
+  Kyiv, 200 walkers: 0.20-0.28 ms sim + 0.32-0.35 ms draw a frame.
+- A physical body in a walker's place (`pedhit.lua`, vehicle `e2r_ped` from `earthng/ped_body.py`:
+  41 nodes, joints that break at 1500 N): any vehicle with physics (the player, the hand-off's real
+  cars, the game's traffic) about to touch a walker within 0.3 s meets a body from a pool of 6,
+  in the walker's colours. Not hit within 0.8 s: back to the pool, the walker walks on. Hit: it lies
+  until the player is 120 m away. Pickup at 30 km/h along a sidewalk: body on the bonnet, thrown
+  16 m. Teleports (velocity of the jump) and freshly woken bodies no longer count as hits.
+  Details: docs/CROWDS_AND_PACKS.md.
+
 ## 2026-11-09: Overpass test query before the real one
 
 - EarthNG.exe: before asking an area from Overpass, every server gets a tiny query at once

@@ -18,6 +18,8 @@ import zipfile
 from PIL import Image, ImageDraw
 
 import flow_art  # noqa: E402 (earthng/ is on sys.path for every caller)
+import people_art  # noqa: E402
+import ped_body  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 MOD = HERE.parent / 'mod'
@@ -132,6 +134,8 @@ def level_files(lang='uk'):
             'Stages': [{'baseColorMap': '/assets/materials/terrain/grass/groundmesh_grass2/groundmesh_grass_b.color.png',
                         'baseColorFactor': [0.55, 0.55, 0.5, 1], 'roughnessFactor': 0.9}, {}, {}, {}]}}, indent=2),
         **flow_art.level_files(LEVEL),
+        **people_art.level_files(LEVEL),
+        **ped_body.vehicle_files(),
     }
 
 

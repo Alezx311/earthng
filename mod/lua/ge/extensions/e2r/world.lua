@@ -32,6 +32,8 @@ if M.navigator then M.navigator.source = native end
 M.gc = require('ge/extensions/e2r/gc')   -- the collector's step while in the level (gc.lua)
 M.flowSim = require('ge/extensions/e2r/flow')   -- cars without physics, hundreds of them (flow.lua)
 M.handoffSim = require('ge/extensions/e2r/handoff')   -- real cars in their place round the player
+M.walkSim = require('ge/extensions/e2r/walkers')   -- pedestrians on the sidewalks, no physics (walkers.lua)
+M.pedHit = require('ge/extensions/e2r/pedhit')   -- a physical body in a walker's place before a hit
 local detailStream
 -- the UI language: the package's LANG until the player switches it (settings/earthng.json)
 local LANG_FILE = 'settings/earthng.json'
@@ -1183,7 +1185,9 @@ local TRAFFIC_KINDS = {
   -- the flow's cars (flow.lua): no physics, no collision
   flow = {{0, 'Вимк', 'Off'}, {100, '100', '100'}, {200, '200', '200'}, {400, '400', '400'}},
   -- how many of them round the player are real cars one can hit (handoff.lua), ~1.5 ms each
-  real = {{0, 'Вимк', 'Off'}, {4, '4', '4'}, {8, '8', '8'}, {12, '12', '12'}, {16, '16', '16'}}}
+  real = {{0, 'Вимк', 'Off'}, {4, '4', '4'}, {8, '8', '8'}, {12, '12', '12'}, {16, '16', '16'}},
+  -- pedestrians (walkers.lua): static pose shapes, a physical body only when a car is about to hit one
+  walk = {{0, 'Вимк', 'Off'}, {100, '100', '100'}, {200, '200', '200'}, {400, '400', '400'}}}
 
 local function navRead()
   local job = table.remove(S.navPending, 1)
@@ -1512,6 +1516,82 @@ function M.flowStep()
   end
 end
 
+-- Pedestrians (walkers.lua) on the sidewalks of the same graph, drawn as static pose shapes in a
+-- group outside the MissionGroup. A vehicle with physics about to touch one (the player's car, the
+-- real cars of the hand-off, the game's traffic) meets a physical body in its place (pedhit.lua).
+function M.walkersSet(n)
+  local ws, ph = M.walkSim, M.pedHit
+  if n > 0 and not S.walk then
+    local W = ws.new{seed = math.floor(S.now * 1000) % 100000 + 7}
+    local shapes = {}
+    for k = 0, ws.POSES - 1 do shapes[k + 1] = '/levels/e2r_world/art/people/ped_walk' .. k .. '.dae' end
+    local api = ph.gameApi(ws)
+    S.walk = {W = W, V = ws.view(W, shapes, tileGroup('E2R_walkers', true)), P = ph.new{size = S.walkBodies}, api = api,
+      boxes = {}}
+    local veh = getPlayerVehicle(0)
+    local q = veh and veh:getPosition() or focus()
+    -- the bodies are spawned once, now (~0.2 s each, result.walk.spawnMs), not while driving
+    local t = hptimer()
+    if q then ph.prewarm(S.walk.P, api, q.x, q.y) end
+    S.walk.spawnMs = t:stop()
+    if veh and getPlayerVehicle(0) ~= veh then pcall(function() be:enterVehicle(0, veh) end) end
+  end
+  if S.walk then ws.setTarget(S.walk.W, n) end
+  if n == 0 and S.walk then
+    ws.clear(S.walk.W, S.walk.V)
+    ph.clear(S.walk.P, S.walk.api)
+    dropGroup('E2R_walkers')
+    S.walk = nil
+  end
+  result.walkTarget = n
+end
+
+function M.walkersStep()
+  local ws, ph, wk = M.walkSim, M.pedHit, S.walk
+  local p = focus()
+  if not p then return end
+  local t = hptimer()
+  if wk.syncAt ~= S.navAt then
+    wk.syncAt = S.navAt
+    ws.sync(wk.W, S.nav, p.x, p.y)
+  end
+  ws.step(wk.W, S.dtSim or S.dt or 1 / 60, p.x, p.y)
+  -- the vehicles that can hit: every active one with physics but the pool's own bodies
+  local hitters = {}
+  local veh = getPlayerVehicle(0)
+  local car = veh and veh:getPosition()
+  for i = 0, be:getObjectCount() - 1 do
+    local o = be:getObject(i)
+    local id = o and o:getID()
+    if id and be:getObjectActive(id) and not ph.owns(wk.P, id) then
+      local q, v = o:getPosition(), o:getVelocity()
+      if v.x * v.x + v.y * v.y > 0.5 and (q.x - p.x) ^ 2 + (q.y - p.y) ^ 2 < 300 * 300 then
+        local d = o:getDirectionVector()
+        local l = math.sqrt(d.x * d.x + d.y * d.y)
+        local b = ph.vehicleBox(wk.boxes, o)
+        if l > 1e-3 then
+          -- the box's centre: getPosition is the ref node, b[3] m from the middle along the heading
+          local fx, fy = d.x / l, d.y / l
+          hitters[#hitters + 1] = {x = q.x + fx * b[3], y = q.y + fy * b[3], vx = v.x, vy = v.y, fx = fx, fy = fy,
+            hl = b[1], hw = b[2]}
+        end
+      end
+    end
+  end
+  ph.step(wk.P, ws, wk.W, hitters, S.now, wk.api, car and car.x, car and car.y)
+  wk.simMs = t:stopAndReset()
+  wk.moved = ws.draw(wk.W, wk.V, p.x, p.y, function(x, y, z)
+    local h = be:getSurfaceHeightBelow(vec3(x, y, z + 2))
+    if h and h > -1e6 then return h end
+  end)
+  wk.drawMs = t:stop()
+  local r = result.walk or {}
+  result.walk = r
+  r.walkers, r.segs, r.simMs, r.drawMs = wk.W.count or 0, #wk.W.list, wk.simMs, wk.drawMs
+  r.simMax, r.drawMax = math.max(r.simMax or 0, wk.simMs), math.max(r.drawMax or 0, wk.drawMs)
+  r.stats, r.hit, r.bodies, r.pool, r.spawnMs = wk.W.stats, wk.P.stats, ph.activeCount(wk.P), #wk.P.pool, wk.spawnMs
+end
+
 local function drawTraffic()
   local amount = trafficRunning() and (S.trafficAmount or -1) or 0
   local kind = S.trafficKind or 'simple'
@@ -1567,6 +1647,19 @@ local function drawTraffic()
       im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
     end
     if im.Button(L(a[2], a[3]) .. '##flowReal_' .. a[1], im.ImVec2(width, 0)) and not active then M.flowReal(a[1]) end
+    if active then im.PopStyleColor(2) end
+  end
+  im.Text(L('Пішоходи:', 'Pedestrians:'))
+  local walkN = S.walk and S.walk.W.target or 0
+  width = math.floor((im.GetContentRegionAvailWidth() - (#TRAFFIC_KINDS.walk - 1) * spacing) / #TRAFFIC_KINDS.walk)
+  for k, a in ipairs(TRAFFIC_KINDS.walk) do
+    if k > 1 then im.SameLine() end
+    local active = walkN == a[1]
+    if active then
+      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
+      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
+    end
+    if im.Button(L(a[2], a[3]) .. '##walk_' .. a[1], im.ImVec2(width, 0)) and not active then M.walkersSet(a[1]) end
     if active then im.PopStyleColor(2) end
   end
   im.Text(L('Припарковані машини:', 'Parked cars:'))
@@ -2420,6 +2513,7 @@ local function beginArrival(job)
   -- traffic and parked cars of the old place have no roads here
   if trafficRunning() then gameplay_traffic.deleteVehicles() end
   if S.flow then M.flowSet(0) end
+  if S.walk then M.walkersSet(0) end
   if S.park then parking.clear(S.park) end
   S.nav, S.navPending, S.navLights, S.navDirty, S.trafficWanted = {}, {}, {}, false, nil
   S.navAt, S.navPos, S.navSerial, S.signalDirty, S.signalAt = nil, nil, nil, nil, nil
@@ -3304,6 +3398,12 @@ local function drawStats(st, p, v)
     im.Text(string.format(L('Світлофорні перехрестя: %d, стоять на червоному: %d', 'Lit crossings: %d, waiting at red: %d'),
       S.flow.F.crossings or 0, S.flow.F.atRed or 0))
   end
+  if S.walk then
+    local h = S.walk.P.stats
+    im.Text(string.format(L('Пішоходи: %d, тіл %d/%d, зіткнень %d, рух %.2f мс, показ %.2f мс',
+      'Pedestrians: %d, bodies %d/%d, hits %d, sim %.2f ms, draw %.2f ms'),
+      S.walk.W.count or 0, M.pedHit.activeCount(S.walk.P), #S.walk.P.pool, h.hit, S.walk.simMs or 0, S.walk.drawMs or 0))
+  end
   if st and not NATIVE then
     local nFailed = 0
     for _ in pairs(st.failed or {}) do nFailed = nFailed + 1 end
@@ -3991,6 +4091,7 @@ local function refreshCountries()
     dropLights()
     if trafficRunning() then gameplay_traffic.deleteVehicles() end
     if S.flow then M.flowSet(0) end
+    if S.walk then M.walkersSet(0) end
     map.reset({})
     if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
     S.navAt, S.navPos, S.navSerial, S.signalDirty, S.signalAt = nil, nil, nil, nil, nil
@@ -4157,6 +4258,15 @@ local function runTest()
   end
   -- manual play: the automation only picks the point and lands; the player drives from there
   if test.manual and S.testLanded and S.state ~= 'pick' then
+    -- the flow and the pedestrians asked for (--flow, --walkers), once driving: the automatic drive
+    -- below switches them on, manual play never gets there
+    if S.state == 'driving' and not S.manualTraffic then
+      S.manualTraffic = true
+      if test.flowReal then S.flowReal = test.flowReal end
+      if test.flow then M.flowSet(test.flow) end
+      if test.walkBodies then S.walkBodies = test.walkBodies end
+      if test.walkers then M.walkersSet(test.walkers) end
+    end
     -- keep the report current for the drive (it was frozen at the landing, play-bilychi-01)
     if S.state == 'driving' and S.now - (S.manualSaveAt or 0) > 5 then
       S.manualSaveAt = S.now
@@ -4258,6 +4368,11 @@ local function runTest()
     if test.flow then
       M.flowSet(test.flow)
       -- the pool spawn is a one-time wait at switch-on (result.flow.handoffSpawns), not a drive frame
+      if S.driveAcc then S.driveAcc = newAcc(); S.driveAcc.skip = 2 end
+    end
+    if test.walkBodies then S.walkBodies = test.walkBodies end
+    if test.walkers then
+      M.walkersSet(test.walkers)
       if S.driveAcc then S.driveAcc = newAcc(); S.driveAcc.skip = 2 end
     end
     if test.recordDrive then
@@ -4832,6 +4947,7 @@ function M.tick(dt)
       M.locationStep()
       if M.signals then M.signals.step(S.now, trafficRunning()) end
       if S.flow then M.flowStep() end
+      if S.walk then M.walkersStep() end
     end
     updateParking()
     local tNav = timer:stopAndReset()

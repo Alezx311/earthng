@@ -123,6 +123,8 @@ def main():
     p.add_argument('--traffic', type=int, help="after landing: the game's AI traffic, this many cars")
     p.add_argument('--flow', type=int, help='after landing: this many flow cars without physics (flow.lua)')
     p.add_argument('--flow-real', type=int, help='of them round the player this many real cars (handoff.lua, default 8)')
+    p.add_argument('--walkers', type=int, help='after landing: this many pedestrians (walkers.lua)')
+    p.add_argument('--walk-bodies', type=int, help='physical bodies for walkers about to be hit (pedhit.lua, default 6)')
     p.add_argument('--traffic-kind', choices=('simple', 'full', 'agent'), default='simple',
                    help="--traffic cars: the game's simple_traffic, its full vehicles, or Agent Traffic's")
     p.add_argument('--rain', type=int, help="after landing: the game's own rain (core_environment numOfDrops)")
@@ -253,6 +255,10 @@ def main():
         test['flow'] = a.flow
     if a.flow_real is not None:
         test['flowReal'] = a.flow_real
+    if a.walkers:
+        test['walkers'] = a.walkers
+    if a.walk_bodies is not None:
+        test['walkBodies'] = a.walk_bodies
     if a.traffic:
         test['traffic'] = a.traffic
         test['trafficKind'] = a.traffic_kind
