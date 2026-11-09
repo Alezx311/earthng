@@ -2,6 +2,26 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-09: release 0.8.2, real cars that match the traffic, kerbs and sidewalks
+
+- Traffic hand-off (`handoff.lua`, `flow.lua`): the pool of real cars holds the flow's bodies in
+  their shares (stock `simple_traffic` configs picked by name, `handoff.bodyOf`) with half again as
+  many inactive spares, and a real car is repainted to the paint of the flow car it replaces. Flow
+  cars turn real by how close they will come to the player within 4 s; one about to reach the
+  player takes the place of a far real car driving away; a real car with no lane to go back to
+  stays real. Kyiv, 400 flow cars and 8 real: wrong body 3 of 32 hand-offs (was about 70 %), flow
+  step worst 48.6 -> 6.1 ms. Details: docs/NATIVE_MODS.md.
+- Buildings (principles of MaGE, no code taken): a wall lying on a neighbour's wall is not drawn
+  up to the neighbour's top, so windows, balconies and air conditioners no longer stand inside the
+  next house; above a lower neighbour it is a blank fire wall. Windows get sills from detail 40 and
+  wooden casings from 65.
+- Sidewalks: a street side with its own `footway=sidewalk` way beside it (or `sidewalk=separate`)
+  no longer draws a second 2 m sidewalk; it is paved from the kerb out to the footway, also on the
+  left of a one-way street, and the paving runs on round junctions (`ROADS.endWalks`,
+  `ROADS.ringInsets`) instead of stopping at every yard drive. Sidewalks stand 12 cm above the
+  road with a kerb face. Bridges get a low parapet wall with a mesh railing and posts instead of a
+  solid 0.9 m wall. Details: docs/CITY_DETAIL.md.
+
 ## 2026-11-09: release 0.8.1, your own objects through the World Editor
 
 - In an EarthNG world Ctrl+S / File > Save Level saves the player's own meshes into

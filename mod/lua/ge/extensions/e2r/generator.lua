@@ -2340,13 +2340,14 @@ local function walkAt(tags, sides, a, b, builtAt, mapped, hw)
   if builtAt((a[1] + b[1]) / 2, (a[2] + b[2]) / 2) < least then return NONE end
   if not mapped or deck then return sides end
   local kerb
+  -- both sides: a one-way street's guess is a sidewalk on the right only, but a footway mapped on
+  -- its left is there all the same (Kyiv's one-way residential streets: grass between the kerb
+  -- and the footway, w3)
   for _, side in ipairs({1, -1}) do
-    if sides[side] then
-      local found, outer = ROADS.mappedWalk(mapped, a, b, hw, side)
-      if found then
-        kerb = kerb or {}
-        kerb[side] = math.max(TUNE.curb, math.min(ROADS.MAPPED_WALK.wide, outer - hw))
-      end
+    local found, outer = ROADS.mappedWalk(mapped, a, b, hw, side)
+    if found then
+      kerb = kerb or {}
+      kerb[side] = math.max(TUNE.curb, math.min(ROADS.MAPPED_WALK.wide, outer - hw))
     end
   end
   if not kerb then return sides end
@@ -7394,6 +7395,76 @@ function ROADS.fillKerbs(walk)
     end
   end
 end
+-- The paving a strip's end carries on each side, seen from the junction into the road
+-- ({[1] = left, [-1] = right}, metres): its own sidewalk, or the paving out to a mapped footway
+-- (walk.kerb wider than the kerb stone). own: the end has a sidewalk of its own. nil: neither.
+function ROADS.endWalks(strip, last, sidewalk)
+  local k = last and #strip.points - 1 or 1
+  local own, kerb = (strip.walk or NONE)[k] or NONE, ((strip.walk or NONE).kerb or NONE)[k] or NONE
+  local w = {own = next(own) ~= nil or nil}
+  for _, side in ipairs({1, -1}) do
+    local v = own[side] and sidewalk or (kerb[side] or 0) > TUNE.curb and kerb[side] or nil
+    -- the last point looks back along the strip: its left is the strip's right
+    if v then w[last and -side or side] = v end
+  end
+  return (w[1] or w[-1]) and w or nil
+end
+-- How far a junction's sidewalk ring reaches out at each of its corners. A corner at a road's
+-- mouth continues that side's paving (ROADS.endWalks), so a street paved out to its mapped
+-- footway keeps it across a side road's mouth instead of a gap of grass (decals-kyiv w3). A
+-- corner with none (a yard drive's) takes its neighbour's round the corner, not across its own
+-- mouth: the paving runs on to the drive's edge, not a wedge down to grass; a corner of no mouth
+-- takes the narrower of its neighbours. With a street of its own sidewalk at a
+-- mouth every corner gets at least `sidewalk` (the ring before: 2 m all round). nil: no ring.
+-- The result is how far each corner moves away from the node (cx, cy): far enough to reach its
+-- road's paving edge (a push of the paving's width fell short of a wide paving's edge), at most
+-- 1/ROADS.RING_REACH of it where the corner lies almost along its road. Away from the node, so the
+-- rays of two corners never cross (straight across each road, they did on a narrow street).
+ROADS.RING_REACH = .75
+function ROADS.ringInsets(corners, endAt, sidewalk, cx, cy)
+  local n, at, base, dir, mouth = #corners, {}, nil, {}, {}
+  for k = 1, n do
+    local a, b = corners[k], corners[k % n + 1]
+    local e = endAt((a[1] + b[1]) / 2, (a[2] + b[2]) / 2)
+    mouth[k] = e ~= nil
+    if e then
+      for _, c in ipairs({k, k % n + 1}) do
+        local q = corners[c]
+        local dx, dy = q[1] - e.p[1], q[2] - e.p[2]
+        local l = math.sqrt(dx * dx + dy * dy)
+        if l > EPS then dir[c] = {dx / l, dy / l} end
+        local w = e.walk and e.walk[e.dx * dy - e.dy * dx > 0 and 1 or -1]
+        if w then at[c] = math.max(at[c] or 0, w) end
+      end
+      if e.walk and e.walk.own then base = sidewalk end
+    end
+  end
+  if not next(at) then return nil end
+  -- out.mouth[k]: the edge k -> k+1 is a road's mouth
+  local out = {mouth = mouth}
+  for k = 1, n do
+    local v, u = at[k], dir[k]
+    if not v then
+      -- edge k-1 -> k and edge k -> k+1: a mouth on one side, round the corner on the other.
+      -- Taken round the corner, the paving reaches the neighbour's paving edge (its direction),
+      -- not as far again along the drive: the corner fills up to the street's footway line.
+      local before, after = mouth[(k - 2) % n + 1], mouth[k]
+      local p, q = at[(k - 2) % n + 1], at[k % n + 1]
+      if before and not after then v, u = q or 0, dir[k % n + 1]
+      elseif after and not before then v, u = p or 0, dir[(k - 2) % n + 1]
+      else v = p and q and math.min(p, q) or 0 end
+    end
+    v = math.max(base or 0, v)
+    local q = corners[k]
+    if v > 0 and u then
+      local rx, ry = q[1] - cx, q[2] - cy
+      local l = math.sqrt(rx * rx + ry * ry)
+      if l > EPS then v = v / math.max(ROADS.RING_REACH, (rx * u[1] + ry * u[2]) / l) end
+    end
+    out[k] = v
+  end
+  return out
+end
 function ROADS.mappedWalk(bins, a, b, hw, side)
   local dx, dy = b[1] - a[1], b[2] - a[2]
   local l = math.sqrt(dx * dx + dy * dy)
@@ -10423,22 +10494,9 @@ local function build(cells, i, j, options)
       end
     end
   end
-  -- Strip ends of streets with sidewalks, by the metre: a junction with one of them at a mouth
-  -- gets a sidewalk ring.
-  local walkEnds = {}
-  for _, strip in ipairs(strips) do
-    local last = #strip.points
-    for _, e in ipairs({{strip.points[1], 1}, {strip.points[last], last - 1}}) do
-      if next(strip.walk[e[2]] or NONE) then
-        local p = e[1]
-        local key = (floor(p[1]) + 65536) * 131072 + floor(p[2]) + 65536
-        local list = walkEnds[key] or {}
-        walkEnds[key], list[#list + 1] = list, p
-      end
-    end
-  end
   -- Every strip end by the metre, with its direction into the road: a junction's mouth is the
-  -- edge between two corners whose midpoint is a strip end.
+  -- edge between two corners whose midpoint is a strip end. walk: the paving on its sides, which
+  -- the junction's sidewalk ring continues (ROADS.ringInsets).
   local stripEnds, corridors, corridorOf, corridorsAt = {}, {}, {}, {}
   for _, strip in ipairs(strips) do
     local pts = strip.points
@@ -10449,7 +10507,8 @@ local function build(cells, i, j, options)
       local key = (floor(p[1]) + 65536) * 131072 + floor(p[2]) + 65536
       local list = stripEnds[key] or {}
       local corridor = strip.corridors and strip.corridors[e[3]]
-      stripEnds[key], list[#list + 1] = list, {p = p, dx = dx / l, dy = dy / l, corridor = corridor}
+      stripEnds[key], list[#list + 1] = list, {p = p, dx = dx / l, dy = dy / l, corridor = corridor,
+        walk = ROADS.endWalks(strip, e[3] ~= 1, tune.sidewalk)}
       if corridor then
         local node = strip.nodes[e[3]]
         local c = {quad = corridor, material = strip.material}
@@ -10468,16 +10527,6 @@ local function build(cells, i, j, options)
         end
       end
     end
-  end
-  local function walkEndNear(x, y)
-    for dx = -1, 1 do
-      for dy = -1, 1 do
-        for _, p in ipairs(walkEnds[(floor(x) + dx + 65536) * 131072 + floor(y) + dy + 65536] or NONE) do
-          if (p[1] - x) ^ 2 + (p[2] - y) ^ 2 < .01 then return true end
-        end
-      end
-    end
-    return false
   end
   local plates = {}
   -- Junctions: a fan from the node over its star, each corner at its road's profile, so the
@@ -10549,28 +10598,28 @@ local function build(cells, i, j, options)
       -- round a ground-level star (fast.junction_verge): a sidewalk ring when a street with
       -- sidewalks meets here, then the verge down to the ground, both away from the node
       if not junction.raised then
-        local walks = false
-        for k = 1, #corners do
-          local a, b = corners[k], corners[k % #corners + 1]
-          if walkEndNear((a[1] + b[1]) / 2, (a[2] + b[2]) / 2) then walks = true; break end
-        end
-        local inset = walks and tune.sidewalk or 0
+        -- per corner: how far the ring reaches (nil: no street here is paved)
+        local walks = ROADS.ringInsets(corners, stripEndAt, tune.sidewalk, cx, cy)
         local mids, outs = {}, {}
         for k, q in ipairs(corners) do
           local dx, dy = q[1] - cx, q[2] - cy
           local l = math.max(EPS, math.sqrt(dx * dx + dy * dy))
           dx, dy = dx / l, dy / l
+          local inset = walks and walks[k] or 0
           mids[k] = {q[1] + dx * inset, q[2] + dy * inset, q[3]}
           outs[k] = {q[1] + dx * (inset + tune.shoulder), q[2] + dy * (inset + tune.shoulder), 0}
         end
         plate.mids, plate.walks, plate.verges = mids, {}, {}
         for k = 1, #corners do
           local n = k % #corners + 1
-          if walks then plate.walks[#plate.walks + 1] = {corners[k], corners[n], mids[n], mids[k]} end
-          -- the verge starts at the raised ring's outer edge (ROADS.curbSlab)
-          if tune.shoulder > 0 then
-            plate.verges[#plate.verges + 1] = {walks and {mids[k][1], mids[k][2], mids[k][3] + ROADS.CURB.height} or mids[k],
-              walks and {mids[n][1], mids[n][2], mids[n][3] + ROADS.CURB.height} or mids[n], outs[n], outs[k]}
+          if walks and (walks[k] > 0 or walks[n] > 0) then
+            plate.walks[#plate.walks + 1] = {corners[k], corners[n], mids[n], mids[k]}
+          end
+          -- the verge starts at the raised ring's outer edge (ROADS.curbSlab); none across a
+          -- paved ring's mouth: it lay over the road's own paving there (grass bands, w3)
+          if tune.shoulder > 0 and not (walks and walks.mouth[k]) then
+            plate.verges[#plate.verges + 1] = {walks and walks[k] > 0 and {mids[k][1], mids[k][2], mids[k][3] + ROADS.CURB.height} or mids[k],
+              walks and walks[n] > 0 and {mids[n][1], mids[n][2], mids[n][3] + ROADS.CURB.height} or mids[n], outs[n], outs[k]}
           end
         end
       end

@@ -2009,6 +2009,43 @@ class GeneratorTests(unittest.TestCase):
         under = dict(footway, id='u', tags=dict(footway['tags'], layer='-1'))
         self.assertEqual(walk_sides([across, park, under]), {'north', 'south'})
 
+    def test_paving_to_a_mapped_footway_runs_across_a_side_roads_mouth(self):
+        # Kyiv's one-way residential streets (w3, 50.4464, 30.5187): footways mapped 5.5 m off the
+        # axis on both sides, yard drives joining from one side. The paving out to the footway
+        # stopped before every junction (a ring was only made for a street's own 2 m sidewalk), and
+        # the one-way street's left side, guessed without a sidewalk, kept grass to its footway.
+        houses = [{'id': f'h{side}{x}', 'height': 6,
+                   'rings': [[[x, 250 + side * 12], [x + 16, 250 + side * 12], [x + 16, 250 + side * 28],
+                              [x, 250 + side * 28]]]}
+                  for side in (1, -1) for x in range(-100, 600, 20) if not 230 <= x <= 260]
+        tags = {'highway': 'residential', 'oneway': 'yes'}
+        west = {'id': 'w', 'width': 4, 'nodes': [1, 2], 'points': line(-50, 250, 250, 250), 'tags': tags}
+        east = {'id': 'e', 'width': 4, 'nodes': [2, 3], 'points': line(250, 250, 550, 250), 'tags': tags}
+        drive = {'id': 'd', 'width': 4, 'nodes': [2, 4], 'points': [[250, 250, 20], [250, 150, 20]],
+                 'tags': {'highway': 'service'}}
+        walks = [{'id': f'fw{y}', 'kind': 'path', 'points': line(-60, y, 560, y),
+                  'tags': {'highway': 'footway', 'footway': 'sidewalk'}} for y in (255.5, 244.5)]
+        cell = dict(self.edge_cell(west, east, drive), buildings=houses, lines=walks)
+        road = self.build([cell])[0]
+        paving = list(self.triangles(road, 'e2rf_sidewalk'))
+        # no verge of the junction's ring across the street's own paving (grass bands in w3, where
+        # the ground rose above the kerb): a verge leaves the paving's top edge (20 m + 12 cm kerb
+        # + lift) outwards, never over the paving itself
+        for tri in self.triangles(road, 'e2rf_ground'):
+            x, y = sum(p[0] for p in tri) / 3, sum(p[1] for p in tri) / 3
+            top = max(p[2] for p in tri) > 20.2
+            self.assertFalse(top and 230 < x < 270 and 248.5 < abs(y - 250) + 250 < 255.5, (x, y))
+        # north (the left of the one-way street): paved from the kerb to the footway's far edge
+        self.assertIsNotNone(self.surface_at(paving, 150, 255))
+        # and on through the junction on the side without the drive
+        for x in range(240, 261, 2):
+            self.assertIsNotNone(self.surface_at(paving, x + .25, 255), x)
+        # south: the drive's mouth stays asphalt, the paving turns the corner up to its edge
+        self.assertIsNone(self.surface_at(paving, 250, 244))
+        self.assertIsNotNone(self.surface_at(paving, 150, 245))
+        for x in (244, 246, 247.5, 252.5, 254, 256):
+            self.assertIsNotNone(self.surface_at(paving, x, 246), x)
+
     def test_curb_runs_along_the_top_row_of_the_trim_sheet(self):
         street = {'id': 'street', 'width': 7, 'nodes': [1, 2], 'points': line(-50, 250, 550, 250),
                   'tags': {'highway': 'residential', 'sidewalk': 'both'}}
