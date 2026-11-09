@@ -26,6 +26,14 @@ class Reply(io.BytesIO):
         return False
 
 
+PROBE_OK = b'{"version": 0.6, "elements": []}'
+
+
+def probe(request):
+    """True for the tiny test query every server gets before the real one."""
+    return b'out+ids' in request.data
+
+
 def as_xml(pbf, xml):
     """The fixture as Overpass sends it (XML, no header box)."""
     with osmium.SimpleWriter(str(xml)) as out:
@@ -77,6 +85,8 @@ class OverpassTests(unittest.TestCase):
         sent = []
 
         def urlopen(request, timeout, context):
+            if probe(request):
+                return Reply(PROBE_OK)
             sent.append(request)
             return Reply(body)
         source = country_fetch.OverpassSource(self.root, PLACE, SELECTION)
@@ -102,7 +112,7 @@ class OverpassTests(unittest.TestCase):
         fixture(pbf)
         body = as_xml(pbf, self.root / 'reply.osm')
         source = country_fetch.OverpassSource(self.root, PLACE, SELECTION)
-        with patch('urllib.request.urlopen', lambda *a, **k: Reply(body)):
+        with patch('urllib.request.urlopen', lambda r, *a, **k: Reply(PROBE_OK if probe(r) else body)):
             source.fetch(emit=lambda _: None)
         source.cut(None, emit=lambda _: None)
         country_fetch.cut_tiles(pbf, self.root / 'country', SELECTION, emit=lambda _: None)
@@ -121,6 +131,8 @@ class OverpassTests(unittest.TestCase):
                    Reply(b'<osm><remark> runtime error: Query timed out in "query" </remark></osm>')]
 
         def urlopen(request, timeout, context):
+            if probe(request):
+                return Reply(PROBE_OK)
             answer = answers.pop(0)
             if isinstance(answer, Exception):
                 raise answer
@@ -138,6 +150,51 @@ class OverpassTests(unittest.TestCase):
         self.assertFalse(source.pbf.exists())
         self.assertFalse(list(source.pbf.parent.glob('*.osm')))
 
+    def test_servers_that_fail_the_test_query_are_not_asked(self):
+        import threading
+        import time
+        pbf = self.root / 'fixture.osm.pbf'
+        fixture(pbf)
+        body = as_xml(pbf, self.root / 'reply.osm')
+        first, second, third = country_fetch.OVERPASS_SERVERS
+        asked, release = [], threading.Event()
+
+        def urlopen(request, timeout, context):
+            if probe(request):
+                if request.full_url == first:          # full queue: answers at once with an error
+                    raise urllib.error.HTTPError(first, 502, 'Gateway Timeout', {}, None)
+                if request.full_url == second:         # silent until the probe gives up on it
+                    release.wait(5)
+                    raise TimeoutError('timed out')
+                return Reply(PROBE_OK)
+            asked.append(request.full_url)
+            return Reply(body)
+        source = country_fetch.OverpassSource(self.root, PLACE, SELECTION)
+        lines = []
+        started = time.monotonic()
+        with patch.object(country_fetch, 'OVERPASS_PROBE', 0.5), patch('urllib.request.urlopen', urlopen):
+            source.fetch(emit=lines.append)
+        release.set()
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(asked, [third])
+        self.assertTrue(source.pbf.is_file())
+        log = ' | '.join(lines)
+        self.assertIn('skipping ' + first.split('/')[2], log)
+        self.assertIn('502', log)
+        self.assertIn('no answer to a test query', log)
+
+    def test_no_server_answering_the_test_query_asks_for_the_pbf_at_once(self):
+        def urlopen(request, timeout, context):
+            if not probe(request):
+                raise AssertionError('sent the real query')
+            self.assertLessEqual(timeout, country_fetch.OVERPASS_PROBE)
+            raise urllib.error.HTTPError(request.full_url, 502, 'Gateway Timeout', {}, None)
+        source = country_fetch.OverpassSource(self.root, PLACE, SELECTION)
+        with patch('urllib.request.urlopen', urlopen):
+            with self.assertRaises(country_fetch.NeedsPbf) as caught:
+                source.fetch(emit=lambda _: None)
+        self.assertEqual(caught.exception.reason.count('502'), len(country_fetch.OVERPASS_SERVERS))
+
     def test_a_large_area_asks_for_the_pbf_without_asking_overpass(self):
         big = [30.0, 50.0, 30.4, 50.3]
         self.assertGreater(country_fetch.overpass_km2(big), country_fetch.OVERPASS_MAX_KM2)
@@ -151,7 +208,7 @@ class OverpassTests(unittest.TestCase):
         cancel = threading.Event()
         cancel.set()
         source = country_fetch.OverpassSource(self.root, PLACE, SELECTION)
-        with patch('urllib.request.urlopen', lambda *a, **k: Reply(b'<osm></osm>')):
+        with patch('urllib.request.urlopen', lambda r, *a, **k: Reply(PROBE_OK if probe(r) else b'<osm></osm>')):
             with self.assertRaises(InterruptedError):
                 source.fetch(emit=lambda _: None, cancel=cancel)
 

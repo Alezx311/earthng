@@ -715,6 +715,11 @@ OVERPASS_MAX_KM2 = 300          # of whole cells with their buffer; a dense cent
 OVERPASS_BUDGET = 240           # seconds of trying servers before the build asks for the PBF
 OVERPASS_WAIT = 150             # seconds a server may stay silent (queue, query, a stalled stream)
 OVERPASS_QUERY_SECONDS = 600    # the query's own limit on the server
+# Before the real query every server gets a tiny one, all at once: a server that does not answer it
+# within OVERPASS_PROBE seconds (full queue: 502 at once, or silence until the timeout, 9.11.2026)
+# is not asked at all, and when none answers the build asks for the PBF after 10 s, not minutes.
+OVERPASS_PROBE = 10
+OVERPASS_PROBE_QUERY = '[out:json][timeout:5];node(1);out ids;'
 # A country file this small downloads and cuts faster than Overpass answers (Albania: 52 MB, about
 # 25 s): it is taken at once, without Overpass and without asking (user's choice, 8.11.2026).
 SMALL_PBF_BYTES = 100 * 2**20
@@ -766,6 +771,48 @@ def overpass_query(box, timeout):
             '(' + ' '.join(f'rel(br.r){k};' for k in kinds) + ')->.u;\n'
             '(.p; .p >; .r; .r >>; .u; .u >>;);\n'
             'out body;')
+
+
+def overpass_probe(url, wait=OVERPASS_PROBE):
+    """Ask a server the tiny OVERPASS_PROBE_QUERY; raises when it fails or is not an Overpass answer."""
+    import urllib.parse
+    data = urllib.parse.urlencode({'data': OVERPASS_PROBE_QUERY}).encode()
+    request = urllib.request.Request(url, data=data, headers={'User-Agent': USER_AGENT})
+    with urllib.request.urlopen(request, timeout=wait, context=tls.context()) as response:
+        body = response.read(1 << 16)
+    if b'"elements"' not in body:
+        raise ValueError('not an Overpass answer to the test query')
+
+
+def overpass_alive(urls, wait=OVERPASS_PROBE, cancel=None):
+    """Probe every server at once, for at most wait seconds in all. Returns the servers that
+    answered, fastest first, and {url: why not} for the others."""
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as wait_any
+
+    def timed(url):
+        started = time.monotonic()
+        overpass_probe(url, wait)
+        return time.monotonic() - started
+    pool = ThreadPoolExecutor(len(urls))
+    try:
+        futures = {pool.submit(timed, url): url for url in urls}
+        pending, deadline = set(futures), time.monotonic() + wait
+        while pending and time.monotonic() < deadline:
+            if cancel is not None and cancel.is_set():
+                raise InterruptedError('build stopped')
+            _, pending = wait_any(pending, timeout=min(0.2, max(0, deadline - time.monotonic())),
+                                  return_when=FIRST_COMPLETED)
+        alive, failed = [], {}
+        for future, url in futures.items():
+            if future in pending:
+                failed[url] = f'no answer to a test query in {wait:.0f} s'
+            elif future.exception() is not None:
+                failed[url] = f'test query: {future.exception()}'
+            else:
+                alive.append((future.result(), url))
+        return [url for _, url in sorted(alive)], failed
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)     # a silent probe ends on its own socket timeout
 
 
 def overpass_fetch(url, box, dest, wait=OVERPASS_WAIT, emit=print, cancel=None):
@@ -842,10 +889,18 @@ class OverpassSource(GeofabrikSource):
         if km2 > OVERPASS_MAX_KM2:
             raise NeedsPbf(f'the area is {km2:.0f} km2; Overpass serves up to {OVERPASS_MAX_KM2} km2')
         xml = self.pbf.with_name(self.pbf.name.replace('.osm.pbf', '.osm'))
-        deadline = time.monotonic() + OVERPASS_BUDGET
+        emit(f'Overpass: checking {len(OVERPASS_SERVERS)} servers (up to {OVERPASS_PROBE} s)')
+        alive, failed = overpass_alive(OVERPASS_SERVERS, OVERPASS_PROBE, cancel)
         failures = []
+        for url, why in failed.items():
+            host = url.split('/')[2]
+            failures.append(f'{host}: {why}')
+            emit(f'Overpass: skipping {host} ({why})')
+        if not alive:
+            raise NeedsPbf('Overpass did not answer: ' + '; '.join(failures))
+        deadline = time.monotonic() + OVERPASS_BUDGET
         try:
-            for url in OVERPASS_SERVERS:
+            for url in alive:
                 if time.monotonic() > deadline:
                     break
                 host = url.split('/')[2]

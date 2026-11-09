@@ -2,6 +2,14 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-09: Overpass test query before the real one
+
+- EarthNG.exe: before asking an area from Overpass, every server gets a tiny query at once
+  (`overpass_alive`), 10 s for all. Servers that do not answer it (502 "queue full", or silence)
+  are skipped; when none answers, the build asks for the country's PBF after 10 s instead of
+  waiting up to four minutes. The real query's 150 s silence limit stays: a live server runs the
+  query before its first byte (43 s for 3 x 3 km on 8.11).
+
 ## 2026-11-09: release 0.8.2, real cars that match the traffic, kerbs and sidewalks
 
 - Traffic hand-off (`handoff.lua`, `flow.lua`): the pool of real cars holds the flow's bodies in
