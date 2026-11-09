@@ -575,9 +575,12 @@ local function placeObstacles(F, list)
     local speed = math.sqrt((o.vx or 0) ^ 2 + (o.vy or 0) ^ 2)
     local hx, hy = speed > 1 and o.vx / speed or nil, speed > 1 and o.vy / speed or nil
     locate(F, o.x, o.y, hx, hy, function(link, lane, s, along)
-      local key = link.id .. '#' .. lane
-      F.obstacles[key] = F.obstacles[key] or {}
-      table.insert(F.obstacles[key], {s = s, v = speed * math.max(0, along)})
+      -- by link, then lane: a string key per car per frame was garbage for the GC
+      local byLane = F.obstacles[link]
+      if not byLane then byLane = {}; F.obstacles[link] = byLane end
+      local list = byLane[lane]
+      if not list then list = {}; byLane[lane] = list end
+      list[#list + 1] = {s = s, v = speed * math.max(0, along)}
     end)
   end
 end
@@ -602,11 +605,16 @@ end
 -- flow cars within r of (fx, fy), nearest first, each {car, x, y, z, yaw, d}
 function M.near(F, fx, fy, r)
   local out = {}
+  -- where a car was last drawn is at most a few frames old: the far ones cost no pose
+  local wide = (r + 40) ^ 2
   for _, car in pairs(F.cars) do
-    local x, y, z, yaw, _, hint = M.pose(F, car.link, car.s, car.lane, car.hint)
-    car.hint = hint
-    local d = math.sqrt((x - fx) ^ 2 + (y - fy) ^ 2)
-    if d < r then out[#out + 1] = {car = car, x = x, y = y, z = z, yaw = yaw, d = d} end
+    local dx, dy = car.drawnX, car.drawnY
+    if not dx or (dx - fx) ^ 2 + (dy - fy) ^ 2 < wide then
+      local x, y, z, yaw, _, hint = M.pose(F, car.link, car.s, car.lane, car.hint)
+      car.hint = hint
+      local d = math.sqrt((x - fx) ^ 2 + (y - fy) ^ 2)
+      if d < r then out[#out + 1] = {car = car, x = x, y = y, z = z, yaw = yaw, d = d} end
+    end
   end
   table.sort(out, function(a, b) return a.d < b.d end)
   return out
@@ -625,16 +633,15 @@ end
 
 -- a real car comes back: onto the lane under (x, y) along its heading (hx, hy), at speed v, with
 -- paint. Returns the flow car, or nil when no lane is there or it has no room (it is dropped then;
--- the fill puts another one out of sight).
-function M.put(F, x, y, hx, hy, v, paint, body)
-  F.promoted = math.max(0, (F.promoted or 0) - 1)
+-- the fill puts another one out of sight). try: a failure changes nothing (the real car stays).
+function M.put(F, x, y, hx, hy, v, paint, body, try)
   local best
   locate(F, x, y, hx, hy, function(link, lane, s, along, miss)
     if along > .7 and (not best or miss < best.miss) then best = {link = link, lane = lane, s = s, miss = miss} end
   end)
-  if not best then F.stats.dropped = (F.stats.dropped or 0) + 1; return end
-  local car = M.spawn(F, best.link, math.min(best.s, best.link.len - .1), best.lane, v, paint, LEN, body)
-  if not car then F.stats.dropped = (F.stats.dropped or 0) + 1 end
+  local car = best and M.spawn(F, best.link, math.min(best.s, best.link.len - .1), best.lane, v, paint, LEN, body)
+  if car or not try then F.promoted = math.max(0, (F.promoted or 0) - 1) end
+  if not car and not try then F.stats.dropped = (F.stats.dropped or 0) + 1 end
   return car
 end
 
@@ -651,7 +658,8 @@ local function ahead(F, car, list, k)
   local link, gap, v = car.link
   local leader = list[k + 1]
   if leader then gap, v = leader.s - car.s - LEN, leader.v end
-  local obs = F.obstacles[link.id .. '#' .. car.lane]
+  local byLane = F.obstacles[link]
+  local obs = byLane and byLane[car.lane]
   if obs then
     for _, o in ipairs(obs) do
       local g = o.s - car.s - LEN
@@ -665,7 +673,8 @@ local function ahead(F, car, list, k)
   local nextList = car.next.cars[car.nextLane]
   local first = nextList and nextList[1]
   if first then return toEnd + first.s - LEN, first.v end
-  local nobs = F.obstacles[car.next.id .. '#' .. car.nextLane]
+  local nextLanes = F.obstacles[car.next]
+  local nobs = nextLanes and nextLanes[car.nextLane]
   if nobs then
     local best
     for _, o in ipairs(nobs) do if not best or o.s < best.s then best = o end end
@@ -958,7 +967,8 @@ function M.view(F, shapes, group)
     local x, y, z, yaw, pitch = M.pose(F, car.link, car.s, car.lane)
     local qx, qy, qz, qw = M.quat(yaw, pitch)
     obj:setPosRot(x, y, z, qx, qy, qz, qw)
-    car.drawnYaw, car.drawnPitch = yaw, pitch
+    car.drawnYaw, car.drawnPitch, car.drawnX, car.drawnY = yaw, pitch, x, y
+    car.drawnS, car.drawnLink, car.drawnLane = car.s, car.link, car.lane
     obj:registerObject('')
     if group then group:addObject(obj) end
     V.objs[car.id] = obj
@@ -973,17 +983,22 @@ end
 
 function M.draw(F, V, fx, fy)
   V.frame = V.frame + 1
-  local moved = 0
+  local moved, nearR2 = 0, NEAR_R * NEAR_R
   for id, car in pairs(F.cars) do
     local obj = V.objs[id]
-    if obj then
-      local x, y, z, yaw, pitch, hint = M.pose(F, car.link, car.s, car.lane, car.hint)
-      car.hint = hint
-      local near = not fx or (x - fx) ^ 2 + (y - fy) ^ 2 < NEAR_R * NEAR_R
+    -- a car standing where it was drawn (a queue at a light, a jam) is not moved again
+    if obj and (car.s ~= car.drawnS or car.link ~= car.drawnLink or car.lane ~= car.drawnLane) then
+      -- near or far by where it was drawn last (a car moves under a metre a frame): a far car
+      -- skipped this frame costs no pose
+      local dx, dy = car.drawnX, car.drawnY
+      local near = not fx or not dx or (dx - fx) ^ 2 + (dy - fy) ^ 2 < nearR2
       if near or (id + V.frame) % FAR_EVERY == 0 then
+        local x, y, z, yaw, pitch, hint = M.pose(F, car.link, car.s, car.lane, car.hint)
+        car.hint = hint
         local qx, qy, qz, qw = M.quat(yaw, pitch)
         obj:setPosRot(x, y, z, qx, qy, qz, qw)
-        car.drawnYaw, car.drawnPitch = yaw, pitch
+        car.drawnYaw, car.drawnPitch, car.drawnX, car.drawnY = yaw, pitch, x, y
+        car.drawnS, car.drawnLink, car.drawnLane = car.s, car.link, car.lane
         moved = moved + 1
       end
     end

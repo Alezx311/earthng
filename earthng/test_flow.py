@@ -285,11 +285,11 @@ class FlowTests(unittest.TestCase):
       -- a fake game: real cars keep the pose they were given and drive straight on
       real = {}
       api = {nextId = 100}
-      function api.spawn(paint) api.nextId = api.nextId + 1; real[api.nextId] = {paint = paint, active = false}; return api.nextId end
+      function api.spawn(body) api.nextId = api.nextId + 1; real[api.nextId] = {body = body, active = false}; return api.nextId end
       function api.alive(id) return real[id] ~= nil end
-      function api.activate(id, x, y, z, yaw, v)
+      function api.activate(id, x, y, z, yaw, v, paint)
         local r = real[id]
-        r.active, r.x, r.y, r.hx, r.hy, r.v = true, x, y, math.cos(yaw), math.sin(yaw), v
+        r.active, r.x, r.y, r.hx, r.hy, r.v, r.paint = true, x, y, math.cos(yaw), math.sin(yaw), v, paint
       end
       function api.deactivate(id) real[id].active = false end
       function api.delete(id) real[id] = nil end
@@ -312,7 +312,7 @@ class FlowTests(unittest.TestCase):
           local F = flow.new{seed = 4, paints = {1, 1, 1, 1, 1, 1, 1, 1}}
           flow.sync(F, {r = {s = s, x = 1000, y = 0}})
           F.target = 60
-          local H = handoff.new{size = 8, paints = 8}
+          local H = handoff.new{size = 8, spare = 0}
           local now, maxReal, minCount = 0, 0, 1e9
           for t = 1, 600 do
             now = now + 1 / 30
@@ -363,7 +363,7 @@ class FlowTests(unittest.TestCase):
           local F = flow.new{seed = 4, paints = {1, 1, 1, 1, 1, 1, 1, 1}}
           flow.sync(F, {r = {s = s, x = 1000, y = 0}})
           F.target = 60
-          local H = handoff.new{size = 8, paints = 8}
+          local H = handoff.new{size = 8, spare = 0}
           handoff.prewarm(H, api, 1000, 0)
           local now = 0
           local function run(steps)
@@ -420,6 +420,241 @@ class FlowTests(unittest.TestCase):
         self.assertAlmostEqual(s, 600, delta=1)
         self.assertEqual((v, paint, promoted), (11, 6, 0))
         self.assertTrue(wrong_way_dropped)
+
+    # a straight two-way road along x through the player at (0, 0); car(F, x, dir, v, body, paint)
+    # puts a flow car at x heading +x (dir 1) or -x (dir -1)
+    ROAD = '''
+      function road()
+        local s = {'r', 'A', 'B', '-+', 13.9, 3.5, 1, -1000, 0, 0, 0, 0, 0, 1000, 0, 0}
+        local F = flow.new{seed = 5}
+        flow.sync(F, {r = {s = s, x = 0, y = 0}})
+        return F
+      end
+      function car(F, x, dir, v, body, paint)
+        local link = F.links[dir > 0 and 'r+' or 'r-']
+        return flow.spawn(F, link, dir > 0 and x + 1000 or 1000 - x, 1, v, paint or 1, nil, body or 1)
+      end
+    '''
+
+    def test_stock_configs_have_the_flow_bodies(self):
+        lua = self.lua()
+        configs = (
+            'ardente_ev bastion_base bx_base_coupe bx_sport_hatch covet_base etk800_base_sedan etk800_eu_high_wagon '
+            'etk800_xc etkc_kc4 etki_eu_pre fullsize_taxi lansdale_eu_pre_van lansdale_facelift_mid '
+            'legran_wagon_pre_s midsize_v6 pessima_tuner pickup_d15 roamer_ext_high sunburst2_eu_sedan_base '
+            'tograc_ev van_cargobox van_passenger_facelift vivace_wide wendover_pre_high').split()
+        body = lua.eval('handoff.bodyOf')
+        got = {c: body(c) for c in configs}
+        self.assertTrue(all(got.values()), got)
+        expected = {'bastion_base': 1, 'covet_base': 2, 'vivace_wide': 2, 'bx_base_coupe': 2, 'etk800_xc': 3,
+                    'roamer_ext_high': 3, 'lansdale_eu_pre_van': 3, 'pickup_d15': 3, 'van_cargobox': 4,
+                    'etk800_eu_high_wagon': 1}
+        for name, b in expected.items():
+            self.assertEqual(got[name], b, name)
+        self.assertEqual(body('vehicles/simple_traffic/van_delivery.pc'), 4)
+        self.assertIsNone(body('robotvan_stock'))
+        self.assertIsNone(body(None))
+        # the stand-ins for a body the game's group lacks are of that body
+        stock = lua.eval('handoff.STOCK')
+        for b in range(1, 5):
+            for name in stock[b].values():
+                self.assertEqual(body(name), b, name)
+
+    def test_the_pool_holds_the_flow_bodies_and_a_flow_car_takes_its_own_in_its_paint(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        lua.execute(self.ROAD)
+        out = lua.execute('''
+          local H = handoff.new{size = 8, spare = 0, bodies = {40, 30, 22, 8}}
+          handoff.prewarm(H, api, 0, 0)
+          local counts = {0, 0, 0, 0}
+          for _, e in ipairs(H.pool) do counts[e.body] = counts[e.body] + 1 end
+          local F = road()
+          -- a white van and a red hatch coming at the player
+          car(F, -70, 1, 12, 4, 1)
+          car(F, 60, -1, 12, 2, 6)
+          handoff.step(H, flow, F, 0, 0, 1, api)
+          local got = {}
+          for _, e in ipairs(H.pool) do
+            if e.active then got[#got + 1] = {real[e.id].body, real[e.id].paint, e.flowBody} end
+          end
+          table.sort(got, function(a, b) return a[1] < b[1] end)
+          return {counts, got, H.stats.mismatched}
+        ''')
+        counts, got, mismatched = list(out.values())
+        self.assertEqual(list(counts.values()), [3, 2, 2, 1])
+        self.assertEqual([list(g.values()) for g in got.values()], [[2, 6, 2], [4, 1, 4]])
+        self.assertEqual(mismatched, 0)
+
+    def test_a_flow_car_waits_for_its_own_body_until_it_comes_near(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        lua.execute(self.ROAD)
+        out = lua.execute('''
+          local H = handoff.new{size = 2, bodies = {1}}
+          handoff.prewarm(H, api, 0, 0)
+          local F = road()
+          local van = car(F, -80, 1, 3, 4, 2)
+          handoff.step(H, flow, F, 0, 0, 1, api)
+          local before = handoff.activeCount(H)
+          van.s = 1000 - 30
+          handoff.step(H, flow, F, 0, 0, 2, api)
+          return {before, handoff.activeCount(H), H.stats.mismatched}
+        ''')
+        self.assertEqual(list(out.values()), [0, 1, 1])
+
+    def test_the_car_that_will_come_nearest_goes_first_and_one_driving_away_stays(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        lua.execute(self.ROAD)
+        out = lua.execute('''
+          local H = handoff.new{size = 1}
+          handoff.prewarm(H, api, 0, 0)
+          local F = road()
+          car(F, 40, 1, 10)      -- past the player, driving away
+          car(F, 70, 1, 0)       -- standing ahead
+          car(F, -85, 1, 14)     -- coming up fast from behind
+          handoff.step(H, flow, F, 0, 0, 1, api)
+          local x = real[H.pool[1].id].x
+          -- with free cars in the pool the one driving away is still left alone
+          local H2 = handoff.new{size = 3}
+          handoff.prewarm(H2, api, 0, 0)
+          local F2 = road()
+          car(F2, 40, 1, 10)
+          handoff.step(H2, flow, F2, 0, 0, 1, api)
+          return {x, handoff.activeCount(H2)}
+        ''')
+        x, away = list(out.values())
+        self.assertAlmostEqual(x, -85, delta=1)
+        self.assertEqual(away, 0)
+
+    def test_a_car_about_to_reach_the_player_takes_a_far_real_car_going_away(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        lua.execute(self.ROAD)
+        out = lua.execute('''
+          local H = handoff.new{size = 1}
+          handoff.prewarm(H, api, 0, 0)
+          local F = road()
+          car(F, -60, 1, 10, 1, 3)
+          handoff.step(H, flow, F, 0, 0, 1, api)
+          -- the real car drives on to 100 m ahead, away from the player; another comes up behind
+          local r = real[H.pool[1].id]
+          r.x = 100
+          car(F, -40, 1, 12, 1, 5)
+          handoff.step(H, flow, F, 0, 0, 2, api)
+          local back = 0
+          for _, c in ipairs(flow.near(F, 100, 0, 10)) do if c.car.paint == 3 then back = back + 1 end end
+          return {H.stats.preempted, real[H.pool[1].id].x, real[H.pool[1].id].paint, back, F.promoted}
+        ''')
+        preempted, x, paint, back, promoted = list(out.values())
+        self.assertEqual(preempted, 1)
+        self.assertAlmostEqual(x, -40, delta=1)
+        self.assertEqual(paint, 5)
+        self.assertEqual(back, 1)          # the one that gave its place drives on in the flow
+        self.assertEqual(promoted, 1)
+
+    def test_an_urgent_car_takes_a_far_real_car_of_its_body_before_a_free_one_of_another(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        lua.execute(self.ROAD)
+        out = lua.execute('''
+          -- a sedan and a van in the pool
+          local H = handoff.new{size = 2, bodies = {1, 0, 0, 1}}
+          handoff.prewarm(H, api, 0, 0)
+          local F = road()
+          car(F, -60, 1, 10, 4, 3)
+          handoff.step(H, flow, F, 0, 0, 1, api)
+          -- the van drives on away; another van comes right up behind the player
+          for _, e in ipairs(H.pool) do if e.active then real[e.id].x = 100 end end
+          car(F, -30, 1, 12, 4, 5)
+          handoff.step(H, flow, F, 0, 0, 2, api)
+          local bodies = {}
+          for _, e in ipairs(H.pool) do if e.active then bodies[#bodies + 1] = real[e.id].body end end
+          return {H.stats.preempted, H.stats.mismatched, #bodies, bodies[1]}
+        ''')
+        self.assertEqual(list(out.values()), [1, 0, 1, 4])
+
+    def test_a_real_car_with_no_lane_under_it_stays_real_rather_than_vanish(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        lua.execute(self.ROAD)
+        out = lua.execute('''
+          local H = handoff.new{size = 1}
+          handoff.prewarm(H, api, 0, 0)
+          local F = road()
+          car(F, -60, 1, 10)
+          handoff.step(H, flow, F, 0, 0, 1, api)
+          -- it left the road (a field 140 m away, driving away)
+          local r = real[H.pool[1].id]
+          r.x, r.y = 0, 140
+          r.hx, r.hy = 0, 1
+          handoff.step(H, flow, F, 0, 0, 2, api)
+          local still = handoff.activeCount(H)
+          r.y = 200
+          handoff.step(H, flow, F, 0, 0, 3, api)
+          return {still, handoff.activeCount(H), H.stats.dropped, F.promoted}
+        ''')
+        self.assertEqual(list(out.values()), [1, 0, 1, 0])
+
+    def test_spares_wait_in_the_pool_and_never_drive_over_the_setting(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        out = lua.execute('''
+          local s = {'r', 'A', 'B', '--++', 13.9, 7, 1, 0, 0, 0, 1000, 0, 0, 2000, 0, 0}
+          local F = flow.new{seed = 4, bodies = {40, 30, 22, 8}}
+          flow.sync(F, {r = {s = s, x = 1000, y = 0}})
+          F.target = 60
+          local H = handoff.new{size = 8, bodies = {40, 30, 22, 8}}
+          handoff.prewarm(H, api, 1000, 0)
+          local pool, now, most, total = #H.pool, 0, 0, 0
+          local function run(steps)
+            local m = 0
+            for t = 1, steps do
+              now = now + 1 / 30
+              flow.step(F, 1 / 30, 1000, 0, handoff.obstacles(H, api, {}))
+              handoff.step(H, flow, F, 1000, 0, now, api)
+              drive(1 / 30)
+              m = math.max(m, handoff.activeCount(H))
+            end
+            return m
+          end
+          most = run(600)
+          H.size = 2
+          local after = run(30)
+          return {pool, most, H.stats.promoted, H.stats.mismatched, #H.pool, after, F.count}
+        ''')
+        pool, most, promoted, mismatched, pool_after, after, count = list(out.values())
+        self.assertEqual(pool, 12)
+        self.assertEqual(most, 8)
+        self.assertGreater(promoted, 8)
+        self.assertLessEqual(mismatched, promoted // 4)
+        self.assertEqual((pool_after, after, count), (3, 2, 60))
+
+    def test_at_speed_an_oncoming_car_is_made_real_early_and_kept_while_it_comes(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        lua.execute(self.ROAD)
+        out = lua.execute('''
+          local H = handoff.new{size = 2}
+          handoff.prewarm(H, api, 0, 0)
+          local F = road()
+          car(F, 150, -1, 14)
+          -- the player drives at 30 m/s towards it
+          handoff.step(H, flow, F, 0, 0, 1, api, 30, 0)
+          local first = handoff.activeCount(H)
+          handoff.step(H, flow, F, 0, 0, 2, api, 30, 0)
+          local kept = handoff.activeCount(H)
+          -- standing still the same car is too far to matter
+          local H2 = handoff.new{size = 2}
+          handoff.prewarm(H2, api, 0, 0)
+          local F2 = road()
+          car(F2, 150, -1, 14)
+          handoff.step(H2, flow, F2, 0, 0, 1, api)
+          return {first, kept, handoff.activeCount(H2)}
+        ''')
+        self.assertEqual(list(out.values()), [1, 1, 0])
+
 
     # a crossing of two two-way streets at C (0, 0), arms 300 m; `extra` adds segments
     CROSS = '''

@@ -1394,14 +1394,20 @@ function M.flowSet(n)
       shapes[b] = {}
       for k, paint in ipairs(fs.PAINTS) do shapes[b][k] = '/levels/e2r_world/art/flow/car_' .. body .. '_' .. paint .. '.dae' end
     end
-    -- the game's simple cars, picked once (a group scans every config)
-    local t, group, k = hptimer(), TRAFFIC_KINDS[1].group(hs.SIZE), 0
-    local api = hs.gameApi(fs.PAINT_RGB, function()
-      k = k + 1
-      return group and group[(k - 1) % #group + 1]
+    -- the game's simple cars, picked once (a group scans every config) and sorted by the flow's
+    -- bodies, so a flow sedan becomes a real sedan; a body the group lacks takes stock configs
+    local t = hptimer()
+    local byBody, k = hs.byBody(TRAFFIC_KINDS[1].group(48)), {}
+    local api = hs.gameApi(fs.PAINT_RGB, function(body)
+      body = body or 1
+      k[body] = (k[body] or 0) + 1
+      local list = byBody[body]
+      if list and #list > 0 then return list[(k[body] - 1) % #list + 1] end
+      local stock = hs.STOCK[body] or hs.STOCK[1]
+      return {model = 'simple_traffic', config = stock[(k[body] - 1) % #stock + 1]}
     end)
     api.ms.group = t:stop()
-    S.flow = {F = F, V = fs.view(F, shapes, tileGroup('E2R_flow', true)), H = hs.new{paints = #fs.PAINTS,
+    S.flow = {F = F, V = fs.view(F, shapes, tileGroup('E2R_flow', true)), H = hs.new{bodies = fs.BODY_SHARE,
       size = S.flowReal or hs.SIZE}, api = api}
     local veh = getPlayerVehicle(0)
     local q = veh and veh:getPosition() or focus()
@@ -1425,7 +1431,7 @@ function M.flowReal(n)
     fl.H.size = n
     local veh = getPlayerVehicle(0)
     local q = veh and veh:getPosition() or focus()
-    if q and #fl.H.pool < n then M.handoffSim.prewarm(fl.H, fl.api, q.x, q.y) end
+    if q and #fl.H.pool < M.handoffSim.target(fl.H) then M.handoffSim.prewarm(fl.H, fl.api, q.x, q.y) end
   end
   result.flowReal = n
 end
@@ -1457,9 +1463,10 @@ function M.flowStep()
   local obs = {}
   local veh = getPlayerVehicle(0)
   local car = veh and veh:getPosition()
+  local pv
   if veh then
-    local v = veh:getVelocity()
-    obs[1] = {x = car.x, y = car.y, vx = v.x, vy = v.y}
+    pv = veh:getVelocity()
+    obs[1] = {x = car.x, y = car.y, vx = pv.x, vy = pv.y}
   end
   M.handoffSim.obstacles(fl.H, fl.api, obs)
   -- every other physical car in the level: the game's traffic, a second car the player spawned,
@@ -1478,7 +1485,7 @@ function M.flowStep()
   -- used to drive on at full speed through the real cars standing still
   fs.step(fl.F, S.dtSim or S.dt or 1 / 60, p.x, p.y, obs, S.now, M.signals and M.signals.current)
   -- the swap follows the player's car, not a free camera: the cars one can hit are round it
-  if car then M.handoffSim.step(fl.H, fs, fl.F, car.x, car.y, S.now, fl.api) end
+  if car then M.handoffSim.step(fl.H, fs, fl.F, car.x, car.y, S.now, fl.api, pv.x, pv.y) end
   fl.simMs = t:stopAndReset()
   fl.moved = fs.draw(fl.F, fl.V, p.x, p.y)
   fl.drawMs = t:stop()
