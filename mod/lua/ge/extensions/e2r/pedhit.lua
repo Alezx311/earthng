@@ -4,7 +4,8 @@
 --   - A pool of SIZE bodies is spawned once (a spawn is ~0.2 s of the frame, p15) and parked switched
 --     off (setActive 0: no physics, no cost).
 --   - Every step, for every vehicle with physics that moves (the player's car, the real cars of the
---     hand-off, the game's traffic), the walkers near its path are swept against its box: a walker it
+--     hand-off, the game's traffic), the walkers near its path (walkers.near: the walkers' grid, not
+--     every walker: 1000 walkers x 20 vehicles) are swept against its box: a walker it
 --     will touch within LEAD s gets a body from the pool, standing where the walker stands, walking
 --     its way, in its colours; the walker is hidden. A body stands on a sloped street for ~1 s at most
 --     (it is a statue, p15), so LEAD is short.
@@ -44,24 +45,28 @@ end
 -- When a point at (px, py) moving (vx, vy) first touches a box (vehicle) within T s: the box at
 -- (bx, by), unit forward (fx, fy), half length hl and half width hw, moving (bvx, bvy); the point
 -- has radius r. nil when it does not.
+-- the slab [-h, h] of one axis (position p, velocity d) cut into [t0, t1]; nil when it misses
+local function slab(p, d, h, t0, t1)
+  if math.abs(d) < 1e-9 then
+    if math.abs(p) > h then return nil end
+    return t0, t1
+  end
+  local ta, tb = (-h - p) / d, (h - p) / d
+  if ta > tb then ta, tb = tb, ta end
+  t0, t1 = math.max(t0, ta), math.min(t1, tb)
+  if t0 > t1 then return nil end
+  return t0, t1
+end
+
 function M.sweep(px, py, vx, vy, r, bx, by, fx, fy, hl, hw, bvx, bvy, T)
-  -- in the box's frame: u along its forward, w to its left
+  -- in the box's frame: u along its forward, w to its left (no tables: this runs per walker near a car)
   local dx, dy = px - bx, py - by
   local rvx, rvy = vx - bvx, vy - bvy
   local u, w = dx * fx + dy * fy, -dx * fy + dy * fx
   local du, dw = rvx * fx + rvy * fy, -rvx * fy + rvy * fx
-  local t0, t1 = 0, T
-  for _, a in ipairs({{u, du, hl + r}, {w, dw, hw + r}}) do
-    local p, d, h = a[1], a[2], a[3]
-    if math.abs(d) < 1e-9 then
-      if math.abs(p) > h then return nil end
-    else
-      local ta, tb = (-h - p) / d, (h - p) / d
-      if ta > tb then ta, tb = tb, ta end
-      t0, t1 = math.max(t0, ta), math.min(t1, tb)
-      if t0 > t1 then return nil end
-    end
-  end
+  local t0, t1 = slab(u, du, hl + r, 0, T)
+  if not t0 then return nil end
+  t0 = slab(w, dw, hw + r, t0, t1)
   return t0
 end
 
@@ -132,7 +137,11 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
     local carSpeed = math.sqrt(h.vx * h.vx + h.vy * h.vy)
     if carSpeed > MIN_SPEED and carSpeed < MAX_SPEED then
       local reach = math.sqrt(h.hl * h.hl + h.hw * h.hw) + (carSpeed + 2) * M.LEAD + 1
-      for _, w in ipairs(walkers.near(W, h.x, h.y, reach)) do
+      -- the walkers' grid round the car (walkers.near), into a list the pool keeps
+      local near, n = walkers.near(W, h.x, h.y, reach, P.near)
+      P.near = near
+      for k = 1, n or #near do
+        local w = near[k]
         local speed = w.waiting and 0 or w.speed   -- one waiting at the kerb stands
         local wvx, wvy = w.hx * speed, w.hy * speed
         local t = M.sweep(w.x, w.y, wvx, wvy, walkers.RADIUS, h.x, h.y, h.fx, h.fy, h.hl, h.hw, h.vx, h.vy, M.LEAD)
@@ -178,6 +187,17 @@ function M.clear(P, api)
   P.pool = {}
 end
 
+-- every body out there back to the pool at once (the walkers went: a new landing), the pool kept
+function M.parkAll(P, api)
+  for _, e in ipairs(P.pool) do
+    if e.state ~= 'idle' then
+      api.reset(e.id)
+      api.park(e.id)
+      e.state, e.walker = 'idle', nil
+    end
+  end
+end
+
 -- --- the game side ------------------------------------------------------------------------------
 -- looks: the walkers module (its SHIRTS, PANTS, SKIN palettes)
 local REF_Z = .99   -- setPositionRotation places the ref node (the front of the pelvis, 0.97 m) + 2 cm
@@ -204,6 +224,75 @@ function M.vehicleBox(boxes, o)
   end)
   boxes[id] = b
   return b
+end
+
+-- The vehicles that can hit, for M.step and the walkers' wait at the kerb: every active vehicle
+-- with physics within R m of (px, py) moving faster than 0.7 m/s (or any, where slow(x, y) says so),
+-- but the pool's own bodies. H is the caller's state; the list returned (H.list, refilled in place)
+-- holds {x, y, vx, vy, fx, fy, hl, hw, player, z} (the box's centre; z the position's height) and nothing else (the walkers read it with pairs). be:getObject and getDirectionVector allocate, so the vehicle list is read
+-- again every LIST_EVERY calls and a heading every DIR_EVERY; positions and velocities come by id.
+-- knock.lua passes slow = a function (x, y) -> true near something a slow or still vehicle could push:
+-- then those within it are listed as well (their heading read every SLOW_DIR_EVERY calls).
+local LIST_EVERY, DIR_EVERY, HIT_R, SLOW_DIR_EVERY = 30, 4, 300, 16
+function M.gameHitters(H, P, boxes, px, py, slow)
+  H.frame = (H.frame or 0) + 1
+  H.ids, H.pool, H.dirs, H.n, H.list = H.ids or {}, H.pool or {}, H.dirs or {}, H.n or 0, H.list or {}
+  local list = H.list
+  if H.frame >= (H.listAt or 0) then
+    H.listAt = H.frame + LIST_EVERY
+    local n = 0
+    for i = 0, be:getObjectCount() - 1 do
+      local o = be:getObject(i)
+      local id = o and o:getID()
+      if id and not M.owns(P, id) then n = n + 1; H.ids[n] = id end
+    end
+    for k = n + 1, #H.ids do H.ids[k] = nil end
+    if H.xyz == nil then H.xyz = n > 0 and pcall(function() return be:getObjectVelocityXYZ(H.ids[1]) end) or nil end
+  end
+  local player = be:getPlayerVehicleID(0)
+  local n = 0
+  for k = 1, #H.ids do
+    local id = H.ids[k]
+    if be:getObjectActive(id) then
+      local x, y, z = be:getObjectPositionXYZ(id)
+      local vx, vy
+      if H.xyz then
+        vx, vy = be:getObjectVelocityXYZ(id)
+      else
+        local o = getObjectByID(id)
+        local v = o and o:getVelocity()
+        if v then vx, vy = v.x, v.y end
+      end
+      local v2 = vx and vx * vx + vy * vy
+      if x and vx and (v2 > .5 or slow and slow(x, y)) and (x - px) ^ 2 + (y - py) ^ 2 < HIT_R * HIT_R then
+        local dir = H.dirs[id]
+        if not dir then dir = {0, 0, -1}; H.dirs[id] = dir end
+        local b = boxes[id]
+        if H.frame - dir[3] >= (v2 > .5 and DIR_EVERY or SLOW_DIR_EVERY) or not b then
+          local o = getObjectByID(id)
+          if o then
+            local d = o:getDirectionVector()
+            local l = math.sqrt(d.x * d.x + d.y * d.y)
+            if l > 1e-3 then dir[1], dir[2], dir[3] = d.x / l, d.y / l, H.frame end
+            b = M.vehicleBox(boxes, o)
+          end
+        end
+        if b and dir[3] >= 0 then
+          n = n + 1
+          local h = H.pool[n]
+          if not h then h = {}; H.pool[n] = h end
+          -- the box's centre: the position is the ref node, b[3] m from the middle along the heading
+          local fx, fy = dir[1], dir[2]
+          h.x, h.y, h.vx, h.vy, h.fx, h.fy, h.hl, h.hw = x + fx * b[3], y + fy * b[3], vx, vy, fx, fy, b[1], b[2]
+          h.id, h.player, h.z = id, id == player or nil, z
+          list[n] = h
+        end
+      end
+    end
+  end
+  for k = n + 1, H.n do list[k] = nil end
+  H.n = n
+  return list
 end
 
 function M.gameApi(looks)

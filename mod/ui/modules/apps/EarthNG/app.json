@@ -1,0 +1,21 @@
+{
+  "domElement": "<earthng-options></earthng-options>",
+  "directive": "earthngOptions",
+  "name": "EarthNG",
+  "description": "EarthNG settings: world quality, traffic, pedestrians, language. The same settings as the EarthNG widget.",
+  "types": [
+    "ui.apps.categories.utility"
+  ],
+  "css": {
+    "right": "20px",
+    "top": "120px",
+    "width": "340px",
+    "height": "560px"
+  },
+  "author": "EarthNG",
+  "version": "1.0",
+  "category": "Gameplay",
+  "preserveAspectRatio": false,
+  "isAuxiliary": false,
+  "interactive": "required"
+}

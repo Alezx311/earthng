@@ -30,10 +30,18 @@ M.signals = NATIVE and require('ge/extensions/e2r/signals') or nil
 if M.signals and not M.signals.step then M.signals = nil end
 if M.navigator then M.navigator.source = native end
 M.gc = require('ge/extensions/e2r/gc')   -- the collector's step while in the level (gc.lua)
+-- the settings registry shared by the widget and the game's UI app (options.lua, docs/INGAME_UI.md);
+-- nil where a test stubs require
+M.options = (function()
+  local o = require('ge/extensions/e2r/options')
+  if type(o) == 'table' and rawget(o, 'REGISTRY') == true then return o end
+end)()
 M.flowSim = require('ge/extensions/e2r/flow')   -- cars without physics, hundreds of them (flow.lua)
 M.handoffSim = require('ge/extensions/e2r/handoff')   -- real cars in their place round the player
 M.walkSim = require('ge/extensions/e2r/walkers')   -- pedestrians on the sidewalks, no physics (walkers.lua)
 M.pedHit = require('ge/extensions/e2r/pedhit')   -- a physical body in a walker's place before a hit
+M.knock = require('ge/extensions/e2r/knock')   -- street furniture a vehicle knocks down (knock.lua)
+M.winguard = require('ge/extensions/e2r/winguard')   -- widget windows stay on the game screen (winguard.lua)
 local detailStream
 -- the UI language: the package's LANG until the player switches it (settings/earthng.json)
 local LANG_FILE = 'settings/earthng.json'
@@ -153,7 +161,7 @@ local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128, sceneLag =
   collisionWant = 200, collisionLead = 4, collisionSceneLead = 2.5, collisionMargin = 200, vehicleCollision = {100, 300}, otherCars = {80, 160},
   collisionScene = {fast = 15, ahead = 1.5, want = 1, side = 100, margin = 100,
     roadSide = 120, roadKeep = 200, roadLane = 120, roadStep = 100},
-  roadAhead = 15, roadUrgent = 8, roadFloorMs = 2.5,
+  roadAhead = 18, roadUrgent = 8, roadFloorMs = 2.5,
   -- Until the car stands on the road (the landing: the player waits and the camera hangs still)
   -- the generator and the spawn queue take most of the frame instead of BUDGET_MS: at 4 ms a
   -- frame the nine tiles of a landing in central Kyiv took 82 s, most of them idle. 60 ms: the
@@ -453,9 +461,13 @@ local function plantDataFor(shape)
       return nil
     end
     local file = shape:match('^(.-)#solid$')
-    setPlantField(created, 'shapeFile', file or shape)
+    -- shape .. '#knock': a prop knock.lua can knock down; no static collision, since an item that
+    -- leaves the Forest keeps its collision until the next reloadCollision (p24_knock_forest)
+    local knockFile = shape:match('^(.-)#knock$')
+    setPlantField(created, 'shapeFile', file or knockFile or shape)
     setPlantField(created, 'collidable', file and '1' or '0')
     -- props do not sway
+    file = file or knockFile
     setPlantField(created, 'windScale', file and '0' or '0.35')
     setPlantField(created, 'branchAmp', file and '0' or '0.08')
     setPlantField(created, 'detailAmp', file and '0' or '0.15')
@@ -538,7 +550,8 @@ end
 
 local function spawnForestItem(it, tile)
   if S.forestOff or not tile or not MatrixF then return false end
-  local key = it.prop and it.shape .. '#solid' or it.shape
+  -- a knockable prop (knock.lua's table) has no static collision while knocking is on
+  local key = it.prop and it.shape .. ((not S.knockOff and M.knock.kindOf(it.shape)) and '#knock' or '#solid') or it.shape
   if it.prop then result.propsQueued = (result.propsQueued or 0) + 1 end
   local kind = forestFor(tile) and plantDataFor(key)
   if not kind then return false end
@@ -556,6 +569,8 @@ local function retireForest(tile)
   if detailStream and tile then detailStream:remove(tile) end
   if not tile then return end
   tile.forestGen = (tile.forestGen or 0) + 1
+  -- its knockable props leave knock.lua's hash, its debris the scene (they stand again when it is rebuilt)
+  if S.knock then M.knock.unregisterTile(S.knock.K, tile, S.knock.api) end
   if not tile.forestId or not tile.i then tile.forestId = nil; return end
   tile.forestId = nil
   local f = forestFor()
@@ -582,7 +597,7 @@ local function retireForest(tile)
       if not q.removing[key] then
         q.removing[key] = true
         M.fifo.push(q.removes, item)
-        if shape == LAMP_SHAPE .. '#solid' and S.lamps then
+        if (shape == LAMP_SHAPE .. '#solid' or shape == LAMP_SHAPE .. '#knock') and S.lamps then
           S.lamps[string.format('%d_%d', math.floor(pos.x), math.floor(pos.y))] = nil
         end
       end
@@ -611,7 +626,8 @@ local function forestCommit()
   local removed, added = 0, 0
   -- Retiring several dense tiles must obey the same budget as planting them.
   -- A shared budget bounds the total engine calls, even during a quality change.
-  local limit = name:find('#solid', 1, true) and LIMIT.propMax or LIMIT.forestMax
+  local knockKind = name:find('#knock', 1, true) ~= nil
+  local limit = (knockKind or name:find('#solid', 1, true)) and LIMIT.propMax or LIMIT.forestMax
   local retireCount = math.min(M.fifo.size(q.removes), limit)
   for _ = 1, retireCount do
     local item = M.fifo.pop(q.removes)
@@ -636,6 +652,8 @@ local function forestCommit()
       if ok and item then
         tile.forestId = sharedForestId
         added = added + 1
+        -- knock.lua finds it again by its tile, place and kind (no ForestItem kept in Lua)
+        if knockKind then M.knockRegister(tile, it.shape, at, m, it.scale) end
         if it.shape == LAMP_SHAPE then
           S.lamps = S.lamps or {}
           S.lamps[string.format('%d_%d', math.floor(at.x), math.floor(at.y))] = {at.x, at.y, at.z}
@@ -869,8 +887,9 @@ local function grassCell(parts, pause)
       obj:setField('decalType', 0, 'None')
       obj.useInstanceRenderData = true
       obj:setPosRot(part.x[k], part.y[k], part.z[k], 0, 0, math.sin(half), math.cos(half))
-      local scale = part.scale[k]
-      if scale ~= 1 then obj:setScale(vec3(scale, scale, scale)) end
+      -- a far ring's tuft is broader than tall (detail.lua TUFT)
+      local scale, wide = part.scale[k], part.wide and part.wide[k] or part.scale[k]
+      if scale ~= 1 or wide ~= 1 then obj:setScale(vec3(wide, wide, scale)) end
       obj:registerObject('')
       if group then group:addObject(obj) end
       handle[#handle + 1] = obj:getID()
@@ -937,8 +956,9 @@ local function dropGroup(name)
 end
 
 -- A decoration group (trees, lamps, lines, the far city) goes a few dozen objects a frame: a
--- scene tile holds up to ~900 trees, and deleting them in one frame stalled it.
-local GRAVE_PER_FRAME = 60
+-- scene tile holds up to ~900 trees, and deleting them in one frame stalled it. At speed many
+-- tiles leave at once; digGraves takes a higher budget so the backlog does not keep drawing.
+-- Budget numbers stay literals: this file is at LuaJIT's 200 chunk-local limit.
 local function buryGroup(name)
   local g = scenetree.findObject(name)
   if not g then return end
@@ -948,10 +968,10 @@ local function buryGroup(name)
   table.insert(S.graves, g)
 end
 
-local function digGraves()
+local function digGraves(budget)
   local graves = S.graves
   if not graves or #graves == 0 then return end
-  local left = GRAVE_PER_FRAME
+  local left = budget or 60
   while left > 0 and #graves > 0 do
     local g = graves[1]
     local n = g:getCount()
@@ -1191,7 +1211,7 @@ function VISTA.plane(z, kind, cx, cy)
   if old then old:delete() end
   S.vistaPlaneAt = z and {z, kind, cx, cy} or nil
   if not z then return end
-  local R, k = VISTA.PLANE, 1 / 24
+  local R, k = VISTA.PLANE, kind == 'ground' and 1 / 96 or 1 / 24   -- generator.lua COVER_SCALE
   local verts = {{x = -R, y = -R, z = 0}, {x = R, y = -R, z = 0}, {x = R, y = R, z = 0}, {x = -R, y = R, z = 0}}
   local up = {x = 0, y = 0, z = 1}
   local uvs = {}
@@ -1343,9 +1363,8 @@ local TRAFFIC_KINDS = {
   -- the flow's cars (flow.lua): no physics, no collision
   flow = {{0, 'Вимк', 'Off'}, {100, '100', '100'}, {200, '200', '200'}, {400, '400', '400'}},
   -- how many of them round the player are real cars one can hit (handoff.lua), ~1.5 ms each
-  real = {{0, 'Вимк', 'Off'}, {4, '4', '4'}, {8, '8', '8'}, {12, '12', '12'}, {16, '16', '16'}},
-  -- pedestrians (walkers.lua): static pose shapes, a physical body only when a car is about to hit one
-  walk = {{0, 'Вимк', 'Off'}, {100, '100', '100'}, {200, '200', '200'}, {400, '400', '400'}}}
+  real = {{0, 'Вимк', 'Off'}, {4, '4', '4'}, {8, '8', '8'}, {12, '12', '12'}, {16, '16', '16'}}}
+-- (pedestrians: a 0..1000 slider and a switch, options 'walkers' and 'walkersOn', drawPeopleRows)
 
 local function navRead()
   local job = table.remove(S.navPending, 1)
@@ -1681,80 +1700,177 @@ end
 -- Pedestrians (walkers.lua) on the sidewalks of the same graph, drawn as static pose shapes in a
 -- group outside the MissionGroup. A vehicle with physics about to touch one (the player's car, the
 -- real cars of the hand-off, the game's traffic) meets a physical body in its place (pedhit.lua).
-function M.walkersSet(n)
-  local ws, ph = M.walkSim, M.pedHit
-  if n > 0 and not S.walk then
-    local W = ws.new{seed = math.floor(S.now * 1000) % 100000 + 7}
-    local shapes = {}
-    for k = 0, ws.POSES - 1 do shapes[k + 1] = '/levels/e2r_world/art/people/ped_walk' .. k .. '.dae' end
-    shapes[ws.POSES + 1] = '/levels/e2r_world/art/people/ped_stand.dae'   -- one waiting at the kerb
-    local api = ph.gameApi(ws)
-    S.walk = {W = W, V = ws.view(W, shapes, tileGroup('E2R_walkers', true)), P = ph.new{size = S.walkBodies}, api = api,
-      boxes = {}}
+-- M.walkersSet(n [, now]): n walkers asked, clamped to 0..walkers.MAX (1000). Cheap to call every
+-- frame of a slider drag: the count changes in place and the shapes follow a few a frame. 0 hides
+-- every walker at once and releases the objects, the group and the body pool 2 s later unless a
+-- count comes back (now: at once). Asked before the drive (the menu, a landing), the count is kept
+-- and the walkers come with the drive. M.walkersGet() -> asked, walking, room (see walkers.counts).
+function M.walkersSet(n, now)
+  local ws, ph, wk = M.walkSim, M.pedHit, S.walk
+  n = math.max(0, math.min(ws.MAX, math.floor(tonumber(n) or 0)))
+  result.walkTarget = n
+  if n == 0 then
+    if not wk then return end
+    if now or wk.parked or S.state ~= 'driving' then
+      if wk.V then ws.clear(wk.W, wk.V) end
+      -- the body pool stays, parked (inactive: no cost): spawning it again is ~0.25 s a body in
+      -- one frame, a 1.5 s stall each time pedestrians come back on (verify-01)
+      if wk.P then ph.parkAll(wk.P, wk.api); S.walkPool = {P = wk.P, api = wk.api} end
+      dropGroup('E2R_walkers')
+      S.walk = nil
+    else
+      ws.setTarget(wk.W, 0)
+      wk.zeroAt = wk.zeroAt or S.now
+    end
+    return
+  end
+  if not wk then
+    wk = {W = ws.new{seed = math.floor(S.now * 1000) % 100000 + 7}, parked = true, boxes = {}, H = {}}
+    S.walk = wk
+  end
+  wk.zeroAt = nil
+  ws.setTarget(wk.W, n)
+  if not (wk.parked and S.state == 'driving') then return end
+  local shapes = {}
+  for k = 0, ws.POSES - 1 do shapes[k + 1] = '/levels/e2r_world/art/people/ped_walk' .. k .. '.dae' end
+  shapes[ws.POSES + 1] = '/levels/e2r_world/art/people/ped_stand.dae'   -- one waiting at the kerb
+  wk.V, wk.parked, wk.syncAt = ws.view(wk.W, shapes, tileGroup('E2R_walkers', true)), nil, nil
+  if not wk.ground then
+    -- the ground under a walker: one vec3 filled again (no garbage per read)
+    local at = vec3(0, 0, 0)
+    wk.timer = hptimer()
+    wk.ground = function(x, y, z)
+      at.x, at.y, at.z = x, y, z + 2
+      local h = be:getSurfaceHeightBelow(at)
+      if h and h > -1e6 then return h end
+    end
+  end
+  if not wk.P and S.walkPool then   -- the pool parked when the count went to 0
+    wk.api, wk.P, S.walkPool = S.walkPool.api, S.walkPool.P, nil
+  end
+  if not wk.P then
+    wk.api, wk.P = ph.gameApi(ws), ph.new{size = S.walkBodies}
     local veh = getPlayerVehicle(0)
     local q = veh and veh:getPosition() or focus()
     -- the bodies are spawned once, now (~0.2 s each, result.walk.spawnMs), not while driving
     local t = hptimer()
-    if q then ph.prewarm(S.walk.P, api, q.x, q.y) end
-    S.walk.spawnMs = t:stop()
+    if q then ph.prewarm(wk.P, wk.api, q.x, q.y) end
+    wk.spawnMs = t:stop()
     if veh and getPlayerVehicle(0) ~= veh then pcall(function() be:enterVehicle(0, veh) end) end
   end
-  if S.walk then ws.setTarget(S.walk.W, n) end
-  if n == 0 and S.walk then
-    ws.clear(S.walk.W, S.walk.V)
-    ph.clear(S.walk.P, S.walk.api)
-    dropGroup('E2R_walkers')
-    S.walk = nil
-  end
-  result.walkTarget = n
+end
+
+function M.walkersGet()
+  if not S.walk then return 0, 0, 0 end
+  return M.walkSim.counts(S.walk.W)
+end
+
+-- A new landing or a pack gone: the walkers and their shapes go at once; the count asked and the
+-- body pool stay, and the walkers come back with the next drive (walkersStep).
+function M.walkersPark()
+  local ws, wk = M.walkSim, S.walk
+  if not wk or wk.parked then return end
+  if wk.zeroAt then return M.walkersSet(0, true) end
+  local n = wk.W.target
+  if wk.V then ws.clear(wk.W, wk.V) end
+  if wk.P then M.pedHit.parkAll(wk.P, wk.api) end
+  dropGroup('E2R_walkers')
+  wk.W, wk.V, wk.parked, wk.syncAt, wk.syncCo = ws.new{seed = math.floor(S.now * 1000) % 100000 + 7}, nil, true, nil, nil
+  ws.setTarget(wk.W, n)
+end
+
+-- The level ended: its objects and the pool's vehicles are gone already (nothing to delete); only
+-- the count asked stays, for the next drive.
+function M.walkersLost()
+  local wk = S.walk
+  S.walkPool = nil   -- its vehicles went with the level
+  if not wk then return end
+  local n = not wk.zeroAt and wk.W.target or 0
+  S.walk = nil
+  if n > 0 then M.walkersSet(n) end
 end
 
 function M.walkersStep()
   local ws, ph, wk = M.walkSim, M.pedHit, S.walk
+  if wk.parked then M.walkersSet(wk.W.target) end
+  if wk.zeroAt and S.now - wk.zeroAt > 2 then M.walkersSet(0, true) end
+  wk = S.walk
+  if not wk or wk.parked then return end
   local p = focus()
   if not p then return end
-  local t = hptimer()
-  if wk.syncAt ~= S.navAt then
+  local t = wk.timer
+  t:stopAndReset()
+  -- the sidewalks follow the graph (a tile came or went) in a coroutine, ~1.5 ms a frame: a whole
+  -- landing's sync is ~20-30 ms of Lua, a tile's 4-5 (earthng/walkers_bench.py)
+  if not wk.syncCo and wk.syncAt ~= S.navAt then
     wk.syncAt = S.navAt
-    ws.sync(wk.W, S.nav, p.x, p.y)
+    local W, nav, x, y = wk.W, S.nav, p.x, p.y
+    wk.pause = wk.pause or function() if wk.timer:stop() > 1.5 then coroutine.yield() end end
+    wk.syncCo = coroutine.create(function() ws.sync(W, nav, x, y, wk.pause) end)
   end
-  -- the vehicles that can hit: every active one with physics but the pool's own bodies
-  local hitters = {}
-  local veh = getPlayerVehicle(0)
-  local car = veh and veh:getPosition()
-  for i = 0, be:getObjectCount() - 1 do
-    local o = be:getObject(i)
-    local id = o and o:getID()
-    if id and be:getObjectActive(id) and not ph.owns(wk.P, id) then
-      local q, v = o:getPosition(), o:getVelocity()
-      if v.x * v.x + v.y * v.y > 0.5 and (q.x - p.x) ^ 2 + (q.y - p.y) ^ 2 < 300 * 300 then
-        local d = o:getDirectionVector()
-        local l = math.sqrt(d.x * d.x + d.y * d.y)
-        local b = ph.vehicleBox(wk.boxes, o)
-        if l > 1e-3 then
-          -- the box's centre: getPosition is the ref node, b[3] m from the middle along the heading
-          local fx, fy = d.x / l, d.y / l
-          hitters[#hitters + 1] = {x = q.x + fx * b[3], y = q.y + fy * b[3], vx = v.x, vy = v.y, fx = fx, fy = fy,
-            hl = b[1], hw = b[2], player = o:getID() == (veh and veh:getID()) or nil}
-        end
-      end
-    end
+  if wk.syncCo then
+    local ok, err = coroutine.resume(wk.syncCo)
+    if not ok then log('E', logTag, 'walkers sync: ' .. tostring(err)) end
+    if not ok or coroutine.status(wk.syncCo) == 'dead' then wk.syncCo = nil end
   end
-  -- walkers wait at the kerb for those vehicles and for the flow's cars (as drawn)
+  local syncMs = t:stopAndReset()
+  -- the vehicles that can hit (every active one with physics but the pool's own bodies); walkers
+  -- wait at the kerb for them and for the flow's cars (as drawn)
+  local hitters = ph.gameHitters(wk.H, wk.P, wk.boxes, p.x, p.y)
   ws.step(wk.W, S.dtSim or S.dt or 1 / 60, p.x, p.y, hitters, S.flow and S.flow.F.cars)
-  ph.step(wk.P, ws, wk.W, hitters, S.now, wk.api, car and car.x, car and car.y)
+  ph.step(wk.P, ws, wk.W, hitters, S.now, wk.api, p.x, p.y)
   wk.simMs = t:stopAndReset()
-  wk.moved = ws.draw(wk.W, wk.V, p.x, p.y, function(x, y, z)
-    local h = be:getSurfaceHeightBelow(vec3(x, y, z + 2))
-    if h and h > -1e6 then return h end
-  end)
-  wk.drawMs = t:stop()
+  wk.moved = ws.draw(wk.W, wk.V, p.x, p.y, wk.ground)
+  wk.drawMs = t:stopAndReset()
   local r = result.walk or {}
   result.walk = r
-  r.walkers, r.segs, r.simMs, r.drawMs = wk.W.count or 0, #wk.W.list, wk.simMs, wk.drawMs
+  r.asked, r.walkers, r.room = ws.counts(wk.W)
+  r.segs, r.simMs, r.drawMs, r.syncMs = #wk.W.list, wk.simMs, wk.drawMs, syncMs
   r.simMax, r.drawMax = math.max(r.simMax or 0, wk.simMs), math.max(r.drawMax or 0, wk.drawMs)
+  r.syncMax = math.max(r.syncMax or 0, syncMs)
+  -- shapes in the scene, walkers posed (within 60 m) and with one shape (to 200 m)
+  r.objects, r.posed, r.drawn, r.placed = wk.V.objects, wk.V.nearUsed, wk.V.farUsed, wk.moved
   r.stats, r.hit, r.bodies, r.pool, r.spawnMs = wk.W.stats, wk.P.stats, ph.activeCount(wk.P), #wk.P.pool, wk.spawnMs
   r.hitLog = wk.P.log
+end
+
+-- The widget's pedestrians and knockable-props rows, through the registry (options.lua) like the
+-- game's UI app, so both show the same. The ImGui pointers are made once and refilled from the
+-- registry each frame; the note's string is rebuilt only when its counts change (noteText).
+function M.drawPeopleRows()
+  local o = M.options
+  if not (o and o.has('walkers')) then return end   -- a test stubs require
+  local P = S.peoplePtrs
+  if not P then
+    P = {on = im.BoolPtr(false), n = im.IntPtr(0), knock = im.BoolPtr(true), muted = im.ImVec4(.65, .68, .72, 1)}
+    S.peoplePtrs = P
+  end
+  P.on[0] = o.get('walkersOn') and true or false
+  if im.Checkbox(L('Пішоходи', 'Pedestrians') .. '##walkOn', P.on) then o.set('walkersOn', P.on[0] and true or false, 'widget') end
+  im.SameLine()
+  P.n[0] = o.get('walkers') or 0
+  if im.SetNextItemWidth then im.SetNextItemWidth(-1) end
+  local ok, changed = pcall(im.SliderInt, '##walkN', P.n, 0, 1000, '%d')
+  if ok then
+    if changed then o.set('walkers', P.n[0], 'widget') end   -- live: walkersSet is cheap
+  else
+    if im.Button('-##walkN') then o.set('walkers', (o.get('walkers') or 0) - 50, 'widget') end
+    im.SameLine()
+    if im.Button('+##walkN') then o.set('walkers', (o.get('walkers') or 0) + 50, 'widget') end
+    im.SameLine()
+    im.Text(tostring(o.get('walkers') or 0))
+  end
+  local note = o.noteText('walkers', lang)
+  if note then im.TextColored(P.muted, note) end
+  if o.has('knock') then
+    P.knock[0] = o.get('knock') and true or false
+    if im.Checkbox(L('Збивані об\'єкти', 'Knockable props') .. '##knock', P.knock) then
+      o.set('knock', P.knock[0] and true or false, 'widget')
+    end
+    if im.IsItemHovered() then
+      im.SetTooltip(L('Для щойно завантажених околиць', 'For newly loaded surroundings'))
+    end
+  end
 end
 
 local function drawTraffic()
@@ -1814,19 +1930,7 @@ local function drawTraffic()
     if im.Button(L(a[2], a[3]) .. '##flowReal_' .. a[1], im.ImVec2(width, 0)) and not active then M.flowReal(a[1]) end
     if active then im.PopStyleColor(2) end
   end
-  im.Text(L('Пішоходи:', 'Pedestrians:'))
-  local walkN = S.walk and S.walk.W.target or 0
-  width = math.floor((im.GetContentRegionAvailWidth() - (#TRAFFIC_KINDS.walk - 1) * spacing) / #TRAFFIC_KINDS.walk)
-  for k, a in ipairs(TRAFFIC_KINDS.walk) do
-    if k > 1 then im.SameLine() end
-    local active = walkN == a[1]
-    if active then
-      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
-      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
-    end
-    if im.Button(L(a[2], a[3]) .. '##walk_' .. a[1], im.ImVec2(width, 0)) and not active then M.walkersSet(a[1]) end
-    if active then im.PopStyleColor(2) end
-  end
+  M.drawPeopleRows()   -- pedestrians (on/off and a 0..1000 slider) and knockable props
   im.Text(L('Припарковані машини:', 'Parked cars:'))
   local parked = S.parkedPick or (S.tune and S.tune.parkedCars) or 0
   width = math.floor((im.GetContentRegionAvailWidth() - 2 * spacing) / 3)
@@ -1858,11 +1962,14 @@ local function updateTiles()
   if S.state ~= 'driving' then loadR = math.max(loadR, 500 * math.sqrt(2) + S.stream.tile * 0.71) end
   local unloadR = fast and loadR + 350 or UNLOAD_R
   -- fast, at speed: tiles well behind the car are neither kept nor loaded (the static collision
-  -- costs ~7.5 ms per MB of loaded world at every rebuild); a U-turn loads them back from disk
+  -- costs ~7.5 ms per MB of loaded world at every rebuild); a U-turn loads them back from disk.
+  -- keepBack matches native.lua AHEAD (backM / backS): the old loadR*0.6+250 left ~850 m of
+  -- city loaded behind at 200 km/h and dueNear held those tiles against unload.
   local speed = v:length()
+  local keepBack = math.max(200, speed * 3.5)
   local function behind(cx, cy, d)
     if not fast or speed < 15 then return false end
-    return ((cx - p.x) * v.x + (cy - p.y) * v.y) < 0 and d > loadR * 0.6 + 250
+    return ((cx - p.x) * v.x + (cy - p.y) * v.y) < 0 and d > keepBack
   end
   -- native: a near tile's wanted value is the seconds until the car reaches it (native.lua AHEAD;
   -- far tiles and the horizon are 1e6 and up). At speed the near set runs on along the heading
@@ -1872,16 +1979,22 @@ local function updateTiles()
     local due = wantedNow[key]
     return due and due < 1e6 and due or nil
   end
+  local graveBacklog = S.graves and #S.graves or 0
   -- unload far tiles (their queued items are skipped)
   for key, tile in pairs(S.tiles) do
     local cx, cy = tileCentre(tile.i, tile.j)
     local d = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
+    local isBehind = behind(cx, cy, d)
     -- A free camera far from the car owns the bubble; the tiles under the parked car used to
     -- unload with the rest and it fell through the world (night-fence-02, z 179 -> 0.2).
-    local held = (S.heldCar and (cx - S.heldCar[1]) ^ 2 + (cy - S.heldCar[2]) ^ 2 <= 600 * 600) or dueNear(key)
-    if not held and (d > unloadR or behind(cx, cy, d)) then
+    -- dueNear must not hold a behind tile: native drops it from wanted, but a stale wanted bit
+    -- or a keep-bubble edge used to block unload while the far ring rebuilt the same key.
+    local held = (S.heldCar and (cx - S.heldCar[1]) ^ 2 + (cy - S.heldCar[2]) ^ 2 <= 600 * 600)
+      or (dueNear(key) and not isBehind)
+    if not held and (d > unloadR or isBehind) then
       retireForest(tile)
-      dropGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
+      -- bury roads too: dropGroup on a dense tile hitching the frame; digGraves drains them
+      buryGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
       if M.signals then M.signals.dropTile(key) end
       if tile.flowLights and #tile.flowLights > 0 then S.flowLightVersion = (S.flowLightVersion or 0) + 1 end
       S.tiles[key] = nil
@@ -1910,16 +2023,23 @@ local function updateTiles()
       local d = math.min(dp, math.sqrt((cx - ax) ^ 2 + (cy - ay) ^ 2))
       local due = dueNear(key)
       local rank = due or d
-      if (d <= loadR or due) and not behind(cx, cy, dp) and (not bestRank or rank < bestRank) then
+      -- at speed the native wanted set is the corridor + keep bubble; a ready tile still
+      -- inside the old load disk but outside that set must not start (side/back clutter)
+      local inRange = due or (d <= loadR and (not NATIVE or speed < 15))
+      if inRange and not behind(cx, cy, dp) and (not bestRank or rank < bestRank) then
         best, bestD, bestRank = {key, i, j}, d, rank
       end
     end
   end
   local soon = best and dueNear(best[1])
-  if best and (#S.queue < 400 or (soon and soon < LIMIT.roadAhead)) then startTile(best[1], best[2], best[3]) end
+  -- a deep unload backlog digs first; only an urgent road ahead still starts
+  local allowLoad = graveBacklog < 16 or (soon and soon < LIMIT.roadUrgent)
+  if allowLoad and best and (#S.queue < 400 or (soon and soon < LIMIT.roadAhead)) then
+    startTile(best[1], best[2], best[3])
+  end
   -- the nearest scene (look-ahead point too) whose road is in: it used to wait for every road tile
   -- in loadR and then took any one, so buildings next to the car came after roads 1 km away
-  if fast and #S.queue < 300 and st.scenes then
+  if allowLoad and fast and #S.queue < 300 and st.scenes then
     local bestS, bestSD
     for key, tile in pairs(S.tiles) do
       if tile.roadComplete and not tile.sceneStarted and st.scenes[key] then
@@ -1952,7 +2072,7 @@ local function updateTiles()
       -- forest as soon as the near scene starts; its ground mesh stays until the
       -- near ground has replaced it.
       if near and near.sceneStarted then retireForest(far); far.vegetationDropped = true end
-      if d > farR + 500 or (near and near.sceneComplete) then
+      if d > farR + 500 or (near and near.sceneComplete) or behind(cx, cy, d) then
         retireForest(far)
         buryGroup('E2RF_' .. key)
         far.dropped = true
@@ -1969,7 +2089,7 @@ local function updateTiles()
         S.far[key] = nil
       end
     end
-    if #S.queue < 60 then
+    if allowLoad and graveBacklog < 8 and #S.queue < 60 then
       local bestF, bestFD
       for key in pairs(st.far or {}) do
         local near = S.tiles[key]
@@ -1978,7 +2098,9 @@ local function updateTiles()
           i, j = tonumber(i), tonumber(j)
           local cx, cy = tileCentre(i, j)
           local d = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
-          if d <= farLoadR and (not bestFD or d < bestFD) then bestF, bestFD = {key, i, j}, d end
+          if d <= farLoadR and not behind(cx, cy, d) and (not bestFD or d < bestFD) then
+            bestF, bestFD = {key, i, j}, d
+          end
         end
       end
       if bestF then
@@ -2015,6 +2137,7 @@ local function updateTiles()
         local info = st.horizon and st.horizon[key]
         local cx = info and info.x or spawned.x or p.x
         local cy = info and info.y or spawned.y or p.y
+        -- DEM horizon stays a full ring (native wants it all round); behind culling is near/far
         if not info or math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) > horizonR + 800 then
           buryGroup(spawned.groupName or ('E2RH_' .. key:gsub('[^%w_]', '_')))
           spawned.dropped = true
@@ -2022,7 +2145,7 @@ local function updateTiles()
           if NATIVE then native.unload(key, 'horizon') end
         end
       end
-      if #S.queue < 40 then
+      if allowLoad and graveBacklog < 8 and #S.queue < 40 then
         local bestH, bestHD
         for key, info in pairs(st.horizon or {}) do
           if not S.horizon[key] and type(info) == 'table' and info.x and info.y then
@@ -2645,7 +2768,7 @@ local function makeHorizon(z, cx, cy)
   local old = scenetree.findObject('e2r_horizon')
   if old then old:delete() end
   if not z then return end
-  local R, k = 20000, 1 / 24
+  local R, k = 20000, 1 / 96   -- the open land's sheet (generator.lua COVER_SCALE.ground)
   local verts = {{x = -R, y = -R, z = 0}, {x = R, y = -R, z = 0}, {x = R, y = R, z = 0}, {x = -R, y = R, z = 0}}
   local up = {x = 0, y = 0, z = 1}
   local uvs = {}
@@ -2682,7 +2805,8 @@ local function beginArrival(job, early)
   -- traffic and parked cars of the old place have no roads here
   if trafficRunning() then gameplay_traffic.deleteVehicles() end
   if S.flow then M.flowSet(0) end
-  if S.walk then M.walkersSet(0) end
+  if S.walk then M.walkersPark() end   -- the count asked comes back with the drive
+  M.knockPark()
   if S.park then parking.clear(S.park) end
   S.nav, S.navPending, S.navLights, S.navDirty, S.trafficWanted = {}, {}, {}, false, nil
   S.navAt, S.navPos, S.navSerial, S.signalDirty, S.signalAt = nil, nil, nil, nil, nil
@@ -3596,7 +3720,7 @@ local function drawStats(st, p, v)
     im.Text(string.format(L('Світлофорні перехрестя: %d, стоять на червоному: %d', 'Lit crossings: %d, waiting at red: %d'),
       S.flow.F.crossings or 0, S.flow.F.atRed or 0))
   end
-  if S.walk then
+  if S.walk and S.walk.P then   -- (no pool yet: the count was asked before the drive)
     local h = S.walk.P.stats
     im.Text(string.format(L('Пішоходи: %d, тіл %d/%d, зіткнень %d, рух %.2f мс, показ %.2f мс',
       'Pedestrians: %d, bodies %d/%d, hits %d, sim %.2f ms, draw %.2f ms'),
@@ -3891,7 +4015,7 @@ end
 local function drawPicker()
   im.SetNextWindowSize(im.ImVec2(1180, 720), im.Cond_FirstUseEver)
   im.SetNextWindowSizeConstraints(im.ImVec2(820, 500), im.ImVec2(8000, 8000))
-  im.Begin(L('EarthNG - планета', 'EarthNG - Planet') .. '###planet', nil,
+  M.winguard.begin(im, L('EarthNG - планета', 'EarthNG - Planet') .. '###planet',
     im.WindowFlags_NoCollapse + im.WindowFlags_NoScrollbar + im.WindowFlags_NoScrollWithMouse)
   if im.Button(L('Приховати', 'Hide')) then S.widgetHidden = true end
   drawLangButton()
@@ -4153,7 +4277,7 @@ local function drawWindow()
   if NATIVE then planetMap.update(S.status and S.status.countries) end
   pushTheme()
   if S.widgetHidden then
-    im.Begin('EarthNG##restore', nil, im.WindowFlags_AlwaysAutoResize)
+    M.winguard.begin(im, 'EarthNG##restore', im.WindowFlags_AlwaysAutoResize)
     if im.Button(L('Показати мапу', 'Show map')) then S.widgetHidden = false; S.viewDirty = true end
     im.End()
     popTheme()
@@ -4161,7 +4285,7 @@ local function drawWindow()
   end
   if S.state == 'driving' and not S.pickerOpen then
     im.SetNextWindowSize(im.ImVec2(392, 0), im.Cond_Always)
-    im.Begin('EarthNG##mini', nil, im.WindowFlags_NoCollapse + im.WindowFlags_AlwaysAutoResize)
+    M.winguard.begin(im, 'EarthNG##mini', im.WindowFlags_NoCollapse + im.WindowFlags_AlwaysAutoResize)
     if im.Button(L('Приховати', 'Hide')) then S.widgetHidden = true end
     im.SameLine()
     if im.Button(L('Обрати інше місце', 'Pick another place')) then S.pickerOpen = true; S.viewDirty = true end
@@ -4214,11 +4338,15 @@ local function drawWindow()
       drawTraffic()
       S.locationShown = S.locationShown or im.BoolPtr(not S.locationOff)
       if im.Checkbox(L('Рядок з назвою вулиці', 'Street name line'), S.locationShown) then
-        S.locationOff = not S.locationShown[0]
-        local ok, cfg = pcall(jsonReadFile, LANG_FILE)
-        cfg = ok and type(cfg) == 'table' and cfg or {}
-        cfg.locationOff = S.locationOff
-        pcall(jsonWriteFile, LANG_FILE, cfg, true)
+        if M.options and M.options.has('streetLine') then
+          M.options.set('streetLine', S.locationShown[0] and true or false, 'widget')   -- saves locationOff
+        else   -- no registry (a test stubs require)
+          S.locationOff = not S.locationShown[0]
+          local ok, cfg = pcall(jsonReadFile, LANG_FILE)
+          cfg = ok and type(cfg) == 'table' and cfg or {}
+          cfg.locationOff = S.locationOff
+          pcall(jsonWriteFile, LANG_FILE, cfg, true)
+        end
       end
     end
     if im.CollapsingHeader1(L('Статистика', 'Statistics')) then drawStats(st, p, v) end
@@ -4234,7 +4362,7 @@ local function drawWindow()
   end
   -- the landing under way: a small window of its own
   im.SetNextWindowSize(im.ImVec2(W, 0), im.Cond_Always)
-  im.Begin(L('EarthNG - висадка', 'EarthNG - Landing') .. '###progress', nil, im.WindowFlags_NoCollapse + im.WindowFlags_AlwaysAutoResize)
+  M.winguard.begin(im, L('EarthNG - висадка', 'EarthNG - Landing') .. '###progress', im.WindowFlags_NoCollapse + im.WindowFlags_AlwaysAutoResize)
   if im.Button(L('Приховати', 'Hide')) then S.widgetHidden = true end
   drawLangButton()
   local job = S.status and S.status.job
@@ -4289,7 +4417,8 @@ local function refreshCountries()
     dropLights()
     if trafficRunning() then gameplay_traffic.deleteVehicles() end
     if S.flow then M.flowSet(0) end
-    if S.walk then M.walkersSet(0) end
+    if S.walk then M.walkersPark() end
+    M.knockPark()
     map.reset({})
     if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
     S.navAt, S.navPos, S.navSerial, S.signalDirty, S.signalAt = nil, nil, nil, nil, nil
@@ -4349,6 +4478,8 @@ function M.onClientEndMission()
   S.stream, S.co, S.job, S.landing, S.state = nil, nil, nil, nil, 'off'
   S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending, S.navLights = {}, {}, {}, {}, {}, {}, {}
   S.signalDirty, S.signalAt = nil, nil
+  M.walkersLost()   -- the walkers' shapes and bodies went with the level; the count asked stays
+  S.knock = nil     -- the debris and its pool went with the level; knockOff (the setting) stays
   S.knownMats, S.coverage, S.centredOnPackage = {}, nil, nil
   dropLights()
 end
@@ -5085,6 +5216,8 @@ function M.onUpdate(dtReal, dtSim)
   end
   local wkb, wt = collectgarbage('count'), hptimer()
   drawWindow()
+  -- a setting the widget (or anything else) changed reaches the UI app within POLL_EVERY s
+  if M.options then M.options.poll(S.now) end
   if S.prof then profAdd('window', wt:stop(), collectgarbage('count') - wkb) end
   if test then
     S.forestTimer:stopAndReset()
@@ -5158,8 +5291,12 @@ function M.tick(dt)
     local tColl = timer:stopAndReset()
     local kb2 = collectgarbage('count')
     if not reloaded then
-      stepQueue(); digGraves()
-      local p = focus()
+      stepQueue()
+      local p, vel = focus()
+      -- 60 idle / 180 at speed / 240 when many groups wait (was GRAVE_PER_FRAME)
+      local graveBudget = (vel and vel:length() >= 15) and 180 or 60
+      if S.graves and #S.graves > 8 then graveBudget = math.max(graveBudget, 240) end
+      digGraves(graveBudget)
       local detailTimer = hptimer()
       getDetailStream():step(p, S.appliedTune or TUNE_DEFAULT, S.now, detailTimer, 1)
       result.detailMs = detailTimer:stop()
@@ -5174,6 +5311,7 @@ function M.tick(dt)
       if M.signals then M.signals.step(S.now, trafficRunning()) end
       if S.flow then M.flowStep() end
       if S.walk then M.walkersStep() end
+      if S.knock then M.knockStep() end
     end
     updateParking()
     local tNav = timer:stopAndReset()
@@ -5249,6 +5387,336 @@ function M.tick(dt)
   if S.state == 'driving' and AP then autopilotStep(dt) end
 end
 
+-- --- knockable street furniture (knock.lua, docs/KNOCKDOWN.md) -------------------------------------
+-- The game side of knock.lua: the Forest item leaves, a pooled TSStatic of the shape takes its place,
+-- the struck vehicle gets a velocity change. Created with the first knockable prop the Forest commits.
+function M.knockState()
+  if S.knock then return S.knock end
+  local ks = {K = M.knock.new{enabled = true}, boxes = {}, pool = {}, noBodies = {pool = {}}}
+  local api, at = {}, vec3(0, 0, 0)
+  local box = Box3F and Box3F()
+  -- the item at (x, y, z) of kind shape .. '#knock' leaves the Forest (not one a retiring tile queued)
+  function api.hide(id, shape, x, y, z)
+    local key = shape .. '#knock'
+    local d = plantData[key]
+    local f = d and forestFor()
+    local data = f and f:getData()
+    if not data or not box then return false end
+    box.minExtents = vec3(x - .3, y - .3, z - 2)
+    box.maxExtents = vec3(x + .3, y + .3, z + 6)
+    local ok, items = pcall(data.getItemsBox, data, box)
+    if not ok or type(items) ~= 'table' then return false end
+    local name, q = d:getName(), S.forestQ and S.forestQ[key]
+    for _, item in ipairs(items) do
+      local okD, itemData = pcall(item.getData, item)
+      local p = item:getPosition()
+      if okD and itemData and itemData:getName() == name and (p.x - x) ^ 2 + (p.y - y) ^ 2 < .0025 then
+        if q and q.removing[item:getKey()] then return false end
+        if not pcall(data.removeItem, data, item) then return false end
+        result.forestItems = math.max(0, (result.forestItems or 0) - 1)
+        -- a lamp's light goes with its pole: lightsStep places the pool again on the next frame
+        if shape == LAMP_SHAPE and S.lamps then
+          S.lamps[string.format('%d_%d', math.floor(x), math.floor(y))] = nil
+          S.lightsAt = -1
+        end
+        return true
+      end
+    end
+    return false
+  end
+  -- a TSStatic of the shape: from the pool, or a new one (~11 us once the shape was drawn, p24b)
+  function api.take(shape, scale)
+    local list = ks.pool[shape]
+    local obj = list and list[#list]
+    if obj then
+      list[#list] = nil
+      obj:setHidden(false)
+    else
+      obj = createObject('TSStatic')
+      obj:setField('shapeName', 0, shape)
+      obj:setField('collisionType', 0, 'None')
+      obj:setField('decalType', 0, 'None')
+      obj.useInstanceRenderData = true
+      obj.canSave = false
+      obj:registerObject('')
+      -- (tileGroup empties a group it finds: only for the first one)
+      local g = scenetree.findObject('E2R_knock') or tileGroup('E2R_knock', true)
+      g:addObject(obj)
+    end
+    if scale and scale ~= 1 then obj:setScale(vec3(scale, scale, scale)) else obj:setScale(vec3(1, 1, 1)) end
+    return obj
+  end
+  function api.drop(obj, shape)
+    local list = ks.pool[shape]
+    if not list then list = {}; ks.pool[shape] = list end
+    if #list < 64 then
+      pcall(function() obj:setHidden(true) end)
+      list[#list + 1] = obj
+    else
+      pcall(function() obj:delete() end)
+    end
+  end
+  -- pcall: a debris object deleted from outside (a group emptied) must not stop the step
+  function api.place(obj, x, y, z, qx, qy, qz, qw) pcall(obj.setPosRot, obj, x, y, z, qx, qy, qz, qw) end
+  function api.ground(x, y, z)
+    at.x, at.y, at.z = x, y, z + 1.5
+    local h = be:getSurfaceHeightBelow(at)
+    if h and h > -1e6 then return h end
+  end
+  function api.push(vid, dvx, dvy, dvz)
+    local o = be:getObjectByID(vid)
+    if o then o:applyClusterVelocityScaleAdd(o:getRefNodeId(), 1, dvx, dvy, dvz) end
+  end
+  function api.clock() return os.clock() * 1000 end
+  -- a flier's wall ray: static collision only (buildings, solid Forest items, terrain), two reused
+  -- vectors, a number back; the distance, or nil for nothing within len
+  local ro, rd = vec3(0, 0, 0), vec3(0, 0, 0)
+  if castRayStatic then
+    function api.ray(x, y, z, dx, dy, len)
+      ro.x, ro.y, ro.z = x, y, z
+      rd.x, rd.y, rd.z = dx, dy, 0
+      local ok, d = pcall(castRayStatic, ro, rd, len)
+      if ok and type(d) == 'number' and d < len then return d end
+    end
+  end
+  -- a slow or still vehicle is listed for knocking only next to a prop
+  function ks.slow(x, y) return M.knock.near(ks.K, x, y) end
+  ks.api = api
+  S.knock = ks
+  return ks
+end
+
+-- one committed '#knock' item (forestCommit): its transform's own rotation, so the debris matches it
+function M.knockRegister(tile, shape, pos, m, scale)
+  if S.knockOff and not S.knock then return end
+  local ks = M.knockState()
+  local q = m:toQuatF()
+  M.knock.register(ks.K, tile, shape, pos.x, pos.y, pos.z, q.z, q.w, type(scale) == 'number' and scale or 1)
+end
+
+-- automation (earthng/probe/knock_row.lua): one knockable prop planted now as the generator's would be,
+-- owned by tile (any table; M.knock.unregisterTile takes it away). Returns its id or nil.
+function M.knockPlant(tile, shape, x, y, z, yaw)
+  local kind = forestFor() and plantDataFor(shape .. '#knock')
+  local data = kind and forestFor():getData()
+  if not data then return end
+  local m = MatrixF(true)
+  m:setFromEuler(vec3(0, 0, yaw or 0))
+  m:setPosition(vec3(x, y, z))
+  local ok, item = pcall(data.createNewItem, data, kind, m, 1)
+  if not ok or not item then return end
+  local q = m:toQuatF()
+  return M.knock.register(M.knockState().K, tile, shape, x, y, z, q.z, q.w, 1)
+end
+
+-- every moving vehicle with physics (player, hand-off cars, the game's traffic, not pedestrian bodies):
+-- pedhit.gameHitters, the same garbage-free scan the walkers use, with knock.lua's own state
+function M.knockStep()
+  local ks = S.knock
+  local p = focus()
+  if not p then return end
+  ks.H = ks.H or {}
+  local hs = M.pedHit.gameHitters(ks.H, S.walk and S.walk.P or ks.noBodies, ks.boxes, p.x, p.y, ks.slow)
+  local n = ks.H.n or 0
+  for i = 1, n do
+    local h = hs[i]
+    -- no mass in GE: a car's plan area scaled from a 1500 kg sedan
+    h.mass = math.max(600, math.min(30000, 1500 * h.hl * h.hw / 2.1))
+  end
+  M.knock.step(ks.K, hs, n, S.now, S.dtSim or S.dt or 1 / 60, ks.api)
+  result.knock = ks.K.stats
+end
+
+-- a new landing or a pack gone: every debris back to the pool (the tiles' retireForest has taken
+-- their props already); knocking itself stays as set
+function M.knockPark()
+  if S.knock then M.knock.clear(S.knock.K, S.knock.api) end
+end
+
+-- on (default) or off: off stops knocking for props committed from now on (they are solid again);
+-- the ones already planted without collision stay knockable until their tile is rebuilt
+function M.knockSet(enabled)
+  S.knockOff = not enabled or nil
+  result.knockOn = enabled and true or false
+end
+
+function M.knockGet() return not S.knockOff end
+
+-- {enabled, registered (props in the hash), active (debris live), flying, lying, knocked (total),
+-- recycled, missed, ms (last step), msMax, cap}
+function M.knockStatus()
+  local K = S.knock and S.knock.K
+  local st = K and K.stats or {}
+  return {enabled = not S.knockOff, registered = K and M.knock.count(K) or 0, active = st.active or 0,
+    flying = st.flying or 0, lying = st.lying or 0, knocked = st.knocked or 0, recycled = st.recycled or 0,
+    missed = st.missed or 0, ms = st.ms or 0, msMax = st.msMax or 0, cap = K and K.cap or M.knock.CAP}
+end
+
+-- --- settings registry (options.lua) and the game's UI app (docs/INGAME_UI.md) --------------------
+-- Every setting the widget shows, as options: read from and applied to the same state the widget
+-- uses, so both views show the same value whichever changed it. Values keep their old places in
+-- settings/earthng.json (lang and tune by setLang/applyTune, locationOff by the registry).
+function M.optionsBind()
+  local o = M.options
+  if not o then return end
+  o.storage = {
+    read = function() local ok, cfg = pcall(jsonReadFile, LANG_FILE); return ok and type(cfg) == 'table' and cfg or {} end,
+    write = function(cfg) pcall(jsonWriteFile, LANG_FILE, cfg, true) end}
+  local function driving() return S.state == 'driving' end
+  local function tuneRead(key) return function() return (S.tune or TUNE_DEFAULT)[key] end end
+  local function tuneApply(key)
+    return function(v)
+      ensureTune()
+      local parked = S.tune.parkedCars
+      if key == 'quality' then
+        S.tune = quality.preset(v); S.tune.parkedCars = parked
+      elseif key == 'detail' or key == 'distance' then
+        local d, r = S.tune.detail, S.tune.distance
+        if key == 'detail' then d = v else r = v end
+        S.tune = quality.preset(d, r); S.tune.parkedCars = parked
+      else
+        S.tune[key] = v
+      end
+      -- the widget's sliders keep their own copies and write them back every frame
+      for k, ptr in pairs(tunePtr) do
+        if k == 'groundTrees' then ptr[0] = S.tune.groundTrees and true or false
+        elseif S.tune[k] ~= nil then ptr[0] = S.tune[k] end
+      end
+      applyTune()   -- rebuilds the scenery when density changed; saves tune
+    end
+  end
+  o.group{key = 'quality', label = {uk = 'Якість світу', en = 'World quality'}}
+  o.group{key = 'traffic', label = {uk = 'Трафік і люди', en = 'Traffic and people'}}
+  o.group{key = 'view', label = {uk = 'Інтерфейс і стиль', en = 'Interface and style'}}
+  o.group{key = 'advanced', label = {uk = 'Точні налаштування', en = 'Advanced settings'}, collapsed = true}
+  o.define{key = 'quality', kind = 'int', min = 0, max = 100, step = 1, group = 'quality',
+    label = {uk = 'Якість (Potato - OASIS)', en = 'Quality (Potato - OASIS)'},
+    hint = {uk = 'Задає деталізацію і дальність разом', en = 'Sets detail and draw distance together'},
+    read = tuneRead('quality'), apply = tuneApply('quality')}
+  o.define{key = 'detail', kind = 'int', min = 0, max = 100, step = 1, group = 'quality',
+    label = {uk = 'Деталізація', en = 'Detail'},
+    hint = {uk = 'Густота дерев, трави й каміння; зміна перебудовує сцену', en = 'Trees, grass and rocks; a change rebuilds the scenery'},
+    read = tuneRead('detail'), apply = tuneApply('detail')}
+  o.define{key = 'distance', kind = 'int', min = 0, max = 100, step = 1, group = 'quality',
+    label = {uk = 'Дальність малювання', en = 'Draw distance'}, read = tuneRead('distance'), apply = tuneApply('distance')}
+  for _, t in ipairs({
+    {'grassM', 0, 220, 5, 'Дальність трави, м', 'Grass distance, m'},
+    {'rockM', 0, 900, 10, 'Дальність каміння, м', 'Rock distance, m'},
+    {'nearM', 400, 4000, 50, 'Ближній світ, м', 'Near world, m'},
+    {'farM', 800, 8000, 100, 'Далекий світ, м', 'Far world, m'},
+    {'maxTrees', 0, 2400, 50, 'Крони на ближній тайл', 'Crowns per near tile'},
+    {'maxFarTrees', 0, 1200, 25, 'Крони на далекий тайл', 'Crowns per far tile'},
+    {'maxGrass', 0, 4800, 100, 'Щільність трави на тайл', 'Grass density per tile'},
+    {'maxRocks', 0, 200, 5, 'Каміння на тайл', 'Rocks per tile'},
+    {'grassBudget', 0, 14000, 200, 'Загальний ліміт трави', 'Total grass limit'},
+    {'rockBudget', 0, 1600, 50, 'Загальний ліміт каміння', 'Total rock limit'},
+    {'forestSpacing', 4, 24, 1, 'Крок лісу, м', 'Forest spacing, m'},
+    {'groundSpacing', 4, 30, 1, 'Крок на відкритому ґрунті, м', 'Open-ground spacing, m'}}) do
+    o.define{key = t[1], kind = 'int', min = t[2], max = t[3], step = t[4], group = 'advanced',
+      label = {uk = t[5], en = t[6]}, read = tuneRead(t[1]), apply = tuneApply(t[1])}
+  end
+  o.define{key = 'groundTrees', kind = 'bool', group = 'advanced',
+    label = {uk = 'Дерева на відкритому ґрунті', en = 'Trees on open ground'},
+    read = tuneRead('groundTrees'), apply = tuneApply('groundTrees')}
+  -- traffic and people: what runs now (not saved, as in the widget)
+  o.define{key = 'trafficKind', kind = 'enum', values = TRAFFIC_KINDS, group = 'traffic',
+    label = {uk = 'Трафік: машини', en = 'Traffic: cars'},
+    read = function() return S.trafficKind or 'simple' end,
+    apply = function(v)
+      S.trafficKind = v
+      local amount = trafficRunning() and S.trafficAmount or 0
+      if amount and amount > 0 then setTraffic(amount, v) end   -- the running traffic respawns with it
+    end}
+  o.define{key = 'trafficAmount', kind = 'enum', values = TRAFFIC_KINDS.amounts, group = 'traffic',
+    label = {uk = 'Трафік (з фізикою)', en = 'Traffic (with physics)'},
+    hint = {uk = 'Кожна машина ~1,5 мс кадру', en = 'Each car costs ~1.5 ms of the frame'}, available = driving,
+    read = function() return trafficRunning() and (S.trafficAmount or -1) or 0 end,
+    apply = function(v) setTraffic(v, S.trafficKind) end}
+  o.define{key = 'flow', kind = 'enum', values = TRAFFIC_KINDS.flow, group = 'traffic',
+    label = {uk = 'Потік (без фізики)', en = 'Flow (no physics)'}, available = driving,
+    read = function() return S.flow and S.flow.F.target or 0 end, apply = function(v) M.flowSet(v) end}
+  o.define{key = 'flowReal', kind = 'enum', values = TRAFFIC_KINDS.real, group = 'traffic',
+    label = {uk = 'Справжні машини біля гравця', en = 'Real cars round the player'},
+    read = function() return S.flowReal or M.handoffSim.SIZE end, apply = function(v) M.flowReal(v) end}
+  -- pedestrians: a count (kept while they are off) and on/off; walkersSet(on and count or 0). Saved
+  -- as walkers and walkersOn; none saved = off, as before the registry. restore() takes walkersOn
+  -- first (it asks for the count kept so far or 200), then the count, which follows while on;
+  -- before the drive walkersSet only remembers it. walkersSet is cheap: the slider applies live.
+  local function asked() return (M.walkersGet()) end
+  o.define{key = 'walkersOn', kind = 'bool', default = false, group = 'traffic', path = {'walkersOn'},
+    label = {uk = 'Пішоходи на тротуарах', en = 'Pedestrians on the sidewalks'},
+    read = function() return asked() > 0 end,
+    apply = function(v)
+      if not v then
+        local n = asked()
+        if n > 0 then S.walkCount = n end   -- a count asked elsewhere (test_world --walkers) is kept
+        M.walkersSet(0)
+      else
+        M.walkersSet(S.walkCount or 200)
+      end
+    end}
+  o.define{key = 'walkers', kind = 'int', min = 0, max = 1000, step = 10, default = 200, group = 'traffic',
+    label = {uk = 'Скільки пішоходів', en = 'How many pedestrians'}, path = {'walkers'}, live = true,
+    read = function() local n = asked(); if n > 0 then return n end return S.walkCount end,
+    apply = function(v)
+      S.walkCount = v
+      if asked() > 0 then M.walkersSet(v) end
+    end,
+    -- the asked, walking, room counts as one number: the note changes only when one of them does
+    watch = function() local a, w, r = M.walkersGet(); return a * 1e8 + w * 1e4 + r end,
+    note = function()
+      local a, w, r = M.walkersGet()
+      if a == 0 then return nil end
+      if not S.walk or S.walk.parked then return {uk = 'З\'являться після висадки', en = 'They come with the drive'} end
+      return {uk = string.format('Ходять %d з %d · місця на %d', w, a, r),
+        en = string.format('Walking %d of %d · room for %d', w, a, r)}
+    end}
+  o.define{key = 'knock', kind = 'bool', default = true, group = 'traffic', path = {'knock'},
+    label = {uk = 'Збивані об\'єкти', en = 'Knockable props'},
+    hint = {uk = 'Для щойно завантажених околиць: вже поставлені лишаються як були',
+      en = 'For newly loaded surroundings: props already placed stay as they are'},
+    read = function() return M.knockGet() end, apply = function(v) M.knockSet(v) end}
+  o.define{key = 'parkedCars', kind = 'enum', values = parking.AMOUNTS, group = 'traffic',
+    label = {uk = 'Припарковані машини', en = 'Parked cars'},
+    read = function() return S.parkedPick or (S.tune or TUNE_DEFAULT).parkedCars or 0 end,
+    apply = function(v) S.parkedPick = v end}   -- updateParking applies and saves it
+  -- interface and style
+  o.define{key = 'lang', kind = 'enum', group = 'view', label = {uk = 'Мова', en = 'Language'},
+    values = {{value = 'uk', label = {uk = 'Українська', en = 'Українська'}}, {value = 'en', label = {uk = 'English', en = 'English'}}},
+    read = function() return lang end, apply = function(v) setLang(v); S.viewDirty = true end}
+  o.define{key = 'streetLine', kind = 'bool', group = 'view', default = true, path = {'locationOff'},
+    label = {uk = 'Рядок з назвою вулиці', en = 'Street name line'},
+    encode = function(v) return not v end, decode = function(raw) return not raw end,
+    read = function() return not S.locationOff end,
+    apply = function(v)
+      S.locationOff = not v
+      if S.locationShown then S.locationShown[0] = v end
+    end}
+  o.define{key = 'style', kind = 'enum', group = 'view', label = {uk = 'Стиль світу', en = 'World style'},
+    available = function() return S.packs ~= nil end,
+    values = function()
+      local out = {}
+      for i, p in ipairs(PACK_NAMES) do
+        out[i] = {value = p[1], label = {uk = PACK_LABELS_UK[p[1]] or p[2] or p[1], en = PACK_LABELS_EN[p[1]] or p[2] or p[1]}}
+      end
+      return out
+    end,
+    read = function() return S.pack or 'real' end, apply = function(v) applyPack(v) end}
+  o.onChange(function() M.optionsList() end, 'ui')
+end
+
+-- the UI app's two calls (bngApi.engineLua): the list now, and a change; both answer with the hook
+-- EarthNGOptions carrying options.payload()
+function M.optionsList()
+  if M.options and guihooks then guihooks.trigger('EarthNGOptions', M.options.payload()) end
+end
+
+function M.optionsSet(key, value)
+  if not M.options then return end
+  local _, changed = M.options.set(key, value, 'ui')   -- (nil, reason) when refused
+  if changed ~= true then M.optionsList() end   -- refused or the same: the page shows the value in force
+end
+
 function M.onExtensionLoaded()
   setExtensionUnloadMode(M, 'manual')
   loadLang()
@@ -5257,6 +5725,11 @@ function M.onExtensionLoaded()
     local ok, cfg = pcall(jsonReadFile, LANG_FILE)
     S.tune = quality.clamp(ok and type(cfg) == 'table' and cfg.tune or nil)
     S.appliedTune = native.setTune(S.tune)
+  end
+  if M.options then
+    M.optionsBind()
+    M.options.restore(nil, true)   -- locationOff (the rest is read above)
+    M.optionsList()                -- an open UI app redraws after a Lua reload
   end
   log('I', logTag, 'Earth2Road planet extension loaded')
 end

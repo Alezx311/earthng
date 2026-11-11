@@ -57,6 +57,25 @@ function fakeApi()
   function api.delete(id) api.bodies[id] = nil end
   return api
 end
+-- the game's TSStatic as a table that counts its calls (walkers.view / draw)
+OBJ = {made = 0, alive = 0, pos = 0, shown = 0}
+local Obj = {}
+Obj.__index = Obj
+function Obj:setField() end
+function Obj:registerObject() end
+function Obj:setPosRot(x, y) OBJ.pos = OBJ.pos + 1; self.x, self.y = x, y end
+function Obj:setHidden(h)
+  -- shown: hidden == false (a new object is hidden)
+  if (self.hidden == false) ~= (h == false) then OBJ.shown = OBJ.shown + (h and -1 or 1) end
+  self.hidden = h
+end
+function Obj:delete() OBJ.alive = OBJ.alive - 1; if self.hidden == false then OBJ.shown = OBJ.shown - 1 end; self.deleted = true end
+function createObject() OBJ.made, OBJ.alive = OBJ.made + 1, OBJ.alive + 1; return setmetatable({}, Obj) end
+local Col = {}
+Col.__index = Col
+function Col:asLinear4F() return self end
+function ColorF(r, g, b, a) return setmetatable({r, g, b, a}, Col) end
+function shapes() local s = {}; for k = 1, walkers.POSES + 1 do s[k] = 'pose' .. k end; return s end
 '''
 
 
@@ -135,7 +154,8 @@ class WalkerTests(unittest.TestCase):
           local line = piece.line
           local inner = {#rec.pieces, piece.len, line[1], line[2], line[#line - 2], line[#line - 1]}
           -- one street alone: its sidewalks are whole, and at its ends a walker crosses to the other side
-          local one = walkers.new{seed = 9}
+          -- (no cap by sidewalk: a lone street would hold 4)
+          local one = walkers.new{seed = 9, spacing = 0}
           walkers.sync(one, {h0_0 = segs['h0_0']}, 50, 0)
           walkers.setTarget(one, 10)
           for t = 1, 1800 do walkers.step(one, 1 / 10, 50, 0) end
@@ -474,6 +494,260 @@ class WalkerTests(unittest.TestCase):
         ''')
         self.assertEqual(out[1], 1)
         self.assertEqual(out[2], 0)
+
+    def test_the_count_changes_in_place_and_is_clamped(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed = 3}
+          walkers.sync(W, grid(8, 100), 350, 350)
+          walkers.setTarget(W, 300)
+          for t = 1, 60 do walkers.step(W, 1 / 30, 350, 350) end
+          local first, slot1 = W.count, W.slots[1]
+          local look1, version = slot1.look, W.version
+          -- a slider dragged: up, down, up again; the walkers already there keep walking
+          walkers.setTarget(W, 500)
+          walkers.step(W, 1 / 30, 350, 350)
+          local grown = W.count
+          walkers.setTarget(W, 120)
+          local shrunk = W.count
+          walkers.setTarget(W, 2000)
+          local clamped = W.target
+          walkers.setTarget(W, -5)
+          local zero = {W.target, W.count}
+          walkers.setTarget(W, 7.8)
+          local asked, walking, room = walkers.counts(W)
+          return {first, grown, shrunk, clamped, zero[1], zero[2], asked, slot1.look == look1 and 1 or 0,
+            W.slots[1] == slot1 and 1 or 0, version == W.version and 1 or 0, room}
+        ''')
+        first, grown, shrunk, clamped, zero_target, zero_count, asked, same_look, same_slot, no_sync, room = (out[k] for k in range(1, 12))
+        self.assertEqual(first, 300)
+        self.assertEqual(grown, 312)          # FILL_PER_STEP new ones a step
+        self.assertEqual(shrunk, 120)
+        self.assertEqual(clamped, 1000)
+        self.assertEqual((zero_target, zero_count), (0, 0))
+        self.assertEqual(asked, 7)
+        self.assertEqual((same_look, same_slot, no_sync), (1, 1, 1))
+        self.assertEqual(room, 1000)          # an 8 x 8 grid of streets holds them all (M.MAX)
+
+    def test_little_sidewalk_holds_fewer_walkers_than_asked(self):
+        out = self.lua().execute('''
+          local segs = grid(8, 100)
+          -- one street alone (a village road) and the whole grid (a town)
+          local lone = walkers.new{seed = 2}
+          walkers.sync(lone, {h0_0 = segs['h0_0']}, 50, 0)
+          walkers.setTarget(lone, 200)
+          for t = 1, 60 do walkers.step(lone, 1 / 30, 50, 0) end
+          local town = walkers.new{seed = 2}
+          walkers.sync(town, segs, 350, 350)
+          local loneWeight, townWeight = lone.list[1].weight, 0
+          for _, piece in ipairs(town.list) do townWeight = math.max(townWeight, piece.weight) end
+          local a1, p1, r1 = walkers.counts(lone)
+          return {a1, p1, r1, loneWeight, townWeight}
+        ''')
+        asked, placed, room, lone_weight, town_weight = (out[k] for k in range(1, 6))
+        self.assertEqual(asked, 200)
+        self.assertEqual(placed, room)
+        self.assertLess(room, 10)
+        self.assertLess(lone_weight, .1)
+        self.assertGreater(town_weight, .5)
+
+    def test_far_walkers_move_less_often_but_as_far(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed = 4, spacing = 0}
+          walkers.sync(W, grid(8, 100), 320, 320)
+          walkers.setTarget(W, 400)
+          walkers.step(W, 1 / 60, 320, 320)
+          local start = {}
+          for slot, w in pairs(W.slots) do if not w.free then start[slot] = {w.walked, w.x, w.y} end end
+          local turns = {}
+          for t = 1, 600 do
+            walkers.step(W, 1 / 60, 320, 320)
+            for slot, w in pairs(W.slots) do if w.dirty then turns[slot] = (turns[slot] or 0) + 1; w.dirty = nil end end
+          end
+          -- by distance: walked (m) over the 10 s against the walker's speed, and turns taken
+          local nearTurns, farTurns, worst, n = 0, 0, 0, 0
+          for slot, s in pairs(start) do
+            local w = W.slots[slot]
+            if not w.free and w.look then
+              local d = math.sqrt((w.x - 320) ^ 2 + (w.y - 320) ^ 2)
+              local ratio = (w.walked - s[1]) / (w.speed * 10)
+              if not w.waiting and not w.transit then worst = math.max(worst, math.abs(1 - ratio)) end
+              if d < 30 and math.sqrt((s[2] - 320) ^ 2 + (s[3] - 320) ^ 2) < 30 then nearTurns = math.max(nearTurns, turns[slot] or 0) end
+              if d > 220 and math.sqrt((s[2] - 320) ^ 2 + (s[3] - 320) ^ 2) > 220 then farTurns = math.max(farTurns, turns[slot] or 0) end
+              n = n + 1
+            end
+          end
+          return {nearTurns, farTurns, worst, walkers.periodOf(10 ^ 2), walkers.periodOf(100 ^ 2), walkers.periodOf(250 ^ 2)}
+        ''')
+        near_turns, far_turns, worst, p10, p100, p250 = (out[k] for k in range(1, 7))
+        self.assertEqual(near_turns, 600)
+        self.assertLess(worst, 20 / 600 + .001)   # skipped turns are walked at the next: behind by a period at most
+        self.assertLessEqual(far_turns, 600 / 20 + 2)
+        self.assertGreater(far_turns, 0)
+        self.assertEqual((p10, p100, p250), (1, 5, 20))
+
+    def test_near_finds_the_walkers_round_a_point_from_the_grid(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed = 8, spacing = 0}
+          walkers.sync(W, grid(8, 100), 350, 350)
+          walkers.setTarget(W, 600)
+          for t = 1, 300 do walkers.step(W, 1 / 30, 350, 350) end
+          local bad, total, buf = 0, 0, {}
+          for k = 1, 40 do
+            local x, y, r = 200 + k * 7, 250 + k * 3, 5 + k % 4 * 10
+            local got, n = walkers.near(W, x, y, r, buf)
+            if got ~= buf then bad = bad + 1000 end
+            local want = 0
+            for _, w in pairs(W.slots) do
+              if not w.free and not w.taken and (w.x - x) ^ 2 + (w.y - y) ^ 2 < r * r then want = want + 1 end
+            end
+            if want ~= n or #got ~= n then bad = bad + 1 end
+            total = total + n
+          end
+          return {bad, total}
+        ''')
+        self.assertEqual(out[1], 0)
+        self.assertGreater(out[2], 20)
+
+    def test_shapes_by_distance_stay_bounded_and_go_when_off(self):
+        out = self.lua().execute('''
+          for k in pairs(OBJ) do OBJ[k] = 0 end
+          local W = walkers.new{seed = 5, spacing = 0}
+          walkers.sync(W, grid(12, 100), 550, 550)
+          local V = walkers.view(W, shapes(), nil)
+          walkers.setTarget(W, 1000)
+          local maxMade = 0
+          for t = 1, 900 do
+            walkers.step(W, 1 / 60, 550, 550)
+            walkers.draw(W, V, 550, 550)
+            maxMade = math.max(maxMade, OBJ.made)
+          end
+          -- every walker within 60 m posed (one shape shown of its set), within 200 m one shape, none further
+          local posedFar, drawnFar, hiddenNear, shownSlots = 0, 0, 0, 0
+          for slot, w in pairs(W.slots) do
+            if not w.free then
+              local d = math.sqrt((w.x - 550) ^ 2 + (w.y - 550) ^ 2)
+              if V.near[slot] and d > 70.01 then posedFar = posedFar + 1 end
+              if V.far[slot] and d > 215.01 then drawnFar = drawnFar + 1 end
+              if d < 190 and not (V.near[slot] or V.far[slot]) then hiddenNear = hiddenNear + 1 end
+              if V.near[slot] or V.far[slot] then shownSlots = shownSlots + 1 end
+            end
+          end
+          local busy = {W.count, OBJ.alive, OBJ.shown, V.nearUsed, V.farUsed, posedFar, drawnFar, hiddenNear, shownSlots}
+          -- off: nothing shown at once, the spare objects trimmed a few a frame later
+          walkers.setTarget(W, 0)
+          walkers.step(W, 1 / 60, 550, 550)
+          walkers.draw(W, V, 550, 550)
+          local shownOff = OBJ.shown
+          for t = 1, 400 do walkers.step(W, 1 / 60, 550, 550); walkers.draw(W, V, 550, 550) end
+          local aliveTrimmed = OBJ.alive
+          walkers.clear(W, V)
+          return {busy[1], busy[2], busy[3], busy[4], busy[5], busy[6], busy[7], busy[8], busy[9], shownOff, aliveTrimmed, OBJ.alive}
+        ''')
+        count, alive, shown, posed, drawn, posed_far, drawn_far, hidden_near, shown_slots, shown_off, trimmed, cleared = (out[k] for k in range(1, 13))
+        self.assertEqual(count, 1000)
+        self.assertEqual(shown, posed + drawn)
+        self.assertEqual(shown_slots, posed + drawn)
+        self.assertLessEqual(posed, 96)
+        self.assertLess(alive, 1000 + 96 * 9)
+        self.assertLess(drawn + posed, 1000)              # those beyond 200 m have none
+        self.assertEqual((posed_far, drawn_far, hidden_near), (0, 0, 0))
+        self.assertEqual(shown_off, 0)
+        self.assertLessEqual(trimmed, 48 + 6 * 9)
+        self.assertEqual(cleared, 0)
+
+    def test_no_garbage_while_walking(self):
+        out = self.lua().execute('''
+          jit.off()
+          local W = walkers.new{seed = 6, spacing = 0}
+          walkers.sync(W, grid(12, 100), 550, 550)
+          local V = walkers.view(W, shapes(), nil)
+          local api, P = fakeApi(), pedhit.new{size = 2}
+          pedhit.prewarm(P, api, 0, 0)
+          local car = {x = 550, y = 545, vx = 8, vy = 0, fx = 1, fy = 0, hl = 2.3, hw = .95}
+          local flow = {{drawnX = 500, drawnY = 500, drawnYaw = 0, v = 10}}
+          walkers.setTarget(W, 1000)
+          local function frame(t)
+            walkers.step(W, 1 / 60, 550, 550, {car}, flow)
+            pedhit.step(P, walkers, W, {car}, t / 60, api, 550, 550)
+            walkers.draw(W, V, 550, 550, function(x, y, z) return z + .1 end)
+          end
+          -- every walker has turned a corner once, every shape is made
+          for t = 1, 3600 do frame(t) end
+          collectgarbage('collect')
+          collectgarbage('stop')
+          local kb = collectgarbage('count')
+          for t = 3601, 4200 do frame(t) end
+          kb = collectgarbage('count') - kb
+          collectgarbage('restart')
+          jit.on()
+          return {kb / 600, W.count}
+        ''')
+        # the draw's ground closure above is 1 per frame (the game makes it once): ~0.03 KB
+        self.assertLess(out[1], .25, out[1])
+        self.assertEqual(out[2], 1000)
+
+    def test_a_sync_in_slices_builds_what_a_whole_one_does_while_walkers_walk(self):
+        out = self.lua().execute('''
+          local all = grid(10, 100)
+          local part = {}
+          for sid, seg in pairs(all) do if seg.x < 600 then part[sid] = seg end end
+          local function signature(W)
+            local n, links, len = 0, 0, 0
+            for _, piece in ipairs(W.list) do
+              n, len = n + 1, len + piece.len
+              for e = -1, 1, 2 do links = links + #piece.ends[e].links end
+            end
+            return n .. ' ' .. links .. ' ' .. math.floor(len)
+          end
+          -- the whole sync, and the same in slices (pause yields every call) with walkers walking between
+          local A = walkers.new{seed = 1, spacing = 0}
+          walkers.sync(A, part, 450, 450)
+          walkers.sync(A, all, 450, 450)
+          local B = walkers.new{seed = 1, spacing = 0}
+          walkers.sync(B, part, 450, 450)
+          walkers.setTarget(B, 300)
+          for t = 1, 120 do walkers.step(B, 1 / 30, 450, 450) end
+          local co = coroutine.create(function() walkers.sync(B, all, 450, 450, coroutine.yield) end)
+          local slices = 0
+          while coroutine.status(co) ~= 'dead' do
+            assert(coroutine.resume(co))
+            slices = slices + 1
+            walkers.step(B, 1 / 30, 450, 450)
+          end
+          for t = 1, 300 do walkers.step(B, 1 / 30, 450, 450) end
+          -- and all at once from nothing: the ends linked again only round the change are the same
+          local C = walkers.new{seed = 1, spacing = 0}
+          walkers.sync(C, all, 450, 450)
+          return {signature(A), signature(B), slices, B.count, signature(C)}
+        ''')
+        self.assertEqual(out[1], out[2])
+        self.assertEqual(out[1], out[5])
+        self.assertGreater(out[3], 20)
+        self.assertEqual(out[4], 300)
+
+    def test_a_teleport_brings_the_walkers_to_the_new_place(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed = 7, spacing = 0}
+          walkers.sync(W, grid(14, 100), 200, 200)
+          walkers.setTarget(W, 200)
+          for t = 1, 60 do walkers.step(W, 1 / 30, 200, 200) end
+          -- 900 m away in one step (a landing elsewhere on the same graph): the old ones go, the new
+          -- ones may appear in sight (the camera cut), so the place fills at once
+          walkers.step(W, 1 / 30, 1100, 1100)
+          walkers.sync(W, grid(14, 100), 1100, 1100)   -- the new place's tiles (S.navAt changed)
+          for t = 1, 30 do walkers.step(W, 1 / 30, 1100, 1100) end
+          local nearest, all = 1e9, 0
+          for _, w in pairs(W.slots) do
+            if not w.free then
+              all = all + 1
+              nearest = math.min(nearest, math.sqrt((w.x - 1100) ^ 2 + (w.y - 1100) ^ 2))
+            end
+          end
+          return {all, nearest, W.stats.far}
+        ''')
+        self.assertEqual(out[1], 200)
+        self.assertLess(out[2], 90)
+        self.assertEqual(out[3], 200)
 
 
 if __name__ == '__main__':

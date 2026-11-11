@@ -16,9 +16,16 @@ local QUIET = {road = {}, scene = {}}
 for _, kind in ipairs({'mark', 'mark_yellow', 'edge_grass', 'edge_dirt', 'manhole', 'drain', 'patch'}) do
   QUIET.road['e2rf_' .. kind], QUIET.scene['e2rf_' .. kind] = true, true
 end
+-- the land coming into another in a piece of open ground (generator.lua VEG.land): it lies in
+-- the ground's own triangles, and the land under it (cut_*) is the one that collides
+for _, land in ipairs({'dry', 'lush', 'earth'}) do
+  for level = 1, 3 do
+    QUIET.road['e2rf_fade_' .. land .. level], QUIET.scene['e2rf_fade_' .. land .. level] = true, true
+  end
+end
 for _, kind in ipairs({'roof', 'roof_tile', 'roof_metal', 'roof_sheet', 'roof_mtile_red', 'roof_mtile_brown',
     'win_pvc', 'win_wood', 'door_house', 'door_garage', 'door_rust', 'chimney', 'pipe', 'ac_unit', 'dish', 'plate', 'glyphs', 'glyphs_dark', 'sign_white', 'lens_dark', 'lens_red', 'lens_yellow', 'lens_green', 'paint_red', 'fascia',
-    'roof_mtile_green', 'footway', 'footway_asphalt', 'trodden', 'ground',
+    'roof_mtile_green', 'footway', 'footway_asphalt', 'trodden', 'ground', 'grass_dry', 'grass_lush', 'earth',
     'paved', 'water', 'glacier', 'bare_rock', 'scree', 'beach', 'wetland', 'orchard', 'vineyard', 'farmland',
     'meadow', 'heath', 'scrub', 'forest', 'park', 'bare_ground', 'ballast', 'track', 'rail', 'rail_side'}) do
   QUIET.scene['e2rf_' .. kind] = true

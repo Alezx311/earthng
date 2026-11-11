@@ -107,6 +107,8 @@ def main():
     p.add_argument('--display', default='Window', choices=('Window', 'Borderless', 'Fullscreen'))
     p.add_argument('--manual', action='store_true', help='land, then hand the car to the player; runs until the game is closed')
     p.add_argument('--probe', action='store_true', help='add the e2rprobe mod (earthng/probe.py runs Lua in the game)')
+    p.add_argument('--mcp', action='store_true', help="the game's own MCP server (-enablemcp, http://127.0.0.1:29292/mcp)")
+    p.add_argument('--sound', action='store_true', help='keep the master volume (manual play; tests run muted)')
     p.add_argument('--seed-editor-objects', type=Path,
                    help='copy a saved EarthNG editor-object file into this new test profile before landing')
     p.add_argument('--min-distance', type=float, default=20, help='physics test fails below this, m')
@@ -129,6 +131,8 @@ def main():
     p.add_argument('--gc-cycle', help='the collector step of the landing changes every 2 s among these (10,1,400,-10,100)')
     p.add_argument('--walkers', type=int, help='after landing: this many pedestrians (walkers.lua)')
     p.add_argument('--walk-bodies', type=int, help='physical bodies for walkers about to be hit (pedhit.lua, default 6)')
+    p.add_argument('--knock', action='store_true',
+                   help='after landing: a car through rows of knockable props (earthng/probe/knock_row.lua) -> knock.json')
     p.add_argument('--traffic-kind', choices=('simple', 'full', 'agent'), default='simple',
                    help="--traffic cars: the game's simple_traffic, its full vehicles, or Agent Traffic's")
     p.add_argument('--rain', type=int, help="after landing: the game's own rain (core_environment numOfDrops)")
@@ -147,6 +151,8 @@ def main():
     if a.lat is None or a.lon is None:
         p.error('--lat and --lon are required')
     out = a.out.resolve()
+    if a.knock:
+        a.probe = True   # the row test runs through the probe
     if out.exists():
         raise SystemExit(f'{out} exists')
     user = out / 'user'
@@ -183,7 +189,7 @@ def main():
     (profile / 'settings/settings.json').write_text(json.dumps({
         'GraphicDisplayResolutions': f'{width} {height}', 'GraphicDisplayModes': a.display,
         'GraphicFullscreen': a.display == 'Fullscreen', 'GraphicOverallQuality': a.graphics,
-        'AudioMasterVol': 0, 'fpsLimitBackgroundEnabled': False, 'onlineFeatures': 'disable', 'telemetry': 'disable', 'PostFXMotionBlurEnabled': False,
+        **({} if a.sound else {'AudioMasterVol': 0}), 'fpsLimitBackgroundEnabled': False, 'onlineFeatures': 'disable', 'telemetry': 'disable', 'PostFXMotionBlurEnabled': False,
         # the first-run "Input Changes" page pauses the simulation (fast-game-02 never moved under it)
         'showedInputLayoutPopupV37': True}), encoding='utf8')
     test = {'lat': a.lat, 'lon': a.lon, 'driveSeconds': a.drive_seconds, 'skipMap': True, 'minDistance': a.min_distance}
@@ -274,6 +280,9 @@ def main():
         test['trafficKind'] = a.traffic_kind
     if a.rain:
         test['rain'] = a.rain
+    if a.knock:
+        # the row test drives its own cars through the probe; the player's car stands
+        test['manual'] = True
     if a.manual:
         test['manual'] = True
         a.timeout = 10**9
@@ -286,13 +295,15 @@ def main():
         test_file.write_text(json.dumps(test), encoding='utf8')
     EXE = game_exe()
     started = time.perf_counter()
-    game = subprocess.Popen([str(EXE), '-userpath', str(user), '-level', build_mod.LEVEL, '-nosteam'], cwd=str(EXE.parent))
+    game = subprocess.Popen([str(EXE), '-userpath', str(user), '-level', build_mod.LEVEL, '-nosteam']
+                            + (['-enablemcp'] if a.mcp else []), cwd=str(EXE.parent))
     peak = 0
     recorder = Recorder(out, a.record_fps) if a.record else None
     try:
         test_file = profile / 'e2r-world-test.json'
         res_path = profile / 'e2r-world-result.json'
         finished = None
+        knock_at = None
         while game.poll() is None and time.perf_counter() - started < a.timeout:
             # the test ends with the game's shutdown(), which sometimes leaves the game open
             # (native-final-kyiv, native-hops-03): a final status 15 s old ends it from here
@@ -314,6 +325,16 @@ def main():
                     shutil.copy2(a.route, profile / 'e2r-route.json')
             if not progress.get('landedAt'):
                 ensure_editor_seed()
+            elif a.knock and knock_at is None:
+                knock_at = time.perf_counter() + 12   # far tiles and the flow settle first
+            elif a.knock and time.perf_counter() > knock_at:
+                import probe
+                text = probe.run(user, (HERE / 'probe' / 'knock_row.lua').read_text(encoding='utf8'), timeout=420)
+                (out / 'knock.txt').write_text(text, encoding='utf8')
+                for png in (profile / 'e2r_probe').glob('knock_*.png'):
+                    shutil.copy2(png, out / png.name)
+                print(text)
+                break
             m = memory(game.pid)
             if m:
                 peak = max(peak, m[0])

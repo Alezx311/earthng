@@ -12,10 +12,102 @@ EN_LABELS = {'pick': 'Pick another place', 'back': 'Back to driving', 'hide': 'H
 
 def load_world(lua, src):
     root = Path(__file__).resolve().parents[1] / 'mod/lua'
-    for name in ('quality', 'detail'):
-        lua.globals()[name] = lua.execute((root / f'ge/extensions/e2r/{name}.lua').read_text(encoding='utf8'))
-    lua.execute("local old=require; require=function(n) if n=='ge/extensions/e2r/quality' then return quality elseif n=='ge/extensions/e2r/detail' then return detail else return old(n) end end")
+    for name in ('quality', 'detail', 'options'):
+        lua.globals()['e2r_' + name] = lua.execute((root / f'ge/extensions/e2r/{name}.lua').read_text(encoding='utf8'))
+    lua.execute("local old=require; require=function(n) local m=n:match('^ge/extensions/e2r/(%a+)$'); "
+                "if m=='quality' or m=='detail' or m=='options' then return _G['e2r_'..m] else return old(n) end end")
     return lua.execute(src)
+
+
+WINGUARD = Path(__file__).resolve().parents[1] / 'mod/lua/ge/extensions/e2r/winguard.lua'
+
+
+class WindowGuardTests(unittest.TestCase):
+    """winguard.lua: EarthNG windows stay in the main viewport, never focus themselves."""
+
+    def guard(self, display=(1920, 1080), win=(1899, 150), size=(392, 719)):
+        lua = LuaRuntime()
+        lua.globals().winguard_src = WINGUARD.read_text(encoding='utf8')
+        lua.execute('''
+          moved, began, pinned, allocs, mouseDown, appearing = {}, {}, {}, 0, false, false
+          view = {ID=0x11111111, Pos={x=0, y=0}, Size={x=0, y=0}, Flags=0}
+          win = {x=0, y=0, w=0, h=0}
+          im = {
+            WindowFlags_NoCollapse=1, WindowFlags_AlwaysAutoResize=64, WindowFlags_NoFocusOnAppearing=4096,
+            WindowFlags_NoDocking=2097152, ViewportFlags_IsMinimized=4096, Cond_Always=1,
+            ImVec2=function(x, y) allocs = allocs + 1; return {x=x, y=y} end,
+            GetMainViewport=function() return view end,
+            SetNextWindowViewport=function(id) pinned[#pinned + 1] = id end,
+            Begin=function(name, open, flags) began[#began + 1] = {name, open, flags}; return true end,
+            IsWindowAppearing=function() return appearing end,
+            IsMouseDown=function() return mouseDown end,
+            GetWindowPos=function() return {x=win.x, y=win.y} end,
+            GetWindowWidth=function() return win.w end,
+            GetWindowHeight=function() return win.h end,
+            SetWindowPos1=function(p, cond) moved[#moved + 1] = {p.x, p.y, cond}; win.x, win.y = p.x, p.y end,
+          }
+          wg = loadstring(winguard_src)()''')
+        lua.execute(f'view.Size.x, view.Size.y = {display[0]}, {display[1]}; '
+                    f'win.x, win.y, win.w, win.h = {win[0]}, {win[1]}, {size[0]}, {size[1]}')
+        return lua
+
+    def test_window_off_the_right_edge_is_pulled_back(self):
+        # imgui.ini had EarthNG##mini at ViewportPos=1899,150 on a 1920x1080 game: a 21 px strip
+        lua = self.guard()
+        self.assertTrue(lua.eval('wg.keepInside(im)'))
+        self.assertEqual(list(lua.eval('moved[1]').values()), [1920 - 392, 150, 1])
+        # inside now: nothing more to do
+        self.assertFalse(lua.eval('wg.keepInside(im)'))
+
+    def test_window_above_and_left_and_too_tall(self):
+        lua = self.guard(win=(-900, -300), size=(392, 1400))
+        self.assertTrue(lua.eval('wg.keepInside(im)'))
+        # taller than the screen: the title bar at the top
+        self.assertEqual(list(lua.eval('moved[1]').values())[:2], [0, 0])
+
+    def test_window_on_screen_is_left_alone(self):
+        lua = self.guard(win=(453, 202), size=(1180, 720))
+        self.assertFalse(lua.eval('wg.keepInside(im)'))
+        self.assertEqual(lua.eval('#moved'), 0)
+
+    def test_zero_or_minimised_display_is_untouched(self):
+        lua = self.guard(display=(0, 0), win=(2541, 422), size=(720, 173))
+        self.assertFalse(lua.eval('wg.keepInside(im)'))
+        lua.execute('view.Size.x, view.Size.y = 1920, 1080; view.Flags = 4096')
+        self.assertFalse(lua.eval('wg.keepInside(im)'))
+        self.assertEqual(lua.eval('#moved'), 0)
+        lua.execute('view.Flags = 0')
+        self.assertTrue(lua.eval('wg.keepInside(im)'))
+
+    def test_begin_pins_to_main_viewport_without_focus(self):
+        lua = self.guard()
+        lua.execute('''
+          appearing = true
+          wg.begin(im, 'EarthNG##mini', im.WindowFlags_NoCollapse + im.WindowFlags_AlwaysAutoResize)''')
+        self.assertEqual(lua.eval('pinned[1]'), 0x11111111)
+        self.assertEqual(lua.eval('began[1][1]'), 'EarthNG##mini')
+        self.assertIsNone(lua.eval('began[1][2]'))
+        self.assertEqual(lua.eval('began[1][3]'), 1 + 64 + 4096 + 2097152)
+        # appearing: checked at once and pulled back
+        self.assertEqual(lua.eval('#moved'), 1)
+
+    def test_begin_waits_for_the_mouse_and_throttles(self):
+        lua = self.guard()
+        lua.execute('''
+          mouseDown = true
+          for i = 1, 30 do wg.begin(im, 'EarthNG##mini', 0) end''')
+        self.assertEqual(lua.eval('#moved'), 0)   # the player may be dragging it
+        lua.execute('''
+          mouseDown = false
+          wg.begin(im, 'EarthNG##mini', 0)''')
+        self.assertEqual(lua.eval('#moved'), 1)
+        # off screen again: found within CHECK frames, one ImVec2 for the session
+        lua.execute('''
+          win.x = 5000
+          for i = 1, wg.CHECK do wg.begin(im, 'EarthNG##mini', 0) end''')
+        self.assertEqual(lua.eval('#moved'), 2)
+        self.assertEqual(lua.eval('allocs'), 1)
+        self.assertEqual(lua.eval('#pinned'), 30 + 1 + lua.eval('wg.CHECK'))
 
 
 class WidgetTests(unittest.TestCase):
@@ -86,6 +178,7 @@ class WidgetTests(unittest.TestCase):
         lua.globals().navigation_src = (root / 'mod/lua/ge/extensions/e2r/navigation.lua').read_text(encoding='utf8')
         lua.globals().navigator_src = (root / 'mod/lua/ge/extensions/e2r/navigator.lua').read_text(encoding='utf8')
         lua.globals().routing_src = (root / 'mod/lua/ge/extensions/e2r/routing.lua').read_text(encoding='utf8')
+        lua.globals().winguard_src = (root / 'mod/lua/ge/extensions/e2r/winguard.lua').read_text(encoding='utf8')
         lua.execute('''
           ui_imgui = setmetatable({ArrayChar=function(n) return require('ffi').new('char[?]', n) end,
             Button=function(label) return label == clicked end,
@@ -145,6 +238,7 @@ class WidgetTests(unittest.TestCase):
             if name == 'ge/extensions/e2r/navigation' then return loadstring(navigation_src)() end
             if name == 'ge/extensions/e2r/navigator' then return loadstring(navigator_src)() end
             if name == 'ge/extensions/e2r/routing' then return loadstring(routing_src)() end
+            if name == 'ge/extensions/e2r/winguard' then return loadstring(winguard_src)() end
             if name == 'bit' then return realRequire('bit') end
             if name == 'ui/imguiUtils' then return {texObj=function(path) return {texId=1, path=path} end} end
             if name == 'ffi' then return realRequire('ffi') end
@@ -344,6 +438,7 @@ class WidgetTests(unittest.TestCase):
 
     def map_ui_flow(self, lang, labels):
         lua = LuaRuntime()
+        lua.globals().winguard_src = WINGUARD.read_text(encoding='utf8')
         lua.execute('''
           ui_imgui = setmetatable({ArrayChar=function() return {} end,
             Button=function(label) return label == clicked end,
@@ -361,7 +456,7 @@ class WidgetTests(unittest.TestCase):
             WindowFlags_NoCollapse=1, WindowFlags_AlwaysAutoResize=2, WindowFlags_NoScrollbar=4,
             WindowFlags_NoScrollWithMouse=8},
             {__index=function() return function() end end})
-          require=function() return {} end
+          require=function(n) if n=='ge/extensions/e2r/winguard' then return loadstring(winguard_src)() end return {} end
           FS={fileExists=function() return false end}
           spawnParams={}
           maptileRequests=0
@@ -419,6 +514,27 @@ class WidgetTests(unittest.TestCase):
           assert(maptileRequests>asked)  -- shown again: asks again (retry after MAP_RETRY)
         ''')
 
+
+
+class PeopleRowsTests(unittest.TestCase):
+    """The driving window's "Style and traffic" section: the pedestrians switch and 0..1000 slider and
+    the knockable-props checkbox go through the settings registry (test_options.py has the rest)."""
+
+    def test_style_and_traffic_section_draws_the_people_rows(self):
+        from test_options import WidgetSyncTests
+        lua = WidgetSyncTests().world()
+        lua.execute('''
+          S.state = 'driving'; S.now = 10; S.stream = {}
+          up(draw, 'focus', function() return nil end)
+          openHeader = 'Вигляд і трафік'
+          clicked = 'Пішоходи##walkOn'; draw()
+          assert(o.get('walkersOn') and fake.asked == 200, 'switch')
+          clicked = nil; slid = '##walkN'; slideTo = 1000; draw()
+          assert(fake.asked == 1000 and o.get('walkers') == 1000, 'slider')
+          slid = nil; clicked = "Збивані об'єкти##knock"; draw()
+          assert(mod.knockGet() == false and disk.knock == false, 'knock')
+          assert(disk.walkers == 1000 and disk.walkersOn == true, 'saved')
+        ''')
 
 
 if __name__ == '__main__':

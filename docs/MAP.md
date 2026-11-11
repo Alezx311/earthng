@@ -10,6 +10,11 @@ Scroll to zoom around the cursor, drag to pan, and use +/− for centered zoom.
 The @ button returns to the car. The small widget follows the car again after this
 button is pressed. The scale bar shows ground distances.
 
+The widget windows (picker, landing, minimap, "Show map") stay in the game window:
+`winguard.lua` keeps them off separate ImGui OS windows (BeamNG runs multi-viewports),
+never lets them take focus on appearing and pulls one back whole when it is found
+outside the screen (not while a mouse button is held, not while minimised).
+
 Main roads use simplified overviews from zoom 5, secondary roads from zoom 9 and
 tertiary roads from zoom 11. Existing block-derived streets supply closer detail.
 Villages appear as you zoom in, with collision avoidance for labels. The stock

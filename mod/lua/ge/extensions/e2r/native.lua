@@ -31,13 +31,17 @@ local VISTA_RADIUS, VISTA_BLOCK, VISTA_STEP, VISTA_RELIEF, VISTA_SPEED = 24000, 
 -- time the car takes to reach it: along its heading, a step sideways counting `across` times
 -- (a step back `back` times), blended in from `slow` to `fast` m/s; below that the old distance.
 -- Past the near radius the tiles a `corridor` s drive ahead (within `half` m of the heading line,
--- `reach` m at most) are near too. A tile's road goes out before its scene (generator.lua
--- roadReady): its scene waits `lag` s plus `lagPerMs` s for every m/s over `slow`, in at most
--- `parked` suspended builds. Under `urgent` s from a missing road the frame gives the generator
--- `urgentMs`. A scene goes out before its grass, flowers and loose stones (generator sceneReady):
--- they wait `grassLag` s more, in at most `grassParked` builds; a tile that lost its grass that
--- way is built again for it only when the car is under `slow` m/s.
-local AHEAD = {across = 3, back = 3, slow = 10, fast = 30, corridor = 15, half = 150, reach = 2000,
+-- `reach` m at most) are near too. At speed the near set is that corridor plus a keep bubble
+-- (`around` m, `backM`/`backS` behind) instead of a full disk: side and rear tiles used to stay
+-- wanted and, once the renderer dropped them, came back as far layers (rebuild churn at 200 km/h).
+-- A tile's road goes out before its scene (generator.lua roadReady): its scene waits `lag` s plus
+-- `lagPerMs` s for every m/s over `slow`, in at most `parked` suspended builds. Under `urgent` s
+-- from a missing road the frame gives the generator `urgentMs`. A scene goes out before its grass,
+-- flowers and loose stones (generator sceneReady): they wait `grassLag` s more, in at most
+-- `grassParked` builds; a tile that lost its grass that way is built again for it only when the
+-- car is under `slow` m/s.
+local AHEAD = {across = 3, back = 3, slow = 10, fast = 30, corridor = 18, half = 150, reach = 2500,
+  around = 450, backM = 200, backS = 3.5,
   lag = 3, lagPerMs = .1, parked = 3, urgent = 6, urgentMs = 6, grassLag = 10, grassParked = 2}
 local GRASS = {}   -- buildTile's yield once the scene is out (AHEAD marks the road)
 -- the generator stage each build last finished (status().stream.stageMs: where streaming time goes)
@@ -893,27 +897,31 @@ local function priorities()
   local ex, ey = p.x + ux * reach, p.y + uy * reach
   local w = math.max(0, math.min(1, (speed - AHEAD.slow) / (AHEAD.fast - AHEAD.slow)))
   local ext = t / 2 * (math.abs(ux) + math.abs(uy))
-  local span = math.max(radius, AHEAD.half + t)
-  for i = math.floor(math.min(p.x - farRadius, ax - radius, ex - span) / t), math.floor(math.max(p.x + farRadius, ax + radius, ex + span) / t) do
-    for j = math.floor(math.min(p.y - farRadius, ay - radius, ey - span) / t), math.floor(math.max(p.y + farRadius, ay + radius, ey + span) / t) do
+  local keepBack = math.max(AHEAD.backM, speed * AHEAD.backS) + ext
+  -- full near disk when slow; at speed a keep bubble plus the forward corridor
+  local around = radius * (1 - w) + AHEAD.around * w
+  local span = math.max(around, AHEAD.half + t)
+  for i = math.floor(math.min(p.x - farRadius, ax - around, ex - span) / t), math.floor(math.max(p.x + farRadius, ax + around, ex + span) / t) do
+    for j = math.floor(math.min(p.y - farRadius, ay - around, ey - span) / t), math.floor(math.max(p.y + farRadius, ay + around, ey + span) / t) do
       local cx, cy = (i + 0.5) * t, (j + 0.5) * t
       local d = math.min(math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2), math.sqrt((cx - ax) ^ 2 + (cy - ay) ^ 2))
       local farD = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
-      -- the renderer drops tiles well behind the car at speed (world.lua updateTiles, behind());
-      -- wanting them back here rebuilt each one after it was dropped
-      local behind = speed >= 15 and ((cx - p.x) * p.vx + (cy - p.y) * p.vy) < 0 and farD > radius * 0.6 + 250
       local along = (cx - p.x) * ux + (cy - p.y) * uy
       local alongE = math.max(0, math.abs(along) - ext)
       local acrossE = math.max(0, math.abs((cx - p.x) * uy - (cy - p.y) * ux) - ext)
+      -- the renderer drops tiles well behind the car at speed (world.lua updateTiles, behind());
+      -- wanting them back here — even as far ground — rebuilt each one after it was dropped
+      local behind = speed >= 15 and along < 0 and farD > keepBack
       local corridor = reach > 0 and along > 0 and alongE <= reach and acrossE <= AHEAD.half
       if tileCovered(a.region, i, j) then
-        if (d <= radius or corridor) and not behind then
+        if (d <= around or corridor) and not behind then
           local iso = d / math.max(speed, 5)
           local arrival = ((along < 0 and AHEAD.back or 1) * alongE + AHEAD.across * acrossE) / math.max(speed, 5)
           out[keyOf(i, j)] = {i = i, j = j, priority = iso + (arrival - iso) * w, size = t}
-        elseif farD <= farRadius then
-          -- Ground stays wanted at any speed. Buildings and trees are the part that used to
-          -- churn the far ring above 90 km/h; they wait until the car slows down.
+        elseif farD <= farRadius and not behind then
+          -- Ground stays wanted ahead and beside at any speed. Buildings and trees are the part
+          -- that used to churn the far ring above 90 km/h; they wait until the car slows down.
+          -- Behind the keep bubble stays out so unload is not undone by a far rebuild.
           out[keyOf(i, j)] = {i = i, j = j, far = true, decor = speed <= st.farFast,
             priority = 1e6 + farD, size = t}
         end
@@ -992,6 +1000,7 @@ local function priorities()
       for _, q in ipairs(inVista and NONE_LIST or quads) do
         local cx, cy = (q[1] + 0.5) * t, (q[2] + 0.5) * t
         local dist = centreDistance(cx, cy)
+        -- DEM horizon stays a full ring (cheap meshes); behind culling is for near/far only
         if dist > farRadius and dist <= HORIZON_RADIUS then
           horizon[#horizon + 1] = {i = q[1], j = q[2], d = dist, x = cx, y = cy}
         elseif dist > HORIZON_RADIUS and dist <= outer then

@@ -1030,19 +1030,46 @@ class NativeV2Tests(NativeTests.__base__):
         mod.pose(cv(dict(x=2750, y=5250, vx=100, vy=0, state='driving')))
         mod.update(.016, 2)
         wanted = mod.status().stream.wanted
-        # a near priority is the seconds to reach the tile: 750 m ahead, 750 m beside counting 3x
+        # at speed the near set is the forward corridor plus a keep bubble, not a full disk:
+        # 750 m ahead stays near; 1000 m beside leaves the 450 m bubble and is only far ground
         self.assertAlmostEqual(wanted['7_10'], 7.5)
-        self.assertAlmostEqual(wanted['5_12'], 22.5)
-        self.assertLess(wanted['5_8'] - wanted['7_10'], 1e6)
-        # past the 1 km radius the 15 s corridor ahead is near, the tile past its end is far
+        self.assertGreaterEqual(wanted['5_12'], 1_000_000)
+        self.assertGreaterEqual(wanted['5_8'], 1_000_000)
+        # past the 1 km radius the 18 s corridor ahead is near; past its end is not
         self.assertAlmostEqual(wanted['8_10'], 12.5)
-        self.assertGreaterEqual(wanted['9_10'], 1_000_000)
+        self.assertAlmostEqual(wanted['9_10'], 17.5)
+        near = {k for k, p in wanted.items() if p is not None and p < 1_000_000}
+        self.assertNotIn('10_10', near)
         # standing still it is the distance again, the same all round
         mod.pose(cv(dict(x=2750, y=5250, vx=0, vy=0, state='driving')))
         mod.update(.016, 2)
         wanted = mod.status().stream.wanted
         self.assertAlmostEqual(wanted['7_10'], wanted['5_12'])
         self.assertGreaterEqual(wanted['8_10'], 1_000_000)
+
+    def test_tiles_behind_at_speed_are_not_wanted_even_as_far(self):
+        # unload used to fight the planner: a dropped behind tile stayed in wanted as far ground
+        # and was rebuilt every time the car moved (200 km/h city drive)
+        _, mod, cv = self.make(fixture(12))
+        lat, lon = geographic(2750, 5250)
+        mod.land(cv(dict(seq=14, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        mod.pose(cv(dict(x=2750, y=5250, vx=55, vy=0, state='driving')))
+        mod.update(.016, 2)
+        wanted = dict(mod.status().stream.wanted.items())
+        # 1000 m behind the car (tile 3_10) is past keepBack (~200 + 55*3.5) and must stay out
+        self.assertNotIn('3_10', wanted)
+        # ahead stays near; a side tile inside the far ring may be far, but not behind
+        self.assertLess(wanted['7_10'], 1_000_000)
+        behind = [k for k, prio in wanted.items()
+                  if not str(k).startswith(('h', 'v')) and '_' in str(k)]
+        for key in behind:
+            i, j = (int(v) for v in str(key).split('_'))
+            cx, cy = (i + .5) * 500, (j + .5) * 500
+            along = cx - 2750
+            dist = ((cx - 2750) ** 2 + (cy - 5250) ** 2) ** .5
+            if along < 0 and dist > 200 + 55 * 3.5 + 250:
+                self.fail(f'behind tile {key} still wanted at priority {wanted[key]}')
 
     def test_arrival_time_is_refreshed_within_the_same_tile_at_high_speed(self):
         _, mod, cv = self.make(fixture(12))
