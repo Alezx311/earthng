@@ -180,9 +180,26 @@ class RoadDecalTests(unittest.TestCase):
             self.assertEqual(stage['detailBaseColorMapStrength'], .55 if kind == 'park' else .38, kind)
             self.assertNotIn('baseColorFactor', stage, kind)
             self.assertNotIn('ground_ground', stage['baseColorMap'])
-        self.assertEqual(real['e2rf_ground']['detailScale'], '12.0 12.0')
-        self.assertTrue(real['e2rf_ground']['baseColorMap'].endswith('t_macro_clumpy_b.color.dds'))
-        self.assertNotIn('ground_ground', real['e2rf_meadow']['baseColorMap'])
+        self.assertEqual(real['e2rf_park']['detailScale'], '12.0 12.0')
+        self.assertTrue(real['e2rf_park']['baseColorMap'].endswith('t_macro_clumpy_b.color.dds'))
+        # open land: a 96 m colour sheet under a grey 2 m terrain detail map of the game
+        self.assertEqual(real['e2rf_ground']['detailScale'], '48.0 48.0')
+        self.assertTrue(real['e2rf_ground']['baseColorMap'].endswith('/real/macro_grass.color.png'))
+        self.assertEqual(real['e2rf_meadow']['baseColorMap'], real['e2rf_ground']['baseColorMap'])
+        self.assertTrue(real['e2rf_earth']['detailMap'].endswith('t_dirt_crumbly_b.png'))
+        # a piece where one land passes into another: the land coming in over its level's share
+        # of the mask, the land under it over the rest (the inverse mask), a few grey levels shared
+        for level in range(1, 4):
+            fade = style.MATERIALS[f'e2rf_fade_earth{level}']
+            cut = style.MATERIALS[f'e2rf_cut_grass{level}']
+            self.assertTrue(fade['alphaTest'] and cut['alphaTest'] and not fade['castShadows'])
+            self.assertTrue(fade['Stages'][0]['opacityMap'].endswith('/real/land_blend_o.data.dds'))
+            self.assertTrue(cut['Stages'][0]['opacityMap'].endswith('/real/land_blend_inv_o.data.dds'))
+            self.assertTrue(fade['Stages'][0]['baseColorMap'].endswith('/real/macro_earth.color.dds'))
+            self.assertEqual(cut['Stages'][0]['baseColorMap'], style.MATERIALS['e2rf_ground']['Stages'][0]['baseColorMap'])
+            # fade shows mask >= ref, cut shows mask <= 255 - ref: together the whole piece
+            self.assertEqual(255 - cut['alphaRef'] - fade['alphaRef'], style.LAND_OVERLAP)
+            self.assertEqual(cut['groundType'], 'GRASS')
         self.assertEqual(art.pack_fields('toon', '/e2r_stream/fast-art/' + art.VERSION)['e2rf_road']['detailMap'], '')
 
     def test_decal_kinds_fall_back_to_their_old_look(self):
@@ -222,7 +239,12 @@ class RoadDecalTests(unittest.TestCase):
         self.assertEqual(winter['e2rf_ground']['detailMap'], '')
         self.assertEqual(winter['e2rf_meadow']['detailNormalMap'], '')
         autumn = fast_packs.fields('autumn', base, real)
-        self.assertEqual(autumn['e2rf_ground']['detailMap'], '')
+        # open land keeps its sheet in autumn and yellows; no pieces dissolve under the snow
+        self.assertNotEqual(autumn['e2rf_ground']['detailMap'], '')
+        self.assertEqual(autumn['e2rf_ground']['baseColorFactor'], '1.2 0.98 0.7 1')
+        self.assertEqual(winter['e2rf_fade_dry2']['opacityFactor'], 0)
+        self.assertEqual(winter['e2rf_cut_grass2']['opacityMap'], '')
+        self.assertEqual(winter['e2rf_grass_dry']['baseColorMap'], f'{base}/winter/ground_ground.color.dds')
         self.assertEqual(autumn['e2rf_park']['detailNormalMapStrength'], 0)
         self.assertEqual(autumn['e2rf_edge_grass']['opacityFactor'], 0)
         self.assertNotIn('opacityFactor', autumn['e2rf_edge_dirt'])

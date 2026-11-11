@@ -343,7 +343,9 @@ GROUND_KINDS = ('ground', 'park', 'forest')
 COVER_KINDS = ('meadow', 'farmland', 'orchard', 'vineyard', 'scrub', 'heath', 'wetland', 'bare_ground',
                'bare_rock', 'scree',
                # other climates' open ground (fast_style.BIOME_GROUND): the snow and ice kinds stay
-               'desert', 'dune', 'steppe', 'dry_grass', 'tundra', 'alpine')
+               'desert', 'dune', 'steppe', 'dry_grass', 'tundra', 'alpine',
+               # the lands of the open ground (fast_style.LAND_OF)
+               'grass_dry', 'grass_lush', 'earth')
 UNPAVED_ROADS = ('road_gravel', 'road_dirt', 'road_track')
 GLOW = {'night': '1.8 1.8 1.8', 'cyber': '2.2 2.2 2.2', 'rain': '1.4 1.4 1.4'}      # emissive gain of lit windows
 # Only luminous objects emit. Ambient visibility belongs to the sky/exposure, not
@@ -460,7 +462,7 @@ def fields(pack, base, real):
             for w in walls:
                 put('wall_' + w, baseColorFactor='0.68 0.68 0.7 1')
             put('water', baseColorFactor=_colour((.1, .14, .16)), roughnessFactor=.05)
-            for kind in GROUND_KINDS + COVER_KINDS:
+            for kind in GROUND_KINDS + COVER_KINDS + tuple(style.FADES) + tuple(style.CUTS):
                 put(kind, baseColorFactor='0.62 0.66 0.6 1')
             # the edge decals darken like the ground they lie on (their tint times the ground's)
             for kind in style.EDGES:
@@ -477,6 +479,12 @@ def fields(pack, base, real):
             put(kind, baseColorMap=f'{art}/ground_ground.color.png', normalMap=f'{art}/ground_ground.normal.png',
                 roughnessMap='', ambientOcclusionMap='',
                 baseColorFactor='0.82 0.84 0.88 1' if kind in ('bare_rock', 'scree') else '1 1 1 1', **bare)
+        # one snow over every land: the land coming in is hidden and the one under it is whole
+        for kind in style.FADES:
+            put(kind, opacityFactor=0)
+        for kind in style.CUTS:
+            put(kind, baseColorMap=f'{art}/ground_ground.color.png', normalMap=f'{art}/ground_ground.normal.png',
+                roughnessMap='', ambientOcclusionMap='', opacityMap='', baseColorFactor='1 1 1 1', **bare)
         for kind in UNPAVED_ROADS:
             put(kind, baseColorMap=f'{art}/trodden.color.png', normalMap=f'{art}/trodden.normal.png',
                 roughnessMap='', ambientOcclusionMap='', baseColorFactor='1 1 1 1')
@@ -501,9 +509,16 @@ def fields(pack, base, real):
             put('wall_' + w, baseColorFactor='0.92 0.94 1 1')
     if pack == 'autumn':
         for kind in GROUND_KINDS:
+            if kind in style.MACRO:
+                continue
             put(kind, baseColorMap=f'{art}/ground_{kind}.color.png', normalMap=f'{art}/ground_{kind}.normal.png',
                 detailMap='', detailNormalMap='', roughnessDetailMap='', detailScale='',
                 detailBaseColorMapStrength=0, detailNormalMapStrength=0, detailRoughnessMapStrength=0)
+        # open land keeps its sheets (a field has no leaf litter, and the leaf sheet is 24 m wide,
+        # the land's 96): the grass yellows
+        for kind in style.MACRO:
+            land = style.LAND_OF.get(kind) or (style.FADES.get(kind) or style.CUTS[kind])[0]
+            put(kind, baseColorFactor='1 1 1 1' if land == 'earth' else '1.2 0.98 0.7 1')
         put('footway', baseColorMap=f'{art}/paving.color.png', normalMap=f'{art}/paving.normal.png')
         for w in walls:
             put('wall_' + w, baseColorFactor='1 0.97 0.92 1')

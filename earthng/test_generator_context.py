@@ -39,7 +39,12 @@ class GeneratorContextTests(unittest.TestCase):
         lines = SOURCE.read_text(encoding='utf8').splitlines()
         fence_start = next(i for i, line in enumerate(lines) if 'local function fence(line)' in line)
         fence_pause = next(i + 1 for i in range(fence_start, len(lines)) if lines[i] == '    pause()')
-        walls_pause = next(i + 1 for i, line in enumerate(lines) if 'if k % 32 == 0 then pause() end' in line and i > 10800)
+        # The checkpoint of the building wall loop, found by its neighbour rather than by a line
+        # number: other loops (road sidewalks) have the same pause line and move with every edit.
+        walls_pause = [i + 2 for i, line in enumerate(lines[:-1]) if line.strip() == 'along = along + length'
+                       and lines[i + 1].strip() == 'if k % 32 == 0 then pause() end']
+        self.assertEqual(len(walls_pause), 1, 'wall loop checkpoint not found exactly once')
+        walls_pause = walls_pause[0]
         fences = [dict(id='f1', kind='fence', tags={'barrier': 'fence'}, points=[[50, 310], [450, 310]]),
                   dict(id='f2', kind='fence', tags={'barrier': 'fence'}, points=[[50, 320], [450, 320]])]
         tiny = dict(id='tiny', height=3, kind='building', tags={'building': 'shed'},

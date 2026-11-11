@@ -77,6 +77,9 @@ GROUND = {'ground': (110, 150, 70), 'forest': (70, 115, 55), 'park': (90, 170, 8
           'dry_grass': (214, 186, 100), 'tundra': (130, 140, 95), 'alpine': (140, 160, 110), 'scree': (150, 145, 135),
           'bare_rock': (115, 110, 105), 'snow': (250, 252, 255), 'snow_edge': (215, 225, 230), 'glacier': (210, 235, 250),
           'water': (90, 140, 200), 'beach': (230, 214, 170), 'heath': (160, 150, 95), 'scrub': (120, 140, 80),
+          'grass_dry': (176, 168, 96), 'grass_lush': (60, 120, 50), 'earth': (170, 130, 90),
+          **{f'fade_{land}{level}': c for land, c in (('dry', (176, 168, 96)), ('lush', (60, 120, 50)), ('earth', (170, 130, 90)))
+             for level in range(1, 5)},
           'paved': (170, 168, 165), 'road': (60, 60, 62), 'road_major': (40, 40, 42), 'sidewalk': (180, 180, 180)}
 DOTS = {'tree': (20, 70, 20), 'grass': (240, 220, 60), 'rock': (90, 60, 40), 'flower': (230, 120, 200),
         'fern': (40, 140, 60), 'bush': (40, 110, 40)}
@@ -186,7 +189,9 @@ def census(args):
                 ground[kind] += area
                 tris.append((kind, v))
             for line in s.split('\n') if s else ():
-                name, shape, x, y, scale = line.split(' ')
+                # a shape's path may hold spaces
+                name, rest = line.split(' ', 1)
+                shape, x, y, scale = rest.rsplit(' ', 3)
                 prefix = name.removeprefix('e2rl_').split('_', 2)
                 layer = prefix[2] if len(prefix) > 2 else name
                 layer = layer.split('_')[0].rstrip('b') if not layer.startswith('tree') else 'tree'

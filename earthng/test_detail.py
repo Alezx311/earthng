@@ -55,18 +55,20 @@ class DetailTests(unittest.TestCase):
     def test_lawn_patch_expands_to_an_even_short_carpet(self):
         lua = self.make()
         lua.execute(r'''
-          local part = {tile={}, n=10, staticN=1, patches={{
+          -- near ring only: the dense short carpet, without the outer rings' broad stray tufts
+          local part = {tile={}, n=8, staticN=1, level=0, patches={{
             x=0, y=0, shapes={'/3d_grass/a.dae','/3d_grass/b.dae','/3d_grass/c.dae'},
             spans={0.265, 0.258, 0.255}, bottoms={-0.038, -0.033, -0.019},
             samples={0, 10, 0.1, -0.2}}},
             x={4}, y={5}, z={6}, yaw={0.2}, scale={1}, shape={'/rocks/kept.dae'}}
           local out = detail.expand(part)
-          assert(out.n==10 and out.x[1]==4 and out.shape[1]=='/rocks/kept.dae')
+          assert(out.n==8 and out.x[1]==4 and out.shape[1]=='/rocks/kept.dae')
           local minx, maxx, miny, maxy = 1e9, -1e9, 1e9, -1e9
           for k=2,out.n do
             local span = out.shape[k]=='/3d_grass/a.dae' and 0.265 or out.shape[k]=='/3d_grass/b.dae' and 0.258 or 0.255
             local height = out.scale[k] * span
             assert(height>=0.32-1e-6 and height<=0.50+1e-6, height)
+            assert(math.abs(out.wide[k]-out.scale[k])<1e-9)
             local dx, dy = out.x[k]-1, out.y[k]-1
             local bottom = out.shape[k]=='/3d_grass/a.dae' and -0.038 or out.shape[k]=='/3d_grass/b.dae' and -0.033 or -0.019
             local expect = 10 + 0.1*dx - 0.2*dy - bottom*out.scale[k]
@@ -79,6 +81,59 @@ class DetailTests(unittest.TestCase):
           assert(maxx-minx>1.2 and maxy-miny>1.2)
           assert(maxx-minx<1.6 and maxy-miny<1.6)
           assert(minx>1-0.8 and maxx<1+0.8 and miny>1-0.8 and maxy<1+0.8)
+        ''')
+
+    def test_lawn_rings_split_a_patch_without_overlap(self):
+        lua = self.make()
+        lua.execute(r'''
+          local function patch(samples) return {x=0, y=0, shapes={'/3d_grass/a.dae','/3d_grass/b.dae','/3d_grass/c.dae'},
+            spans={0.265, 0.258, 0.255}, bottoms={-0.038, -0.033, -0.019}, samples=samples,
+            tall={shapes={'/3d_grass/long.dae'}, spans={0.5}, bottoms={-0.02}}} end
+          local function ring(samples, level)
+            local out = detail.expand({tile={}, n=0, staticN=0, level=level, patches={patch(samples)}})
+            local n = detail.patchCount(patch(samples), level)
+            assert(out.n==n, 'the descriptor count is the expanded count')
+            return out
+          end
+          -- squares 0 (even) and 1 (odd): the far ring shows the even square's middle only
+          local plain = {0, 5, 0, 0, 1, 5, 0, 0}
+          local far, mid, near, all = ring(plain, 2), ring(plain, 1), ring(plain, 0), ring(plain, nil)
+          assert(far.n==1 and mid.n==3 and near.n==14 and all.n==18)
+          local seen = {}
+          for _, out in ipairs({far, mid, near}) do
+            for k=1,out.n do
+              local key = string.format('%.4f:%.4f', out.x[k], out.y[k])
+              assert(not seen[key], 'a tuft belongs to one ring'); seen[key] = true
+            end
+          end
+          for k=1,all.n do assert(seen[string.format('%.4f:%.4f', all.x[k], all.y[k])]) end
+          assert(far.wide[1] > far.scale[1] * 1.4, 'a far tuft is broad')
+          -- thin grass on dry ground keeps two near tufts; a lush hollow's outer tufts are long
+          assert(ring({0 + 32, 5, 0, 0}, 0).n==2 and ring({0 + 32, 5, 0, 0}, 2).n==1)
+          local lush = ring({0 + 16, 5, 0, 0}, 2)
+          assert(lush.n==1 and lush.shape[1]=='/3d_grass/long.dae' and lush.scale[1]*0.5>=0.5-1e-6)
+        ''')
+
+    def test_lawn_rings_share_the_grass_budget(self):
+        lua = self.make()
+        lua.execute(r'''
+          tune.grassM=100; tune.grassBudget=3000
+          local samples = {}
+          for slot=0,15 do samples[#samples+1]=slot; samples[#samples+1]=0; samples[#samples+1]=0; samples[#samples+1]=0 end
+          for x=-200,192,8 do for y=-200,192,8 do
+            stream:add(tile, {kind='static', shape='/3d_grass/a.dae', pos={x+1,y+1,0}, grassPatch={x=x, y=y,
+              shapes={'/3d_grass/a.dae','/3d_grass/b.dae','/3d_grass/c.dae'}, spans={.26,.26,.26}, bottoms={0,0,0}, samples=samples}})
+          end end
+          step(400)
+          assert(stream.count.grass>2000 and stream.count.grass<=3000, stream.count.grass)
+          local far, near = 0, 0
+          for key, entry in pairs(stream.live) do
+            local cell = stream.cells[key]
+            local d = math.sqrt(cell.x^2+cell.y^2)
+            if entry.kind=='grassNear' then near=math.max(near,d) assert(d<=26*1.1+8) end
+            if entry.kind=='grass' then far=math.max(far,d) end
+          end
+          assert(near>0 and far>near*1.8, 'the far ring reaches well past the dense one')
         ''')
 
     def test_groundcover_patches_stream_with_the_grass(self):

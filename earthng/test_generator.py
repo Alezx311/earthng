@@ -156,8 +156,9 @@ class GeneratorTests(unittest.TestCase):
                               'tags': {'highway': 'residential', 'sidewalk': 'no'},
                               'points': [[0, 250, 10], [1000, 250, 20]]}],
                    'terrain': {'rect': [0, 0, 1000, 500], 'nx': 2, 'ny': 2, 'heights': [100] * 4}}]
-        left = self.build(source)[0]
-        right = self.build(source, i=1)[0]
+        # land=False: road/DEM continuity, not which open-land sheet a cell is drawn as
+        left = self.build(source, land=False)[0]
+        right = self.build(source, i=1, land=False)[0]
         borders = []
         for manifest in [left, right]:
             road_border = set()
@@ -732,7 +733,9 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(steep)                                        # away from the deck: still ground
         self.assertTrue(all(off_deck(t) > 15 for t in steep))
         valley = lambda t: all(199 < p[1] < 214 and abs(p[0] - 250) < 20 for p in t)
-        self.assertTrue([t for t in self.triangles(road, 'e2rf_ground') if valley(t) and slope(t) > 55])
+        # under the deck's middle it stays the valley's own ground: the land of a slope (VEG.land)
+        self.assertTrue([t for kind in ('e2rf_ground', 'e2rf_grass_dry', 'e2rf_earth') for t in self.triangles(road, kind)
+                         if valley(t) and slope(t) > 55])
         self.assertEqual([t for t in self.triangles(road, 'e2rf_fence_wall') if valley(t) and slope(t) < 85], [])
 
     def test_an_osm_guard_rail_is_drawn_only_beside_a_carriageway(self):
@@ -1087,7 +1090,8 @@ class GeneratorTests(unittest.TestCase):
         cell = {'lines': [{'id': 'w', 'kind': 'fence', 'tags': {'barrier': 'wall'},
                            'points': [[50, 250, 0], [450, 250, 0]]}],
                 'terrain': {'rect': [0, 0, 500, 500], 'nx': 3, 'ny': 3, 'heights': heights}}
-        road, scene = self.build([cell])[:2]
+        # land=False: fence height over the DEM, not over dry/earth sheets of the hump
+        road, scene = self.build([cell], land=False)[:2]
         ground = list(self.triangles(road, 'e2rf_ground'))
         wall = list(self.triangles(scene, 'e2rf_fence_wall'))
         ys = {round(p[1], 4) for tri in wall for p in tri}
@@ -1798,7 +1802,7 @@ class GeneratorTests(unittest.TestCase):
             n = int(500 / step) + 1
             heights = [20.0 + (3.0 if abs(k // n * step - 200) < 1 else 0) for k in range(n * n)]
             cell = {'roads': [road], 'terrain': {'rect': [0, 0, 500, 500], 'nx': n, 'ny': n, 'heights': heights}}
-            return [p for t in self.triangles(self.build([cell])[0], 'e2rf_ground') for p in t]
+            return [p for t in self.triangles(self.build([cell], land=False)[0], 'e2rf_ground') for p in t]
 
         fine, coarse = ground(10), ground(25)
         lattice = lambda ps, step: {round(p[0], 3) for p in ps if abs(p[0] / step - round(p[0] / step)) < 1e-6}
@@ -2560,19 +2564,27 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(list(self.triangles(scene, 'e2rf_roof_tile')), [])
         self.assertAlmostEqual(sum(map(area, self.triangles(scene, 'e2rf_roof'))), 1200)
 
+    def water_items(self, manifest):
+        return [it for it in manifest['items'].values() if it.kind in ('water', 'river', 'ocean')]
+
     def test_quays_do_not_lift_the_river_between_them(self):
         """The ground of a 75 m arm of a river, under quays 5 m over it, stays on the DEM."""
         size = 41
         heights = [10. if 12 <= y <= 15 else 15. for y in range(size) for x in range(size)]
         grid = {'rect': [0, 0, 1000, 1000], 'nx': size, 'ny': size, 'heights': heights}
-        water = {'id': 'seine', 'kind': 'water', 'tags': {}, 'rings': [[[0, 300], [1000, 300], [1000, 375], [0, 375], [0, 300]]]}
+        water = {'id': 'seine', 'kind': 'water', 'tags': {'water': 'river'},
+                 'rings': [[[0, 300], [1000, 300], [1000, 375], [0, 375], [0, 300]]]}
         quay = lambda ident, y: {'id': ident, 'nodes': [ident + 'a', ident + 'b'], 'width': 8,
                                  'tags': {'highway': 'residential'}, 'points': line(0, y, 500, y, 15)}
         cells = [{'roads': [quay('n', 395), quay('s', 280)], 'terrain': grid, 'areas': [water]}]
-        road = self.build(cells, 0, 0, maxTrees=0, maxGrass=0)[0]
-        wet = [p[2] for t in self.triangles(road, 'e2rf_water') for p in t if 320 <= p[1] <= 355]
+        road, scene = self.build(cells, 0, 0, maxTrees=0, maxGrass=0)[:2]
+        # carved bed under the River; surface sits carve metres above that
+        wet = [p[2] for t in self.triangles(road, 'e2rf_bare_ground') for p in t if 320 <= p[1] <= 355]
         self.assertTrue(wet)
-        self.assertLess(max(wet), 11)
+        self.assertLess(max(wet), 11 - 2)
+        rivers = [it for it in self.water_items(scene) if it.kind == 'river']
+        self.assertTrue(rivers)
+        self.assertGreaterEqual(len(rivers[0].nodes), 2)
         dry = dict(cells[0], areas=[])
         ground = [p[2] for t in self.triangles(self.build([dry], 0, 0, maxTrees=0, maxGrass=0)[0], 'e2rf_ground')
                   for p in t if 320 <= p[1] <= 355]
@@ -2583,11 +2595,27 @@ class GeneratorTests(unittest.TestCase):
         # 25 m cells: the bed at 10, a slope of blur up to the quay's 16 inside the water
         heights = [10. + max(0, y - 13) * 3 for y in range(size) for x in range(size)]
         grid = {'rect': [0, 0, 1000, 1000], 'nx': size, 'ny': size, 'heights': heights}
-        water = {'id': 'river', 'kind': 'water', 'tags': {}, 'rings': [[[0, 200], [1000, 200], [1000, 380], [0, 380], [0, 200]]]}
-        road = self.build([{'roads': [], 'terrain': grid, 'areas': [water]}], 0, 0, maxTrees=0, maxGrass=0)[0]
-        wet = [p[2] for t in self.triangles(road, 'e2rf_water') for p in t if 240 <= p[1] <= 340]
+        water = {'id': 'river', 'kind': 'water', 'tags': {'waterway': 'riverbank'},
+                 'rings': [[[0, 200], [1000, 200], [1000, 380], [0, 380], [0, 200]]]}
+        road, scene = self.build([{'roads': [], 'terrain': grid, 'areas': [water]}], 0, 0, maxTrees=0, maxGrass=0)[:2]
+        wet = [p[2] for t in self.triangles(road, 'e2rf_bare_ground') for p in t if 240 <= p[1] <= 340]
         self.assertTrue(wet)
-        self.assertLess(max(wet), 14)
+        self.assertLess(max(wet), 14 - 2)
+        rivers = [it for it in self.water_items(scene) if it.kind == 'river']
+        self.assertTrue(rivers)
+        zs = [it.nodes[k][3] for it in rivers for k in range(1, len(it.nodes) + 1)]
+        self.assertTrue(zs)
+        self.assertLess(max(zs), 14.5)
+
+    def test_a_lake_is_one_water_block_not_a_tile_grid(self):
+        lake = {'id': 'pond', 'kind': 'water', 'tags': {'water': 'lake'},
+                'rings': [[[100, 100], [300, 100], [300, 280], [100, 280], [100, 100]]]}
+        cell = {'areas': [lake], 'terrain': {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [40] * 4}}
+        scene = self.build([cell], maxTrees=0, maxGrass=0)[1]
+        lakes = [it for it in self.water_items(scene) if it.kind == 'water' and it.look == 'lake']
+        self.assertEqual(len(lakes), 1)
+        self.assertGreater(lakes[0].scale[1] * lakes[0].scale[2], 150 * 150)
+        self.assertEqual(list(self.triangles(scene, 'e2rf_water')), [])
 
     def test_sea_below_zero_gets_a_water_plane_only_where_ground_dips(self):
         def cell(heights):
@@ -2596,19 +2624,18 @@ class GeneratorTests(unittest.TestCase):
             with self.subTest(far=far):
                 _, scene, farScene, _ = self.build([cell([20, 20, 20, 20])], far=far, seaLevel=20)
                 scene = farScene if far else scene
-                water = list(self.triangles(scene, 'e2rf_water'))
-                self.assertEqual(len(water), 2)  # open sea: one quad for the whole tile
-                self.assertTrue(all(p[2] == 20.3 for t in water for p in t))
-                self.assertAlmostEqual(sum(map(area, water)), 500 * 500)
+                # open sea: one ocean marker (world.lua keeps a single WaterPlane)
+                water = [it for it in self.water_items(scene) if it.kind == 'ocean']
+                self.assertEqual(len(water), 1)
+                self.assertAlmostEqual(water[0].pos[3], 20.3)
+                self.assertEqual(list(self.triangles(scene, 'e2rf_water')), [])
                 _, scene, farScene, _ = self.build([cell([30, 30, 30, 30])], far=far, seaLevel=20)
-                self.assertEqual(list(self.triangles(farScene if far else scene, 'e2rf_water')), [])
-        # a coast (west under the sea, east on land): water over the western quads only
+                self.assertEqual([it for it in self.water_items(farScene if far else scene) if it.kind == 'ocean'], [])
+        # a coast (west under the sea, east on land): still requests the ocean plane
         _, scene, *_ = self.build([cell([20, 30, 20, 30])], seaLevel=20)
-        water = list(self.triangles(scene, 'e2rf_water'))
-        self.assertGreater(len(water), 2)
-        self.assertLess(max(p[0] for t in water for p in t), 500)
+        self.assertTrue([it for it in self.water_items(scene) if it.kind == 'ocean'])
         _, scene, *_ = self.build([cell([20, 20, 20, 20])])  # no seaLevel (v1 data): no sea
-        self.assertEqual(list(self.triangles(scene, 'e2rf_water')), [])
+        self.assertEqual(self.water_items(scene), [])
 
     def corners(self, manifest, material=None):
         found = []
@@ -2629,12 +2656,31 @@ class GeneratorTests(unittest.TestCase):
                 pts[round(py, 3)] = (round(pz, 4), round(nx, 4), round(ny, 4), round(nz, 4))
         return pts
 
+    def test_open_land_paints_dry_and_earth_on_a_steep_slope(self):
+        # a 380 m spike over a 20 m plain: the brow is bare loam, the flanks dry (VEG.land)
+        heights = [20.0] * 25
+        heights[6] = 400  # grid point (250 m, 250 m)
+        cell = {'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 5, 'ny': 5, 'heights': heights}}
+        near = self.build([cell], i=0, j=0)[0]
+        far = self.build([cell], far=True)[2]
+        lands = {'e2rf_grass_dry', 'e2rf_grass_lush', 'e2rf_earth'}
+        fades = {f'e2rf_fade_{land}{level}' for land in ('dry', 'lush', 'earth') for level in range(1, 4)}
+        near_kinds = {mesh.material for _, mesh in self.meshes(near)}
+        far_kinds = {mesh.material for _, mesh in self.meshes(far)}
+        self.assertTrue(near_kinds & (lands | fades), near_kinds)
+        self.assertTrue(far_kinds & lands, far_kinds)
+        # a dissolve piece is two materials in the same place (cut under, fade over)
+        cuts = {f'e2rf_cut_{land}{level}' for land in ('grass', 'dry', 'lush') for level in range(1, 4)}
+        if near_kinds & fades:
+            self.assertTrue(near_kinds & cuts, near_kinds)
+
     def test_far_ground_keeps_a_hill_and_a_valley(self):
         def cell(heights):
             return {'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 5, 'ny': 5, 'heights': heights}}
         hill = [20.0] * 25
         hill[6] = 400  # grid point (250 m, 250 m)
-        road, scene, far, nav = self.build([cell(hill)], far=True)
+        # land=False: the far ground's shape, not which land a 380 m spike is drawn as
+        road, scene, far, nav = self.build([cell(hill)], far=True, land=False)
         self.assertEqual((len(road['items']), len(scene['items']), len(nav.segments)), (0, 0, 0))
         self.assertEqual(far.layer, 'far')
         ground = list(self.triangles(far, 'e2rf_ground'))
@@ -2645,13 +2691,13 @@ class GeneratorTests(unittest.TestCase):
         self.assertGreater(self.surface_at(ground, 250, 250), 200)
         valley = [80.0] * 25
         valley[6] = 5
-        low = list(self.triangles(self.build([cell(valley)], far=True)[2], 'e2rf_ground'))
+        low = list(self.triangles(self.build([cell(valley)], far=True, land=False)[2], 'e2rf_ground'))
         self.assertLess(self.surface_at(low, 200, 200), self.surface_at(low, 0, 0))
 
     def test_far_ridge_normals_tilt_away_from_the_crest(self):
         heights = [300.0 if ix == 1 else 20.0 for iy in range(5) for ix in range(5)]
         cell = {'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 5, 'ny': 5, 'heights': heights}}
-        far = self.build([cell], far=True)[2]
+        far = self.build([cell], far=True, land=False)[2]
         left = [n for x, y, z, *n in self.corners(far, 'e2rf_ground') if abs(x - 200) < 1e-4 and abs(y - 200) < 1e-4]
         right = [n for x, y, z, *n in self.corners(far, 'e2rf_ground') if abs(x - 300) < 1e-4 and abs(y - 200) < 1e-4]
         self.assertTrue(left and right)
@@ -2664,8 +2710,9 @@ class GeneratorTests(unittest.TestCase):
                            'tags': {'highway': 'residential', 'sidewalk': 'no'},
                            'points': [[0, 250, 10], [1000, 250, 30]]}],
                 'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 5, 'ny': 5, 'heights': heights}}
-        near = self.border(self.build([cell], i=0)[0], 500, surface=True)
-        far = self.border(self.build([cell], i=1, far=True)[2], 500, surface=True)
+        # land=False: shared XYZ/normals on the seam, not which land sheet each LOD picks
+        near = self.border(self.build([cell], i=0, land=False)[0], 500, surface=True)
+        far = self.border(self.build([cell], i=1, far=True, land=False)[2], 500, surface=True)
         self.assertTrue(near and far)
         self.assertEqual(near, far)
         # x = 500 is DEM column 60 m. Away from the road the surface is that minus groundDrop.
@@ -2683,7 +2730,7 @@ class GeneratorTests(unittest.TestCase):
         low = {'terrain': {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [10, 10, 10, 10]}}
         high = {'terrain': {'rect': [500, 0, 1000, 500], 'nx': 2, 'ny': 2, 'heights': [80, 80, 80, 80]}}
         for cells in ([low, high], [high, low]):
-            ground = list(self.triangles(self.build(cells, far=True)[2], 'e2rf_ground'))
+            ground = list(self.triangles(self.build(cells, far=True, land=False)[2], 'e2rf_ground'))
             self.assertAlmostEqual(self.surface_at(ground, 500, 250), 9.75, places=2)
 
     def test_missing_dem_is_omitted_instead_of_a_zero_cliff(self):
@@ -2744,7 +2791,7 @@ class GeneratorTests(unittest.TestCase):
         # in a 10 m cutting the coarse far terrain (100 m triangles) stands over the road: the far
         # road is lifted to just over it, never hidden under it (Laagna tee: ground 4 m over the road)
         cutting = {'roads': [trunk], 'terrain': {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [40] * 4}}
-        far = self.build([cutting], far=True)[2]
+        far = self.build([cutting], far=True, land=False)[2]
         asphalt = [t for m in ('e2rf_road', 'e2rf_road_major', 'e2rf_road_worn') for t in self.triangles(far, m)]
         ground = list(self.triangles(far, 'e2rf_ground'))
         self.assertTrue(asphalt and ground)

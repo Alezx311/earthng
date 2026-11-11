@@ -721,7 +721,7 @@ PHOTO_GROUND = ('ground', 'park', 'forest', *BIOME_GROUND, 'glacier', 'farmland'
 # Lawns, parks and meadows are soil with a fine relief, not the flat lawn photo. The mesh UV
 # repeats every COVER_SCALE metre (generator.lua, 24). The detail maps tile every 2 m, the same
 # grain BeamNG uses on a terrain block. Blades are the streamed tufts; this only replaces the sheet.
-TURF = ('ground', 'park', 'meadow')
+TURF = ('park',)
 _SOIL = '/assets/materials/terrain/soil/macro_clumply/t_macro_clumpy'
 _VEG = '/assets/materials/terrain/grass/t_dirt_vegetation/t_dirt_vegetation'
 TURF_BASE_M, TURF_DETAIL_M = 24.0, 2.0
@@ -744,9 +744,71 @@ def turf_stage(kind):
     }
 
 
+# Open land (generator.lua VEG.land): the common grass, grass dried on slopes and ridges, lush
+# grass in hollows and bare loam on steep ground. Each is a colour sheet MACRO_M wide
+# (fast_photo.macro_sheet) under one of the game's grey terrain detail maps over LAND_DETAIL_M,
+# which the engine adds to it (base + (2 * detail - 1) * strength).
+# Where one land passes into another the generator draws both in the same place, each cut by
+# the dissolve mask: fade_<land><level> is the land coming in, over LAND_COVER[level] of the
+# area, and cut_<land><level> the land it comes into, over the rest (the inverse mask). They
+# do not overlap but for LAND_OVERLAP grey levels of the mask, so nothing fights for depth and
+# no hole shows the sky through a compressed texel.
+MACRO_M, LAND_DETAIL_M = _photo.MACRO_M, 2.0
+_TERRAIN = '/assets/materials/terrain/'
+# land: (sheet, detail map stem, detail colour strength, groundType, fallback colour)
+LANDS = {
+    'grass': ('grass', 'grass/t_grass_01/t_grass_01', .45, 'GRASS', (84, 100, 42)),
+    'dry':   ('dry', 'grass/t_dirt_dry_grass/t_dirt_dry_grass', .48, 'GRASS', (142, 134, 76)),
+    'lush':  ('lush', 'grass/t_grass_02/t_grass_02', .40, 'GRASS', (62, 92, 34)),
+    'earth': ('earth', 'soil/dirt_crumbly/t_dirt_crumbly', .50, 'DIRT', (150, 124, 88)),
+}
+LAND_COVER = (.22, .45, .70)
+LAND_OVERLAP = 6
+LAND_OF = {'ground': 'grass', 'meadow': 'grass', 'grass_dry': 'dry', 'grass_lush': 'lush', 'earth': 'earth'}
+FADES, CUTS = {}, {}
+for _level, _cover in enumerate(LAND_COVER, 1):
+    for _land in ('dry', 'lush', 'earth'):
+        FADES[f'fade_{_land}{_level}'] = (_land, _cover)
+    for _land in ('grass', 'dry', 'lush'):
+        CUTS[f'cut_{_land}{_level}'] = (_land, _cover)
+for _k, _land in list(LAND_OF.items()) + [(k, v[0]) for k, v in {**FADES, **CUTS}.items()]:
+    _l = LANDS[_land]
+    KINDS[_k] = (None, [*(c / 255 for c in _l[4]), 1], _l[3], MACRO_M, 'plan')
+    # cut, not blended (a translucent ProceduralMesh is lit in the forward pass); the masks'
+    # mips keep every level's coverage (fast_art.MIP_REFS 'uniform')
+    if _k in FADES:
+        EXTRA[_k] = {'alphaTest': True, 'alphaRef': round(255 * (1 - FADES[_k][1])), 'castShadows': False}
+    elif _k in CUTS:
+        EXTRA[_k] = {'alphaTest': True, 'alphaRef': round(255 * CUTS[_k][1]) - LAND_OVERLAP, 'castShadows': False}
+MACRO = tuple(LAND_OF) + tuple(FADES) + tuple(CUTS)
+
+
+def macro_stage(kind):
+    land = LAND_OF.get(kind) or (FADES.get(kind) or CUTS[kind])[0]
+    sheet, detail, strength, _, _ = LANDS[land]
+    stage = {
+        'baseColorMap': f'{ART}/real/macro_{sheet}.color.png',
+        'roughnessFactor': .96 if land == 'earth' else .93,
+        'detailMap': _TERRAIN + detail + '_b.png',
+        'detailNormalMap': _TERRAIN + detail + '_nm.png',
+        'roughnessDetailMap': _TERRAIN + detail + '_r.png',
+        'detailScale': [MACRO_M / LAND_DETAIL_M] * 2,
+        'detailBaseColorMapStrength': strength,
+        'detailNormalMapStrength': 1.0,
+        'detailRoughnessMapStrength': .4,
+    }
+    if kind in FADES:
+        stage['opacityMap'] = f'{ART}/real/land_blend_o.data.png'
+    elif kind in CUTS:
+        stage['opacityMap'] = f'{ART}/real/land_blend_inv_o.data.png'
+    return stage
+
+
 def real_stage(kind):
     """Stage-0 maps of a kind in the 'real' pack."""
     tex, colour, _, _, _ = KINDS[kind]
+    if kind in MACRO:
+        return macro_stage(kind)
     if kind in TURF:
         return turf_stage(kind)
     if kind in nature.NATURAL and tex == 'grass':
@@ -775,7 +837,7 @@ def real_stage(kind):
 def material(kind):
     _, colour, ground, _, _ = KINDS[kind]
     stage = real_stage(kind)
-    if kind in TINT and kind not in PHOTO_GROUND and kind not in TURF:
+    if kind in TINT and kind not in PHOTO_GROUND and kind not in TURF and kind not in MACRO:
         stage['baseColorFactor'] = TINT[kind]
     if kind == 'road_worn':
         stage['roughnessFactor'] = .96

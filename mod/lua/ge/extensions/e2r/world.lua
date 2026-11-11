@@ -693,6 +693,103 @@ local function spawnItem(it, group, pause, tile, layer)
       spawnItem(plant, group, pause, tile, layer)
       pause()
     end
+  elseif it.kind == 'ocean' then
+    -- One WaterPlane for the open sea (infinite, no tile seams). Kept on S, outside tile groups,
+    -- so unloading a coastal tile does not delete the ocean under the next one.
+    if S.ocean then
+      S.ocean:setPosition(vec3(0, 0, it.pos[3]))
+      result.waterSpawned = (result.waterSpawned or 0) + 1
+      return
+    end
+    local obj = createObject('WaterPlane')
+    if not obj then return end
+    obj.canSave = false
+    obj:setField('fullReflect', 0, 'false')
+    obj:setField('baseColor', 0, '26 44 50 255')
+    obj:setField('rippleTex', 0, '/core/art/water/ripple.dds')
+    obj:setField('foamTex', 0, '/core/art/water/foam.dds')
+    obj:setField('depthGradientTex', 0, '/core/art/water/depthcolor_ramp_b.png')
+    obj:setField('cubemap', 0, 'DefaultSkyCubemap')
+    obj:setField('fresnelBias', 0, '0.1')
+    obj:setField('fresnelPower', 0, '15')
+    obj:setField('specularPower', 0, '200')
+    obj:setField('overallRippleMagnitude', 0, '0.28')
+    obj:setField('overallWaveMagnitude', 0, '0.05')
+    obj:setField('overallFoamOpacity', 0, '0.55')
+    obj:setField('foamMaxDepth', 0, '0.35')
+    obj:setField('reflectivity', 0, '0.65')
+    obj:setField('viscosity', 0, '0.001')
+    obj:setField('waterFogDensity', 0, '0.5')
+    obj:setField('depthGradientMax', 0, '80')
+    obj:setField('gridSize', 0, '120')
+    obj:setField('gridElementSize', 0, '1.5')
+    obj:setField('rippleDir', 0, '0 1'); obj:setField('rippleDir', 1, '0.707 0.707'); obj:setField('rippleDir', 2, '0.5 0.86')
+    obj:setField('rippleSpeed', 0, '-0.01'); obj:setField('rippleSpeed', 1, '0.02'); obj:setField('rippleSpeed', 2, '0.012')
+    obj:setField('rippleTexScale', 0, '120 120'); obj:setField('rippleTexScale', 1, '20 28'); obj:setField('rippleTexScale', 2, '60 60')
+    obj:setField('waveDir', 0, '0 1'); obj:setField('waveDir', 1, '0.707 0.707'); obj:setField('waveDir', 2, '0.5 0.86')
+    obj:setField('waveMagnitude', 0, '0.25'); obj:setField('waveMagnitude', 1, '0.2'); obj:setField('waveMagnitude', 2, '0.15')
+    obj:setField('waveSpeed', 0, '1.2'); obj:setField('waveSpeed', 1, '1'); obj:setField('waveSpeed', 2, '0.8')
+    if obj.reloadTextures then obj:reloadTextures() end
+    obj:setPosition(vec3(0, 0, it.pos[3]))
+    obj:registerObject('e2r_ocean')
+    S.ocean = obj
+    result.waterSpawned = (result.waterSpawned or 0) + 1
+  elseif it.kind == 'water' or it.kind == 'river' then
+    -- Real engine water: WaterBlock (lake) or River (channel). Look fields inline —
+    -- this file is at LuaJIT's 200-local limit.
+    local river = it.kind == 'river'
+    local obj = createObject(river and 'River' or 'WaterBlock')
+    if not obj then return end
+    obj.canSave = false
+    obj:setField('fullReflect', 0, 'false')
+    obj:setField('baseColor', 0, river and '34 55 70 255' or '0 67 115 255')
+    obj:setField('rippleTex', 0, '/core/art/water/ripple.dds')
+    obj:setField('foamTex', 0, '/core/art/water/foam.dds')
+    obj:setField('depthGradientTex', 0, '/core/art/water/depthcolor_ramp_b.png')
+    obj:setField('cubemap', 0, 'DefaultSkyCubemap')
+    obj:setField('fresnelBias', 0, '0.1')
+    obj:setField('fresnelPower', 0, '10')
+    obj:setField('specularPower', 0, '200')
+    obj:setField('overallRippleMagnitude', 0, river and '0.35' or '0.28')
+    obj:setField('overallWaveMagnitude', 0, river and '0.02' or '0.04')
+    obj:setField('overallFoamOpacity', 0, river and '0.85' or '0.6')
+    obj:setField('foamMaxDepth', 0, '0.55')
+    obj:setField('reflectivity', 0, '0.4')
+    obj:setField('viscosity', 0, '0.001')
+    obj:setField('waterFogDensity', 0, river and '1.2' or '0.9')
+    obj:setField('depthGradientMax', 0, river and '6' or '12')
+    obj:setField('rippleDir', 0, '0 1'); obj:setField('rippleDir', 1, '0.707 0.707'); obj:setField('rippleDir', 2, '0.5 0.86')
+    obj:setField('rippleSpeed', 0, river and '0.05' or '-0.015')
+    obj:setField('rippleSpeed', 1, '0.015'); obj:setField('rippleSpeed', 2, '0.01')
+    obj:setField('rippleTexScale', 0, river and '4 12' or '10 10')
+    obj:setField('rippleTexScale', 1, '12 16'); obj:setField('rippleTexScale', 2, '50 50')
+    obj:setField('waveDir', 0, '0 1'); obj:setField('waveDir', 1, '0.707 0.707'); obj:setField('waveDir', 2, '0.5 0.86')
+    obj:setField('waveMagnitude', 0, '0.2'); obj:setField('waveMagnitude', 1, '0.2'); obj:setField('waveMagnitude', 2, '0.2')
+    obj:setField('waveSpeed', 0, '1'); obj:setField('waveSpeed', 1, '1'); obj:setField('waveSpeed', 2, '1')
+    if river then
+      obj:setField('FlowMagnitudePhysics', 0, '2')
+      obj:setField('SegmentLength', 0, '12')
+      obj:setField('SubdivideLength', 0, '3')
+      obj:setField('LowLODDistance', 0, '80')
+    end
+    if obj.reloadTextures then obj:reloadTextures() end
+    obj:registerObject(it.name or '')
+    if group then group:addObject(obj) end
+    if river then
+      local up = vec3(0, 0, 1)
+      for i = 1, #(it.nodes or {}) do
+        local node = it.nodes[i]
+        obj:insertNodeNoRegen(vec3(node[1], node[2], node[3]), node[4], node[5], up, i - 1)
+      end
+      if obj.regenerate then obj:regenerate() end
+    else
+      local scale = it.scale or {10, 10, 8}
+      local grid = it.grid or math.max(2, math.min(16, math.min(scale[1], scale[2]) * .06))
+      obj:setField('gridElementSize', 0, tostring(grid))
+      obj:setPosition(vec3(it.pos[1], it.pos[2], it.pos[3]))
+      obj:setScale(vec3(scale[1], scale[2], scale[3]))
+    end
+    result.waterSpawned = (result.waterSpawned or 0) + 1
   elseif it.kind == 'proc' then
     local meshes = it.meshes or binMeshes(it.shape, pause)
     S.pairsFrame = (S.pairsFrame or 0) + #(meshes or {})
@@ -4248,6 +4345,7 @@ function M.onClientEndMission()
   restorePackState()
   resetForests()
   if NATIVE then native.refresh() end
+  if S.ocean then pcall(function() S.ocean:delete() end); S.ocean = nil end
   S.stream, S.co, S.job, S.landing, S.state = nil, nil, nil, nil, 'off'
   S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending, S.navLights = {}, {}, {}, {}, {}, {}, {}
   S.signalDirty, S.signalAt = nil, nil

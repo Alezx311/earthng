@@ -74,7 +74,8 @@ def save(image, path, srgb=None, alpha_ref=None):
     """Write image (PIL, RGB) as a BC1 DDS with mips; sides must be powers of two. A DX10 header
     carries the format as the game's own textures do: colour maps ('.color.' in the name, or
     srgb=True) are sRGB; read as linear, a plain DXT1 lawn came out pale (vis-10-akadem).
-    alpha_ref: an opacity map (grey) for that alpha test; every mip keeps the coverage."""
+    alpha_ref: an opacity map (grey) for that alpha test; every mip keeps the coverage.
+    'uniform': for a test at any ref (see below)."""
     if srgb is None:
         srgb = '.color.' in str(path) or '.glow.' in str(path)
     im = image.convert('RGB')
@@ -83,7 +84,13 @@ def save(image, path, srgb=None, alpha_ref=None):
     coverage = None
     while True:
         a = np.asarray(im, dtype=np.uint8)
-        if alpha_ref is not None:
+        if alpha_ref == 'uniform':
+            # every grey level over the same share of the map in every mip: a test at any ref
+            # keeps its coverage (the lands' dissolve mask is cut at four of them)
+            v = a[..., 0].astype(np.float32)
+            rank = np.argsort(np.argsort(v, axis=None, kind='stable')).reshape(v.shape)
+            a = (rank * (255.999 / rank.size)).astype(np.uint8)[..., None].repeat(3, -1)
+        elif alpha_ref is not None:
             if coverage is None:
                 coverage = float((a[..., 0] >= alpha_ref).mean())
             else:

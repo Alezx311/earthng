@@ -110,6 +110,8 @@ FLAT = {   # kind: (toon colour, model colour)
     'rail': ((196, 198, 206), (240, 240, 240)), 'rail_side': ((118, 86, 68), (208, 208, 208)),
 }
 FLAT.update({k: (tuple(round(c * 255) for c in style.KINDS[k][1][:3]), (222, 222, 222)) for k in style.SHEET_KINDS})
+# the lands of the open ground are the ground in a flat pack
+FLAT.update({k: FLAT['ground'] for k in style.MACRO})
 BASE_PACKS = ('real', 'toon', 'model', 'synth')
 PACKS = BASE_PACKS + ('pixel',) + fast_packs.PACKS
 LABELS = {'real': 'Реальний', 'toon': 'Мультяшний', 'model': 'Макет', 'synth': 'Синтвейв', 'pixel': 'Ретро-місто', **fast_packs.LABELS}
@@ -121,6 +123,7 @@ SYNTH = {
     'water': (14, 10, 46), 'roof': (34, 22, 62), 'ground': (20, 8, 40), 'forest': (16, 6, 34),
     'roof_tile': (40, 20, 60), 'roof_metal': (30, 22, 60), 'parapet': (36, 22, 64),
 }
+SYNTH.update({k: SYNTH['ground'] for k in style.MACRO})
 SYNTH_GLOW = {'mark': (0.0, 1.0, 1.0), 'curb': (1.0, 0.1, 0.8)}   # emissive lines on the roads
 NEON = (255, 40, 200)       # grid magenta
 CYAN = (0, 240, 255)
@@ -372,8 +375,10 @@ def stylised_decal(kind, f):
         f['opacityMap'] = style.TEXTURES['line_worn']['opacityMap']
     elif kind == 'track':
         f['opacityMap'] = style.TEXTURES['track']['opacityMap']    # the ragged shoulders
-    elif kind in style.EDGES:
+    elif kind in style.EDGES or kind in style.FADES:
         f['opacityFactor'] = 0
+    elif kind in style.CUTS:
+        f['opacityMap'] = ''
 
 
 def pack_fields(pack, base):
@@ -396,7 +401,7 @@ def pack_fields(pack, base):
                 f['emissiveMap'] = f'{base}/synth/{w}.glow.png'; f['emissiveFactor'] = '1 1 1'
             f['baseColorFactor'] = '1 1 1 1'
         elif pack == 'real':
-            if kind in style.TURF or kind in style.PHOTO_GROUND:
+            if kind in style.TURF or kind in style.PHOTO_GROUND or kind in style.MACRO:
                 f.update(style.real_stage(kind))
                 f['baseColorFactor'] = '1 1 1 1'
             elif kind in style.nature.NATURAL:
@@ -489,6 +494,20 @@ def ground_sheet(kind):
     return im, nm
 
 
+def land_art(real):
+    """The open land's colour sheets and the mask they dissolve by (fast_photo.macro_sheet)."""
+    for name in photo.MACRO:
+        photo.macro_sheet(name).save(real / f'macro_{name}.color.png')
+    mask = photo.blend_mask()
+    mask.save(real / 'land_blend_o.data.png')
+    # the land a piece comes into is cut by the inverse (fast_style.CUTS)
+    ImageChops.invert(mask).save(real / 'land_blend_inv_o.data.png')
+    (real / 'land.version').write_text(LAND_ART_VERSION)
+
+
+LAND_ART_VERSION = '3'  # change whenever a land sheet or the mask changes
+
+
 def ensure(user):
     """The art in the user folder (the game reads it from there): copied from the shared
     build in data/art/<VERSION>, which is written once (~20 s: photo facades and ground
@@ -569,6 +588,11 @@ def prebuild(distributable=False):
                 im, nm = ground_sheet(kind)
                 im.save(shared / 'real' / f'ground_{kind}.color.png'); nm.save(shared / 'real' / f'ground_{kind}.normal.png')
             to_dds(shared / 'real')
+        # and the open land's sheets (generator.lua VEG.land)
+        stamp = shared / 'real' / 'land.version'
+        if not stamp.exists() or stamp.read_text() != LAND_ART_VERSION:
+            land_art(shared / 'real')
+            to_dds(shared / 'real')
         # and the yard's paint and railing (generator.lua YARD)
         if not (shared / 'real' / 'railing_o.data.dds').exists():
             yard_art(shared / 'real')
@@ -637,6 +661,7 @@ def build(r, game_assets=True):
     for k, rgb in enumerate(car_art.CAR_COLOURS + [(36, 44, 52), (22, 22, 22)]):
         d.rectangle([32 * k, 0, 32 * k + 31, 31], fill=rgb)
     cars.save(r / 'real' / 'cars.color.png')
+    land_art(r / 'real')
     yard_art(r / 'real')
     rail_art(r / 'real')
     brand_art(r / 'real')
@@ -701,7 +726,7 @@ def facade_art(r):
 # alphaRef per opacity map whose mips keep its coverage (fast_dds.keep_coverage)
 MIP_REFS = {'chainlink_o.data.png': style.CHAINLINK_MIP_REF, 'line_o.data.png': style.EXTRA['mark']['alphaRef'],
             'railing_o.data.png': style.RAILING_MIP_REF, 'fence_boards_o.data.png': style.FENCE_BOARDS_MIP_REF,
-            'track_o.data.png': style.TRACK_MIP_REF}
+            'track_o.data.png': style.TRACK_MIP_REF, 'land_blend_o.data.png': 'uniform', 'land_blend_inv_o.data.png': 'uniform'}
 # The yard atlas (generator.lua YARD.cell keeps the same order): playground paint, wood, metal,
 # sand, container screens and the yellow of the hemisphere bollards.
 YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (228, 118, 40), (146, 104, 62),

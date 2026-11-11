@@ -394,6 +394,86 @@ def ground_sheet(kind):
     return img(colour), img(normal)
 
 
+# --- open land: macro colour sheets ------------------------------------------------------------
+# Open ground and meadows are one sheet MACRO_M wide (generator.lua COVER_SCALE), not a 24 m photo
+# sheet: a 24 m repeat read as one green carpet from a hill and hid the relief. The sheet holds
+# only colour, in patches of 2-40 m; the grain is the game's grey terrain detail map over 2 m
+# (fast_style.macro_stage), which the engine adds to it. Four lands: the common grass, grass dried
+# on slopes and ridges, the lush grass of hollows, and bare loam where the slope is steep.
+# Colours are sRGB. The grass is the mean of the tufts streamed over it (the game's
+# s_grass_green_short_01..03: 62 83 22, 94 104 50, 122 120 57), so the carpet has no edge.
+MACRO_M = 96.0
+MACRO_PX = 2048
+# kind: base colour, then (colour, cover, cycles, sharpness) patches laid in order
+MACRO = {
+    'grass': ((84, 102, 42), [((102, 112, 50), .34, 3, .3), ((68, 90, 34), .34, 5, .26),
+                              ((122, 122, 62), .08, 9, .12), ((96, 88, 54), .02, 17, .06)]),
+    'dry':   ((140, 134, 76), [((158, 148, 88), .34, 4, .28), ((116, 120, 60), .26, 6, .2),
+                              ((172, 160, 104), .09, 11, .1), ((122, 104, 70), .04, 15, .06)]),
+    'lush':  ((64, 94, 36), [((78, 106, 40), .34, 4, .28), ((50, 78, 30), .30, 6, .22),
+                             ((92, 114, 46), .08, 10, .1), ((56, 70, 32), .03, 16, .06)]),
+    'earth': ((150, 126, 90), [((166, 142, 102), .32, 4, .26), ((128, 104, 74), .28, 7, .18),
+                               ((126, 122, 70), .10, 9, .08), ((108, 88, 64), .05, 19, .06)]),
+}
+
+
+def _srgb(a):
+    return np.where(a <= .0031308, a * 12.92, 1.055 * np.clip(a, 1e-6, None) ** (1 / 2.4) - .055)
+
+
+def _linear(a):
+    return np.where(a <= .04045, a / 12.92, ((a + .055) / 1.055) ** 2.4)
+
+
+def _octaves(seed, cycles):
+    """Noise that repeats with the sheet with features from 1/cycles of it down to a few pixels."""
+    n = _noise(seed, cycles) * .6 + _noise(seed + 101, min(24, cycles * 3)) * .28
+    rng = np.random.default_rng(seed + 7)
+    fine = rng.random((MACRO_PX // 8, MACRO_PX // 8), dtype=np.float32)
+    fine = np.asarray(Image.fromarray(fine, mode='F').resize((MACRO_PX, MACRO_PX), Image.BICUBIC), dtype=np.float32)
+    n = n + (fine - .5) * .12
+    return (n - n.min()) / (n.max() - n.min())
+
+
+def macro_sheet(kind):
+    """The colour image of one land's MACRO_M sheet. Blended in linear light."""
+    base, patches = MACRO[kind]
+    key = int.from_bytes(hashlib.sha256(('macro_' + kind).encode()).digest()[:4], 'big') % 100000
+    colour = np.empty((MACRO_PX, MACRO_PX, 3), np.float32)
+    colour[:] = _linear(np.array(base, np.float32) / 255)
+    for index, (rgb, cover, cycles, soft) in enumerate(patches):
+        noise = _octaves(key + 31 * index, cycles)
+        edge = np.quantile(noise, 1 - cover)
+        t = np.clip((noise - (edge - soft)) / (2 * soft), 0, 1)
+        mask = (t * t * (3 - 2 * t))[..., None]
+        colour = colour * (1 - mask) + _linear(np.array(rgb, np.float32) / 255) * mask
+    # a slow change of brightness over the sheet, so no two fields of it read the same
+    shade = _noise(key + 977, 2) * .7 + _noise(key + 978, 5) * .3
+    colour = colour * (.86 + .28 * shade[..., None])
+    # clumps of 1-3 m and a grain of 10-20 cm: from a hill the 2 m detail map is too fine to see,
+    # and a sheet of smooth colour read as plastic
+    rng = np.random.default_rng(key + 5)
+    for cells, amount in ((MACRO_PX // 40, .16), (MACRO_PX // 12, .12), (MACRO_PX // 3, .12)):
+        n = np.pad(rng.random((cells, cells), dtype=np.float32), 2, mode='wrap')
+        big = np.asarray(Image.fromarray(n, mode='F').resize(((cells + 4) * MACRO_PX // cells,) * 2, Image.BICUBIC), dtype=np.float32)
+        k = 2 * MACRO_PX // cells
+        colour = colour * (1 + amount * (big[k:k + MACRO_PX, k:k + MACRO_PX, None] - .5))
+    return Image.fromarray(np.clip(_srgb(colour) * 255 + .5, 0, 255).astype('uint8'))
+
+
+def blend_mask():
+    """The opacity map the lands dissolve into each other by (generator.lua VEG.land): blobs of
+    2-12 m with every grey level over the same share of the sheet, so an alpha test at ref
+    covers 1 - ref / 255 of it. fast_dds keeps that in every mip ('uniform')."""
+    n = _noise(4211, 9) * .5 + _noise(4212, 21) * .32
+    rng = np.random.default_rng(4213)
+    fine = rng.random((MACRO_PX // 4, MACRO_PX // 4), dtype=np.float32)
+    n = n + np.asarray(Image.fromarray(fine, mode='F').resize((MACRO_PX, MACRO_PX), Image.BICUBIC), dtype=np.float32) * .08
+    rank = np.argsort(np.argsort(n, axis=None)).reshape(n.shape)
+    grey = (rank * (255.999 / rank.size)).astype('uint8')
+    return Image.fromarray(grey).convert('RGB').resize((1024, 1024), Image.BOX)
+
+
 def available():
     return (TEXTURES / 'panelka_panels/albedo.jpg').exists() and (TEXTURES / 'photo_lawn/albedo.jpg').exists()
 

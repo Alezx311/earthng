@@ -48,14 +48,143 @@ local CLAIM = {paved = 1, ballast = 1, water = 2, glacier = 3, bare_rock = 4, sc
   scrub = 13, forest = 14, park = 15, bare_ground = 16}
 -- Asphalt: the aerial street photo over 30 m, its fine detail through the detail maps
 -- (fast_style.ROAD_M, DETAIL_M).
-local COVER_SCALE = {ground = 24, forest = 24, park = 24, meadow = 24, orchard = 24,
+local COVER_SCALE = {ground = 96, forest = 24, park = 24, meadow = 96, orchard = 24,
+  grass_dry = 96, grass_lush = 96, earth = 96,   -- the open land's sheets (fast_style.MACRO_M)
   scrub = 24, heath = 24, glacier = 24, farmland = 24, vineyard = 12, bare_rock = 12,
   scree = 12, beach = 12, wetland = 12, bare_ground = 12, ballast = 4,
   road = 30, road_major = 30, road_worn = 30, footway_asphalt = 30, road_sett = 3,
   -- the climate's open ground (biome.lua): photo sheets of fast_photo.GROUND_M
   desert = 24, dune = 24, steppe = 24, dry_grass = 24, tundra = 24, alpine = 24, snow = 24, snow_edge = 24}
 local ABIN = 12.5      -- m: bins of asphalt pieces that sidewalks and verges are cut by
-local SEA_ABOVE = 0.3   -- the sea plane over the DEM's flat sea surface (no z-fighting)
+local SEA_ABOVE = 0.3   -- the water surface over the DEM's flat sea / river surface (no z-fighting)
+-- Real WaterBlock volumes (world.lua), not the old e2rf_water mesh sheet. The bed under them
+-- stays ordinary ground (bare_ground); the block carries waves, depth fog and buoyancy.
+-- Real engine water (world.lua): WaterBlock for seas/lakes, River for long channels. The bed mesh
+-- is carved WATER.carve under the surface so depth fog reads; one surface Z per body so blocks
+-- do not stack as shelves. Own functions: build() is at LuaJIT's 200-local limit.
+local WATER = {bed = 'bare_ground', lakeDepth = 10, seaDepth = 80, riverDepth = 5, carve = 2.5,
+  above = SEA_ABOVE, gridNear = 5, gridFar = 16, riverStep = 40, riverMaxW = 90, riverMinAspect = 2.5}
+function WATER.classOf(area, box)
+  local tags = area.tags or {}
+  local w = tags.water or tags.waterway or ''
+  if w == 'river' or w == 'stream' or w == 'canal' or w == 'ditch' or w == 'drain' or w == 'riverbank' then
+    return 'river'
+  end
+  if w == 'lake' or w == 'pond' or w == 'reservoir' or w == 'basin' or w == 'lagoon' or w == 'oxbow' then
+    return 'lake'
+  end
+  local dx, dy = box[3] - box[1], box[4] - box[2]
+  local long, short = math.max(dx, dy), math.min(dx, dy)
+  -- elongated water (a river arm, not a round lake): width is free, River nodes carry it
+  if long > 150 and long > short * WATER.riverMinAspect then return 'river' end
+  return 'lake'
+end
+function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, level, inside, boundsOf, pause)
+  local n = 0
+  local function block(x0, y0, x1, y1, z, depth, look)
+    local w, l = x1 - x0, y1 - y0
+    if w < 1 or l < 1 then return end
+    n = n + 1
+    scene.items[#scene.items + 1] = {
+      kind = 'water', name = string.format('e2rl_%s_water_%d', key, n),
+      pos = {(x0 + x1) * .5, (y0 + y1) * .5, z}, scale = {w, l, depth},
+      look = look or 'lake', grid = distant and WATER.gridFar or WATER.gridNear,
+      decor = true, layer = 'scene'}
+  end
+  -- Sea / ocean: one infinite WaterPlane for the session (world.lua singleton). Per-tile
+  -- WaterBlocks stacked at 50–500 m and read as shelves; a plane has no seams. Inland tiles
+  -- that suppressed seaQuads (Death Valley) emit nothing, so no plane appears there alone.
+  if sea and seaQuads and #seaQuads > 0 then
+    n = n + 1
+    scene.items[#scene.items + 1] = {
+      kind = 'ocean', name = string.format('e2rl_%s_ocean', key),
+      pos = {0, 0, sea}, look = 'sea', decor = true, layer = 'scene'}
+  end
+  for _, area in ipairs(distant and {} or areas or {}) do
+    if area.kind == 'water' then
+      local box = boundsOf(area.rings)
+      local x0 = math.max(rect[1], box[1])
+      local y0 = math.max(rect[2], box[2])
+      local x1 = math.min(rect[3], box[3])
+      local y1 = math.min(rect[4], box[4])
+      if x1 - x0 >= 2 and y1 - y0 >= 2 then
+        local class = WATER.classOf(area, box)
+        -- one surface Z for the whole body (median of wet samples): shelves were adjacent cells
+        -- each taking their own bed height
+        local zs, zN = {}, 0
+        for sy = y0 + 10, y1, 25 do
+          for sx = x0 + 10, x1, 25 do
+            if inside(area.rings, sx, sy) then
+              zN = zN + 1
+              zs[zN] = level(sx, sy, demAt(sx, sy) or 0, demAt)
+            end
+          end
+        end
+        if zN == 0 then
+          local cx, cy = (x0 + x1) * .5, (y0 + y1) * .5
+          if inside(area.rings, cx, cy) then zN = 1; zs[1] = level(cx, cy, demAt(cx, cy) or 0, demAt) end
+        end
+        if zN > 0 then
+          table.sort(zs)
+          local surface = zs[math.ceil(zN * .5)] + WATER.carve + WATER.above
+          if class == 'river' then
+            local nodes = WATER.riverNodes(area.rings, rect, x0, y0, x1, y1, surface, demAt, level, inside)
+            if nodes and #nodes >= 2 then
+              n = n + 1
+              scene.items[#scene.items + 1] = {
+                kind = 'river', name = string.format('e2rl_%s_river_%d', key, n),
+                nodes = nodes, look = 'river', decor = true, layer = 'scene'}
+            else
+              block(x0, y0, x1, y1, surface, WATER.lakeDepth, 'lake')
+            end
+          else
+            block(x0, y0, x1, y1, surface, WATER.lakeDepth, 'lake')
+          end
+        end
+      end
+    end
+    pause()
+  end
+end
+-- Centre line of a river polygon: samples along the long axis, width from the wet cross-section.
+function WATER.riverNodes(rings, rect, x0, y0, x1, y1, surface, demAt, level, inside)
+  local dx, dy = x1 - x0, y1 - y0
+  local alongX = dx >= dy
+  local len = alongX and dx or dy
+  if len < 30 then return nil end
+  local step = math.min(WATER.riverStep, len / 3)
+  local nodes, n = {}, 0
+  local function cross(s)
+    local ax = alongX and (x0 + s) or ((x0 + x1) * .5)
+    local ay = alongX and ((y0 + y1) * .5) or (y0 + s)
+    local nx, ny = alongX and 0 or 1, alongX and 1 or 0
+    local lo, hi = nil, nil
+    local reach = alongX and dy or dx
+    for t = -reach, reach, 2 do
+      local x, y = ax + nx * t, ay + ny * t
+      if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and inside(rings, x, y) then
+        if not lo or t < lo then lo = t end
+        if not hi or t > hi then hi = t end
+      end
+    end
+    if not lo then return nil end
+    local cx, cy = ax + nx * (lo + hi) * .5, ay + ny * (lo + hi) * .5
+    local width = math.max(4, math.min(400, (hi - lo) + 4))
+    local z = surface
+    local bed = level(cx, cy, demAt(cx, cy) or surface, demAt)
+    if bed then z = math.max(surface - 0.5, bed + WATER.carve + WATER.above) end
+    return {cx, cy, z, width, WATER.riverDepth}
+  end
+  for s = 0, len, step do
+    local node = cross(s)
+    if node then n = n + 1; nodes[n] = node end
+  end
+  if n >= 2 and (alongX and nodes[n][1] or nodes[n][2]) < (alongX and x1 or y1) - 1 then
+    local last = cross(len)
+    if last then n = n + 1; nodes[n] = last end
+  end
+  return n >= 2 and nodes or nil
+end
 local ECA_TREE = '/levels/east_coast_usa/art/shapes/trees/'
 local LAMP = '/art/shapes/objects/lamp1.dae'
 local BUS_STOP = '/art/shapes/objects/s_busstop_jri.dae'
@@ -142,6 +271,23 @@ local VEG = {
 -- gardenRamp (a village street reads .04-.14). Firs from firFrom m above the sea, fully at
 -- firFrom + firRamp: the Polissia and steppe pinewoods stay pine, the Carpathians turn fir.
 VEG.gardenFrom, VEG.gardenRamp, VEG.firFrom, VEG.firRamp = .004, .012, 450, 450
+-- Open land (ground without a mapped cover, and meadows) is not one sheet of grass: it dries on
+-- slopes and ridges, the more the more a slope faces the sun, grows lush in hollows, and is bare
+-- loam where it is steep (build(): bio.landAt). The relief reads by it. A ProceduralMesh has no
+-- vertex colours and one UV set, so lands are not blended in a shader: where one passes into
+-- another, the ground is drawn in pieces `fine` m wide, each as two materials in the same place:
+-- the land coming in, cut by a world-locked noise mask at the share of the area its level names
+-- (fade_<land><level>, fast_style.LAND_COVER), and the land it comes into, cut by the inverse
+-- (cut_<land><level>). They do not overlap, so nothing fights for depth at any distance (pieces
+-- laid 1 cm over the ground did, from 100 m: only whole cells showed, as blocks). moist and
+-- bare: the levels' thresholds; the level past the last is the land whole.
+VEG.land = {fine = 12.5, kinds = {ground = true, meadow = true}, levels = 3,
+  moist = {.16, .32, .5, .7}, bare = {.15, .35, .55, .8}, reach = 45, farReach = 60,
+  solid = {dry = 'grass_dry', lush = 'grass_lush', earth = 'earth'}}
+for level = 1, VEG.land.levels do
+  for _, land in ipairs({'dry', 'lush', 'earth'}) do COVER_SCALE['fade_' .. land .. level] = COVER_SCALE.ground end
+  for _, land in ipairs({'grass', 'dry', 'lush'}) do COVER_SCALE['cut_' .. land .. level] = COVER_SCALE.ground end
+end
 
 -- Plants and stones of other climates (biome.lua), all from the player's own levels: Utah's
 -- junipers, sagebrush and boulders, Johnson Valley's desert shrubs, dry grass and rocks, West
@@ -170,6 +316,9 @@ VEG.desertPlants = {UT .. 'groundcover/s_gc_utah_grey_bush_01.dae', UT .. 'groun
   UT .. 'groundcover/s_gc_dead_bush_01.dae'}
 VEG.dryTufts = {JV .. 'groundcover/s_gc_dry_grass_01.dae', JV .. 'groundcover/s_gc_dry_grass_02.dae',
   JV .. 'groundcover/s_gc_dry_grass_03.dae', JV .. 'groundcover/s_gc_dry_grass_04.dae'}
+-- the long tufts of a lush hollow (detail.lua), where the game has them
+VEG.tallGrass = {shapes = {GRASS[4], GRASS[5]}, spans = {GRASS_MESH[GRASS[4]].span, GRASS_MESH[GRASS[5]].span},
+  bottoms = {GRASS_MESH[GRASS[4]].bottom, GRASS_MESH[GRASS[5]].bottom}}
 VEG.grassMesh[VEG.dryTufts[1]] = {span = .71, bottom = -.05}
 VEG.grassMesh[VEG.dryTufts[2]] = {span = 1.06, bottom = -.17}
 VEG.grassMesh[VEG.dryTufts[3]] = {span = .37, bottom = -.24}
@@ -1302,7 +1451,13 @@ end
 ROADS.wing = {steep = 55, reach = 15, material = 'fence_wall', decals = {edge_grass = true, edge_dirt = true},
   covers = {ground = true, forest = true, park = true, meadow = true, orchard = true, scrub = true, heath = true,
     farmland = true, vineyard = true, wetland = true, bare_ground = true, beach = true, desert = true, dune = true,
-    steppe = true, dry_grass = true, tundra = true, alpine = true, snow = true, snow_edge = true}}
+    steppe = true, dry_grass = true, tundra = true, alpine = true, snow = true, snow_edge = true,
+    grass_dry = true, grass_lush = true, earth = true}}
+-- the open land's pieces (VEG.land): the land under is the wall, the land coming in is left out
+for level = 1, 3 do
+  for _, land in ipairs({'dry', 'lush', 'earth'}) do ROADS.wing.decals['fade_' .. land .. level] = true end
+  for _, land in ipairs({'grass', 'dry', 'lush'}) do ROADS.wing.covers['cut_' .. land .. level] = true end
+end
 -- main roads' decks are girders deeper than a street's slab (fast_profile.CLEARANCE leaves
 -- 4.5 m under the deepest)
 function ROADS.deckDepth(tags)
@@ -9752,7 +9907,8 @@ local function build(cells, i, j, options)
       heightOperations = heightOperations + 1
       if heightOperations % 512 == 0 then pause() end
     end
-    if near > tune.shoulder and ROADS.wet(x, y) then return ROADS.level(x, y, base, demAt) end
+    -- wet bed is carved under the WaterBlock / River surface so depth fog has volume
+    if near > tune.shoulder and ROADS.wet(x, y) then return ROADS.level(x, y, base, demAt) - WATER.carve end
     if sa > 0 then return base + (sz / sa - base) * pull end
     return base
   end
@@ -11015,10 +11171,13 @@ local function build(cells, i, j, options)
           local cx, cy = 0, 0
           for n, q in ipairs(half) do
             out[n] = {q[1], q[2], ground(q[1], q[2]) + above}
-            if kind ~= 'water' then out[n][6], out[n][7], out[n][8] = groundNormal(q[1], q[2]) end
+            out[n][6], out[n][7], out[n][8] = groundNormal(q[1], q[2])
             cx, cy = cx + q[1], cy + q[2]
           end
-          scene.polygon(surfaceKind(cx / #half, cy / #half, kind), out, true)
+          -- water is a WaterBlock (placeWater), not a textured sheet on the bed
+          if kind ~= 'water' then
+            scene.polygon(surfaceKind(cx / #half, cy / #half, kind), out, true)
+          end
         end
       end
     end
@@ -11175,10 +11334,10 @@ local function build(cells, i, j, options)
   end
   mark('marks')
   -- OSM has no sea polygons (only coastlines); the DEM's sea is flat at the region's seaLevel
-  -- (0 m plus the world lift). Open water is a plane just above it over every ground quad that
-  -- reaches it; higher ground covers the plane on the shore. Lakes and rivers are OSM areas.
-  local sea = type(options.seaLevel) == 'number' and options.seaLevel + SEA_ABOVE or nil
-  -- Death Valley's floor lies 86 m under the sea, and the plane flooded it: a tile far inland
+  -- (0 m plus the world lift). Open water is a WaterBlock just above it over every ground quad
+  -- that reaches it. Lakes and rivers are OSM areas → WaterBlocks; the bed under them is ground.
+  local sea = type(options.seaLevel) == 'number' and options.seaLevel + WATER.above or nil
+  -- Death Valley's floor lies 86 m under the sea, and a plane flooded it: a tile far inland
   -- (land on the climate grid ~3 km round its corners and centre) has no sea at all
   if sea and bio.on and VEG.biome.inland then
     local dry = true
@@ -11203,13 +11362,14 @@ local function build(cells, i, j, options)
     pause()
   end
   if sea and seaAll then seaQuads = {rect} end
-  for _, q in ipairs(seaQuads) do
-    scene.polygon('water', {{q[1], q[2], sea}, {q[3], q[2], sea}, {q[3], q[4], sea}, {q[1], q[4], sea}}, 'flat')
-  end
+  -- WaterBlocks for the sea and OSM lakes (not the old e2rf_water mesh sheet)
+  WATER.fill(scene, key, rect, sea, seaQuads, lists.areas, distant, demAt, ROADS.level, inside, ringBounds, pause)
   mark('groundsea')
   for _, area in ipairs(distant and NONE or lists.areas) do
     local kind = area.kind
-    if CLAIM[kind] and not (((area.tags or NONE).source or ''):find('worldcover', 1, true)) and ringsTouch(area.rings, rect) then
+    -- a meadow is the ground's own sheet, and its lands are the ground's (VEG.land): no drape
+    if CLAIM[kind] and not (((area.tags or NONE).source or ''):find('worldcover', 1, true)) and ringsTouch(area.rings, rect)
+        and (kind ~= 'meadow' or bio.landOff) then
       drapeRings(RAIL.cover(area), area.rings, .025)
     end
     pause()
@@ -11222,6 +11382,103 @@ local function build(cells, i, j, options)
     p[6], p[7], p[8] = groundNormal(x, y)
     return p
   end
+  -- The land at a point (VEG.land): moisture -1 (dry) .. 1 (lush) and bareness 0 .. 1, from the
+  -- raw DEM `reach` m round it, so neighbouring tiles agree. Among buildings it stays lawn.
+  bio.landOff = options.land == false
+  function bio.landAt(x, y, d)
+    local c = demAt(x, y)
+    local e, w, n, s = demAt(x + d, y), demAt(x - d, y), demAt(x, y + d), demAt(x, y - d)
+    if not (c and e and w and n and s) then return 0, 0 end
+    local gx, gy = (e - w) / (2 * d), (n - s) / (2 * d)
+    local slope = math.sqrt(gx * gx + gy * gy)
+    -- over 0: a hollow (its neighbours stand higher), under 0: a ridge or a brow
+    local curve = ((e + w + n + s) / 4 - c) / d
+    -- the ground rises to the north: the slope faces south, the sun's side north of the equator
+    local sun = slope > 1e-3 and gy / slope or 0
+    local p = bio.on and bio.at(x, y)
+    if p and p.south then sun = -sun end
+    local steep = math.max(0, math.min(1, (slope - .05) / .23))
+    steep = steep * steep * (3 - 2 * steep)
+    local n1, n2, n3 = bio.noise(x, y, 320, 71), bio.noise(x, y, 85, 73), bio.noise(x, y, 23, 75)
+    local moist = math.max(-1, math.min(1, curve * 9)) * .9 - steep * (.75 + .45 * sun) * 1.1
+      + (n1 - .5) * 1.1 + (n2 - .5) * .5 + (n3 - .5) * .2
+    local cliff = math.max(0, math.min(1, (slope - .3) / .32))
+    local brow = math.max(0, math.min(1, (slope - .12) / .18))
+    local bare = cliff * cliff * (3 - 2 * cliff) + math.max(0, -curve * 6 - .25) * brow + (n3 - .5) * .3 * brow
+    local town = math.max(0, math.min(1, (builtAt(x, y) - .015) / .045))
+    return math.max(-1, math.min(1, moist)) * (1 - town), math.max(0, math.min(1, bare)) * (1 - town)
+  end
+  -- as levels: moisture -4 .. 4 (0: the common grass, 4: the land whole), bareness 0 .. 4
+  function bio.landLevels(x, y, d)
+    local m, b = bio.landAt(x, y, d or VEG.land.reach)
+    local t, a = VEG.land.moist, math.abs(m)
+    local lm = a < t[1] and 0 or a < t[2] and 1 or a < t[3] and 2 or a < t[4] and 3 or 4
+    t = VEG.land.bare
+    return m < 0 and -lm or lm, b < t[1] and 0 or b < t[2] and 1 or b < t[3] and 2 or b < t[4] and 3 or 4
+  end
+  -- The lands of a piece: the land under ('grass', 'dry' or 'lush'), the land coming in over it
+  -- and its level 1 .. 3, or one land whole (level nil). Loam comes in over whichever grass is
+  -- there; two grasses and loam do not meet in one piece.
+  function bio.landPair(x, y, d)
+    local m, b = bio.landLevels(x, y, d)
+    local under = m <= -3 and 'dry' or m >= 3 and 'lush' or 'grass'
+    if b >= 4 then return 'earth' end
+    if b > 0 then return under, 'earth', b end
+    if m >= 4 then return 'lush' elseif m <= -4 then return 'dry' end
+    if m ~= 0 then return 'grass', m > 0 and 'lush' or 'dry', math.abs(m) end
+    return 'grass'
+  end
+  -- a distant triangle is one land: no pieces dissolve a kilometre away
+  function bio.landFar(kind, x, y)
+    if bio.landOff or not VEG.land.kinds[kind] then return kind end
+    local under, over, level = bio.landPair(x, y, VEG.land.farReach)
+    if over and level >= 2 then under = over end
+    return VEG.land.solid[under] or kind
+  end
+  -- One cell of the near lattice, its two triangles kindA (south-east) and kindB: true when it
+  -- is drawn here, in pieces; else the kinds to draw its two triangles in (one land whole).
+  function bio.landCell(x0, y0, x1, y1, kindA, kindB)
+    local L = VEG.land
+    if bio.landOff or not (L.kinds[kindA] or L.kinds[kindB]) then return kindA, kindB end
+    local n = math.max(1, floor((x1 - x0) / L.fine + .5))
+    local w = (x1 - x0) / n
+    local unders, overs, levels, same = {}, {}, {}, true
+    for sy = 0, n - 1 do
+      for sx = 0, n - 1 do
+        local k = sy * n + sx + 1
+        unders[k], overs[k], levels[k] = bio.landPair(x0 + (sx + .5) * w, y0 + (sy + .5) * w)
+        if overs[k] or unders[k] ~= unders[1] then same = false end
+      end
+    end
+    if same then
+      local solid = L.solid[unders[1]]
+      return L.kinds[kindA] and solid or kindA, L.kinds[kindB] and solid or kindB
+    end
+    for sy = 0, n - 1 do
+      for sx = 0, n - 1 do
+        local k = sy * n + sx + 1
+        local ax, ay = x0 + sx * w, y0 + sy * w
+        local bx, by = ax + w, ay + w
+        local p00, p10 = vertex(ax, ay, ground(ax, ay)), vertex(bx, ay, ground(bx, ay))
+        local p11, p01 = vertex(bx, by, ground(bx, by)), vertex(ax, by, ground(ax, by))
+        -- split along the cell's own diagonal: each half lies in one of the cell's triangles
+        for half = 1, 2 do
+          local parent = kindB
+          if sx > sy or (sx == sy and half == 1) then parent = kindA end
+          local tri = half == 1 and {p00, p10, p11} or {p00, p11, p01}
+          if not L.kinds[parent] then
+            roads.polygon(parent, tri, true)
+          elseif overs[k] then
+            roads.polygon('cut_' .. unders[k] .. levels[k], tri, true)
+            roadDecor.polygon('fade_' .. overs[k] .. levels[k], tri, true)
+          else
+            roads.polygon(L.solid[unders[k]] or parent, tri, true)
+          end
+        end
+      end
+    end
+    return true
+  end
   -- The ground lattice: each cell two triangles along its (x0, y0)-(x1, y1) diagonal, drawn in
   -- the material of the cover that fills it whole (claims), else as grass.
   for gy = 0, distant and -1 or count - 1 do
@@ -11233,9 +11490,19 @@ local function build(cells, i, j, options)
       local c, d = vertex(x1, y1, ground(x1, y1)), vertex(x0, y1, ground(x0, y1))
       local gkey = ((cx + 32768) * 65536 + cy + 32768) * 2
       local tx, ty = (x0+x1+x1)/3, (y0+y0+y1)/3
-      roads.polygon(surfaceKind(tx, ty, claims[gkey] or backgroundKind(tx, ty)), {a, b, c}, true)
+      local kindA = surfaceKind(tx, ty, claims[gkey] or backgroundKind(tx, ty))
       tx, ty = (x0+x1+x0)/3, (y0+y1+y1)/3
-      roads.polygon(surfaceKind(tx, ty, claims[gkey + 1] or backgroundKind(tx, ty)), {a, c, d}, true)
+      local kindB = surfaceKind(tx, ty, claims[gkey + 1] or backgroundKind(tx, ty))
+      -- claimed water: the WaterBlock is the surface; the lattice is only the bed under it
+      if kindA == 'water' then kindA = WATER.bed end
+      if kindB == 'water' then kindB = WATER.bed end
+      if x1 > rect[1] and x0 < rect[3] and y1 > rect[2] and y0 < rect[4] then
+        kindA, kindB = bio.landCell(x0, y0, x1, y1, kindA, kindB)
+      end
+      if kindA ~= true then
+        roads.polygon(kindA, {a, b, c}, true)
+        roads.polygon(kindB, {a, c, d}, true)
+      end
     end
     pause()
   end
@@ -11245,6 +11512,12 @@ local function build(cells, i, j, options)
     table.sort(mats)
     for _, item in ipairs(collector.items) do total = total + (item.triangles or 0) end
     local warm = VEG.warm(LAMP, BUS_STOP)
+    -- knock.lua's debris shapes: a shape's first TSStatic costs ~35 ms (p24b), so not at its first
+    -- knock; listed here so stockFor loads their materials too
+    local okKnock, knock = pcall(require, 'ge/extensions/e2r/knock')
+    if okKnock and type(knock) == 'table' and knock.warmShapes then
+      knock.warmShapes(warm, FS and function(p) return FS:fileExists(p) end)
+    end
     return {version = 1, generator = 'earthng-lua-v1', source = options.regionId, layer = layer,
       tile = {i, j}, rect = rect, materials = options.materials or '/earthng/planet/materials.json',
       items = collector.items, mats = mats, triangles = total, packs = options.packs,
@@ -11308,7 +11581,10 @@ local function build(cells, i, j, options)
     local function emitTri(a, b, c)
       if not a or not b or not c then return end
       if farRoads then farTris[#farTris + 1] = {a, b, c} end
-      scene.triangle(surfaceKind((a[1]+b[1]+c[1])/3, (a[2]+b[2]+c[2])/3), a, b, c, true)
+      local cx, cy = (a[1]+b[1]+c[1])/3, (a[2]+b[2]+c[2])/3
+      local kind = surfaceKind(cx, cy)
+      if kind == 'water' then kind = WATER.bed end
+      scene.triangle(bio.landFar(kind, cx, cy), a, b, c, true)
     end
     local function at(x, y)
       local z = heightAt(x, y)
@@ -13113,7 +13389,8 @@ local function build(cells, i, j, options)
       local lawn = {ground = true, park = true, meadow = true, residential = true}
       local function lawnAt(x, y)
         local kind, where = coverAt(x, y)
-        return lawn[kind] and not (where and VEG.fields[(where.tags or NONE).leisure])
+        if not lawn[kind] or (where and VEG.fields[(where.tags or NONE).leisure]) then return false end
+        return VEG.land.kinds[kind] and 'land' or true
       end
       local function climate(x, y)
         if not bio.on then return true end
@@ -13135,12 +13412,22 @@ local function build(cells, i, j, options)
             for sy = 0, 3 do
               for sx = 0, 3 do
                 local x, y = ox + sx * step + 1, oy + sy * step + 1
-                if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and lawnAt(x, y) then
-                  local z = ground(x, y)
+                local wild = x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and lawnAt(x, y)
+                if wild then
+                  -- the land under it (VEG.land): no grass on bare loam, thin on dry ground and
+                  -- where loam shows through, tall in the lush hollows (detail.lua reads the flags)
+                  local flag = 0
+                  if wild == 'land' and not bio.landOff then
+                    local m, b = bio.landLevels(x, y)
+                    if b >= 3 then wild = false
+                    elseif m <= -3 or b == 2 then flag = 32
+                    elseif m >= 2 and b == 0 then flag = 16 end
+                  end
+                  local z = wild and ground(x, y)
                   local nx, ny, nz = groundNormal(x, y)
-                  if nz >= .72 and (not sea or z > sea) and not blocked(x, y, 2.4) then
+                  if wild and nz >= .72 and (not sea or z > sea) and not blocked(x, y, 2.4) then
                     local n = #samples
-                    samples[n + 1], samples[n + 2] = sy * 4 + sx, z
+                    samples[n + 1], samples[n + 2] = sy * 4 + sx + flag, z
                     samples[n + 3] = nz > 1e-4 and -nx / nz or 0
                     samples[n + 4] = nz > 1e-4 and -ny / nz or 0
                     if not anchor then anchor = {x, y, z} end
@@ -13151,7 +13438,8 @@ local function build(cells, i, j, options)
             if anchor then
               static(string.format('lawn_%d_%d', floor(ox), floor(oy)), shapes[1], anchor[1], anchor[2], anchor[3], 0, 1)
               scene.items[#scene.items].grassPatch = {
-                x = ox, y = oy, shapes = shapes, spans = spans, bottoms = bottoms, samples = samples}
+                x = ox, y = oy, shapes = shapes, spans = spans, bottoms = bottoms, samples = samples,
+                tall = VEG.tallGrass}
             end
           end
           if ox % 64 == 0 then pause() end
