@@ -153,7 +153,12 @@ local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128, sceneLag =
   collisionWant = 200, collisionLead = 4, collisionSceneLead = 2.5, collisionMargin = 200, vehicleCollision = {100, 300}, otherCars = {80, 160},
   collisionScene = {fast = 15, ahead = 1.5, want = 1, side = 100, margin = 100,
     roadSide = 120, roadKeep = 200, roadLane = 120, roadStep = 100},
-  roadAhead = 15, roadUrgent = 8, roadFloorMs = 2.5}
+  roadAhead = 15, roadUrgent = 8, roadFloorMs = 2.5,
+  -- Until the car stands on the road (the landing: the player waits and the camera hangs still)
+  -- the generator and the spawn queue take most of the frame instead of BUDGET_MS: at 4 ms a
+  -- frame the nine tiles of a landing in central Kyiv took 82 s, most of them idle. 60 ms: the
+  -- tiles were ready in 18.6 s at 40 ms a frame and in 17.4 s at 90 (the picker at 6 frames a second)
+  loadNativeMs = 60, loadQueueMs = 14, loadQueueLastMs = 30}
 -- Read-only view for the development probe (earthng/probe.py); nothing in the mod calls it.
 function M.dbg() return {S = S, result = result, native = native, detail = detailStream, test = test} end
 
@@ -270,6 +275,60 @@ local function goTo(lat, lon, zoom)
   setMarker(lat, lon)
 end
 
+-- The landing's phases for the report (result.loadReal): real seconds since the request (S.now
+-- stands still in a long frame), frames, and the Lua the generator, the spawn queue and the window
+-- took by then; the generator's own account of its layers.
+-- An early arrival (beginArrival with native job.early) once the job is ready: the chosen spawn
+-- replaces the provisional one; a failed job goes back to the landing window with its error.
+function M.landFinal()
+  local job = S.status and S.status.job
+  if not job or job.seq ~= S.landSeq then return end
+  if job.state == 'ready' then
+    local manifest = type(job.manifest) == 'table' and job.manifest or jsonReadFile(job.manifest)
+    if not manifest then return end
+    loadNewMaterials(manifest.materials, manifest.stockMaterials)
+    S.landing, S.landEarly, result.timings = manifest, nil, job.timings
+    M.loadMark('final')
+  elseif job.state == 'error' then
+    S.landEarly, S.state = nil, 'generating'
+  end
+end
+
+function M.loadMark(name)
+  local P, st = S.prof or {sum = {}}, S.status and S.status.stream
+  result.loadReal = result.loadReal or {}
+  result.loadReal[name] = {s = S.landTimer and S.landTimer:stop() / 1000, frames = P.frames,
+    nativeMs = P.sum.native, queueMs = P.sum.queue, windowMs = P.sum.window, tilesMs = P.sum.tiles,
+    navMs = P.sum.nav, forestMs = P.sum.forest, testMs = P.sum.test,
+    collisionMs = P.sum.collision, built = st and st.built,
+    spent = st and st.spentMs and deepcopy(st.spentMs), heapKb = collectgarbage('count')}
+end
+
+-- Automation: the engine's own split of each frame of the landing (Lua, LuaGC, Render, Ticking,
+-- physics...), summed per phase into result.loadEngine. The Lua parts above see half the frame.
+function M.loadEngine(state)
+  S.engineM = S.engineM or {}
+  -- test.gcCycle = {10, 1, 400, -10, 100}: the collector's step changes every 2 s of the landing,
+  -- and the frames are summed per step ('generating@10'): what the step is worth there
+  if test and test.gcCycle and state == 'generating' then
+    state = state .. '@' .. tostring(M.gc.try or '-')
+    M.gc.try = test.gcCycle[math.floor(S.now / 2) % #test.gcCycle + 1]
+  else
+    M.gc.try = nil
+  end
+  if not pcall(Engine.Debug.getLastPerformanceMetrics, S.engineM) then return end
+  result.loadEngine = result.loadEngine or {}
+  local sum = result.loadEngine[state] or {frames = 0}
+  result.loadEngine[state] = sum
+  sum.frames = sum.frames + 1
+  sum.stepmulSeen = (sum.stepmulSeen or 0) + (M.gc.seen or 0)
+  sum.nativeMs = (sum.nativeMs or 0) + (S.nativeMs or 0)
+  sum.heapMaxMB = math.max(sum.heapMaxMB or 0, collectgarbage('count') / 1024)
+  for k, v in pairs(S.engineM) do
+    if type(v) == 'number' then sum[k] = (sum[k] or 0) + v end
+  end
+end
+
 local function land()
   if not S.marker then return end
   if NATIVE and not native.at(S.marker.lat, S.marker.lon) then return end
@@ -279,6 +338,8 @@ local function land()
   S.landSeq = request({type = 'land', lat = S.marker.lat, lon = S.marker.lon})
   S.landAt = S.now
   S.landTimer = hptimer()
+  result.loadReal = nil
+  M.loadMark('request')
   S.pickerOpen = false
   S.state = 'generating'
   result.landRequestedAt = S.now
@@ -1473,6 +1534,10 @@ function M.flowStep()
     obs[1] = {x = car.x, y = car.y, vx = pv.x, vy = pv.y}
   end
   M.handoffSim.obstacles(fl.H, fl.api, obs)
+  -- pedestrians crossing a road (walkers.lua): the flow's cars stop for them
+  if S.walk then
+    for _, w in ipairs(S.walk.W.onRoad or {}) do obs[#obs + 1] = {x = w.x, y = w.y, vx = 0, vy = 0} end
+  end
   -- every other physical car in the level: the game's traffic, a second car the player spawned,
   -- police in a pursuit. Only the game's traffic used to count, so the flow drove through the rest.
   local mine = {}
@@ -1525,6 +1590,7 @@ function M.walkersSet(n)
     local W = ws.new{seed = math.floor(S.now * 1000) % 100000 + 7}
     local shapes = {}
     for k = 0, ws.POSES - 1 do shapes[k + 1] = '/levels/e2r_world/art/people/ped_walk' .. k .. '.dae' end
+    shapes[ws.POSES + 1] = '/levels/e2r_world/art/people/ped_stand.dae'   -- one waiting at the kerb
     local api = ph.gameApi(ws)
     S.walk = {W = W, V = ws.view(W, shapes, tileGroup('E2R_walkers', true)), P = ph.new{size = S.walkBodies}, api = api,
       boxes = {}}
@@ -1555,7 +1621,6 @@ function M.walkersStep()
     wk.syncAt = S.navAt
     ws.sync(wk.W, S.nav, p.x, p.y)
   end
-  ws.step(wk.W, S.dtSim or S.dt or 1 / 60, p.x, p.y)
   -- the vehicles that can hit: every active one with physics but the pool's own bodies
   local hitters = {}
   local veh = getPlayerVehicle(0)
@@ -1573,11 +1638,13 @@ function M.walkersStep()
           -- the box's centre: getPosition is the ref node, b[3] m from the middle along the heading
           local fx, fy = d.x / l, d.y / l
           hitters[#hitters + 1] = {x = q.x + fx * b[3], y = q.y + fy * b[3], vx = v.x, vy = v.y, fx = fx, fy = fy,
-            hl = b[1], hw = b[2]}
+            hl = b[1], hw = b[2], player = o:getID() == (veh and veh:getID()) or nil}
         end
       end
     end
   end
+  -- walkers wait at the kerb for those vehicles and for the flow's cars (as drawn)
+  ws.step(wk.W, S.dtSim or S.dt or 1 / 60, p.x, p.y, hitters, S.flow and S.flow.F.cars)
   ph.step(wk.P, ws, wk.W, hitters, S.now, wk.api, car and car.x, car and car.y)
   wk.simMs = t:stopAndReset()
   wk.moved = ws.draw(wk.W, wk.V, p.x, p.y, function(x, y, z)
@@ -1590,6 +1657,7 @@ function M.walkersStep()
   r.walkers, r.segs, r.simMs, r.drawMs = wk.W.count or 0, #wk.W.list, wk.simMs, wk.drawMs
   r.simMax, r.drawMax = math.max(r.simMax or 0, wk.simMs), math.max(r.drawMax or 0, wk.drawMs)
   r.stats, r.hit, r.bodies, r.pool, r.spawnMs = wk.W.stats, wk.P.stats, ph.activeCount(wk.P), #wk.P.pool, wk.spawnMs
+  r.hitLog = wk.P.log
 end
 
 local function drawTraffic()
@@ -1928,7 +1996,8 @@ local function stepQueue()
   local head, wanted = S.queue[1], S.status and S.status.stream and S.status.stream.wanted
   local urgent = NATIVE and head and not (head.scene or head.grass or head.far or head.horizon) and wanted
     and (wanted[head.key] or 1e6) < LIMIT.roadUrgent
-  local budget = test and test.genBudget or math.max(urgent and LIMIT.roadFloorMs or .5, BUDGET_MS - (S.nativeMs or 0))
+  local budget = test and test.genBudget or (S.state == 'spawning' and (S.landOwed == false and LIMIT.loadQueueLastMs or LIMIT.loadQueueMs))
+    or math.max(urgent and LIMIT.roadFloorMs or .5, BUDGET_MS - (S.nativeMs or 0))
   local function over() return frame:stop() >= budget end
   local function pause() if over() then coroutine.yield() end end
   if S.co and S.job and S.job.tile.dropped then S.co, S.job = nil, nil end
@@ -2493,9 +2562,12 @@ local function makeHorizon(z, cx, cy)
   obj:setPosition(vec3(cx, cy, z))
 end
 
-local function beginArrival(job)
-  local manifest = type(job.manifest) == 'table' and job.manifest or jsonReadFile(job.manifest)
+local function beginArrival(job, early)
+  local manifest = early or (type(job.manifest) == 'table' and job.manifest or jsonReadFile(job.manifest))
   if not manifest then return end
+  -- where the arrival's own frame goes (result.arrivalMs): it is seconds long
+  local arrival, arrivalTimer = {}, hptimer()
+  result.arrivalMs = arrival
   -- leave the previous region
   for key, tile in pairs(S.tiles) do
     retireForest(tile)
@@ -2525,6 +2597,7 @@ local function beginArrival(job)
   S.landing = manifest
   S.knownMats = {}
   S.lamps = {}
+  arrival.leave = arrivalTimer:stopAndReset()
   -- Stock conifers are level assets. Load their definitions from the user's
   -- installation; no game geometry or material file is distributed with EarthNG.
   -- Stock shapes stay in the player's install. Load their materials or the mesh is orange.
@@ -2542,7 +2615,9 @@ local function beginArrival(job)
   for _, path in ipairs(stockMaterials) do
     if FS:fileExists(path) then loadJsonMaterialsFile(path) end
   end
+  arrival.stock = arrivalTimer:stopAndReset()
   loadNewMaterials(manifest.materials, manifest.stockMaterials)
+  arrival.materials = arrivalTimer:stopAndReset()
   if manifest.spawn and job.horizonZ then pcall(makeHorizon, job.horizonZ, manifest.spawn.pos[1], manifest.spawn.pos[2]) end
   if manifest.packs and FS:fileExists(manifest.packs) then
     local okP, packs = pcall(jsonReadFile, manifest.packs)
@@ -2552,6 +2627,7 @@ local function beginArrival(job)
     end
     S.packs = okP and packs and packs.fields or nil
     S.packEnv = okP and packs and packs.environment or nil
+    arrival.packMaps = arrivalTimer:stopAndReset()
     if okP and packs and packs.order then
       PACK_NAMES = {}
       for _, name in ipairs(packs.order) do
@@ -2595,8 +2671,10 @@ local function beginArrival(job)
       S.packsWarm = true
       result.packMaterialsWarmed = n
     end
+    arrival.packWarm = arrivalTimer:stopAndReset()
     if S.pack and S.pack ~= 'real' then applyPack(S.pack) end   -- keep the player's choice
   end
+  arrival.packs = arrivalTimer:stopAndReset()
   commands.setFreeCamera()
   cameraOver(CAM_HIGH)
   -- one visible triangle per material: texture upload and pipeline creation happen now, high up,
@@ -2616,6 +2694,7 @@ local function beginArrival(job)
   end
   -- Render each shape during loading so its materials/shaders are uploaded as well as
   -- its mesh. Keep the instances underground afterwards to retain the loaded resources.
+  arrival.warm = arrivalTimer:stopAndReset()
   local shapes = tileGroup('E2RWorldShapes')
   for k, shape in ipairs(manifest.warmShapes or {}) do
     local obj = createObject('TSStatic')
@@ -2626,14 +2705,25 @@ local function beginArrival(job)
     obj:registerObject('e2r_shape_' .. k)
     shapes:addObject(obj)
   end
-  S.state, S.phaseAt, S.frames = 'warmup', S.now, {}
-  result.readyAt, result.timings = S.now, job.timings
+  arrival.shapes = arrivalTimer:stopAndReset()
+  -- (no collection here: the heap is the tiles waiting to be spawned, 817 MB before a 1.1 s
+  -- collection and 915 MB at the end of the warm-up, load-05)
+  S.state, S.phaseAt, S.frames, S.landOwed = 'warmup', S.now, {}, nil
+  -- early: the tile under the requested point is in, the rest of the landing square is still
+  -- being built (native job.early); M.landFinal swaps in the chosen spawn when the job is ready
+  S.landEarly = early and true or nil
+  result.readyAt, result.timings, result.earlyArrival = S.now, job.timings, early and true or nil
+  -- the landing in real seconds since the request (S.now stands still in a long frame)
+  M.loadMark('ready')
+  if not early then M.loadMark('final') end
   saveResult()
 end
 
 -- Called after the landing tile is loaded and its collision rebuilt (teleporting in the same frame
 -- as reloadCollision dropped the car through the new roads, world-test-04).
 local function touchDown()
+  -- the landing's garbage goes before the drive starts, not in sweeps during its first seconds
+  result.touchDownCollectMs = M.gc.collect()
   local timer = hptimer()
   local veh = getPlayerVehicle(0)
   local s = S.landing.spawn
@@ -2647,6 +2737,17 @@ local function touchDown()
   S.driveAcc = newAcc()
   result.landedAt = S.now
   result.startupSeconds = S.landTimer and S.landTimer:stop() / 1000 or S.now - S.landAt
+  M.loadMark('landed')
+  if S.samples then
+    result.samples = {n = S.samples.n}
+    for _, kind in ipairs({'top', 'pair'}) do
+      local list = {}
+      for where, n in pairs(S.samples[kind]) do list[#list + 1] = {where, n} end
+      table.sort(list, function(a, b) return a[2] > b[2] end)
+      for k = 71, #list do list[k] = nil end
+      result.samples[kind] = list
+    end
+  end
   saveResult()
 end
 
@@ -4799,7 +4900,8 @@ end
 
 function M.onUpdate(dtReal, dtSim)
   local ours = inOurLevel()
-  M.gc.step(ours, dtReal)
+  local heapKb = M.gc.count()   -- with the previous frame's: a hitch that swept the heap shows it
+  M.gc.step(ours, dtReal, S.state == 'generating' or S.state == 'warmup' or S.state == 'spawning')
   if not ours then
     S.state = 'off'
     return
@@ -4807,7 +4909,10 @@ function M.onUpdate(dtReal, dtSim)
   S.now, S.dt = S.now + dtReal, dtReal
   -- the simulation's own step: 0 while paused, a fraction of dtReal in slow motion
   S.dtSim = dtSim or dtReal
+  S.forestTimer = S.forestTimer or hptimer()
+  S.forestTimer:stopAndReset()
   forestCommit()
+  profAdd('forest', S.forestTimer:stop())
   local frameMs = frameTimer:stopAndReset()
   table.insert(S.frames, frameMs)
   S.recentAt = (S.recentAt or 0) % 240 + 1        -- the widget's FPS: the last 240 frames
@@ -4816,8 +4921,11 @@ function M.onUpdate(dtReal, dtSim)
   if S.driveAcc and S.state == 'driving' then accFrame(S.driveAcc, frameMs, S.now) end
   if frameMs > 300 and S.stream then
     result.hitches = result.hitches or {}
-    if #result.hitches < 60 then table.insert(result.hitches, {math.floor(S.now), math.floor(frameMs), S.state}) end
+    -- {s, ms, state, heap MB before the frame, after it}
+    if #result.hitches < 60 then table.insert(result.hitches, {math.floor(S.now), math.floor(frameMs), S.state,
+      math.floor((S.heapKb or heapKb) / 1024), math.floor(heapKb / 1024)}) end
   end
+  S.heapKb = heapKb
   if #S.frames > 20000 then S.frames = {} end
   if S.state == 'off' then
     if worldReadyState < 2 or not getPlayerVehicle(0) then return end
@@ -4844,13 +4952,22 @@ function M.onUpdate(dtReal, dtSim)
   -- e2r-hang.txt in the user folder from inside the loop (the LuaJIT profiler samples compiled
   -- code too). Freezes in play were otherwise invisible: the log just stopped.
   S.frameStamp = os.clock()
-  if not S.watchdog then
+  -- (started once the automation's test file has had its chance to be read: it sets the interval)
+  if not S.watchdog and (test or S.now - (S.phaseAt or S.now) > 3) then
     S.watchdog = true
     local okProfile, profile = pcall(require, 'jit.profile')
     if okProfile and profile then
       local dumps, lastDump = 0, -1
-      profile.start('i200', function(thread)
+      -- test.sample (automation): where the landing's Lua time goes, by the function on top of
+      -- the stack and by its caller, every 5 ms (result.samples; the generator is one 13k-line file)
+      profile.start(test and test.sample and 'i5' or 'i200', function(thread)
         local now = os.clock()
+        if test and test.sample and S.state ~= 'driving' and S.state ~= 'pick' then
+          local hist = S.samples or {top = {}, pair = {}, n = 0}
+          S.samples = hist
+          local top, pair = profile.dumpstack(thread, 'pl', 1), profile.dumpstack(thread, 'pl < ', 2)
+          hist.top[top], hist.pair[pair], hist.n = (hist.top[top] or 0) + 1, (hist.pair[pair] or 0) + 1, hist.n + 1
+        end
         if S.frameStamp and now - S.frameStamp > 3 and now - lastDump > 2 and dumps < 30 then
           lastDump, dumps = now, dumps + 1
           local f = io.open('e2r-hang.txt', 'a')
@@ -4872,7 +4989,9 @@ function M.onUpdate(dtReal, dtSim)
   drawWindow()
   if S.prof then profAdd('window', wt:stop(), collectgarbage('count') - wkb) end
   if test then
+    S.forestTimer:stopAndReset()
     local ok2, err2 = xpcall(runTest, debug.traceback)
+    profAdd('test', S.forestTimer:stop())
     if not ok2 and S.lastError ~= err2 then log('E', logTag, err2); S.lastError = err2 end
   end
 end
@@ -4888,7 +5007,10 @@ function M.tick(dt)
         if kb >= S.profKb then P.kbUp = P.kbUp + kb - S.profKb else P.collections = P.collections + 1 end
       end
     end
-    native.update(dt, test and test.genBudget or BUDGET_MS, test and test.genBudget, S.now)
+    local loading = S.state == 'generating' or S.state == 'warmup' or S.state == 'spawning'
+    if test and loading then M.loadEngine(S.state) end
+    local owed = loading and (S.state ~= 'spawning' or S.landOwed ~= false)
+    native.update(dt, test and test.genBudget or (owed and LIMIT.loadNativeMs) or BUDGET_MS, test and test.genBudget, S.now)
     S.nativeMs = t:stop()
     profAdd('native', S.nativeMs, collectgarbage('count') - kb)
     S.profKb = collectgarbage('count')
@@ -4902,10 +5024,16 @@ function M.tick(dt)
   replayStep(dt)
   if S.state == 'generating' then
     local job = S.status and S.status.job
-    if job and job.seq == S.landSeq and job.state == 'ready' then beginArrival(job) end
-  elseif S.state == 'warmup' and S.now - S.phaseAt > 3 then
+    if job and job.seq == S.landSeq and job.state == 'ready' then beginArrival(job)
+    elseif job and job.seq == S.landSeq and job.state == 'working' and job.early and not (test and test.lateArrival) then
+      beginArrival(job, job.early)
+    end
+  end
+  if S.landEarly then M.landFinal() end
+  if S.state == 'warmup' and S.now - S.phaseAt > 3 then
     if test then shot('3-descent') end
     result.warmupFrames = frameStats(S.frames)
+    M.loadMark('warm')
     dropGroup('E2RWorldWarmup')
     dropGroup('E2RWorldPacks')
     local sp = S.landing.spawn.pos
@@ -4965,20 +5093,27 @@ function M.tick(dt)
   if S.state == 'spawning' then
     local sp = S.landing.spawn.pos
     local loaded = countTiles()
-    cameraOver(CAM_HIGH + (CAM_LOW - CAM_HIGH) * math.min(1, loaded / 4))
+    -- the camera stays up until the spawn is chosen (an early arrival may land a tile away)
+    cameraOver(CAM_HIGH + (CAM_LOW - CAM_HIGH) * (S.landEarly and 0 or math.min(1, loaded / 4)))
     -- touch down once the landing tile is in and its collision has been rebuilt a while ago
     local buffered = true
     if S.stream.generator then
       local li,lj = tileOf(sp[1],sp[2])
       local landingTile = S.tiles[li .. '_' .. lj]
       if not landingTile or not landingTile.sceneComplete then buffered = false end
+      -- whether the generator still owes a tile of the touch-down set (S.landOwed): once it does
+      -- not, the frame goes to the spawn queue, not to tiles further out (load-04: 33 tiles built
+      -- before the touch-down instead of 11, and the wait grew by 7 s)
+      local owed = false
       for x = sp[1]-500, sp[1]+500, 250 do
         for y = sp[2]-500, sp[2]+500, 250 do
           local i,j = tileOf(x,y)
           local t = S.tiles[i .. '_' .. j]
+          if not t then owed = true end
           if not t or t.failed or not t.roadComplete or (itemCount(t.manifest) > 0 and not t.collided) then buffered = false end
         end
       end
+      S.landOwed = owed or S.landEarly == true
       -- the descent only (the index of a big city's window, before it, takes minutes and is
       -- not the stream's fault); a warning in play, a failed run in automation
       -- why the descent waits (automation report): the tiles round the spawn that hold it back
@@ -5006,7 +5141,7 @@ function M.tick(dt)
         if test then result.status = 'failed'; saveResult(); shutdown(1) end
       end
     end
-    if buffered and tileLoadedAt(sp[1], sp[2], S.landing.offRoad) and S.collisionAt > 0 and S.now - S.collisionAt > 0.2 then
+    if not S.landEarly and buffered and tileLoadedAt(sp[1], sp[2], S.landing.offRoad) and S.collisionAt > 0 and S.now - S.collisionAt > 0.2 then
       result.spawnFrames = frameStats(S.frames)
       result.spawnSeconds = S.now - S.phaseAt
       S.frames = {}

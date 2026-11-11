@@ -153,6 +153,7 @@ class CountryTests(unittest.TestCase):
             self.assertNotIn('/private', archive.read(descriptor['manifest'].lstrip('/')).decode())
             self.assertEqual(len(region['geo']), 8)
             data = archive.read(block['path'].lstrip('/'))
+            self.assertEqual(data[:4], b'EGB3' if country.FIXED_CELLS else b'EGB2')
             ranges = binary.decode_block(data)
             self.assertEqual(sorted(ranges), [0, 1])
             cell = binary.decode_cell(data, (1000, 0), [1000, 0, 2000, 1000], *ranges[1])
@@ -559,7 +560,9 @@ class BlockPartsTests(unittest.TestCase):
                 self.block, self.value = key, result
         futures = [Done(key, ({binary.slot(*c): b'%d' % c[0] for c in part}, {binary.slot(*c): 1 for c in part}))
                    for key, part in parts]
-        merged = dict(country._merged(futures, lambda f: [(f.block, f.value)]))
-        whole = country._pack({binary.slot(*c): b'%d' % c[0] for c in cells}, {binary.slot(*c): 1 for c in cells})
+        # the payloads are stand-ins, not cells: packed as they are (v2), not transcoded to EGB3
+        with patch.object(country, 'FIXED_CELLS', False):
+            merged = dict(country._merged(futures, lambda f: [(f.block, f.value)]))
+            whole = country._pack({binary.slot(*c): b'%d' % c[0] for c in cells}, {binary.slot(*c): 1 for c in cells})
         self.assertEqual(merged[(0, 0)], whole)
         self.assertEqual(len(merged[(1, 0)][1]), 64)

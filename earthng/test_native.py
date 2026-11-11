@@ -234,6 +234,25 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(got, [('Львів', 49.84, 24.03, 'ukraine'), ('Harju', 59.4, 24.7, 'estonia')])
         self.assertEqual(len(mod.sectionPlaces(None)), 0)
 
+    def test_the_tile_under_the_landing_is_offered_before_the_square_is_built(self):
+        lua, mod, cv = self.make()
+        lat, lon = geographic(1750, 1750)
+        mod.land(cv(dict(seq=3, lat=lat, lon=lon)))
+        early_at = None
+        for step in range(400):
+            mod.update(.016, 2)
+            job = mod.status().job
+            if job.early and early_at is None:
+                early_at = (step, job.state, job.progress)
+                self.assertEqual(list(job.early.tile.values())[:2], [3, 3])     # 1750 m / 500 m tiles
+                self.assertEqual(len(job.early.spawn.pos), 3)
+            if job.state != 'working':
+                break
+        self.assertEqual(job.state, 'ready')
+        self.assertIsNotNone(early_at)
+        self.assertEqual(early_at[1], 'working')
+        self.assertLess(early_at[2], 1)        # offered while the square was still being built
+
     def test_landing_uses_budgeted_generation_and_direct_manifests(self):
         lua, mod, cv = self.make()
         self.assertEqual(mod.refresh().countryCount, 1)
@@ -664,7 +683,7 @@ class NativeTests(unittest.TestCase):
 
 
 
-def fixture_v2(size=4, roads=False, landing=(1750, 1750)):
+def fixture_v2(size=4, roads=False, landing=(1750, 1750), fixed=False):
     """The same demo region in earthng-features-v2: binary 8 x 8 cell blocks."""
     base = '/earthng/countries/demo/'
     region_path = base + 'regions/sample.json'
@@ -683,7 +702,7 @@ def fixture_v2(size=4, roads=False, landing=(1750, 1750)):
                                       tags={'highway': 'residential', 'sidewalk': 'no'})]
             payloads.setdefault((i // 8, j // 8), {})[binary.slot(i, j)] = binary.encode_cell(cell, bounds[:2])
     for (bi, bj), cells in payloads.items():
-        data, mask = binary.encode_block(cells)
+        data, mask = binary.encode_block(cells, fixed)
         path = base + f'regions/sample/blocks/{bi}_{bj}.bin'
         files[path] = data
         blocks[f'{bi}_{bj}'] = dict(path=path, mask=mask)
@@ -744,6 +763,22 @@ class NativeV2Tests(NativeTests.__base__):
     pump = NativeTests.pump
 
     def test_lua_decoder_matches_reference_decoder(self):
+        for fixed in (False, True):
+            with self.subTest(fixed=fixed):
+                self.check_lua_decoder(fixed)
+
+    @staticmethod
+    def plain(value):
+        if hasattr(value, 'items') and not isinstance(value, dict):
+            items = dict(value.items())
+            if items and all(isinstance(k, int) for k in items):
+                return [NativeV2Tests.plain(items[k]) for k in sorted(items)]
+            return {k: NativeV2Tests.plain(v) for k, v in items.items()}
+        if isinstance(value, bytes):
+            return value.decode('utf8')
+        return value
+
+    def check_lua_decoder(self, fixed):
         lua, _, _ = self.make()
         cell = dict(roads=[dict(id='w1', nodes=['9007199254740993', 'b'], width=7.25, tags={'highway': 'primary', 'name': 'Вулиця'},
                                 points=[[1000.004, 2000.5, 151.237], [1999.99, -3.5, -12.01]])],
@@ -754,24 +789,14 @@ class NativeV2Tests(NativeTests.__base__):
                     lines=[dict(id='l:0', kind='fence', tags={'barrier': 'fence'}, points=[[1, 1, 1], [2, 2, 2]])],
                     points=[dict(id='p:0', kind='stop', tags={'highway': 'bus_stop'}, pos=[1000, 20, 50.4])],
                     terrain=dict(rect=[1000, 0, 2000, 1000], nx=2, ny=3, heights=[1, 2.04, 3, -4, 5, 6.66]))
-        data, _ = binary.encode_block({binary.slot(1, 0): binary.encode_cell(cell, (1000, 0))})
+        data, _ = binary.encode_block({binary.slot(1, 0): binary.encode_cell(cell, (1000, 0))}, fixed)
+        self.assertEqual(data[:4], b'EGB3' if fixed else b'EGB2')
         expected = binary.decode_cell(data, (1000, 0), [1000, 0, 2000, 1000], *binary.decode_block(data)[1])
         lua.globals().blockData = data
         got = lua.execute('''local slots = cellformat.block(blockData)
           local r = slots[1]
           return cellformat.cell(blockData, r[1], r[2], 1000, 0, {1000, 0, 2000, 1000})''')
-
-        def plain(value):
-            if hasattr(value, 'items') and not isinstance(value, dict):
-                items = dict(value.items())
-                if items and all(isinstance(k, int) for k in items):
-                    return [plain(items[k]) for k in sorted(items)]
-                return {k: plain(v) for k, v in items.items()}
-            if isinstance(value, bytes):
-                return value.decode('utf8')
-            return value
-
-        got = plain(got)
+        got = self.plain(got)
         for kind in binary.KINDS:
             for feature in got[kind]:
                 feature.setdefault('tags', {}) if kind != 'junctions' else None
@@ -780,8 +805,67 @@ class NativeV2Tests(NativeTests.__base__):
         with self.assertRaises(Exception):
             lua.execute('cellformat.block(blockData)')
 
+    def egb3_cell(self):
+        """A cell whose numbers need the escape: a road reaching 60 km out, 4.4 km mountains."""
+        return dict(roads=[dict(id='far', nodes=['1', '2'], width=12.5, tags={'highway': 'motorway'},
+                                points=[[1000, 0, 4400], [61000.37, -29000.5, 4381.2], [1500, 500, 4390]])],
+                    junctions=[dict(id='j', height=-12.5, rings=[[[1000, 0, 1], [1700, 0, 1], [1000, 900, 1]]])],
+                    buildings=[], areas=[], points=[],
+                    lines=[dict(id='l', kind='fence', tags={}, points=[[999, 999, 4400], [1001, 1, 4401]])],
+                    terrain=dict(rect=[1000, 0, 2000, 1000], nx=3, ny=2,
+                                 heights=[4400, 4410.3, 4398.7, 4402, 4407.7, 4396.1]))
+
+    def test_egb3_words_escape_large_values_and_high_ground(self):
+        cell = self.egb3_cell()
+        payload = binary.encode_cell(cell, (1000, 0))
+        v3 = binary.transcode_cell(payload)
+        self.assertEqual(binary.cell_to_v2(v3), payload)
+        data, _ = binary.encode_block({binary.slot(1, 0): payload}, True)
+        first, last = binary.decode_block(data)[binary.slot(1, 0)]
+        expected = binary.decode_cell(data, (1000, 0), [1000, 0, 2000, 1000], first, last)
+        self.assertEqual(expected, binary.decode_cell(payload, (1000, 0), [1000, 0, 2000, 1000]))
+        lua, _, _ = self.make()
+        lua.globals().blockData = data
+        got = self.plain(lua.execute('''local r = cellformat.block(blockData)[1]
+          return cellformat.cell(blockData, r[1], r[2], 1000, 0, {1000, 0, 2000, 1000})'''))
+        for kind in binary.KINDS:
+            got[kind] = got[kind] or []     # an empty Lua table reads back as {}
+        self.assertEqual(got, expected)
+        terrain = lua.globals().cellformat.terrain(data, first + 1, last, lua.table_from([1000, 0, 2000, 1000]))
+        self.assertEqual(list(terrain.terrain.heights.values()), expected['terrain']['heights'])
+        self.assertEqual(terrain.low, 4396.1)
+        roads = self.plain(lua.globals().cellformat.roads(data, first + 1, last, 1000, 0))
+        self.assertEqual(roads, [{'id': 'far', 'highway': 'motorway',
+                                  'xy': [p for q in expected['roads'][0]['points'] for p in q[:2]]}])
+        with self.assertRaises(Exception):
+            lua.globals().cellformat.cell(data[:-1], first + 1, last - 1, 1000, 0, lua.table_from([1000, 0, 2000, 1000]))
+
+    def test_egb3_reads_the_same_without_ffi_and_with_a_shared_grid(self):
+        data, _ = binary.encode_block({binary.slot(1, 0): binary.encode_cell(self.egb3_cell(), (1000, 0))}, True)
+        source = (ROOT / 'mod/lua/ge/extensions/e2r/cellformat.lua').read_text(encoding='utf8')
+        results = []
+        for blocked in (False, True):
+            lua = LuaRuntime()
+            if blocked:
+                lua.execute("local r = require; require = function(n) if n == 'ffi' then error('no ffi') end return r(n) end")
+            cf = lua.execute(source)
+            self.assertEqual(cf.ffi, not blocked)
+            lua.globals().cf, lua.globals().blockData = cf, data
+            results.append(self.plain(lua.execute('''local r = cf.block(blockData)[1]
+              local grid = {}
+              local a = cf.cell(blockData, r[1], r[2], 1000, 0, {1000, 0, 2000, 1000}, nil, nil, grid)
+              local b = cf.cell(blockData, r[1], r[2], 1000, 0, {1000, 0, 2000, 1000}, nil, {1000, 0, 1500, 500}, grid)
+              assert(a.terrain.heights == b.terrain.heights, 'the grid is shared')
+              return {a, b}''')))
+        self.assertEqual(results[0], results[1])
+
     def test_v2_region_lands_without_enumerating_cells(self):
-        lua, mod, cv = self.make(fixture_v2())
+        for fixed in (False, True):
+            with self.subTest(fixed=fixed):
+                self.check_region_lands(fixed)
+
+    def check_region_lands(self, fixed):
+        lua, mod, cv = self.make(fixture_v2(fixed=fixed))
         st = mod.refresh()
         self.assertEqual(st.countryCount, 1)
         lat, lon = geographic(1750, 1750)
@@ -1047,12 +1131,13 @@ class NativeV2Tests(NativeTests.__base__):
                                 points=[[1000, 0, 5], [1500, 10, 6]])],
                     junctions=[], buildings=[], areas=[], lines=[], points=[],
                     terrain=dict(rect=[1000, 0, 2000, 1000], nx=2, ny=3, heights=[1, 2.04, 3, -4, 5, 6.66]))
-        data, _ = binary.encode_block({binary.slot(1, 0): binary.encode_cell(cell, (1000, 0))})
-        first, last = binary.decode_block(data)[binary.slot(1, 0)]
-        got = lua.globals().cellformat.terrain(data, first + 1, last, lua.table_from([1000, 0, 2000, 1000]))
-        self.assertEqual(list(got.terrain.heights.values()), [1, 2.0, 3, -4, 5, 6.7])
-        self.assertEqual(got.low, -4)
-        self.assertEqual(len(got.roads), 0)
+        for fixed in (False, True):
+            data, _ = binary.encode_block({binary.slot(1, 0): binary.encode_cell(cell, (1000, 0))}, fixed)
+            first, last = binary.decode_block(data)[binary.slot(1, 0)]
+            got = lua.globals().cellformat.terrain(data, first + 1, last, lua.table_from([1000, 0, 2000, 1000]))
+            self.assertEqual(list(got.terrain.heights.values()), [1, 2.0, 3, -4, 5, 6.7])
+            self.assertEqual(got.low, -4)
+            self.assertEqual(len(got.roads), 0)
 
     def test_terrain_only_decoder_yields_and_preserves_large_grid(self):
         lua, _, _ = self.make()

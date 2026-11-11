@@ -16,7 +16,7 @@
 | `osm` | Читання PBF через mmap (osmpbf), власний PBF-писач, правила `osm_select`, нарізка тайлів (`cut.rs`), джерело `Map detail` (`mapsrc.rs`) |
 | `geo` | UTM за рядами Крюгера (сумування Кленшоу), `fast_sources.Frame` без PROJ |
 | `kernels` | `earthng_native.dll` для ctypes: CG профілів доріг, DEM Terrarium (`terrain.rs`) |
-| `pack` | Формат клітинок EGB2 (`format.rs`), графи маршрутизації EGR1 (`routing.rs`) |
+| `pack` | Формат клітинок EGB2 (`format.rs`) і EGB3 (`fixed.rs`, читання й транскод), графи маршрутизації EGR1 (`routing.rs`) |
 | `cells` | `compile_cell` + кодер: індекс через SQLite, сцени, GEOS із shapely (`geos.rs`, завантажується під час роботи), семантика numpy (`numeric.rs`) |
 | `mapbuilder` | `earthng-mapbuilder.exe`: підкоманди `cut`, `routing`, `map-source`, `compile`, `scene` |
 | `app` | `EarthNG.exe`: вікно WebView2, сторінка `app/ui`, тайли підкладки, розпаковка runtime ([MAPBUILDER_APP.md](MAPBUILDER_APP.md)) |

@@ -498,9 +498,9 @@ impl Reader<'_> {
     }
 }
 
-/// decode_block: {slot: (start, end)} of a block file, in slot order.
+/// decode_block: {slot: (start, end)} of a block file (v2 or EGB3), in slot order.
 pub fn decode_block(data: &[u8]) -> Result<Vec<(u32, usize, usize)>> {
-    if data.len() < 4 || &data[..4] != MAGIC {
+    if data.len() < 4 || (&data[..4] != MAGIC && !crate::fixed::is_v3(data)) {
         return Err(FormatError("not an EarthNG source block"));
     }
     let mut r = Reader { data, at: 4, end: data.len() };
@@ -522,7 +522,12 @@ pub fn decode_block(data: &[u8]) -> Result<Vec<(u32, usize, usize)>> {
 }
 
 /// decode_roads without the `seen` filter: every road of the cell data[at..end], in order.
+/// A cell of an EGB3 block (cells start after the magic, so at >= 5) is read as its v2 bytes.
 pub fn decode_roads(data: &[u8], origin: [f64; 2], at: usize, end: usize) -> Result<Vec<DecodedRoad>> {
+    if at >= 5 && crate::fixed::is_v3(data) {
+        let cell = crate::fixed::cell_to_v2(data, at, end)?;
+        return decode_roads(&cell, origin, 0, cell.len());
+    }
     let mut r = Reader { data, at, end };
     let n = r.u()?;
     let mut strings = Vec::with_capacity(n as usize);

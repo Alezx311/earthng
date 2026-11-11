@@ -35,6 +35,11 @@ import venues
 
 
 FORMAT = 'earthng-features-v2'
+# EARTHNG_CELLS_V3=1 writes fixed-width blocks (EGB3, country_format.transcode_cell) that the game
+# copies with one ffi.copy. They decode 2.9 times faster, but in the game the landing in central
+# Kyiv was the same (generator 7.17 s against 7.29 s, out/egb-01..04) and a pack 15 % larger, so
+# packs stay v2 (docs/RUST_IN_MOD.md, "EGB3 у паках").
+FIXED_CELLS = os.environ.get('EARTHNG_CELLS_V3', '').strip() in ('1', 'yes', 'on', 'true')
 CELL = 1000
 HALO = 100
 GRID = 25
@@ -606,7 +611,7 @@ def _finish_block(store, cells, include):
 def _pack(payloads, counts):
     if not payloads:
         return None, counts
-    data, mask = binary.encode_block(payloads)
+    data, mask = binary.encode_block(payloads, FIXED_CELLS)
     crc, size, blob = _deflate(data)
     return (crc, size, blob, mask), counts
 

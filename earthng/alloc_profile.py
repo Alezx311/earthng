@@ -100,8 +100,10 @@ def main():
     p.add_argument('--top', type=int, default=60)
     p.add_argument('--lines', action='store_true', help='by line instead of by function')
     p.add_argument('--count', type=int, default=200, help='VM instructions between hook calls (smaller: sharper, slower)')
+    p.add_argument('--game-structs', action='store_true',
+                   help="a vec3 as in the game: the mesh output as FFI structs, not the tables lupa gets")
     a = p.parse_args()
-    lua, mods, _ = runtime(a.pack)
+    lua, mods, _ = runtime(a.pack, a.game_structs)
     # readPaused reads 256 KB at a time until a short read: the bench stub hands the whole file
     # to every read(), so give it once
     lua.execute('''io.open = function(p) local data = py_bytes(p); if not data then return nil end

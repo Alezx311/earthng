@@ -20,7 +20,7 @@ from lupa.luajit21 import LuaRuntime
 LUA = ROOT / 'mod/lua/ge/extensions/e2r'
 
 
-def runtime(pack):
+def runtime(pack, game_structs=False):
     archive = zipfile.ZipFile(pack)
     names = {'/' + n for n in archive.namelist()}
     lua = LuaRuntime(unpack_returned_tuples=True)
@@ -67,6 +67,11 @@ def runtime(pack):
         return {stop=function() return (clock()-t0)*1000 end,
                 stopAndReset=function() local n=clock(); local d=(n-t0)*1000; t0=n; return d end} end
     ''')
+    if game_structs:
+        # the game's vec3 as an FFI struct: the generator then writes its mesh output as cdata,
+        # as it does in the game (lupa has no vec3, so tests and digests see plain tables)
+        lua.execute("local ffi = require('ffi'); ffi.cdef('struct __luaVec3_t { double x, y, z; };');"
+                    " vec3 = ffi.typeof('struct __luaVec3_t')")
     mods = {}
     load = lua.eval('function(source, name) return assert(load(source, "@" .. name))() end')
     for name in ('countries', 'coordinates', 'cellformat', 'generator', 'quality', 'manual', 'manual_editor'):

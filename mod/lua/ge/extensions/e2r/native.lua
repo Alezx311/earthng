@@ -755,6 +755,16 @@ local function completeLanding()
   local done, total = 0, 0
   for key in pairs(land.required) do total = total + 1; if active.tiles[key] then done = done + 1 end end
   state.job.progress = total > 0 and done / total or 0
+  -- The tile under the requested point, as soon as it is built (job.early): the world leaves the
+  -- old place, loads materials, warms the textures and spawns tiles while the rest of the square
+  -- is built, instead of holding nine tiles of geometry (~900 MB of Lua heap, the engine's
+  -- collector walking it) until the last one (docs/PERFORMANCE.md, "Висадка").
+  if not state.job.early then
+    local t = active.region.data.tileSize
+    local entry = active.tiles[keyOf(math.floor(land.x / t), math.floor(land.y / t))]
+    local sp = entry and entry.road and entry.road.spawn
+    if sp and vector(sp.pos, 3) and finite(sp.yaw) then state.job.early = entry.road end
+  end
   if done < total then return end
   if not land.selected then
     local best, distance
@@ -1457,7 +1467,8 @@ local function update(dt, budgetMs, farBudgetMs, now)
   local timer = hptimer()
   -- farBudgetMs: the far ring's own budget instead of FAR_BUDGET_MS (showcase stills; the
   -- game passes none), and then the frame may take up to 50 ms
-  budgetMs = finite(budgetMs) and math.max(0.1, math.min(farBudgetMs and 50 or 8, budgetMs)) or 2
+  -- the landing (startupPinned: the player waits for the tiles) may take as much
+  budgetMs = finite(budgetMs) and math.max(0.1, math.min(active.startupPinned and 100 or (farBudgetMs and 50 or 8), budgetMs)) or 2
   if dirty or active.nearKnownAt ~= state.stream.built then
     active.nearWaiting, active.nearUrgent = nearPending(wanted)
     active.nearKnownAt = state.stream.built

@@ -35,6 +35,19 @@ class CollectorStep(unittest.TestCase):
         self.lua.execute('heap = 310 * 1024; gc.step(true, .016)')
         self.assertEqual(self.stepmul(), 100)
 
+    def test_the_landing_steps_little_until_the_heap_is_over_its_cap(self):
+        self.lua.execute('gc.step(true, .016); heap = 700 * 1024; gc.step(true, .016, true)')
+        self.assertEqual(self.stepmul(), 10)
+        self.lua.execute('heap = 1400 * 1024; gc.step(true, .016, true)')
+        self.assertEqual(self.stepmul(), 200)
+        self.lua.execute('heap = 900 * 1024; gc.step(true, .016, true)')
+        self.assertEqual(self.stepmul(), 10)
+        # the drive starts from what the landing left: that is the floor, not 600 MB of garbage
+        self.lua.execute('gc.step(true, .016)')
+        self.assertEqual(self.stepmul(), 100)
+        self.lua.execute('heap = 1000 * 1024; gc.step(true, .016)')
+        self.assertEqual(self.stepmul(), 200)
+
     def test_the_floor_follows_a_live_heap_that_grows_slowly(self):
         # 200 MB more live data over ten minutes is not garbage piling up
         self.lua.execute('gc.step(true, .016); for k = 1, 600 do heap = (300 + k / 3) * 1024; gc.step(true, 1) end')

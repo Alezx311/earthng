@@ -100,6 +100,10 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
       elseif now - e.at > SETTLE_T and dv > HIT_DV and touching(hitters, bx, by) then
         e.state, e.at = 'down', now
         P.stats.hit = P.stats.hit + 1
+        -- what was hit and by whom, for the report (the last 24)
+        P.log = P.log or {}
+        if #P.log >= 24 then table.remove(P.log, 1) end
+        P.log[#P.log + 1] = e.info
       elseif now - e.at > MISS_T then
         -- not hit: the walker walks on, the body goes back
         walkers.untake(W, e.walker)
@@ -125,11 +129,12 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
   end
   -- the walkers about to be touched
   for _, h in ipairs(hitters) do
-    local speed = math.sqrt(h.vx * h.vx + h.vy * h.vy)
-    if speed > MIN_SPEED and speed < MAX_SPEED then
-      local reach = math.sqrt(h.hl * h.hl + h.hw * h.hw) + (speed + 2) * M.LEAD + 1
+    local carSpeed = math.sqrt(h.vx * h.vx + h.vy * h.vy)
+    if carSpeed > MIN_SPEED and carSpeed < MAX_SPEED then
+      local reach = math.sqrt(h.hl * h.hl + h.hw * h.hw) + (carSpeed + 2) * M.LEAD + 1
       for _, w in ipairs(walkers.near(W, h.x, h.y, reach)) do
-        local wvx, wvy = w.hx * w.speed, w.hy * w.speed
+        local speed = w.waiting and 0 or w.speed   -- one waiting at the kerb stands
+        local wvx, wvy = w.hx * speed, w.hy * speed
         local t = M.sweep(w.x, w.y, wvx, wvy, walkers.RADIUS, h.x, h.y, h.fx, h.fy, h.hl, h.hw, h.vx, h.vy, M.LEAD)
         if t then
           local e = free(P)
@@ -137,8 +142,17 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
             P.stats.noBody = P.stats.noBody + 1
           elseif not standingAt(P, api, w.x, w.y) then
             walkers.take(W, w)
-            api.place(e.id, w.x, w.y, walkers.standZ(w), w.hx, w.hy, w.speed, w)
+            api.place(e.id, w.x, w.y, walkers.standZ(w), w.hx, w.hy, speed, w)
             e.state, e.at, e.walker, e.vx, e.vy = 'placed', now, w, wvx, wvy
+            -- where the walker was: on a leg across a road (how far along it), waiting at the kerb or on
+            -- its sidewalk; the vehicle: the player's or another, its speed, the walker's place in its
+            -- frame (ahead, to its left)
+            local dx, dy = w.x - h.x, w.y - h.y
+            local leg = w.transit
+            e.info = {at = math.floor(now), where = leg and (leg.cross and 'crossing' or 'corner') or 'sidewalk',
+              leg = leg and math.floor(leg.s * 10) / 10, legLen = leg and math.floor(leg.len * 10) / 10, waiting = w.waiting,
+              player = h.player, kmh = math.floor(carSpeed * 3.6),
+              ahead = math.floor((dx * h.fx + dy * h.fy) * 10) / 10, left = math.floor((-dx * h.fy + dy * h.fx) * 10) / 10}
             P.stats.placed = P.stats.placed + 1
           end
         end

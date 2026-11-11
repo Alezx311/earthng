@@ -2,6 +2,63 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-11: a third less generator garbage, the landing in ~28.8 s
+
+- Generator output as FFI structs in the game (`generator.lua` `POINT`, `CORNER`, `MESHUV`): vertices
+  and normals the game's vec3, faces `{int32 v, n, u}`, UVs `{double u, v}`. createMesh reads them
+  by field name like tables (research/rust-in-mod/p20_mesh_cdata.lua), at 38-50 B each instead of
+  120-170 B, and the collector does not walk them. Outside the game (lupa) they stay tables.
+- Transient tables gone from hot loops: the press list, the slope closure per ground corner, the
+  per-point normal cache entry, `ringBounds({ring})` in per-segment bounds tests (`BOX.*`), the
+  spawn-search lerp, the double point in `SOLID.face`, `{x, y}` in `onAsphalt`. Output identical
+  (digest of 3x3 central Kyiv tiles near and far, and a suburb).
+- Garbage per central Kyiv tile 113 -> 76 MB; landing 31.3 -> 28.2-30.1 s (out/gc-01..07); landing
+  LuaGC 6.0 -> 4.0-4.4 s; generator garbage per frame 664 -> 482-529 KB.
+- `gc.lua` guard thresholds 96/48 -> 48/24 MB: with less traced garbage the old threshold came too
+  late and a standing car got ~500 ms sweeps of ~100 MB every 15-20 s (p22/p23 probes).
+  `result.hitches` records the heap before and after each hitch frame.
+- `alloc_profile.py --game-structs`: the profile with the game's structs. docs/PERFORMANCE.md.
+
+## 2026-11-11: fixed-width cells and an early arrival, measured: no faster landing
+
+- EGB3 cells (`country_format.transcode_cell`, `cellformat.lua`, `rust/crates/pack/src/fixed.rs`):
+  each cell's numbers as 16-bit words (0xffff escapes a larger value) and its elevation grid as
+  decimetres above its lowest point, copied by the game into FFI arrays with one `ffi.copy`. The
+  game, Python and Rust read both formats by the block's magic; Python and Rust write the same
+  bytes. Decoding is 2.9 times faster under lupa (once the feature walk got its own copy per format:
+  a reader swapped mid-cell kept LuaJIT's traces on the varint reader), but the landing in game was
+  the same (generator 7.17 s against 7.29 s) and a pack 15 % larger, so packs stay v2;
+  `EARTHNG_CELLS_V3=1` writes EGB3. docs/RUST_IN_MOD.md.
+- Early arrival (`native` `job.early`, `world` `M.landFinal`): the world leaves the old place, warms
+  textures and spawns tiles as soon as the tile under the requested point is built; it touches down
+  when the whole landing square is ready. Same total time (31.3-32.1 s in every variant: the main
+  thread is busy throughout), peak Lua heap 381-554 MB instead of 735. `test_world.py --late-arrival`
+  switches it off. The engine's collector follows the generator's allocations, not the heap's size:
+  less garbage in the generator is what is left. docs/PERFORMANCE.md.
+
+## 2026-11-10: the landing in 38 s instead of 82; pedestrians keep off the roads
+
+- Landing (`world.lua` `LIMIT.loadNativeMs`/`loadQueueMs`, `native.lua`, `gc.lua`): while the player
+  waits for the tiles the generator takes 60 ms of a frame and the spawn queue 14, not the drive's
+  4 ms; once the nine landing tiles are queued the generator steps back and the frame goes to the
+  queue; the collector's step is 10 in the landing, with one full collection before the touch-down.
+  Central Kyiv: 82.5 s -> 37.7-39.1 s from the request to the car on the road (Ukraine pack),
+  33.6 s in the Kyiv oblast pack. What is
+  left: the engine's own collector step (~7 s, not moved by the step size, stopping it or frame
+  length), texture loading of every pack (~7 s), the generator itself (~9 s). docs/PERFORMANCE.md.
+- Test report: `result.loadReal` (the landing's phases in real seconds), `result.loadEngine` (the
+  engine's frame split per phase), `result.arrivalMs`, `test_world.py --sample` (LuaJIT profile of
+  the landing every 5 ms), `--gc-cycle`, `--walkers`; `--manual` switches on `--flow`/`--walkers`.
+- Pedestrians (`walkers.lua`): real traffic cars ran them over 12-16 times a minute. Sidewalks now
+  lie beyond the lanes the flow drives in, and are cut wherever another road lies (crossings,
+  mouths of side streets that join mid-road, the other carriageway); the pieces' ends are linked
+  round corners and across roads. A walker waits at the kerb (standing pose) while a moving car
+  would reach its crossing first; walkers on a crossing are obstacles to the flow. Kyiv oblast
+  pack, 90 s: 1-3 hits. `result.walk.hitLog` says where each hit walker was and whose car it was.
+- Kyiv oblast test pack rebuilt (`out/kyiv-oblast-polygon`, 256.4 MB, export 226.5 s with 6 jobs).
+- Photogrammetry: no source that may be cached or packed for Kyiv; open city meshes only for
+  Helsinki, Espoo, Melbourne, Launceston. docs/PHOTOGRAMMETRY.md.
+
 ## 2026-11-09: pedestrians, and a physical body in their place before a hit
 
 - Pedestrians (`walkers.lua`): walkers on both sidewalks of every street of the loaded tiles' graph

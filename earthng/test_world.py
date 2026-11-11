@@ -123,6 +123,10 @@ def main():
     p.add_argument('--traffic', type=int, help="after landing: the game's AI traffic, this many cars")
     p.add_argument('--flow', type=int, help='after landing: this many flow cars without physics (flow.lua)')
     p.add_argument('--flow-real', type=int, help='of them round the player this many real cars (handoff.lua, default 8)')
+    p.add_argument('--sample', action='store_true', help="the landing's Lua by function, sampled every 5 ms (result.samples)")
+    p.add_argument('--late-arrival', action='store_true',
+                   help='wait for the whole landing square before leaving the old place (no early arrival; A/B)')
+    p.add_argument('--gc-cycle', help='the collector step of the landing changes every 2 s among these (10,1,400,-10,100)')
     p.add_argument('--walkers', type=int, help='after landing: this many pedestrians (walkers.lua)')
     p.add_argument('--walk-bodies', type=int, help='physical bodies for walkers about to be hit (pedhit.lua, default 6)')
     p.add_argument('--traffic-kind', choices=('simple', 'full', 'agent'), default='simple',
@@ -255,6 +259,12 @@ def main():
         test['flow'] = a.flow
     if a.flow_real is not None:
         test['flowReal'] = a.flow_real
+    if a.sample:
+        test['sample'] = True
+    if a.late_arrival:
+        test['lateArrival'] = True
+    if a.gc_cycle:
+        test['gcCycle'] = [int(v) for v in a.gc_cycle.split(',')]
     if a.walkers:
         test['walkers'] = a.walkers
     if a.walk_bodies is not None:

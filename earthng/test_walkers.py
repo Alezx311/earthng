@@ -32,11 +32,12 @@ function grid(n, step, speed)
 end
 -- the distance of (x, y) from the nearest street's middle line of grid(n, step)
 function offStreet(x, y, n, step)
-  local best = 1e9
+  local best, last = 1e9, (n - 1) * step
   for i = 0, n - 1 do
     local c = i * step
-    if y >= -10 and y <= (n - 1) * step + 10 then best = math.min(best, math.abs(x - c)) end
-    if x >= -10 and x <= (n - 1) * step + 10 then best = math.min(best, math.abs(y - c)) end
+    -- the street along x = c from y = 0 to last, and the one along y = c
+    best = math.min(best, math.sqrt((x - c) ^ 2 + (y - math.max(0, math.min(last, y))) ^ 2))
+    best = math.min(best, math.sqrt((y - c) ^ 2 + (x - math.max(0, math.min(last, x))) ^ 2))
   end
   return best
 end
@@ -96,12 +97,12 @@ class WalkerTests(unittest.TestCase):
         count, worst_in, worst_out, bad, moved, transits, turned = (out[k] for k in range(1, 8))
         self.assertEqual(count, 150)
         self.assertEqual(bad, 0)
-        # half width 3.5 + gap 1.7 = 5.2 m off the middle line; mitred corners stand further out
-        self.assertGreater(worst_in, 5.0)
+        # half width 3.5 + gap 1.7 = 5.2 m off its own middle line, and no nearer than 4.9 m to another's
+        self.assertGreater(worst_in, 4.85)
         self.assertLess(worst_out, 5.2 * 2.5 + .1)
         self.assertGreater(moved, 100)
         self.assertGreater(transits, 50)
-        self.assertEqual(turned, 0)   # the grid has no dead ends
+        self.assertEqual(turned, 0)   # every end of the grid's sidewalks has a way on
 
     def test_fast_roads_have_no_walkers_and_a_lost_road_takes_its_walkers(self):
         out = self.lua().execute('''
@@ -122,32 +123,196 @@ class WalkerTests(unittest.TestCase):
         self.assertEqual(out[3], 0)
         self.assertGreater(out[4], 0)
 
-    def test_sidewalks_stop_at_the_corners_and_a_dead_end_turns_walkers_back(self):
+    def test_sidewalks_stop_at_the_corners_and_a_lone_street_is_walked_round(self):
         out = self.lua().execute('''
           local W = walkers.new{seed = 9}
           local segs = grid(3, 100)
           walkers.sync(W, segs, 100, 100)
-          -- h0_1 runs from 0_1 (an edge node of three roads) to 1_1 (four): both ends cut by 5.2 m
+          -- h0_1 runs along y = 100 from x = 0 (an edge node of three roads) to x = 100 (four): each
+          -- side is one piece, cut 4.9 m from the crossing roads' middle lines (samples every 2 m)
           local rec = W.segs['h0_1']
-          local cum, line = rec.cums[1], rec.lines[1]
-          local inner = {cum[#cum], line[1], line[2], line[#line - 2], line[#line - 1]}
-          -- one street alone: its ends are dead ends, uncut
+          local piece = rec.pieces[1]
+          local line = piece.line
+          local inner = {#rec.pieces, piece.len, line[1], line[2], line[#line - 2], line[#line - 1]}
+          -- one street alone: its sidewalks are whole, and at its ends a walker crosses to the other side
           local one = walkers.new{seed = 9}
           walkers.sync(one, {h0_0 = segs['h0_0']}, 50, 0)
           walkers.setTarget(one, 10)
-          for t = 1, 900 do walkers.step(one, 1 / 10, 50, 0) end
-          local c1 = one.segs['h0_0'].cums[1]
-          return {inner[1], inner[2], inner[3], inner[4], inner[5], c1[#c1], one.stats.turned, one.count}
+          for t = 1, 1800 do walkers.step(one, 1 / 10, 50, 0) end
+          local alone = one.segs['h0_0'].pieces
+          return {inner[1], inner[2], inner[3], inner[4], inner[5], inner[6], #alone, alone[1].len,
+            one.stats.transits, one.stats.turned, one.count}
         ''')
-        length, x0, y0, x1, y1, alone, turned, count = (out[k] for k in range(1, 9))
-        self.assertAlmostEqual(length, 100 - 2 * 5.2, places=6)
-        self.assertAlmostEqual(x0, 5.2, places=6)
-        self.assertAlmostEqual(x1, 94.8, places=6)
+        pieces, length, x0, y0, x1, y1, alone, alone_len, transits, turned, count = (out[k] for k in range(1, 12))
+        self.assertEqual(pieces, 2)
+        self.assertTrue(4.9 <= x0 <= 7, x0)
+        self.assertTrue(93 <= x1 <= 95.1, x1)
+        self.assertAlmostEqual(length, x1 - x0, places=6)
         self.assertAlmostEqual(abs(y0 - 100), 5.2, places=6)
         self.assertAlmostEqual(y0, y1, places=6)
-        self.assertAlmostEqual(alone, 100, places=6)
-        self.assertGreater(turned, 5)
+        self.assertEqual(alone, 2)
+        self.assertAlmostEqual(alone_len, 100, places=6)
+        self.assertGreater(transits, 5)
+        self.assertEqual(turned, 0)
         self.assertEqual(count, 10)
+
+    def test_a_side_street_joining_in_the_middle_of_a_road_cuts_its_sidewalk(self):
+        out = self.lua().execute('''
+          -- a main road along y = 0 and a side street from its middle (100, 0) north; the graph has
+          -- no node of the main road there
+          local function road(id, a, b, x0, y0, x1, y1)
+            local s = {id, a, b, '-+', 13.9, 3.5, 1}
+            for k = 0, 4 do
+              local f = k / 4
+              s[#s + 1], s[#s + 2], s[#s + 3] = x0 + (x1 - x0) * f, y0 + (y1 - y0) * f, 0
+            end
+            return {s = s, x = (x0 + x1) / 2, y = (y0 + y1) / 2}
+          end
+          local segs = {main = road('main', 'm0', 'm1', 0, 0, 200, 0), side = road('side', 's0', 's1', 100, 0, 100, 100)}
+          local W = walkers.new{seed = 6}
+          walkers.sync(W, segs, 100, 20)
+          local north, south, gap = {}, {}, nil
+          for _, piece in ipairs(W.segs.main.pieces) do
+            -- the line's left side is north (y = 5.2)
+            if piece.line[2] > 0 then north[#north + 1] = piece else south[#south + 1] = piece end
+          end
+          table.sort(north, function(a, b) return a.line[1] < b.line[1] end)
+          if #north == 2 then gap = {north[1].line[#north[1].line - 2], north[2].line[1]} end
+          local sideStart = 1e9
+          for _, piece in ipairs(W.segs.side.pieces) do sideStart = math.min(sideStart, piece.line[2], piece.line[#piece.line - 1]) end
+          -- the ends at the mouth: straight on across it, and round the corner into the side street
+          local E = north[1] and north[1].ends[1]
+          local across, corner = 0, 0
+          for _, link in ipairs(E and E.links or {}) do
+            if link.cross and link.to.piece == north[2] then across = across + 1 end
+            if not link.cross and link.to.piece.rec == W.segs.side then corner = corner + 1 end
+          end
+          -- walkers never stand in either road except on a leg across it
+          walkers.setTarget(W, 60)
+          local inRoad, crossed = 0, 0
+          for t = 1, 6000 do
+            walkers.step(W, 1 / 10, 100, 20)
+            for _, w in pairs(W.slots) do
+              if not w.free then
+                local dMain = (w.x >= 0 and w.x <= 200) and math.abs(w.y) or 1e9
+                local dSide = (w.y >= 0 and w.y <= 100) and math.abs(w.x - 100) or 1e9
+                if math.min(dMain, dSide) < 4.5 then
+                  if w.transit and w.transit.cross then crossed = crossed + 1 else inRoad = inRoad + 1 end
+                end
+              end
+            end
+          end
+          return {#north, #south, gap and gap[1] or -1, gap and gap[2] or -1, sideStart, across, corner, inRoad, crossed, W.stats.rebuilt or 0}
+        ''')
+        north, south, gap0, gap1, side_start, across, corner, in_road, crossed, rebuilt = (out[k] for k in range(1, 11))
+        self.assertEqual((north, south), (2, 1))
+        self.assertTrue(93 <= gap0 <= 95.2, gap0)
+        self.assertTrue(104.8 <= gap1 <= 107, gap1)
+        self.assertTrue(4.9 <= side_start <= 7, side_start)   # where the main road's cars no longer reach
+        self.assertEqual((across, corner), (1, 1))
+        self.assertEqual(in_road, 0)
+        self.assertGreater(crossed, 20)
+
+    def test_a_new_road_cuts_the_sidewalks_it_crosses(self):
+        out = self.lua().execute('''
+          local function road(id, x0, y0, x1, y1)
+            local s = {id, id .. 'a', id .. 'b', '-+', 13.9, 3.5, 1}
+            for k = 0, 4 do
+              local f = k / 4
+              s[#s + 1], s[#s + 2], s[#s + 3] = x0 + (x1 - x0) * f, y0 + (y1 - y0) * f, 0
+            end
+            return {s = s, x = (x0 + x1) / 2, y = (y0 + y1) / 2}
+          end
+          local segs = {main = road('main', 0, 0, 200, 0), far = road('far', 0, 300, 200, 300)}
+          local W = walkers.new{seed = 6}
+          walkers.sync(W, segs, 100, 20)
+          local before, farPiece = #W.segs.main.pieces, W.segs.far.pieces[1]
+          local again = walkers.sync(W, segs, 100, 20)
+          -- the next tile brings a street across the main road
+          segs.cross = road('cross', 100, -100, 100, 100)
+          local changed = walkers.sync(W, segs, 100, 20)
+          return {before, again and 1 or 0, changed and 1 or 0, #W.segs.main.pieces, W.stats.rebuilt,
+            W.segs.far.pieces[1] == farPiece and 1 or 0, farPiece.dead and 1 or 0}
+        ''')
+        self.assertEqual(out[1], 2)
+        self.assertEqual(out[2], 0)          # nothing came or went: nothing is built
+        self.assertEqual(out[3], 1)
+        self.assertEqual(out[4], 4)          # both sides cut in two
+        self.assertEqual(out[5], 1)          # only the road beside the new one is built again
+        self.assertEqual((out[6], out[7]), (1, 0))
+
+    def test_a_walker_waits_at_the_kerb_for_a_car_and_crosses_when_the_road_is_clear(self):
+        out = self.lua().execute('''
+          -- one walker made to cross the road from (0, 0) to (0, 9) at 1.5 m/s
+          local function crossing()
+            local W = walkers.new{seed = 1}
+            walkers.sync(W, grid(2, 100), 50, 50)
+            walkers.setTarget(W, 1)
+            walkers.step(W, .01, 50, 50)
+            local w = W.slots[1]
+            w.speed = 1.5
+            w.transit = {x0 = 0, y0 = 0, z0 = 0, x1 = 0, y1 = 9, z1 = 0, len = 9, s = 0, hx = 0, hy = 1, cross = true}
+            return W, w
+          end
+          local function run(W, w, seconds, cars, flow)
+            local onRoad = 0
+            for t = 1, seconds * 20 do
+              walkers.step(W, .05, 50, 50, cars, flow)
+              if #W.onRoad > 0 then onRoad = onRoad + 1 end
+            end
+            return onRoad
+          end
+          -- a car 60 m down the road coming at 14 m/s: there in 4 s, the walker needs 6 + 2
+          local W, w = crossing()
+          local coming = run(W, w, 2, {{x = -60, y = 4.5, vx = 14, vy = 0}})
+          local waited = {w.waiting and 1 or 0, w.transit and w.transit.s or -1, coming}
+          -- the same car as the flow draws it
+          local W2, w2 = crossing()
+          run(W2, w2, 2, nil, {{drawnX = -60, drawnY = 4.5, drawnYaw = 0, v = 14}})
+          local flowWait = w2.waiting and 1 or 0
+          -- a car that has passed, one far up a side street, a standing one: the walker goes
+          local W3, w3 = crossing()
+          local on3 = run(W3, w3, 2, {{x = 30, y = 4.5, vx = 14, vy = 0}, {x = -60, y = 40, vx = 14, vy = 0}, {x = -10, y = 4.5, vx = 0, vy = 0}})
+          local went = {w3.waiting and 1 or 0, w3.transit and w3.transit.s or -1, on3}
+          -- a street that never clears: after 25 s the walker goes anyway
+          local W4, w4 = crossing()
+          local cars = {{x = -40, y = 4.5, vx = 14, vy = 0}}
+          run(W4, w4, 24, cars)
+          local still = w4.waiting and 1 or 0
+          run(W4, w4, 3, cars)
+          return {waited[1], waited[2], waited[3], flowWait, went[1], went[2], went[3], still, w4.waiting and 1 or 0, W.stats.waits}
+        ''')
+        self.assertEqual((out[1], out[2], out[3]), (1, 0, 0))     # waits, has not moved, not on the road
+        self.assertEqual(out[4], 1)
+        self.assertEqual(out[5], 0)
+        self.assertAlmostEqual(out[6], 3.0, delta=.3)             # 2 s at 1.5 m/s
+        self.assertGreater(out[7], 30)
+        self.assertEqual((out[8], out[9]), (1, 0))
+        self.assertEqual(out[10], 1)
+
+    def test_sidewalks_lie_beyond_the_lanes_the_flow_drives_in(self):
+        out = self.lua().execute('''
+          local function edge(lanes, half) return walkers.roadEdge({'id', 'a', 'b', lanes, 13.9, half, 1}) end
+          -- a 7 m street with one lane each way: its own edge
+          local plain = edge('-+', 3.5)
+          -- tagged four lanes on the same 7 m: the flow's lanes are 2.6 m, two each way
+          local narrow = edge('--++', 3.5)
+          -- one way, three lanes on 7 m: 3 x 2.6 round the middle line
+          local oneway = edge('+++', 3.5)
+          -- a wide avenue holds its lanes
+          local wide = edge('---+++', 12)
+          local W = walkers.new{seed = 1}
+          local s = {'s', 'a', 'b', '--++', 13.9, 3.5, 1, 0, 0, 0, 50, 0, 0, 100, 0, 0}
+          walkers.sync(W, {s = {s = s, x = 50, y = 0}}, 50, 0)
+          local pieces = W.segs.s.pieces
+          return {plain, narrow, oneway, wide, math.abs(pieces[1].line[2]), math.abs(pieces[2].line[2])}
+        ''')
+        self.assertAlmostEqual(out[1], 3.5)
+        self.assertAlmostEqual(out[2], 5.2)
+        self.assertAlmostEqual(out[3], 3.9)
+        self.assertAlmostEqual(out[4], 12)
+        self.assertAlmostEqual(out[5], 5.2 + 1.7)
+        self.assertAlmostEqual(out[6], 5.2 + 1.7)
 
     def test_new_walkers_appear_out_of_sight(self):
         out = self.lua().execute('''

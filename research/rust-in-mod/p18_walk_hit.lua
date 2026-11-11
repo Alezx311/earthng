@@ -31,7 +31,7 @@ end
 local best, bestD
 for _, w in pairs(W.slots) do
   if not w.free and not w.taken and not w.transit and w.s > 45 then
-    local cum = w.seg.cums[w.side]
+    local cum = w.piece.cum
     local d = math.sqrt((w.x - cp.x) ^ 2 + (w.y - cp.y) ^ 2)
     if cum[#cum] - w.s > 20 and d < 300 and (not bestD or d < bestD) then best, bestD = w, d end
   end
@@ -39,7 +39,7 @@ end
 if not best then return {error = 'no walker near', count = W.count} end
 local w = best
 w.speed = 0.01   -- the test aims at a standing walker
-local line, cum = w.seg.lines[w.side], w.seg.cums[w.side]
+local line, cum = w.piece.line, w.piece.cum
 local target = vec3(w.x, w.y, w.z)
 local start = along(line, cum, w.s - 40)
 local dir = (along(line, cum, w.s - 36) - start):normalized()
