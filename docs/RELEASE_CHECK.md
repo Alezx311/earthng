@@ -4,6 +4,40 @@ Newest first. Each entry records what was checked before a release and what was 
 in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
 `MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
 
+## 0.9.0 (2026-11-12): planet 0.9.0 and EarthNG.exe 0.9.0 from 9fc4c38
+
+A polish of 0.8.7 (with its planet of 12.11, the blood fix): no `knock.step` stall when a car is
+teleported among props, the walker and blood shapes warmed at the landing (40be732), version 0.9.0
+(9fc4c38).
+
+- Planet built from a clean `git archive HEAD mod` (out/release/build_planet_0_9_0.py), language
+  `en`, map sidecars carried by `build_mod`: 280 112 444 bytes, sha256 c68045d7…; testzip clean.
+  Against the 0.8.7 planet of 12.11 only `knock.lua`, `world.lua` and the manifest (0.9.0) changed.
+- EarthNG.exe 0.9.0 (50 167 847 bytes, sha256 e485506c…): BUILD_INFO version 0.9.0, planet 0.9.0,
+  source 9fc4c38. Its Lua equals the planet's but for the language line of `world.lua` (`uk` in the
+  runtime, `en` in the release planet).
+- Unit tests at 9fc4c38: full discover 922 OK (1 skipped).
+- Game (BeamNG 0.40.5, isolated profiles, release planet, no other game running):
+  - Kyiv oblast pack, Vytachiv route (50.1128, 30.8790), 25 m/s for 70 s, 150 pedestrians,
+    quality 50, High 1600×900 (out/rel090-vyt): functional status passed, no EarthNG errors; 823 m;
+    frames mean 12.0 ms, p99 27.5, 4 over 100 ms (0.8.7: 13.6, 31, 5); walkers `drawMax` 1.8 ms.
+    No walker was hit this time. The four frames over 100 ms are collector sweeps at 23, 41, 63 and
+    86 s (400–500 ms, the heap 80–150 MB lower after each).
+  - Ukraine pack, Kyiv centre 50.4501, 30.5234, 400 flow cars and 8 real, 200 pedestrians, 60 s,
+    quality 50, Normal 1280×720 (out/rel090-kyiv): functional status passed, no EarthNG errors;
+    landed in 33.1 s; frames mean 25.3 ms, p99 54.5, 7 over 100 ms in 179 m (0.8.7: 24.8, 54, 8 in
+    317 m). 3 hits, all with a body, 15 stains. `knock.step` worst 0.33 ms (0.8.7: 565), walkers
+    `drawMax` 0.46 ms (0.8.7: 110). Flow: 35 hand-offs, 22 preempted, flow step worst 5.0 ms. The
+    straight physics drive met a building again.
+  - Working tree before packaging: the same Kyiv drive four times (out/polish-01…04) for the stall
+    and the warm-up, the knock row (`test_world --knock`, out/polish-knock2: ai 24 of 24, fling 16,
+    swarm 54 of 90, worst step 0.62 ms), the swap stills (`earthng/probe/knock_swap.lua`,
+    out/swap-01).
+- Known: the Lua collector sweeps 80–150 MB in one 0.4–0.75 s frame every 20–50 s of driving; not
+  new (0.8.7 had as many frames over 100 ms on the same routes).
+- Not run: BeamNG 0.39 (its files are no longer on disk), a pack build by the exe, the in-game
+  options UI.
+
 ## 0.8.7, planet replaced (2026-11-12): blood stains, from d60917c
 
 The first 0.8.7 planet drew every blood stain as a black square, and the car's stains hung in a
