@@ -3351,8 +3351,9 @@ end
 -- Called after the landing tile is loaded and its collision rebuilt (teleporting in the same frame
 -- as reloadCollision dropped the car through the new roads, world-test-04).
 local function touchDown()
-  -- the landing's garbage goes before the drive starts, not in sweeps during its first seconds
-  result.touchDownCollectMs = M.gc.collect()
+  -- the landing's garbage goes before the drive starts, not in sweeps during its first seconds: the
+  -- engine's own full collection, nudged to run here (gc.lua M.nudge)
+  result.touchDownCollectMs = M.gc.nudge()
   local timer = hptimer()
   local veh = getPlayerVehicle(0)
   local s = S.landing.spawn
@@ -4978,7 +4979,9 @@ local function runTest()
       local kbMean = {}
       for part, sum in pairs(P.kb) do kbMean[part] = sum / P.frames end
       result.luaProfile = {frames = P.frames, meanMs = mean, maxMs = P.max, heapKb = collectgarbage('count'), kbPerFrame = kbMean,
-        garbageKbPerFrame = P.kbUp / P.frames, collections = P.collections}
+        garbageKbPerFrame = P.kbUp / P.frames, collections = P.collections,
+        -- gc.lua: cycles the pace ended, the engine's full collections seen, the touch-down's nudge
+        gc = M.gc.report()}
     end
     saveResult()
   end
@@ -5565,6 +5568,7 @@ function M.onUpdate(dtReal, dtSim)
   S.forestTimer:stopAndReset()
   forestCommit()
   profAdd('forest', S.forestTimer:stop())
+  profAdd('gc', M.gc.paceMs or 0)   -- the collector's slice of the frame (gc.lua M.pace)
   local frameMs = frameTimer:stopAndReset()
   table.insert(S.frames, frameMs)
   S.recentAt = (S.recentAt or 0) % 240 + 1        -- the widget's FPS: the last 240 frames

@@ -2,6 +2,35 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-12: no collector sweep while driving
+
+- The 0.4-0.6 s frame every 15-25 s of a drive, where the GE Lua heap fell by 80-150 MB, was the
+  engine's own full collection, not our code. Engine.Debug LuaGC was 415-442 ms in that frame, and
+  our Lua parts were under 20 ms. It runs when the heap reaches 4/3 of what its own last full
+  collection left (all pairs measured 1.32-1.33). Our collectgarbage('collect') costs as much and
+  does not move that point.
+- At stepmul 100 the incremental cycle never finished before that point. The guessed cause, collector
+  debt from big streaming allocations, did not hold: step(0) meters took at most 2.5 ms. Probes are in
+  `research/rust-in-mod/p25_gc_debt.lua`, `p26_engine_step.lua` and `p27_gc_pace.lua`.
+- `gc.lua`: while driving, the collector gets a slice of every frame. Its size depends on the share of
+  the room the garbage has taken. The room runs from the live heap to 0.94 x the engine's 4/3. A cycle
+  costs about as much as a full collection, so it starts late: a first version that paced from the
+  live heap ran 24 cycles in 70 s, costing 2.1 ms a frame.
+- At touch-down, FFI arrays lift the heap over the engine's 4/3, so its full collection runs in the
+  landing's long frame. One array, 0.35 of the heap, is held through that collection and then let go.
+  The engine then counts from the live heap plus that array, which leaves ~240 MB of room instead of
+  ~110. Without that collection within 20 frames, we collect ourselves as before.
+- The engine's collection is told by a heap fall together with its LuaGC over 100 ms. A frame-time
+  rule misread a 166 ms scene object as a collection.
+- Vytachiv drive at 25 m/s, 150 walkers, High 1600x900, measured on the same day:
+  - 0.9.0 (out/gcbase-05..06): mean 11.92-12.19 ms, p99 26-28 ms, two to four sweeps of 381-559 ms.
+  - With the fix (out/gcfix-02..04): mean 11.84-12.15 ms, p99 26-27.5 ms, no sweep. The collector
+    takes 0.19-0.34 ms a frame. The frames left over 100 ms are scene-object creations (134-210 ms),
+    which the baselines have too.
+  - The atomic step is 43-47 ms, and the frame that frees the held array is 46-68 ms.
+- `luaProfile.gc` in the automation report lists the cycle ends, the engine's collections and the
+  other heap falls (with frame time and LuaGC), the longest step and the touch-down arrays.
+
 ## 2026-11-12: polish for 0.9.0: no knock stall, pedestrians warmed at the landing
 
 - Version 0.9.0: the planet's manifest and EarthNG.exe (`build_mod.py`, `rust/crates/app`).
