@@ -2,6 +2,36 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-12: release 0.8.7, pedestrians with bodies and blood, and the work since 0.8.2
+
+- Planet and EarthNG.exe 0.8.7: everything since 0.8.2 (15a8ec5) in one release: the Overpass test
+  query and the app's logo (EarthNG.exe), pedestrians (6a8c2ff), the faster landing (dc0ab1a, the
+  11-10 and 11-11 entries below), engine water and open-land covers (e366b52), tiles ahead at
+  speed, knockable street props and the options registry (dbbfe0a: docs/KNOCKDOWN.md,
+  docs/INGAME_UI.md), six land levels (ecf3bf4). Checks: docs/RELEASE_CHECK.md.
+- Pedestrians (`pedhit.lua`, `world.lua`, `earthng/people_art.py`): a body is placed outside the
+  striking car's box with an outward kick and thrown clear on a confirmed hit; a lying body far from
+  the player is taken back for a new hit; a walker about to be hit when no body is free is still
+  struck (ghost hit), never driven through. Blood stains (`blood_splat.dae`, 48 at most) on the
+  road for 180 s and on the car for 45 s. Walker figures of ~450 triangles (shaped limbs, shoes,
+  collar, jaw, ears, hair). The pool holds up to 24 bodies: 4 at switch-on, then one at most every
+  2 s, only when fewer than 2 are idle or a hit found none, and only with the player's car under
+  8 m/s; two spawns a frame at speed were ~4 s of 340 ms frames right after landing (out/all-08).
+  `world.lua`'s blood state is one table (`BLOOD`): the main chunk is at LuaJIT's 200 locals.
+  Vytachiv, 150 walkers, route at 25 m/s for 70 s (out/all-08, all-10): 2 and 4 hits, all with a
+  body, 4 and 8 stains, no ghost hit; with the fill on demand the pool stayed at 4 (all-10).
+- Streaming (`native.lua` priorities, `world.lua` updateTiles): the tile under the car is never
+  "behind" at speed: past mid-tile its centre lies rearwards, and the road under the wheels was
+  dropped and rebuilt every few hundred metres. `keepBack` pads half a tile, as native's AHEAD.
+- Far tiles (`native.lua` `trimTiles`, `update`): one evicted in this epoch is built again once it
+  fits with a 20 % margin (`active.evictedSize`). After a fast drive the near refill's untaken
+  geometry kept the cache over budget, each far tile was evicted as soon as it was built and
+  waited for the next epoch (250 m of travel), which a parked car never reached. out/all-11:
+  rebuilds 85 instead of 113, drive frames 13.4 ms, p99 31. docs/PERFORMANCE.md.
+- Tests: gallery shots record the streaming state (`result.shotStream`: graves, queue, near and
+  far wanted, far ready and loaded, cached tiles); the drive ends with the parking brake too (the
+  car rolled on into a field while the gallery framed where it had stopped).
+
 ## 2026-11-12: open land in six levels, grass in four rings
 
 - Open land (`generator.lua` `VEG.land`, docs/NATURE.md): the levels a land comes into another by
