@@ -1714,6 +1714,19 @@ end
 -- Pedestrians (walkers.lua) on the sidewalks of the same graph, drawn as static pose shapes in a
 -- group outside the MissionGroup. A vehicle with physics about to touch one (the player's car, the
 -- real cars of the hand-off, the game's traffic) meets a physical body in its place (pedhit.lua).
+-- The walkers' shapes: the walk poses, then the one waiting at the kerb (walkers.view); with blood,
+-- the blood stains' too. The landing warms them when walkers will come with the drive: a shape's
+-- first TSStatic costs ~12 ms, and a walker's first posed set (all nine at once) was a 110 ms frame
+-- in every drive with walkers (polish-01..03).
+function M.peopleShapes(blood)
+  local ws, dir = M.walkSim, '/levels/e2r_world/art/people/'
+  local shapes = {}
+  for k = 0, ws.POSES - 1 do shapes[k + 1] = dir .. 'ped_walk' .. k .. '.dae' end
+  shapes[ws.POSES + 1] = dir .. 'ped_stand.dae'
+  if blood then shapes[#shapes + 1] = dir .. 'blood_splat.dae'; shapes[#shapes + 1] = dir .. 'blood_spray.dae' end
+  return shapes
+end
+
 -- M.walkersSet(n [, now]): n walkers asked, clamped to 0..walkers.MAX (1000). Cheap to call every
 -- frame of a slider drag: the count changes in place and the shapes follow a few a frame. 0 hides
 -- every walker at once and releases the objects, the group and the body pool 2 s later unless a
@@ -1746,10 +1759,7 @@ function M.walkersSet(n, now)
   wk.zeroAt = nil
   ws.setTarget(wk.W, n)
   if not (wk.parked and S.state == 'driving') then return end
-  local shapes = {}
-  for k = 0, ws.POSES - 1 do shapes[k + 1] = '/levels/e2r_world/art/people/ped_walk' .. k .. '.dae' end
-  shapes[ws.POSES + 1] = '/levels/e2r_world/art/people/ped_stand.dae'   -- one waiting at the kerb
-  wk.V, wk.parked, wk.syncAt = ws.view(wk.W, shapes, tileGroup('E2R_walkers', true)), nil, nil
+  wk.V, wk.parked, wk.syncAt = ws.view(wk.W, M.peopleShapes(), tileGroup('E2R_walkers', true)), nil, nil
   if not wk.ground then
     -- the ground under a walker: one vec3 filled again (no garbage per read)
     local at = vec3(0, 0, 0)
@@ -3308,6 +3318,13 @@ local function beginArrival(job, early)
   -- its mesh. Keep the instances underground afterwards to retain the loaded resources.
   arrival.warm = arrivalTimer:stopAndReset()
   local shapes = tileGroup('E2RWorldShapes')
+  -- walkers coming with this drive (asked before it, or the automation's): their shapes too
+  if (M.walkersGet() > 0 or (test and test.walkers)) and manifest.warmShapes and not manifest.peopleWarm then
+    manifest.peopleWarm = true
+    for _, shape in ipairs(M.peopleShapes(true)) do
+      if FS:fileExists(shape) then table.insert(manifest.warmShapes, shape) end
+    end
+  end
   for k, shape in ipairs(manifest.warmShapes or {}) do
     local obj = createObject('TSStatic')
     obj:setField('shapeName', 0, shape)
@@ -5524,6 +5541,10 @@ end
 local function profAdd(part, ms, kb)
   local P = S.prof
   if not P then P = {sum = {}, max = {}, kb = {}, frames = 0, kbUp = 0, collections = 0}; S.prof = P end
+  -- this frame's parts, for a hitch record (onUpdate reads them at the start of the next frame)
+  local F = S.frameParts
+  if not F then F = {}; S.frameParts = F end
+  F[part] = (F[part] or 0) + ms
   P.sum[part] = (P.sum[part] or 0) + ms
   if ms > (P.max[part] or 0) then P.max[part] = ms end
   if kb and kb > 0 then P.kb[part] = (P.kb[part] or 0) + kb end
@@ -5552,10 +5573,16 @@ function M.onUpdate(dtReal, dtSim)
   if S.driveAcc and S.state == 'driving' then accFrame(S.driveAcc, frameMs, S.now) end
   if frameMs > 300 and S.stream then
     result.hitches = result.hitches or {}
-    -- {s, ms, state, heap MB before the frame, after it}
-    if #result.hitches < 60 then table.insert(result.hitches, {math.floor(S.now), math.floor(frameMs), S.state,
-      math.floor((S.heapKb or heapKb) / 1024), math.floor(heapKb / 1024)}) end
+    -- {s, ms, state, heap MB before the frame, after it, {part = ms} of the frame's Lua over 20 ms}
+    if #result.hitches < 60 then
+      local parts = {}
+      for k, v in pairs(S.frameParts or {}) do if v > 20 then parts[k] = math.floor(v) end end
+      table.insert(result.hitches, {math.floor(S.now), math.floor(frameMs), S.state,
+        math.floor((S.heapKb or heapKb) / 1024), math.floor(heapKb / 1024), parts})
+    end
   end
+  -- (emptied, not made anew: no table of garbage a frame)
+  for k in pairs(S.frameParts or {}) do S.frameParts[k] = nil end
   S.heapKb = heapKb
   if #S.frames > 20000 then S.frames = {} end
   if S.state == 'off' then
@@ -5711,9 +5738,14 @@ function M.tick(dt)
       if M.navigator then M.navigator.step(focus, S.now, lang) end
       M.locationStep()
       if M.signals then M.signals.step(S.now, trafficRunning()) end
+      local t0 = timer:stop()
       if S.flow then M.flowStep() end
+      local t1 = timer:stop()
       if S.walk then M.walkersStep() end
+      local t2 = timer:stop()
       if S.knock then M.knockStep() end
+      local t3 = timer:stop()
+      profAdd('flow', t1 - t0); profAdd('walk', t2 - t1); profAdd('knock', t3 - t2)
     end
     updateParking()
     local tNav = timer:stopAndReset()
@@ -5794,9 +5826,14 @@ end
 -- the struck vehicle gets a velocity change. Created with the first knockable prop the Forest commits.
 function M.knockState()
   if S.knock then return S.knock end
-  local ks = {K = M.knock.new{enabled = true}, boxes = {}, pool = {}, noBodies = {pool = {}}}
+  local ks = {K = M.knock.new{enabled = true}, boxes = {}, pool = {}, noBodies = {pool = {}}, callMax = {}}
   local api, at = {}, vec3(0, 0, 0)
   local box = Box3F and Box3F()
+  -- the slowest of each game call (result.knockCalls): a stalled step is found by these
+  local function slowest(kind, t0)
+    local ms = (os.clock() - t0) * 1000
+    if ms > (ks.callMax[kind] or 0) then ks.callMax[kind] = ms end
+  end
   -- the item at (x, y, z) of kind shape .. '#knock' leaves the Forest (not one a retiring tile queued)
   function api.hide(id, shape, x, y, z)
     local key = shape .. '#knock'
@@ -5806,7 +5843,10 @@ function M.knockState()
     if not data or not box then return false end
     box.minExtents = vec3(x - .3, y - .3, z - 2)
     box.maxExtents = vec3(x + .3, y + .3, z + 6)
+    local tb = os.clock()
     local ok, items = pcall(data.getItemsBox, data, box)
+    tb = (os.clock() - tb) * 1000
+    if tb > (ks.callMax.box or 0) then ks.callMax.box, ks.callMax.items = tb, type(items) == 'table' and #items or -1 end
     if not ok or type(items) ~= 'table' then return false end
     local name, q = d:getName(), S.forestQ and S.forestQ[key]
     for _, item in ipairs(items) do
@@ -5814,7 +5854,11 @@ function M.knockState()
       local p = item:getPosition()
       if okD and itemData and itemData:getName() == name and (p.x - x) ^ 2 + (p.y - y) ^ 2 < .0025 then
         if q and q.removing[item:getKey()] then return false end
-        if not pcall(data.removeItem, data, item) then return false end
+        local tr = os.clock()
+        local removed = pcall(data.removeItem, data, item)
+        tr = (os.clock() - tr) * 1000
+        if tr > (ks.callMax.remove or 0) then ks.callMax.remove, ks.callMax.shape = tr, shape end
+        if not removed then return false end
         result.forestItems = math.max(0, (result.forestItems or 0) - 1)
         -- a lamp's light goes with its pole: lightsStep places the pool again on the next frame
         if shape == LAMP_SHAPE and S.lamps then
@@ -5849,6 +5893,7 @@ function M.knockState()
     return obj
   end
   function api.drop(obj, shape)
+    local t0 = os.clock()
     local list = ks.pool[shape]
     if not list then list = {}; ks.pool[shape] = list end
     if #list < 64 then
@@ -5857,17 +5902,24 @@ function M.knockState()
     else
       pcall(function() obj:delete() end)
     end
+    slowest('drop', t0)
   end
   -- pcall: a debris object deleted from outside (a group emptied) must not stop the step
-  function api.place(obj, x, y, z, qx, qy, qz, qw) pcall(obj.setPosRot, obj, x, y, z, qx, qy, qz, qw) end
+  function api.place(obj, x, y, z, qx, qy, qz, qw)
+    local t0 = os.clock()
+    pcall(obj.setPosRot, obj, x, y, z, qx, qy, qz, qw)
+    slowest('place', t0)
+  end
   function api.ground(x, y, z)
     at.x, at.y, at.z = x, y, z + 1.5
     local h = be:getSurfaceHeightBelow(at)
     if h and h > -1e6 then return h end
   end
   function api.push(vid, dvx, dvy, dvz)
+    local t0 = os.clock()
     local o = be:getObjectByID(vid)
     if o then o:applyClusterVelocityScaleAdd(o:getRefNodeId(), 1, dvx, dvy, dvz) end
+    slowest('push', t0)
   end
   function api.clock() return os.clock() * 1000 end
   -- a flier's wall ray: static collision only (buildings, solid Forest items, terrain), two reused
@@ -5918,15 +5970,36 @@ function M.knockStep()
   local p = focus()
   if not p then return end
   ks.H = ks.H or {}
+  local tg = os.clock()
   local hs = M.pedHit.gameHitters(ks.H, S.walk and S.walk.P or ks.noBodies, ks.boxes, p.x, p.y, ks.slow)
+  local slowest = (os.clock() - tg) * 1000
+  if slowest > (ks.callMax.hitters or 0) then ks.callMax.hitters = slowest end
   local n = ks.H.n or 0
   for i = 1, n do
     local h = hs[i]
     -- no mass in GE: a car's plan area scaled from a 1500 kg sedan
     h.mass = math.max(600, math.min(30000, 1500 * h.hl * h.hw / 2.1))
   end
+  local st = ks.K.stats
+  if test and not st.armBy then st.armBy, st.touchBy = {}, {} end
   M.knock.step(ks.K, hs, n, S.now, S.dtSim or S.dt or 1 / 60, ks.api)
-  result.knock = ks.K.stats
+  result.knock = st
+  result.knockCalls = ks.callMax
+  -- automation: who armed and touched props, by vehicle name (player, e2r_flow_real, parked ...)
+  if test and S.now - (ks.byAt or -10) > 2 then
+    ks.byAt = S.now
+    local by, player = {}, be:getPlayerVehicleID(0)
+    for _, field in ipairs({'armBy', 'touchBy'}) do
+      for id, count in pairs(st[field]) do
+        local o = getObjectByID(id)
+        local name = id == player and 'player' or (o and (o:getName() ~= '' and o:getName() or o:getJBeamFilename())) or 'gone'
+        name = name:gsub('_%d+$', '')
+        by[name] = by[name] or {arm = 0, touch = 0}
+        by[name][field == 'armBy' and 'arm' or 'touch'] = by[name][field == 'armBy' and 'arm' or 'touch'] + count
+      end
+    end
+    result.knockBy = by
+  end
 end
 
 -- a new landing or a pack gone: every debris back to the pool (the tiles' retireForest has taken

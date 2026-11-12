@@ -30,6 +30,14 @@ M.OUT_V = 1.2         -- m/s: a prop a vehicle stands in (spawned or teleported 
 M.STILL_V = .05       -- m/s: a vehicle slower than this is still: looked at once in STILL_EVERY steps
 M.STILL_EVERY = 15
 M.LOOK_MAX = 40       -- m: the look-ahead of a very fast vehicle (never under two steps of travel)
+-- The look-ahead is reckoned with at most VN_MAX m/s and a STEP_MAX s step, and the cells swept round
+-- a vehicle reach REACH_MAX m at most: a teleported car (a hand-off, a reset) reads thousands of m/s
+-- for a frame, a hitch makes the step long, and together they swept a few km of cells in one step
+-- (558 ms, central Kyiv with 400 flow cars, polish-02).
+M.STEP_MAX, M.REACH_MAX = .25, 80
+-- m/s: a vehicle seen for the first time (or after half a second) faster than this waits one step
+-- before it touches anything, so a velocity its position does not yet bear out throws nothing
+M.FRESH_V = 30
 M.ESCAPE = .1         -- caught up in flight: sideways by this share of the vehicle's speed (a rounded front)
 M.VN_MAX = 120        -- m/s: the closing speed a throw is computed with at most
 M.ROOF = 1.8          -- m above a vehicle's position: debris higher than this flies over it
@@ -345,6 +353,8 @@ local function arm(K, id, h, hit, now, api)
   if obj then show(K, s, api) end
   actAdd(K, s)
   K.stats.knocked = K.stats.knocked + 1
+  local by = K.stats.armBy
+  if h.id and by then by[h.id] = (by[h.id] or 0) + 1 end
   return true
 end
 
@@ -453,6 +463,9 @@ local function contact(K, s, h, fresh)
   local dv = j / M_
   h.dvx, h.dvy = (h.dvx or 0) - nx * dv, (h.dvy or 0) - ny * dv
   K.stats.contacts = K.stats.contacts + 1
+  -- by vehicle (the glue names them in its report): who touches props
+  local by = K.stats.touchBy
+  if h.id and by then by[h.id] = (by[h.id] or 0) + 1 end
   return dv
 end
 M.contact = contact
@@ -679,7 +692,13 @@ function M.step(K, hitters, n, now, dt, api)
       local lt = LT[id]
       local sp2 = h.vx * h.vx + h.vy * h.vy
       h.ovx, h.ovy = h.vx, h.vy
-      if lt and now - lt <= .5 and now > lt then
+      h.fresh = nil
+      if not (lt and now - lt <= .5 and now > lt) then
+        if sp2 > M.FRESH_V * M.FRESH_V then
+          h.fresh = true
+          K.stats.distrusted = (K.stats.distrusted or 0) + 1
+        end
+      else
         local dx, dy = h.x - LX[id], h.y - LY[id]
         local pv = sqrt(dx * dx + dy * dy) / (now - lt)
         if sp2 > (2 * pv + 1) ^ 2 then
@@ -692,6 +711,8 @@ function M.step(K, hitters, n, now, dt, api)
     end
   end
   local lead = M.LEAD
+  local tp = api.clock and api.clock()
+  part.p0 = tp and tp - timer or 0
   -- 1. armed debris: launched by the first box touching it, or lying down untouched
   local k = 1
   while k <= K.nact do
@@ -702,7 +723,7 @@ function M.step(K, hitters, n, now, dt, api)
       local hit
       for i = 1, n do
         local h = hitters[i]
-        if sweep(K.PX[s], K.PY[s], r, h.x, h.y, h.fx, h.fy, h.hl, h.hw, h.vx, h.vy, dt) then hit = h; break end
+        if not h.fresh and sweep(K.PX[s], K.PY[s], r, h.x, h.y, h.fx, h.fy, h.hl, h.hw, h.vx, h.vy, dt) then hit = h; break end
       end
       if hit then
         launch(K, s, hit, api)
@@ -717,6 +738,7 @@ function M.step(K, hitters, n, now, dt, api)
       k = k + 1
     end
   end
+  if tp then local t = api.clock(); part.p1, tp = t - tp, t end
   -- 2. the fliers: a vehicle catching one up (a pushed planter, a bin sliding ahead) touches it again
   -- every step it closes on it, then it flies a step
   k = 1
@@ -733,7 +755,7 @@ function M.step(K, hitters, n, now, dt, api)
         local rvx, rvy = h.vx - pvx, h.vy - pvy
         local dx, dy = px - h.x, py - h.y
         local rr = h.hl + h.hw + r + (abs(rvx) + abs(rvy)) * dt + .5
-        if dx * dx + dy * dy < rr * rr and not (h.z and low > h.z + M.ROOF)
+        if not h.fresh and dx * dx + dy * dy < rr * rr and not (h.z and low > h.z + M.ROOF)
            and sweep(px, py, r, h.x, h.y, h.fx, h.fy, h.hl, h.hw, rvx, rvy, dt) then
           contact(K, s, h)
           px, py, pvx, pvy = K.PX[s], K.PY[s], K.VX[s], K.VY[s]
@@ -745,6 +767,7 @@ function M.step(K, hitters, n, now, dt, api)
       k = k + 1
     end
   end
+  if tp then local t = api.clock(); part.p2, tp = t - tp, t end
   -- 3. items about to be touched. Any vehicle that moves, at any speed: the look-ahead grows with the
   -- speed (LEAD s of travel, never less than two steps), and every touch is a continuous sweep, so
   -- nothing is jumped over. A still one is looked at once in STILL_EVERY steps (staggered by id) for
@@ -756,10 +779,11 @@ function M.step(K, hitters, n, now, dt, api)
     local h = hitters[i]
     local sp = sqrt(h.vx * h.vx + h.vy * h.vy)
     local still = sp < M.STILL_V
-    if not still or (frame + (h.id or i)) % M.STILL_EVERY == 0 then
-      local look = still and 0 or min(sp * max(lead, 2 * dt), max(M.LOOK_MAX, 2 * sp * dt))
+    if not h.fresh and (not still or (frame + (h.id or i)) % M.STILL_EVERY == 0) then
+      local spl, dtl = min(sp, M.VN_MAX), min(dt, M.STEP_MAX)
+      local look = still and 0 or min(spl * max(lead, 2 * dtl), max(M.LOOK_MAX, 2 * spl * dtl))
       local T = still and 0 or look / sp
-      local reach = sqrt(h.hl * h.hl + h.hw * h.hw) + look + 2.5
+      local reach = min(sqrt(h.hl * h.hl + h.hw * h.hw) + look + 2.5, M.REACH_MAX)
       local cx0, cx1 = floor((h.x - reach) / cell), floor((h.x + reach) / cell)
       local cy0, cy1 = floor((h.y - reach) / cell), floor((h.y + reach) / cell)
       for cx = cx0, cx1 do
@@ -792,6 +816,7 @@ function M.step(K, hitters, n, now, dt, api)
       end
     end
   end
+  if tp then local t = api.clock(); part.p3, tp = t - tp, t end
   -- 4. each vehicle's share of this step's touches, once, capped
   for i = 1, n do
     local h = hitters[i]
@@ -810,7 +835,13 @@ function M.step(K, hitters, n, now, dt, api)
   if timer then
     local ms = api.clock() - timer
     st.ms = ms
-    if ms > st.msMax then st.msMax = ms end
+    if ms > st.msMax then
+      st.msMax = ms
+      -- where the worst step went (the report): swaps, wall rays, ground reads, what was moving
+      st.worst = {ms = ms, arm = part.arm, ray = part.ray, ground = part.ground, arms = K.arms, act = K.nact,
+        fly = K.nfly, hitters = n, t = now, p0 = part.p0, p1 = part.p1, p2 = part.p2, p3 = part.p3,
+        p4 = tp and api.clock() - tp}
+    end
     local pm = K.partMax
     if part.arm > pm.arm then pm.arm = part.arm end
     if part.ray > pm.ray then pm.ray = part.ray end

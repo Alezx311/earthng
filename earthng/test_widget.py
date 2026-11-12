@@ -123,7 +123,7 @@ class WidgetTests(unittest.TestCase):
         lua.execute('''
           ui_imgui = setmetatable({ArrayChar=function() return {} end}, {__index=function() return function() end end})
           require=function() return {} end
-          hptimer=function() return {stopAndReset=function() return 1 end} end''')
+          hptimer=function() return {stopAndReset=function() return 1 end, stop=function() return 1 end} end''')
         src = (Path(__file__).resolve().parents[1] / 'mod/lua/ge/extensions/e2r/world.lua').read_text(encoding='utf8').replace('local NATIVE = true', 'local NATIVE = false')
         lua.globals().mod = load_world(lua, src)
         shown = lua.eval('''function(status)
@@ -461,7 +461,7 @@ class WidgetTests(unittest.TestCase):
           spawnParams={}
           maptileRequests=0
           jsonWriteFile=function(path, tbl) if tbl.type=='maptiles' then maptileRequests=maptileRequests+1 end end
-          hptimer=function() return {stopAndReset=function() return 1 end} end
+          hptimer=function() return {stopAndReset=function() return 1 end, stop=function() return 1 end} end
           function up(fn, name, replacement)
             for i=1,100 do
               local n,v=debug.getupvalue(fn,i)

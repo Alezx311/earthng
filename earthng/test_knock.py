@@ -535,6 +535,39 @@ class KnockTest(unittest.TestCase):
         self.assertEqual(after, 6)
         self.assertGreaterEqual(distrusted, 5)
 
+    def test_teleport_on_a_long_step_sweeps_no_far_cells(self):
+        # a car teleported into the street (a hand-off) reads 5000 m/s for one step, and the step after
+        # a hitch is 0.4 s long: that swept km of cells (558 ms in Kyiv, polish-02) and would arm props far
+        # off its path. Now: nothing armed, few cells looked at; the same car driving for real knocks.
+        r = self.run_lua(f'''
+          local K, api = knock.new(), fakeApi()
+          knock.register(K, 't', "{BIN}", 300, 0, 0, 0, 1, 1)
+          knock.register(K, 't', "{BIN}", 20, 0, 0, 0, 1, 1)
+          local cells = 0
+          local raw = K.cells
+          K.cells = setmetatable({{}}, {{__index = function(_, key) cells = cells + 1; return raw[key] end}})
+          local c = car(3, 0, 0, 5000)
+          knock.step(K, {{c}}, 1, 1, .4, api)
+          local first, firstCells = K.stats.knocked, cells
+          -- the next frame it stands (the spike is gone) and then drives at 15 m/s
+          c.vx = 0
+          knock.step(K, {{c}}, 1, 1 + 1 / 60, 1 / 60, api)
+          cells = 0
+          c.vx = 20
+          knock.step(K, {{c}}, 1, 1 + 2 / 60, .4, api)
+          local longStepCells = cells
+          c.vx = 15
+          drive(K, api, {{c}}, 3, 1 + 2 / 60)
+          return first, firstCells, longStepCells, K.stats.knocked, K.STATE[1] == knock.STAND
+        ''')
+        first, first_cells, long_cells, knocked, far_standing = r
+        self.assertEqual(first, 0)
+        self.assertEqual(first_cells, 0)
+        # REACH_MAX 80 m in 8 m cells: at most 21 x 21
+        self.assertLessEqual(long_cells, 21 * 21)
+        self.assertEqual(knocked, 1)
+        self.assertTrue(far_standing)
+
     # --- debris vs walls ------------------------------------------------------------------------
     def wall_run(self, ray, v=15):
         return self.run_lua(f'''

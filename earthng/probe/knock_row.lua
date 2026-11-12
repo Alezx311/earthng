@@ -306,7 +306,7 @@ local function body(dt, ms)
     stats.stepMs, stats.steps = stats.stepMs + (st.ms or 0), stats.steps + 1
     stats.stepMax = math.max(stats.stepMax, st.ms or 0)
     if (st.flying or 0) >= 40 then stats.stepMax40 = math.max(stats.stepMax40, st.ms or 0) end
-    for key, v in pairs(K.part or {}) do stats.part[key] = math.max(stats.part[key], v) end
+    for key, v in pairs(K.part or {}) do stats.part[key] = math.max(stats.part[key] or 0, v) end
     for k, car in ipairs(cars) do
       local o = be:getObjectByID(car:getID())
       if o then

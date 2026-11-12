@@ -2,6 +2,27 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-12: polish for 0.9.0: no knock stall, pedestrians warmed at the landing
+
+- `knock.step` stalled a frame for 375-558 ms once to four times a drive (central Kyiv, 400 flow
+  cars, 200 pedestrians). Not the swap, rays or the collector: phase 3, the cell sweep round each
+  vehicle. A car just teleported (a hand-off, a reset) reads thousands of m/s for a step, and with a
+  long step after a hitch the look-ahead reached kilometres of cells. Now it is reckoned with at most
+  120 m/s and a 0.25 s step, the cells reach 80 m at most, and a vehicle first seen faster than
+  30 m/s touches nothing for a step (`knock.lua` `STEP_MAX`, `REACH_MAX`, `FRESH_V`). Worst step
+  526-558 ms -> 0.35-1.4 ms (out/polish-01..04). The props "nobody" knocked are the game's parked
+  cars (`gameplay_parking`) set down on a bench or a bin: it is shoved out from under them.
+  `earthng/probe/knock_swap.lua`: the swap itself shows nothing (stills before and after, 5 kinds).
+  The knock row (out/polish-knock2): ai 24 of 24, fling 16 and the car stops on the 16th as before,
+  swarm 54 bins moved of 90 (59 before) with 4 idle swaps instead of 25, worst step 0.62 ms.
+- Pedestrians: a walker's first posed set (nine shapes, ~12 ms each the first time) was a 110 ms
+  frame in every drive with walkers. The landing now warms the walker and blood shapes when walkers
+  come with the drive (`M.peopleShapes`): `drawMax` 110.8 -> 0.53 ms, the landing's shape warm-up
+  626 -> 796 ms.
+- Diagnosis in the automation report: a hitch (> 300 ms) carries the Lua parts of its frame over
+  20 ms (`flow`, `walk`, `knock` are parts of their own now), `knock.worst` the phases of the worst
+  step, `knockCalls` the slowest game call of each kind, `knockBy` who armed and touched props.
+
 ## 2026-11-12: blood stains that lie on the road, walls and the car
 
 - In 0.8.7 a stain was a black square: the material's `translucent` blend sat in the stage, where
