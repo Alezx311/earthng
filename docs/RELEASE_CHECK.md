@@ -36,6 +36,10 @@ The 0.9.0 below was not published. It was rebuilt with the collector fix merged 
 - In the same session, before merging: five drives of the fix and two of 0.9.0 on the Vytachiv
   route (out/gcfix-01..05, out/gcbase-05..06).
 - Not run: BeamNG 0.39, a pack build by the exe, the in-game options UI, a drive longer than 70 s.
+- Published 12.11 to the rolling release `EarthNG` (out/release/publish_0_9_0.py): both assets
+  replaced in place, digests equal to the local files; the release body from make_body_0_9_0.py.
+  For a minute after the swap the public planet link still redirected to the 0.8.7 file, then
+  served the new one.
 
 ## 0.9.0 (2026-11-12): planet 0.9.0 and EarthNG.exe 0.9.0 from 9fc4c38
 
