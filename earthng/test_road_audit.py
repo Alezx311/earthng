@@ -152,6 +152,11 @@ class UnderDeckTests(unittest.TestCase):
     def test_a_wall_wider_than_a_rail_is_not(self):
         self.assertEqual(audit.rails_under(['12 20 10  22 20 10  22 20 20'], self.deck(), self.RECT), [])
 
+    def test_a_rail_at_the_foot_of_an_embankment_is_not(self):
+        # the ramp's edge pixel is 10 m over the rail beside it: the road is high there, the rail is not under it
+        self.assertEqual(audit.rails_under([self.rail(9, 10.)], self.deck(), self.RECT), [])
+        self.assertEqual(audit.rails_under([self.rail(10, 10.)], self.deck(), self.RECT), [(15., 25., 1)])
+
 
 if __name__ == '__main__':
     unittest.main()
