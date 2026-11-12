@@ -130,7 +130,7 @@ def main():
                    help='wait for the whole landing square before leaving the old place (no early arrival; A/B)')
     p.add_argument('--gc-cycle', help='the collector step of the landing changes every 2 s among these (10,1,400,-10,100)')
     p.add_argument('--walkers', type=int, help='after landing: this many pedestrians (walkers.lua)')
-    p.add_argument('--walk-bodies', type=int, help='physical bodies for walkers about to be hit (pedhit.lua, default 6)')
+    p.add_argument('--walk-bodies', type=int, help='physical bodies for walkers about to be hit (pedhit.lua, default 24)')
     p.add_argument('--knock', action='store_true',
                    help='after landing: a car through rows of knockable props (earthng/probe/knock_row.lua) -> knock.json')
     p.add_argument('--traffic-kind', choices=('simple', 'full', 'agent'), default='simple',

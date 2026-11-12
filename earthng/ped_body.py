@@ -219,6 +219,8 @@ def materials():
     """The walker's materials for a vehicle: the palette masks take the vehicle's paints 1-3."""
     out = {}
     for m, stage in pa.MATERIALS.items():
+        if m == 'blood':
+            continue
         out[pa.PREFIX + 'v_' + m] = {'name': pa.PREFIX + 'v_' + m, 'mapTo': pa.PREFIX + 'v_' + m, 'class': 'Material',
                                      'version': 1.5, 'Stages': [dict(stage), {}, {}, {}]}
     return out

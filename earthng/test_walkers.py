@@ -47,11 +47,20 @@ function fakeApi()
   local n = 0
   function api.spawn() n = n + 1; api.bodies[n] = {x = 0, y = -2000, vx = 0, vy = 0, active = false}; return n end
   function api.pose(id) local b = api.bodies[id]; if b then return b.x, b.y, b.vx, b.vy end end
-  function api.place(id, x, y, z, hx, hy, v)
+  function api.place(id, x, y, z, hx, hy, v, w, opts)
     local b = api.bodies[id]
-    b.x, b.y, b.z, b.vx, b.vy, b.active = x, y, z, hx * v, hy * v, true
+    local vx = opts and opts.vx or (hx * v)
+    local vy = opts and opts.vy or (hy * v)
+    b.x, b.y, b.z, b.vx, b.vy, b.active = x, y, z, vx, vy, true
     api.calls[#api.calls + 1] = 'place ' .. id
   end
+  function api.nudge(id, x, y) local b = api.bodies[id]; if b then b.x, b.y = x, y end; api.calls[#api.calls + 1] = 'nudge ' .. id end
+  function api.eject(id, dvx, dvy, dvz)
+    local b = api.bodies[id]
+    if b then b.vx, b.vy = b.vx + dvx, b.vy + dvy end
+    api.calls[#api.calls + 1] = 'eject ' .. id
+  end
+  function api.splat(x, y) api.calls[#api.calls + 1] = string.format('splat %.1f %.1f', x, y) end
   function api.reset(id) api.calls[#api.calls + 1] = 'reset ' .. id end
   function api.park(id) local b = api.bodies[id]; b.y, b.active = -2000, false; api.calls[#api.calls + 1] = 'park ' .. id end
   function api.delete(id) api.bodies[id] = nil end
@@ -415,14 +424,18 @@ class WalkerTests(unittest.TestCase):
         ''')
         placed_at, hit_at, gap, placed, hit, freed, after_far, final, freed_slot, calls = (out[k] for k in range(1, 11))
         self.assertGreater(placed_at, 0)
-        # placed within LEAD (0.3 s at 15 m/s: 4.5 m) of the touch
-        self.assertLess(gap, 2.3 + .3 + 15 * .3 + .6)
+        # placed within LEAD (0.45 s at 15 m/s) of the touch
+        self.assertLess(gap, 2.3 + .3 + 15 * .45 + .8)
         self.assertGreater(hit_at, placed_at)
         self.assertEqual((placed, hit, freed), (1, 1, 1))
         self.assertEqual(after_far, 'reset')
         self.assertEqual(final, 'idle')
         self.assertEqual(freed_slot, 1)
-        self.assertEqual(calls, 'place 1,reset 1,park 1')
+        self.assertIn('place 1', calls)
+        self.assertIn('eject 1', calls)
+        self.assertIn('splat', calls)
+        self.assertIn('reset 1', calls)
+        self.assertIn('park 1', calls)
 
     def test_a_missed_walker_walks_on_and_the_body_is_taken_back(self):
         out = self.lua().execute('''
@@ -488,12 +501,81 @@ class WalkerTests(unittest.TestCase):
           walkers.step(W, .01, 100, 0)
           local w = W.slots[1]
           local api, P = fakeApi(), pedhit.new{size = 0}
+          -- still ~0.22 s from touch: count noBody, walker keeps walking until ghost range
           local car = {x = w.x - w.hx * 4.8, y = w.y - w.hy * 4.8, vx = w.hx * 10, vy = w.hy * 10, fx = w.hx, fy = w.hy, hl = 2.3, hw = .95}
           pedhit.step(P, walkers, W, {car}, 0, api, car.x, car.y)
-          return {P.stats.noBody, w.taken and 1 or 0}
+          return {P.stats.noBody, w.taken and 1 or 0, w.free and 1 or 0, P.stats.ghost}
         ''')
         self.assertEqual(out[1], 1)
         self.assertEqual(out[2], 0)
+        self.assertEqual(out[3], 0)
+        self.assertEqual(out[4], 0)
+
+    def test_ghost_hit_removes_a_walker_when_the_pool_is_empty(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed = 4}
+          walkers.sync(W, grid(3, 100), 100, 0)
+          walkers.setTarget(W, 1)
+          walkers.step(W, .01, 100, 0)
+          local w = W.slots[1]
+          local api, P = fakeApi(), pedhit.new{size = 0}
+          -- within GHOST_LEAD of the bumper: no body, but the walker still dies
+          local car = {x = w.x - w.hx * 2.7, y = w.y - w.hy * 2.7, vx = w.hx * 10, vy = w.hy * 10, fx = w.hx, fy = w.hy, hl = 2.3, hw = .95}
+          pedhit.step(P, walkers, W, {car}, 0, api, car.x, car.y)
+          return {P.stats.ghost, P.stats.hit, w.free and 1 or 0, table.concat(api.calls, ',')}
+        ''')
+        self.assertEqual(out[1], 1)
+        self.assertEqual(out[2], 1)
+        self.assertEqual(out[3], 1)
+        self.assertIn('splat', out[4])
+
+    def test_box_hit_pushes_a_point_out_of_a_vehicle(self):
+        out = self.lua().execute('''
+          local h = {x = 0, y = 0, fx = 1, fy = 0, hl = 2.3, hw = .95}
+          local inside, nx, ny, depth = pedhit.boxHit(0, 0, .3, h)
+          local outX = 0 + nx * (depth + .22)
+          local outY = 0 + ny * (depth + .22)
+          local inside2 = pedhit.boxHit(outX, outY, .3, h)
+          -- a point already outside: negative depth on the nearest face
+          local i3, nx3, ny3, d3 = pedhit.boxHit(4, 0, .3, h)
+          return {inside and 1 or 0, depth, outX, outY, inside2 and 1 or 0, i3 and 1 or 0, d3}
+        ''')
+        self.assertEqual(out[1], 1)
+        self.assertGreater(out[2], 2)
+        self.assertAlmostEqual(out[3], out[2] + .22, places=5)  # pushed along +x
+        self.assertEqual(out[5], 0)
+        self.assertEqual(out[6], 0)
+        self.assertLess(out[7], 0)
+
+    def test_an_embedded_body_is_forced_out_on_hit(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed = 2}
+          walkers.sync(W, grid(3, 100), 100, 0)
+          walkers.setTarget(W, 1)
+          walkers.step(W, .01, 100, 0)
+          local w = W.slots[1]
+          w.speed = 0.0001
+          local api, P = fakeApi(), pedhit.new{size = 1}
+          pedhit.prewarm(P, api, 0, 0)
+          local car = {x = w.x - w.hx * 3.2, y = w.y - w.hy * 3.2, vx = w.hx * 12, vy = w.hy * 12, fx = w.hx, fy = w.hy, hl = 2.3, hw = .95, id = 9}
+          pedhit.step(P, walkers, W, {car}, 0, api, car.x, car.y)
+          local b = api.bodies[1]
+          -- force the body into the car's middle (the old bug) after settle
+          b.x, b.y = car.x + car.fx * .2, car.y + car.fy * .2
+          b.vx, b.vy = car.vx, car.vy
+          car.x, car.y = b.x, b.y
+          pedhit.step(P, walkers, W, {car}, .2, api, car.x, car.y)
+          local dx, dy = b.x - car.x, b.y - car.y
+          local along = dx * car.fx + dy * car.fy
+          return {P.stats.hit, P.pool[1].state, P.stats.eject, along, table.concat(api.calls, ',')}
+        ''')
+        self.assertEqual(out[1], 1)
+        self.assertEqual(out[2], 'down')
+        self.assertEqual(out[3], 1)
+        # nudged outward along the car's forward (or back) so it is no longer at the centre
+        self.assertGreater(abs(out[4]), .2)
+        self.assertIn('nudge 1', out[5])
+        self.assertIn('eject 1', out[5])
 
     def test_the_count_changes_in_place_and_is_clamped(self):
         out = self.lua().execute('''

@@ -221,6 +221,20 @@ local function shot(name)
                               sky and sky:getField('nightCubemap', 0), sky and sky:getField('useNightCubemap', 0),
                               sky and sky:getField('elevation', 0)}
   end)
+  -- the streaming state at the picture: a view without its ground says what held the loads
+  pcall(function()
+    local st = S.status and S.status.stream or {}
+    local function n(t) local c = 0; for _ in pairs(t or {}) do c = c + 1 end; return c end
+    local near, far = 0, 0
+    for _, due in pairs(st.wanted or {}) do if due < 1e6 then near = near + 1 else far = far + 1 end end
+    local g = S.graves and S.graves[1]
+    local head = g and g:getCount() > 0 and g:getObject(g:getCount() - 1)
+    result.shotStream = result.shotStream or {}
+    result.shotStream[name] = {graves = S.graves and #S.graves or 0, graveHead = g and g:getCount() or nil,
+      graveClass = head and head:getClassName() or nil, queue = #(S.queue or {}), tiles = n(S.tiles),
+      far = n(S.far), ready = n(st.ready), stFar = n(st.far), wantNear = near, wantFar = far,
+      cached = st.cachedTiles, camDist = S.camDist}
+  end)
 end
 
 local function request(tbl)
@@ -1716,6 +1730,7 @@ function M.walkersSet(n, now)
       -- the body pool stays, parked (inactive: no cost): spawning it again is ~0.25 s a body in
       -- one frame, a 1.5 s stall each time pedestrians come back on (verify-01)
       if wk.P then ph.parkAll(wk.P, wk.api); S.walkPool = {P = wk.P, api = wk.api} end
+      M.walkBloodClear(wk)
       dropGroup('E2R_walkers')
       S.walk = nil
     else
@@ -1749,20 +1764,151 @@ function M.walkersSet(n, now)
     wk.api, wk.P, S.walkPool = S.walkPool.api, S.walkPool.P, nil
   end
   if not wk.P then
-    wk.api, wk.P = ph.gameApi(ws), ph.new{size = S.walkBodies}
+    wk.api, wk.P = ph.gameApi(ws), ph.new{size = S.walkBodies or ph.SIZE}
+    M.walkBloodBind(wk)
     local veh = getPlayerVehicle(0)
     local q = veh and veh:getPosition() or focus()
-    -- the bodies are spawned once, now (~0.2 s each, result.walk.spawnMs), not while driving
+    -- a few bodies now so the first hit works; more on demand near a stop (SIZE=24 at once would hitch ~5 s)
     local t = hptimer()
-    if q then ph.prewarm(wk.P, wk.api, q.x, q.y) end
+    if q then
+      for _ = 1, math.min(4, wk.P.size) do
+        if not ph.prewarmOne(wk.P, wk.api, q.x, q.y) then break end
+      end
+    end
     wk.spawnMs = t:stop()
     if veh and getPlayerVehicle(0) ~= veh then pcall(function() be:enterVehicle(0, veh) end) end
+  elseif wk.api and not wk.api.splat then
+    M.walkBloodBind(wk)
   end
 end
 
 function M.walkersGet()
   if not S.walk then return 0, 0, 0 end
   return M.walkSim.counts(S.walk.W)
+end
+
+-- Blood stains on asphalt and on the striking car (pedhit api.splat). Flat TSStatic quads from
+-- people_art (blood_splat.dae); car stains follow the vehicle for a while. Cap keeps the scene light.
+-- one table, not locals: the main chunk is at LuaJIT's 200 locals
+local BLOOD = {shape = '/levels/e2r_world/art/people/blood_splat.dae', max = 48, ttl = 180, carTtl = 45,
+  groundS = 1.15, carS = .55}
+
+function BLOOD.take(B)
+  local obj = B.pool[#B.pool]
+  if obj then
+    B.pool[#B.pool] = nil
+    obj:setHidden(false)
+    return obj
+  end
+  obj = createObject('TSStatic')
+  obj:setField('shapeName', 0, BLOOD.shape)
+  obj:setField('collisionType', 0, 'None')
+  obj:setField('decalType', 0, 'None')
+  obj.useInstanceRenderData = true
+  obj.canSave = false
+  obj:registerObject('')
+  local g = scenetree.findObject('E2R_blood') or tileGroup('E2R_blood', true)
+  g:addObject(obj)
+  return obj
+end
+
+function BLOOD.drop(B, obj)
+  if not obj then return end
+  if #B.pool < 24 then
+    pcall(function() obj:setHidden(true) end)
+    B.pool[#B.pool + 1] = obj
+  else
+    pcall(function() obj:delete() end)
+  end
+end
+
+function M.walkBloodClear(wk)
+  local B = wk and wk.blood
+  if not B then return end
+  for i = 1, B.n do
+    local s = B.list[i]
+    if s then BLOOD.drop(B, s.obj); B.list[i] = nil end
+  end
+  B.n = 0
+  dropGroup('E2R_blood')
+  B.pool = {}
+end
+
+function M.walkBloodBind(wk)
+  if not wk or not wk.api then return end
+  local B = wk.blood
+  if not B then
+    B = {list = {}, pool = {}, n = 0, at = vec3(0, 0, 0)}
+    wk.blood = B
+  end
+  function wk.api.splat(x, y, z, h)
+    local function add(kind, ox, oy, oz, sx, sy, sz, yaw, vid, lx, ly, lz)
+      if B.n >= BLOOD.max then
+        -- drop the oldest
+        local old = B.list[1]
+        if old then BLOOD.drop(B, old.obj) end
+        for i = 1, B.n - 1 do B.list[i] = B.list[i + 1] end
+        B.list[B.n], B.n = nil, B.n - 1
+      end
+      local obj = BLOOD.take(B)
+      local yaw0 = yaw or 0
+      local q = quatFromDir(vec3(math.cos(yaw0), math.sin(yaw0), 0), vec3(0, 0, 1))
+      obj:setScale(vec3(sx, sy, sz or .02))
+      pcall(obj.setPosRot, obj, ox, oy, oz, q.x, q.y, q.z, q.w)
+      B.n = B.n + 1
+      B.list[B.n] = {obj = obj, kind = kind, at = S.now, vid = vid, lx = lx, ly = ly, lz = lz, yaw0 = yaw0}
+    end
+    local gz = z or 0
+    if wk.ground then
+      local hgt = wk.ground(x, y, (z or 0) + 2)
+      if hgt then gz = hgt + .02 end
+    end
+    local yaw = (h and math.atan2(h.fy or 0, h.fx or 1)) or ((x * 12.9898 + y * 78.233) % 6.2832)
+    add('ground', x, y, gz, BLOOD.groundS * (.85 + (x * 3.1 % 1) * .4),
+      BLOOD.groundS * (.7 + (y * 5.7 % 1) * .5), .02, yaw)
+    if h and h.id then
+      -- stain on the striking face: local offset in the car's frame (ahead / left / up)
+      local dx, dy = x - (h.x or x), y - (h.y or y)
+      local ahead = dx * (h.fx or 1) + dy * (h.fy or 0)
+      local left = -dx * (h.fy or 0) + dy * (h.fx or 1)
+      ahead = math.max(-(h.hl or 2) + .2, math.min((h.hl or 2) - .2, ahead))
+      left = math.max(-(h.hw or 1) + .05, math.min((h.hw or 1) - .05, left))
+      add('car', x, y, (h.z or gz) + .55, BLOOD.carS, BLOOD.carS * .7, .015, yaw, h.id, ahead, left, .55)
+    end
+  end
+end
+
+function M.walkBloodStep(wk, px, py)
+  local B = wk.blood
+  if not B or B.n == 0 then return end
+  local keep, kn = {}, 0
+  for i = 1, B.n do
+    local s = B.list[i]
+    local ttl = s.kind == 'car' and BLOOD.carTtl or BLOOD.ttl
+    local live = S.now - s.at < ttl
+    if live and s.kind == 'car' and s.vid then
+      local o = getObjectByID(s.vid)
+      if o then
+        local p, d = o:getPosition(), o:getDirectionVector()
+        local l = math.sqrt(d.x * d.x + d.y * d.y)
+        local fx, fy = l > 1e-3 and d.x / l or 1, l > 1e-3 and d.y / l or 0
+        local x = p.x + fx * s.lx - fy * s.ly
+        local y = p.y + fy * s.lx + fx * s.ly
+        local z = p.z + s.lz
+        local q = quatFromDir(vec3(fx, fy, 0), vec3(0, 0, 1))
+        pcall(s.obj.setPosRot, s.obj, x, y, z, q.x, q.y, q.z, q.w)
+      else
+        live = false
+      end
+    end
+    if live then
+      kn = kn + 1
+      keep[kn] = s
+    else
+      BLOOD.drop(B, s.obj)
+    end
+  end
+  B.list, B.n = keep, kn
 end
 
 -- A new landing or a pack gone: the walkers and their shapes go at once; the count asked and the
@@ -1774,6 +1920,7 @@ function M.walkersPark()
   local n = wk.W.target
   if wk.V then ws.clear(wk.W, wk.V) end
   if wk.P then M.pedHit.parkAll(wk.P, wk.api) end
+  M.walkBloodClear(wk)
   dropGroup('E2R_walkers')
   wk.W, wk.V, wk.parked, wk.syncAt, wk.syncCo = ws.new{seed = math.floor(S.now * 1000) % 100000 + 7}, nil, true, nil, nil
   ws.setTarget(wk.W, n)
@@ -1814,11 +1961,26 @@ function M.walkersStep()
     if not ok or coroutine.status(wk.syncCo) == 'dead' then wk.syncCo = nil end
   end
   local syncMs = t:stopAndReset()
+  -- grow the body pool on demand (fewer than 2 idle, or a hit found no body), one at a time, 2 s
+  -- apart and only near a stop: a spawn is ~0.2 s of the frame, and two a frame at speed were ~4 s
+  -- of 3 fps right after landing (all-08, 340 ms frames). Short of bodies, a struck walker is a
+  -- ghost hit (pedhit.lua), never one walked through.
+  local P = wk.P
+  if #P.pool < P.size and S.now - (wk.fillAt or -1e9) > 2 then
+    local idle = 0
+    for _, e in ipairs(P.pool) do if e.state == 'idle' then idle = idle + 1 end end
+    local veh = getPlayerVehicle(0)
+    if (idle < 2 or P.stats.noBody > (wk.noBodySeen or 0)) and (not veh or veh:getVelocity():length() < 8) then
+      ph.prewarmOne(P, wk.api, p.x, p.y)
+      wk.fillAt, wk.noBodySeen = S.now, P.stats.noBody
+    end
+  end
   -- the vehicles that can hit (every active one with physics but the pool's own bodies); walkers
   -- wait at the kerb for them and for the flow's cars (as drawn)
   local hitters = ph.gameHitters(wk.H, wk.P, wk.boxes, p.x, p.y)
   ws.step(wk.W, S.dtSim or S.dt or 1 / 60, p.x, p.y, hitters, S.flow and S.flow.F.cars)
   ph.step(wk.P, ws, wk.W, hitters, S.now, wk.api, p.x, p.y)
+  if wk.blood then M.walkBloodStep(wk, p.x, p.y) end
   wk.simMs = t:stopAndReset()
   wk.moved = ws.draw(wk.W, wk.V, p.x, p.y, wk.ground)
   wk.drawMs = t:stopAndReset()
@@ -1832,6 +1994,7 @@ function M.walkersStep()
   r.objects, r.posed, r.drawn, r.placed = wk.V.objects, wk.V.nearUsed, wk.V.farUsed, wk.moved
   r.stats, r.hit, r.bodies, r.pool, r.spawnMs = wk.W.stats, wk.P.stats, ph.activeCount(wk.P), #wk.P.pool, wk.spawnMs
   r.hitLog = wk.P.log
+  r.blood = wk.blood and wk.blood.n or 0
 end
 
 -- The widget's pedestrians and knockable-props rows, through the registry (options.lua) like the
@@ -1963,12 +2126,17 @@ local function updateTiles()
   local unloadR = fast and loadR + 350 or UNLOAD_R
   -- fast, at speed: tiles well behind the car are neither kept nor loaded (the static collision
   -- costs ~7.5 ms per MB of loaded world at every rebuild); a U-turn loads them back from disk.
-  -- keepBack matches native.lua AHEAD (backM / backS): the old loadR*0.6+250 left ~850 m of
-  -- city loaded behind at 200 km/h and dueNear held those tiles against unload.
+  -- keepBack matches native.lua AHEAD (backM / backS + half tile): without the half-tile pad,
+  -- past the mid-tile the centre sat "behind" and the tile under the car unloaded every few
+  -- hundred metres (reload flicker after the streaming-zone change).
   local speed = v:length()
-  local keepBack = math.max(200, speed * 3.5)
-  local function behind(cx, cy, d)
+  local tileSize = S.stream.tile or 500
+  local keepBack = math.max(200, speed * 3.5) + tileSize * 0.5
+  local underI, underJ = math.floor(p.x / tileSize), math.floor(p.y / tileSize)
+  local function behind(cx, cy, d, i, j)
     if not fast or speed < 15 then return false end
+    -- the tile the car stands on (and anything whose centre is still inside a half-tile) stays
+    if (i and i == underI and j == underJ) or d <= tileSize * 0.71 then return false end
     return ((cx - p.x) * v.x + (cy - p.y) * v.y) < 0 and d > keepBack
   end
   -- native: a near tile's wanted value is the seconds until the car reaches it (native.lua AHEAD;
@@ -1984,12 +2152,13 @@ local function updateTiles()
   for key, tile in pairs(S.tiles) do
     local cx, cy = tileCentre(tile.i, tile.j)
     local d = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
-    local isBehind = behind(cx, cy, d)
+    local isBehind = behind(cx, cy, d, tile.i, tile.j)
     -- A free camera far from the car owns the bubble; the tiles under the parked car used to
     -- unload with the rest and it fell through the world (night-fence-02, z 179 -> 0.2).
     -- dueNear must not hold a behind tile: native drops it from wanted, but a stale wanted bit
     -- or a keep-bubble edge used to block unload while the far ring rebuilt the same key.
-    local held = (S.heldCar and (cx - S.heldCar[1]) ^ 2 + (cy - S.heldCar[2]) ^ 2 <= 600 * 600)
+    local held = (tile.i == underI and tile.j == underJ)
+      or (S.heldCar and (cx - S.heldCar[1]) ^ 2 + (cy - S.heldCar[2]) ^ 2 <= 600 * 600)
       or (dueNear(key) and not isBehind)
     if not held and (d > unloadR or isBehind) then
       retireForest(tile)
@@ -2026,7 +2195,7 @@ local function updateTiles()
       -- at speed the native wanted set is the corridor + keep bubble; a ready tile still
       -- inside the old load disk but outside that set must not start (side/back clutter)
       local inRange = due or (d <= loadR and (not NATIVE or speed < 15))
-      if inRange and not behind(cx, cy, dp) and (not bestRank or rank < bestRank) then
+      if inRange and not behind(cx, cy, dp, i, j) and (not bestRank or rank < bestRank) then
         best, bestD, bestRank = {key, i, j}, d, rank
       end
     end
@@ -4800,7 +4969,9 @@ local function runTest()
     end
     local limit = test.driveSeconds or 8
     if (AP and (AP.done or S.now - S.testDriving > limit)) or (not AP and S.now - S.testDriving > limit) then
-      veh:queueLuaCommand("input.event('throttle', 0, 2) input.event('brake', 1, 2)")
+      -- and the parking brake: without it the car rolled on (into a field, out/all-11) while the
+      -- gallery placed its views round where it had stopped
+      veh:queueLuaCommand("input.event('throttle', 0, 2) input.event('brake', 1, 2) input.event('parkingbrake', 1, 2)")
       result.vehicleAfterDrive = {p.x, p.y, p.z, veh:getVelocity():length()}
       result.driveFrames = accStats(S.driveAcc)
       result.travelledM = AP and AP.travelled or S.travelled or 0

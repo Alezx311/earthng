@@ -518,6 +518,42 @@ class NativeTests(unittest.TestCase):
         self.assertLessEqual(stream.cachedTriangles, 80000)
         self.assertGreaterEqual(len(list(stream.far.keys())), len(far_wanted))
 
+    def test_far_tiles_evicted_by_a_near_refill_come_back_without_moving(self):
+        # After a fast drive the car stops and the near disk is built again: its geometry, not yet
+        # taken, keeps the cache over budget, and each far tile built then is evicted at once. An
+        # evicted tile waited for the next epoch (250 m of travel), so a parked car kept the holes
+        # for good (out/all-10: ~20 of ~160 far tiles). It is built again once it fits.
+        lua, mod, cv = self.make(fixture(20))
+        lat, lon = geographic(10000, 10000)
+        mod.land(cv(dict(seq=9, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        mod.pose(cv(dict(x=10000, y=10000, vx=0, vy=0, state='driving')))
+
+        def run(frames, near):
+            for _ in range(frames):
+                mod.update(.016, 8)
+                stream = mod.status().stream
+                layers = [('far', stream.far)] + ([('road', stream.ready), ('scene', stream.scenes)] if near else [])
+                for layer, keys in layers:
+                    for key in list(keys.keys()):
+                        if mod.manifest(key, layer) is not None:
+                            mod.release(key, layer)
+        run(1500, True)
+        stream = mod.status().stream
+        far_wanted = [k for k, p in stream.wanted.items() if not str(k).startswith('h') and p >= 1e6]
+        near_wanted = [k for k, p in stream.wanted.items() if not str(k).startswith('h') and p < 1e6]
+        lua.globals().fakeTriangles, lua.globals().fakeFarTriangles = 30000, 4000
+        for key in near_wanted:
+            mod.unload(key)
+        for key in far_wanted:
+            mod.unload(key, 'far')
+        run(1500, False)     # the renderer is busy: the near layers wait, the cache is over budget
+        self.assertLess(len(list(mod.status().stream.far.keys())), len(far_wanted) // 2)
+        run(3000, True)      # it catches up; the car has not moved
+        stream = mod.status().stream
+        self.assertGreaterEqual(len(list(stream.far.keys())), len(far_wanted))
+        self.assertLessEqual(stream.cachedTriangles, 80000)
+
     def test_gpu_release_drops_arrays_and_unload_regenerates(self):
         lua, mod, cv = self.make()
         lua.globals().fakeTriangles = 1000
@@ -1070,6 +1106,19 @@ class NativeV2Tests(NativeTests.__base__):
             dist = ((cx - 2750) ** 2 + (cy - 5250) ** 2) ** .5
             if along < 0 and dist > 200 + 55 * 3.5 + 250:
                 self.fail(f'behind tile {key} still wanted at priority {wanted[key]}')
+
+    def test_tile_under_the_car_stays_near_after_its_centre_is_behind(self):
+        # past mid-tile the centre is rearward; dropping that tile unloaded the road under the car
+        _, mod, cv = self.make(fixture(12))
+        lat, lon = geographic(2900, 5250)
+        mod.land(cv(dict(seq=15, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        mod.pose(cv(dict(x=2900, y=5250, vx=55, vy=0, state='driving')))
+        mod.update(.016, 2)
+        wanted = mod.status().stream.wanted
+        # tile 5_10 centre is 150 m behind the car; it must stay near, not vanish from wanted
+        self.assertLess(wanted['5_10'], 1_000_000)
+        self.assertNotIn('3_10', dict(wanted.items()))
 
     def test_arrival_time_is_refreshed_within_the_same_tile_at_high_speed(self):
         _, mod, cv = self.make(fixture(12))

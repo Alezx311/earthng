@@ -910,11 +910,14 @@ local function priorities()
       local alongE = math.max(0, math.abs(along) - ext)
       local acrossE = math.max(0, math.abs((cx - p.x) * uy - (cy - p.y) * ux) - ext)
       -- the renderer drops tiles well behind the car at speed (world.lua updateTiles, behind());
-      -- wanting them back here — even as far ground — rebuilt each one after it was dropped
-      local behind = speed >= 15 and along < 0 and farD > keepBack
+      -- wanting them back here — even as far ground — rebuilt each one after it was dropped.
+      -- The tile under the car is never "behind": past mid-tile its centre is rearwards, and
+      -- dropping it made the road under the wheels vanish and reload every few hundred metres.
+      local underfoot = i == math.floor(p.x / t) and j == math.floor(p.y / t)
+      local behind = speed >= 15 and not underfoot and along < 0 and farD > keepBack
       local corridor = reach > 0 and along > 0 and alongE <= reach and acrossE <= AHEAD.half
       if tileCovered(a.region, i, j) then
-        if (d <= around or corridor) and not behind then
+        if underfoot or ((d <= around or corridor) and not behind) then
           local iso = d / math.max(speed, 5)
           local arrival = ((along < 0 and AHEAD.back or 1) * alongE + AHEAD.across * acrossE) / math.max(speed, 5)
           out[keyOf(i, j)] = {i = i, j = j, priority = iso + (arrival - iso) * w, size = t}
@@ -1116,7 +1119,12 @@ local function trimTiles()
     count, triangles, vertices = count - 1, triangles - removed.triangles, vertices - removed.vertices
     a.tiles[worst] = nil
     if removed.road then a.evicted[worst .. ':road'] = a.epoch end
-    if removed.far then a.evicted[worst .. ':far'] = a.epoch end
+    if removed.far then
+      a.evicted[worst .. ':far'] = a.epoch
+      -- its size: built again in this epoch once it fits (update)
+      a.evictedSize = a.evictedSize or {}
+      a.evictedSize[worst] = {removed.triangles, removed.vertices}
+    end
     st.ready[worst], st.scenes[worst], st.grass[worst], st.far[worst] = nil, nil, nil, nil
   end
   local readyCount = 0
@@ -1529,6 +1537,13 @@ local function update(dt, budgetMs, farBudgetMs, now)
         end
       end
       local full = farTriangles > TRIANGLE_LIMIT * .5 or farVertices > VERTEX_LIMIT * .5
+      -- A far tile evicted in this epoch is built again once it fits in the cache. Until the next
+      -- epoch (250 m of travel) it used to stay a hole, and a parked car never got there: after a
+      -- fast drive the near refill kept the cache over budget, each far tile was evicted as soon
+      -- as it was built, and the far ring stayed ~20 of ~160 tiles for good (out/all-10).
+      local roomT = TRIANGLE_LIMIT - (state.stream.cachedTriangles or 0)
+      local roomV = VERTEX_LIMIT - (state.stream.cachedVertices or 0)
+      local sizes = active.evictedSize or {}
       for key, entry in pairs(wanted) do
         local cached = entry.horizon and active.horizon[key] or active.tiles[key]
         local ready, priority = nil, entry.priority
@@ -1542,7 +1557,12 @@ local function update(dt, budgetMs, farBudgetMs, now)
           if cached and cached.road then priority = priority + lag end
         end
         local layerKey = key .. (entry.horizon and ':horizon' or (entry.far and ':far' or ':road'))
-        if not ready and not active.failed[key] and active.evicted[layerKey] ~= active.epoch then
+        local again = active.evicted[layerKey] ~= active.epoch
+        if not again and entry.far and not entry.horizon then
+          local size = sizes[key]
+          again = size and size[1] < roomT * .8 and size[2] < roomV * .8 or false
+        end
+        if not ready and not active.failed[key] and again then
           queued = queued + 1
           -- one far build at a time: a parked one is finished before another starts
           local farWaits = (entry.far or entry.horizon) and next(active.parkedFar) ~= nil
