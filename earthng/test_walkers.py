@@ -60,7 +60,9 @@ function fakeApi()
     if b then b.vx, b.vy = b.vx + dvx, b.vy + dvy end
     api.calls[#api.calls + 1] = 'eject ' .. id
   end
-  function api.splat(x, y) api.calls[#api.calls + 1] = string.format('splat %.1f %.1f', x, y) end
+  function api.splat(x, y, z, h, kind)
+    api.calls[#api.calls + 1] = string.format('splat %.1f %.1f', x, y) .. (kind and ' ' .. kind or '')
+  end
   function api.reset(id) api.calls[#api.calls + 1] = 'reset ' .. id end
   function api.park(id) local b = api.bodies[id]; b.y, b.active = -2000, false; api.calls[#api.calls + 1] = 'park ' .. id end
   function api.delete(id) api.bodies[id] = nil end
@@ -436,6 +438,84 @@ class WalkerTests(unittest.TestCase):
         self.assertIn('splat', calls)
         self.assertIn('reset 1', calls)
         self.assertIn('park 1', calls)
+
+    def test_a_struck_body_bleeds_one_pool_once_it_lies_still(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed = 2}
+          walkers.sync(W, grid(3, 100), 100, 0)
+          walkers.setTarget(W, 1)
+          walkers.step(W, .01, 100, 0)
+          local w = W.slots[1]
+          w.speed = 0.0001
+          local api, P = fakeApi(), pedhit.new{size = 2}
+          pedhit.prewarm(P, api, 0, 0)
+          local cx, cy = w.x - w.hx * 20, w.y - w.hy * 20
+          local car = {x = cx, y = cy, vx = w.hx * 15, vy = w.hy * 15, fx = w.hx, fy = w.hy, hl = 2.3, hw = .95}
+          local now, hitAt, pools, slidingPools = 0, nil, 0, 0
+          for t = 1, 240 do
+            now = t / 30
+            car.x, car.y = car.x + car.vx / 30, car.y + car.vy / 30
+            local b = api.bodies[1]
+            if b.active and not hitAt and (car.x - b.x) ^ 2 + (car.y - b.y) ^ 2 < 2.5 ^ 2 then b.vx, b.vy = car.vx * .8, car.vy * .8 end
+            -- thrown, it slides for a second and lies still
+            if hitAt and now - hitAt > 1 then b.vx, b.vy = 0, 0 end
+            if b.active then b.x, b.y = b.x + b.vx / 30, b.y + b.vy / 30 end
+            local before = #api.calls
+            pedhit.step(P, walkers, W, {car}, now, api, car.x, car.y)
+            if not hitAt and P.stats.hit > 0 then hitAt = now end
+            for k = before + 1, #api.calls do
+              if api.calls[k]:find(' pool$') then
+                pools = pools + 1
+                if b.vx ~= 0 then slidingPools = slidingPools + 1 end
+              end
+            end
+          end
+          return {hitAt or -1, pools, slidingPools}
+        ''')
+        hit_at, pools, sliding = out[1], out[2], out[3]
+        self.assertGreater(hit_at, 0)
+        self.assertEqual(pools, 1)
+        self.assertEqual(sliding, 0)
+
+    def test_blood_is_cut_out_of_one_atlas_not_blended(self):
+        import io
+        import json
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import people_art
+        from PIL import Image
+        out, _ = people_art.files()
+        material = json.loads(out['people.materials.json'])['e2r_ped_blood']
+        mat = material['Stages'][0]
+        # the game reads no alpha from baseColorMap, and the cut only from the material itself, not
+        # its stage: a translucent stage drew the clear texels black, an alpha-tested stage the whole
+        # quad (12.11 in game, blood-01, blood-02)
+        self.assertTrue(material['alphaTest'])
+        self.assertTrue(material['doubleSided'])
+        for field in ('alphaTest', 'alphaRef', 'translucent', 'doubleSided'):
+            self.assertNotIn(field, mat)
+        self.assertNotIn('translucent', material)
+        for field, name in (('baseColorMap', 'blood.color.png'), ('opacityMap', 'blood_o.data.png')):
+            self.assertEqual(mat[field], '/levels/e2r_world/art/people/' + name)
+            self.assertIn(name, out)
+        colour = Image.open(io.BytesIO(out['blood.color.png']))
+        opacity = Image.open(io.BytesIO(out['blood_o.data.png']))
+        self.assertEqual((colour.mode, opacity.mode), ('RGB', 'L'))
+        self.assertEqual(colour.size, (512, 256))
+        self.assertEqual(opacity.size, colour.size)
+        rgb, a = colour.tobytes(), opacity.tobytes()
+        clear = [rgb[i * 3:i * 3 + 3] for i, v in enumerate(a) if v == 0]
+        solid = [rgb[i * 3:i * 3 + 3] for i, v in enumerate(a) if v >= material['alphaRef']]
+        self.assertGreater(len(clear), len(a) * .4)
+        self.assertGreater(len(solid), len(a) * .08)
+        # blood colour under the clear texels too: no dark fringe where the filter mixes them in
+        self.assertGreater(min(px[0] for px in clear), 50)
+        self.assertTrue(all(px[0] > 3 * px[1] for px in solid))
+        # each shape maps its own half of the atlas
+        for shape, (u0, u1) in people_art.BLOOD_ATLAS.items():
+            dae = out[shape + '.dae']
+            us = [float(v) for v in dae.split('splat-ua" count="12">')[1].split('<')[0].split()[0::2]]
+            self.assertEqual((min(us), max(us)), (u0, u1))
 
     def test_a_missed_walker_walks_on_and_the_body_is_taken_back(self):
         out = self.lua().execute('''

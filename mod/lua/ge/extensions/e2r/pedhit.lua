@@ -11,9 +11,11 @@
 --     hand-off, the game's traffic), the walkers near its path (walkers.near) are swept against its
 --     box: a walker it will touch within LEAD s gets a body. The body is placed outside the vehicle
 --     box (never inside the mesh) with a kick along the contact normal so soft-body nodes do not
---     embed. Hit, or already overlapping the box after settle: eject + optional blood splat.
+--     embed. Hit, or already overlapping the box after settle: eject + blood (api.splat: on
+--     the ground, along the way, on a wall ahead and on the car, world.lua BLOOD).
 --   - Not hit within MISS_T s (the driver braked or swerved): the body goes back to the pool and the
---     walker walks on. Hit: it lies; out of FREE_R from the player (or after FREE_T s) it is reset
+--     walker walks on. Hit: it lies, and once still (POOL_T, POOL_V) a pool of blood spreads under
+--     it (api.splat kind 'pool'); out of FREE_R from the player (or after FREE_T s) it is reset
 --     and parked, and the walker's slot fills again elsewhere.
 -- The game calls go through `api` (M.gameApi), so earthng/test_walkers.py runs this in lupa.
 local M = {}
@@ -36,6 +38,7 @@ local EJECT_GAIN = .55  -- share of closing speed added on a confirmed hit
 local EJECT_LIFT = .35  -- upward share of eject speed
 local RECLAIM_R = 55    -- m: a 'down' body this far from the player may be recycled for a new hit
 local GHOST_LEAD = .12  -- s: within this of touch, a walker with no free body is still struck (ghost)
+local POOL_T, POOL_V = 1.5, .6   -- s after the hit and m/s below which a body lies still: its pool of blood
 
 function M.new(opts)
   opts = opts or {}
@@ -158,8 +161,8 @@ local function ejectBody(P, e, api, nx, ny, vn)
   P.stats.eject = P.stats.eject + 1
 end
 
-local function splatAt(api, x, y, z, h)
-  if api and api.splat then api.splat(x, y, z, h) end
+local function splatAt(api, x, y, z, h, kind)
+  if api and api.splat then api.splat(x, y, z, h, kind) end
 end
 
 -- ghost hit: no free soft body left, but the walker still dies so the car never passes "through" it
@@ -218,8 +221,13 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
         end
       end
     elseif e.state == 'down' then
-      local bx, by = api.pose(e.id)
+      local bx, by, bvx, bvy, bz = api.pose(e.id)
       local far = not bx or not px or (bx - px) ^ 2 + (by - py) ^ 2 > FREE_R * FREE_R
+      -- come to rest: a pool of blood under it, once
+      if bx and not e.pooled and now - e.at > POOL_T and bvx * bvx + bvy * bvy < POOL_V * POOL_V then
+        e.pooled = true
+        splatAt(api, bx, by, bz or e.z or 0, nil, 'pool')
+      end
       if far or now - e.at > FREE_T then
         walkers.release(W, e.walker)
         e.walker, e.hitter = nil, nil
@@ -291,7 +299,7 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
         local ivy = row.wvy + ny * kick + h.vy * .15
         walkers.take(W, w)
         api.place(e.id, sx, sy, walkers.standZ(w), w.hx, w.hy, row.speed, w, {vx = ivx, vy = ivy, vz = .4})
-        e.state, e.at, e.walker = 'placed', now, w
+        e.state, e.at, e.walker, e.pooled = 'placed', now, w, nil
         e.vx, e.vy, e.nx, e.ny, e.z = ivx, ivy, nx, ny, walkers.standZ(w)
         e.hitter = {x = h.x, y = h.y, vx = h.vx, vy = h.vy, fx = h.fx, fy = h.fy, hl = h.hl, hw = h.hw,
           id = h.id, player = h.player, z = h.z}
@@ -447,7 +455,7 @@ function M.gameApi(looks)
     local obj = getObjectByID(id)
     if not obj then return end
     local p, v = obj:getPosition(), obj:getVelocity()
-    return p.x, p.y, v.x, v.y
+    return p.x, p.y, v.x, v.y, p.z
   end
   -- shirt, pants and skin are the vehicle's paints 1-3 (the palette masks of ped_body.py)
   -- opts: optional {vx, vy, vz} absolute velocity (else heading * walk speed)

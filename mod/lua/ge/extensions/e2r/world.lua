@@ -1787,21 +1787,29 @@ function M.walkersGet()
   return M.walkSim.counts(S.walk.W)
 end
 
--- Blood stains on asphalt and on the striking car (pedhit api.splat). Flat TSStatic quads from
--- people_art (blood_splat.dae); car stains follow the vehicle for a while. Cap keeps the scene light.
+-- Blood stains of pedhit hits (api.splat): flat alpha-tested TSStatic quads of people_art, blood_splat
+-- (a round stain) and blood_spray (thrown along its +x). A hit leaves a stain where it struck, a spray
+-- or two further along the car's way, one on a wall, pole or fence ahead within 4 m, and one on the
+-- car; a body come to rest bleeds a pool that spreads for a few seconds (pedhit, kind 'pool'). Ground
+-- and wall stains lie on the surface a ray finds, tilted to its normal, and stay BLOOD.ttl s, until
+-- the player is BLOOD.farR m away, or until the oldest go past BLOOD.max. A car stain hangs on three
+-- of the car's nodes, the top of its body where it struck (bumper, hood, windscreen), so it moves,
+-- tilts and dents with the car; it goes when the car is reset (M.onVehicleResetted) or gone.
 -- one table, not locals: the main chunk is at LuaJIT's 200 locals
-local BLOOD = {shape = '/levels/e2r_world/art/people/blood_splat.dae', max = 48, ttl = 180, carTtl = 45,
-  groundS = 1.15, carS = .55}
+local BLOOD = {dir = '/levels/e2r_world/art/people/', max = 96, ttl = 1200, carTtl = 900, farR = 1500,
+  carMax = 6, lift = .025, carLift = .06}
 
-function BLOOD.take(B)
-  local obj = B.pool[#B.pool]
+function BLOOD.take(B, shape)
+  local pool = B.pool[shape]
+  if not pool then pool = {}; B.pool[shape] = pool end
+  local obj = pool[#pool]
   if obj then
-    B.pool[#B.pool] = nil
+    pool[#pool] = nil
     obj:setHidden(false)
     return obj
   end
   obj = createObject('TSStatic')
-  obj:setField('shapeName', 0, BLOOD.shape)
+  obj:setField('shapeName', 0, BLOOD.dir .. shape .. '.dae')
   obj:setField('collisionType', 0, 'None')
   obj:setField('decalType', 0, 'None')
   obj.useInstanceRenderData = true
@@ -1812,14 +1820,226 @@ function BLOOD.take(B)
   return obj
 end
 
-function BLOOD.drop(B, obj)
+function BLOOD.drop(B, s)
+  local obj = s and s.obj
   if not obj then return end
-  if #B.pool < 24 then
+  s.obj = nil
+  local pool = B.pool[s.shape]
+  if not pool then pool = {}; B.pool[s.shape] = pool end
+  if #pool < 16 then
     pcall(function() obj:setHidden(true) end)
-    B.pool[#B.pool + 1] = obj
+    pool[#pool + 1] = obj
   else
     pcall(function() obj:delete() end)
   end
+end
+
+-- the stain's frame: its z along the normal n, its x along the hint t laid into the surface
+function BLOOD.pose(s, px, py, pz, nx, ny, nz, tx, ty, tz)
+  local d = tx * nx + ty * ny + tz * nz
+  tx, ty, tz = tx - nx * d, ty - ny * d, tz - nz * d
+  local l = math.sqrt(tx * tx + ty * ty + tz * tz)
+  if l < 1e-3 then
+    -- the hint along the normal: any tangent
+    if math.abs(nz) < .9 then tx, ty, tz = -ny, nx, 0 else tx, ty, tz = 1, 0, 0 end
+    d = tx * nx + ty * ny + tz * nz
+    tx, ty, tz = tx - nx * d, ty - ny * d, tz - nz * d
+    l = math.sqrt(tx * tx + ty * ty + tz * tz)
+  end
+  tx, ty, tz = tx / l, ty / l, tz / l
+  -- quatFromDir puts y along its first vector and z towards the second: y = n x t
+  local q = quatFromDir(vec3(ny * tz - nz * ty, nz * tx - nx * tz, nx * ty - ny * tx), vec3(nx, ny, nz))
+  local lift = s.lift or BLOOD.lift
+  pcall(s.obj.setPosRot, s.obj, px + nx * lift, py + ny * lift, pz + nz * lift, q.x, q.y, q.z, q.w)
+end
+
+-- the first static surface on a ray (roads, buildings, poles, terrain): point and normal, or nil;
+-- a vehicle in the way (a lying body, a car) is no surface for a stain
+function BLOOD.surface(x, y, z, dx, dy, dz, len)
+  if not (Engine and Engine.castRay) then return end
+  local ok, hit = pcall(Engine.castRay, vec3(x, y, z), vec3(x + dx * len, y + dy * len, z + dz * len), true, false)
+  if not ok or type(hit) ~= 'table' or not hit.pt then return end
+  local o = hit.obj
+  if o then
+    local okC, cls = pcall(function() return o:getClassName() end)
+    if okC and cls == 'BeamNGVehicle' then return end
+  end
+  local p, n = hit.pt, hit.norm
+  if not n then return p.x, p.y, p.z, 0, 0, 1 end
+  return p.x, p.y, p.z, n.x, n.y, n.z
+end
+
+-- a wall, pole or fence on a level ray: static collision (castRayStatic, as knock's fliers; the
+-- generated buildings answer it, Engine.castRay found only trees, blood-03). Taken upright: its
+-- normal level, from two more rays 0.4 m to either side (window sills and recesses tipped a normal
+-- from a ray above, blood-05); point and normal, or nil
+function BLOOD.wall(x, y, z, dx, dy, len)
+  if not castRayStatic then return end
+  local dir = vec3(dx, dy, 0)
+  local function dist(ox, oy)
+    local ok, d = pcall(castRayStatic, vec3(ox, oy, z), dir, len + .6)
+    if ok and type(d) == 'number' and d < len + .6 then return d end
+  end
+  local d0 = dist(x, y)
+  if not d0 or d0 > len then return end
+  local sx, sy = -dy * .4, dx * .4
+  local dl, dr = dist(x - sx, y - sy), dist(x + sx, y + sy)
+  local nx, ny = -dx, -dy
+  if dl and dr and math.abs(dl - dr) < .8 then
+    -- the wall's run from the left hit to the right one; its normal faces back along the ray
+    local ax, ay = 2 * sx + dx * (dr - dl), 2 * sy + dy * (dr - dl)
+    local l = math.sqrt(ax * ax + ay * ay)
+    nx, ny = -ay / l, ax / l
+    if nx * dx + ny * dy > 0 then nx, ny = -nx, -ny end
+  end
+  return x + dx * d0, y + dy * d0, z, nx, ny, 0, d0
+end
+
+-- how far the car's skin stands over a node along n: a ray down onto the car's own mesh, or
+-- BLOOD.carLift where it finds none (a stain on the node itself sank under the hood, blood-03)
+function BLOOD.skin(vid, px, py, pz, nx, ny, nz)
+  if Engine and Engine.castRay then
+    local ok, hit = pcall(Engine.castRay, vec3(px + nx, py + ny, pz + nz), vec3(px - nx * .3, py - ny * .3, pz - nz * .3),
+      false, true)
+    if ok and type(hit) == 'table' and hit.pt then
+      local okI, hid = pcall(function() return hit.obj and hit.obj:getID() end)
+      if okI and hid == vid then
+        local d = (hit.pt.x - px) * nx + (hit.pt.y - py) * ny + (hit.pt.z - pz) * nz
+        if d > -.1 and d < .3 then return math.max(.015, d + .015), true end
+      end
+    end
+  end
+  return BLOOD.carLift, false
+end
+
+function BLOOD.ground(x, y, z)
+  local px, py, pz, nx, ny, nz = BLOOD.surface(x, y, z + 1.5, 0, 0, -1, 4)
+  if px and nz > .5 then return px, py, pz, nx, ny, nz end
+  local h = be:getSurfaceHeightBelow(vec3(x, y, z + 1.5))
+  if h and h > -1e6 then return x, y, h, 0, 0, 1 end
+end
+
+function BLOOD.lay(B, s, px, py, pz, nx, ny, nz, tx, ty, tz)
+  if B.n >= BLOOD.max then
+    BLOOD.drop(B, B.list[1])
+    table.remove(B.list, 1)
+    B.n = B.n - 1
+  end
+  s.obj, s.at, s.x, s.y = BLOOD.take(B, s.shape), S.now, px, py
+  B.n = B.n + 1
+  B.list[B.n] = s
+  local k = s.grow and .3 or 1
+  s.obj:setScale(vec3(s.len * k, s.wid * k, 1))
+  BLOOD.pose(s, px, py, pz, nx, ny, nz, tx, ty, tz)
+  return s
+end
+
+-- a car stain: the highest node of the car within .25 m (seen from above) of a point on its hood
+-- (0.3 to 1.2 m behind the front), across where it struck, and two nodes near it on the same
+-- surface (one across, one along) to tilt the stain with; nil where the car has no node there
+function BLOOD.carAnchor(veh, h, x, y)
+  local okN, count = pcall(function() return veh:getNodeCount() end)
+  if not okN or not count or count < 4 then return end
+  local o = veh:getPosition()
+  local fx, fy, lx, ly = h.fx, h.fy, -h.fy, h.fx
+  local dx, dy = x - h.x, y - h.y
+  local across = math.max(-h.hw + .2, math.min(h.hw - .2, dx * lx + dy * ly))
+  local along = h.hl - .3 - math.random() * .9
+  local cx, cy = h.x + fx * along + lx * across - o.x, h.y + fy * along + ly * across - o.y
+  local pos, a, az = {}, nil, -1e9
+  for id = 0, count - 1 do
+    local p = veh:getNodePosition(id)
+    pos[id] = p
+    if (p.x - cx) ^ 2 + (p.y - cy) ^ 2 < .0625 and p.z > az then a, az = id, p.z end
+  end
+  if not a then return end
+  local pa, b, c, db, dc = pos[a], nil, nil, 1e9, 1e9
+  for id = 0, count - 1 do
+    local p = pos[id]
+    local ex, ey, ez = p.x - pa.x, p.y - pa.y, p.z - pa.z
+    local dh = math.sqrt(ex * ex + ey * ey)
+    if dh > .12 and dh < .6 and math.abs(ez) < .3 then
+      if math.abs(ex * lx + ey * ly) > .8 * dh and dh < db then b, db = id, dh end
+      if math.abs(ex * fx + ey * fy) > .8 * dh and dh < dc then c, dc = id, dh end
+    end
+  end
+  return a, b and c and b or nil, b and c and c or nil
+end
+
+-- where a car stain is now: point, outward normal, tangent hint (towards the car's back)
+function BLOOD.onCar(s, veh)
+  local o, pa, up, f = veh:getPosition(), veh:getNodePosition(s.a), veh:getDirectionVectorUp(), veh:getDirectionVector()
+  local nx, ny, nz = up.x, up.y, up.z
+  if s.b then
+    local pb, pc = veh:getNodePosition(s.b), veh:getNodePosition(s.c)
+    local ux, uy, uz = pb.x - pa.x, pb.y - pa.y, pb.z - pa.z
+    local vx, vy, vz = pc.x - pa.x, pc.y - pa.y, pc.z - pa.z
+    local cx, cy, cz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+    local l = math.sqrt(cx * cx + cy * cy + cz * cz)
+    if l > 1e-4 then
+      nx, ny, nz = cx / l, cy / l, cz / l
+      if nx * up.x + ny * up.y + nz * up.z < 0 then nx, ny, nz = -nx, -ny, -nz end
+    end
+  end
+  return o.x + pa.x, o.y + pa.y, o.z + pa.z, nx, ny, nz, -f.x, -f.y, -f.z
+end
+
+function BLOOD.hit(B, x, y, z, h, kind)
+  local rnd = math.random
+  z = z or 0
+  local px, py, pz, nx, ny, nz = BLOOD.ground(x, y, z)
+  if kind == 'pool' then
+    if px then
+      local r, a = 1.1 + rnd() * .6, rnd() * 6.283
+      BLOOD.lay(B, {kind = 'ground', shape = 'blood_splat', len = r, wid = r * (.75 + rnd() * .25), grow = S.now},
+        px, py, pz, nx, ny, nz, math.cos(a), math.sin(a), 0)
+    end
+    return
+  end
+  local fx, fy
+  if h and h.fx then fx, fy = h.fx, h.fy else local a = rnd() * 6.283; fx, fy = math.cos(a), math.sin(a) end
+  -- a wall, pole or fence ahead within 4 m: a stain about chest height, and the sprays stop short of it
+  local wx, wy, wz, wnx, wny, wnz, wd = BLOOD.wall(x, y, z + .8 + rnd() * .6, fx, fy, 4)
+  B.walls = B.walls or {rays = 0, hits = 0}
+  B.walls.rays, B.walls.hits = B.walls.rays + 1, B.walls.hits + (wx and 1 or 0)
+  if wx then
+    local r = .7 + rnd() * .4
+    BLOOD.lay(B, {kind = 'wall', shape = rnd() < .5 and 'blood_splat' or 'blood_spray', len = r, wid = r * .8},
+      wx, wy, wz, wnx, wny, wnz, fx, fy, -.3)
+  end
+  -- where it struck
+  if px then
+    local r, a = .7 + rnd() * .4, rnd() * 6.283
+    BLOOD.lay(B, {kind = 'ground', shape = 'blood_splat', len = r, wid = r * (.8 + rnd() * .3)},
+      px, py, pz, nx, ny, nz, math.cos(a), math.sin(a), 0)
+  end
+  -- thrown along the car's way: a spray or two further on
+  for k = 1, 1 + math.floor(rnd() * 2) do
+    local d, side = 1.2 + k * 1.4 + rnd() * 1.2, (rnd() - .5) * 1.2
+    if wd then d = math.min(d, wd - .9) end
+    px, py, pz, nx, ny, nz = nil, nil, nil, nil, nil, nil
+    if d > .6 then px, py, pz, nx, ny, nz = BLOOD.ground(x + fx * d - fy * side, y + fy * d + fx * side, z) end
+    if px then
+      local l, a = 1.3 + rnd() * .9, (rnd() - .5) * .5
+      BLOOD.lay(B, {kind = 'ground', shape = 'blood_spray', len = l, wid = l * .5}, px, py, pz, nx, ny, nz,
+        fx * math.cos(a) - fy * math.sin(a), fy * math.cos(a) + fx * math.sin(a), 0)
+    end
+  end
+  -- on the car
+  local veh = h and h.id and getObjectByID(h.id)
+  if not veh then return end
+  local n = 0
+  for i = 1, B.n do if B.list[i].vid == h.id then n = n + 1 end end
+  if n >= BLOOD.carMax then return end
+  local a, b, c = BLOOD.carAnchor(veh, h, x, y)
+  if not a then return end
+  local spray = rnd() < .5
+  local l = spray and .7 + rnd() * .25 or .45 + rnd() * .2
+  local s = {kind = 'car', shape = spray and 'blood_spray' or 'blood_splat', len = l, wid = spray and l * .5 or l * .85,
+    vid = h.id, a = a, b = b, c = c}
+  local qx, qy, qz, qnx, qny, qnz = BLOOD.onCar(s, veh)
+  s.lift, s.skin = BLOOD.skin(h.id, qx, qy, qz, qnx, qny, qnz)
+  BLOOD.lay(B, s, BLOOD.onCar(s, veh))
 end
 
 function M.walkBloodClear(wk)
@@ -1827,7 +2047,7 @@ function M.walkBloodClear(wk)
   if not B then return end
   for i = 1, B.n do
     local s = B.list[i]
-    if s then BLOOD.drop(B, s.obj); B.list[i] = nil end
+    if s then BLOOD.drop(B, s); B.list[i] = nil end
   end
   B.n = 0
   dropGroup('E2R_blood')
@@ -1838,44 +2058,26 @@ function M.walkBloodBind(wk)
   if not wk or not wk.api then return end
   local B = wk.blood
   if not B then
-    B = {list = {}, pool = {}, n = 0, at = vec3(0, 0, 0)}
+    B = {list = {}, pool = {}, n = 0}
     wk.blood = B
   end
-  function wk.api.splat(x, y, z, h)
-    local function add(kind, ox, oy, oz, sx, sy, sz, yaw, vid, lx, ly, lz)
-      if B.n >= BLOOD.max then
-        -- drop the oldest
-        local old = B.list[1]
-        if old then BLOOD.drop(B, old.obj) end
-        for i = 1, B.n - 1 do B.list[i] = B.list[i + 1] end
-        B.list[B.n], B.n = nil, B.n - 1
-      end
-      local obj = BLOOD.take(B)
-      local yaw0 = yaw or 0
-      local q = quatFromDir(vec3(math.cos(yaw0), math.sin(yaw0), 0), vec3(0, 0, 1))
-      obj:setScale(vec3(sx, sy, sz or .02))
-      pcall(obj.setPosRot, obj, ox, oy, oz, q.x, q.y, q.z, q.w)
-      B.n = B.n + 1
-      B.list[B.n] = {obj = obj, kind = kind, at = S.now, vid = vid, lx = lx, ly = ly, lz = lz, yaw0 = yaw0}
-    end
-    local gz = z or 0
-    if wk.ground then
-      local hgt = wk.ground(x, y, (z or 0) + 2)
-      if hgt then gz = hgt + .02 end
-    end
-    local yaw = (h and math.atan2(h.fy or 0, h.fx or 1)) or ((x * 12.9898 + y * 78.233) % 6.2832)
-    add('ground', x, y, gz, BLOOD.groundS * (.85 + (x * 3.1 % 1) * .4),
-      BLOOD.groundS * (.7 + (y * 5.7 % 1) * .5), .02, yaw)
-    if h and h.id then
-      -- stain on the striking face: local offset in the car's frame (ahead / left / up)
-      local dx, dy = x - (h.x or x), y - (h.y or y)
-      local ahead = dx * (h.fx or 1) + dy * (h.fy or 0)
-      local left = -dx * (h.fy or 0) + dy * (h.fx or 1)
-      ahead = math.max(-(h.hl or 2) + .2, math.min((h.hl or 2) - .2, ahead))
-      left = math.max(-(h.hw or 1) + .05, math.min((h.hw or 1) - .05, left))
-      add('car', x, y, (h.z or gz) + .55, BLOOD.carS, BLOOD.carS * .7, .015, yaw, h.id, ahead, left, .55)
-    end
+  -- (x, y, z) where it struck, h the vehicle (pedhit's hitter) or nil; kind 'pool' under a body at rest
+  function wk.api.splat(x, y, z, h, kind)
+    local ok, err = pcall(BLOOD.hit, B, x, y, z, h, kind)
+    if not ok then B.err = tostring(err) end
   end
+end
+
+-- a car put back by the game (its reset) is clean again
+function M.onVehicleResetted(vid)
+  local B = S.walk and S.walk.blood
+  if not B or B.n == 0 then return end
+  local keep, kn = {}, 0
+  for i = 1, B.n do
+    local s = B.list[i]
+    if s.vid == vid then BLOOD.drop(B, s); B.resets = (B.resets or 0) + 1 else kn = kn + 1; keep[kn] = s end
+  end
+  B.list, B.n = keep, kn
 end
 
 function M.walkBloodStep(wk, px, py)
@@ -1884,31 +2086,51 @@ function M.walkBloodStep(wk, px, py)
   local keep, kn = {}, 0
   for i = 1, B.n do
     local s = B.list[i]
-    local ttl = s.kind == 'car' and BLOOD.carTtl or BLOOD.ttl
-    local live = S.now - s.at < ttl
-    if live and s.kind == 'car' and s.vid then
-      local o = getObjectByID(s.vid)
-      if o then
-        local p, d = o:getPosition(), o:getDirectionVector()
-        local l = math.sqrt(d.x * d.x + d.y * d.y)
-        local fx, fy = l > 1e-3 and d.x / l or 1, l > 1e-3 and d.y / l or 0
-        local x = p.x + fx * s.lx - fy * s.ly
-        local y = p.y + fy * s.lx + fx * s.ly
-        local z = p.z + s.lz
-        local q = quatFromDir(vec3(fx, fy, 0), vec3(0, 0, 1))
-        pcall(s.obj.setPosRot, s.obj, x, y, z, q.x, q.y, q.z, q.w)
-      else
-        live = false
+    local live
+    if s.kind == 'car' then
+      local veh = S.now - s.at < BLOOD.carTtl and getObjectByID(s.vid)
+      if veh then
+        local ok, err = pcall(function() BLOOD.pose(s, BLOOD.onCar(s, veh)) end)
+        if not ok then B.err = tostring(err) end
+        live = ok
+      end
+    else
+      live = S.now - s.at < BLOOD.ttl and (not px or (s.x - px) ^ 2 + (s.y - py) ^ 2 < BLOOD.farR * BLOOD.farR)
+      if live and s.grow then
+        -- a pool spreads over 8 s
+        local k = math.min(1, .3 + (S.now - s.grow) / 8 * .7)
+        pcall(function() s.obj:setScale(vec3(s.len * k, s.wid * k, 1)) end)
+        if k >= 1 then s.grow = nil end
       end
     end
     if live then
       kn = kn + 1
       keep[kn] = s
     else
-      BLOOD.drop(B, s.obj)
+      BLOOD.drop(B, s)
     end
   end
   B.list, B.n = keep, kn
+end
+
+-- development (earthng/probe/blood_hit.lua): a splat as pedhit makes one, and the stains as they lie
+function M.bloodSplat(x, y, z, h, kind)
+  local wk = S.walk
+  if not (wk and wk.api and wk.api.splat) then return false end
+  wk.api.splat(x, y, z, h, kind)
+  return true
+end
+function M.bloodState()
+  local B = S.walk and S.walk.blood
+  local r = {n = B and B.n or 0, err = B and B.err, resets = B and B.resets, walls = B and B.walls, kinds = {}, list = {}}
+  for i = 1, r.n do
+    local s = B.list[i]
+    r.kinds[s.kind] = (r.kinds[s.kind] or 0) + 1
+    local p = s.obj and s.obj:getPosition()
+    r.list[i] = {kind = s.kind, shape = s.shape, len = s.len, x = p and p.x, y = p and p.y, z = p and p.z,
+      vid = s.vid, a = s.a, b = s.b, c = s.c, lift = s.lift, skin = s.skin}
+  end
+  return r
 end
 
 -- A new landing or a pack gone: the walkers and their shapes go at once; the count asked and the

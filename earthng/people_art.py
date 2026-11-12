@@ -5,7 +5,8 @@ A walker is a TSStatic without collision moved by Lua; the walk is a flipbook of
 One mesh per pose, ~450 triangles: tapered limbs posed by forward kinematics from a gait table, a
 waisted torso with collar and hem, a head with jaw and hair, mitts and box shoes. Clothes and skin
 take their colour per instance (TSStatic instanceColor*) through the vehicle palette masks, so
-8 poses + 1 standing pose serve every outfit. A flat blood_splat mesh is for pedhit hits.
+8 poses + 1 standing pose serve every outfit. Two flat blood quads on one atlas (blood_splat,
+blood_spray) are the stains of pedhit hits (world.lua BLOOD).
 
 Forward is +x, up +z, the origin on the ground between the feet. In the planet as
 levels/<level>/art/people/ (level_files); the physical body that takes a walker's place when a car
@@ -34,11 +35,15 @@ MATERIALS = {
              'colorPaletteMap': '/vehicles/common/nullcolormaskB.color.png'},
     'hair': {'baseColorFactor': [.06, .045, .03, 1], 'roughnessFactor': .8},
     'shoes': {'baseColorFactor': [.05, .05, .05, 1], 'roughnessFactor': .7},
-    'blood': {'baseColorMap': 'blood_splat.png', 'roughnessFactor': .95, 'metallicFactor': 0,
-              'diffuseMap': 'blood_splat.png', 'vertColor': False,
-              'alphaMap': 'blood_splat.png', 'castShadows': False, 'translucent': True,
-              'translucentBlendOp': 'Alpha', 'alphaRef': 40},
+    # wet, so not rough
+    'blood': {'baseColorMap': 'blood.color.png', 'opacityMap': 'blood_o.data.png', 'roughnessFactor': .38,
+              'metallicFactor': 0, 'vertColor': False},
 }
+# fields of the material itself, not of its stage (as fast_style EXTRA). Blood is cut out by its own
+# opacity map, not blended: drawn into the gbuffer and lit like the road under it. The game reads
+# these only here and no alpha from baseColorMap: set in the stage, a translucent blend drew the
+# clear texels black (12.11 in game) and an alpha test the whole quad (blood-01, blood-02).
+MATERIAL_FIELDS = {'blood': {'alphaTest': True, 'alphaRef': 64, 'doubleSided': True, 'castShadows': False}}
 
 # body, metres: hip height, thigh, shin, shoulder height, half widths, arm segments
 # (ped_body.py skeleton follows these; keep lengths stable)
@@ -194,52 +199,96 @@ def pose_dae(phase):
     return text.replace('name="car"', 'name="ped"').replace('id="car"', 'id="ped"'), len(tris)
 
 
-def blood_png(size=256):
-    """Irregular translucent blood splat (RGBA PNG bytes)."""
-    im = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+BLOOD_ATLAS = {'blood_splat': (0, .5), 'blood_spray': (.5, 1)}   # shape: its u range in the atlas
+
+
+def _blood_mask(size, seed, spray):
+    """The coverage of one stain (L image, 4x supersampled then reduced). A splat: an uneven pool of
+    overlapping lobes, a few runs of shrinking drops of uneven length and drops thrown mostly to one
+    side. A spray thrown along +x: a blot, a smear thinning and wobbling, then drops stretched along
+    the throw, smaller and wider apart further out."""
+    import random
+    rnd = random.Random(seed)
+    big = size * 4
+    im = Image.new('L', (big, big), 0)
     draw = ImageDraw.Draw(im)
-    cx = cy = size // 2
-    # layered blobs: dark core, mid, thin edges and droplets
-    layers = [
-        ((120, 8, 10, 210), size * .38, 7),
-        ((90, 4, 8, 180), size * .28, 5),
-        ((55, 2, 4, 230), size * .16, 4),
-        ((140, 12, 14, 120), size * .12, 9),
-    ]
-    for colour, rad, n in layers:
-        for k in range(n):
-            a = 2 * math.pi * k / n + (k * .7)
-            d = rad * (.15 + .55 * ((k * 37) % 10) / 10)
-            x, y = cx + rad * .35 * math.cos(a) + d * .2, cy + rad * .3 * math.sin(a)
-            r = rad * (.35 + .4 * ((k * 13) % 7) / 7)
-            draw.ellipse([x - r, y - r, x + r, y + r], fill=colour)
-    # droplets
-    for k in range(14):
-        a = 2 * math.pi * k / 14 + .4
-        d = size * (.32 + .12 * (k % 3))
-        x, y = cx + d * math.cos(a), cy + d * math.sin(a)
-        r = 3 + (k % 5)
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=(100, 5, 8, 160))
-    im = im.filter(ImageFilter.GaussianBlur(radius=1.2))
-    buf = io.BytesIO()
-    im.save(buf, format='PNG')
-    return buf.getvalue()
+
+    def disc(x, y, r, sx=1.0):
+        draw.ellipse([x - r * sx, y - r, x + r * sx, y + r], fill=255)
+
+    c = big / 2
+    if not spray:
+        side = rnd.uniform(0, 2 * math.pi)   # where the drops went
+        for _ in range(22):
+            x, y = c + rnd.gauss(0, big * .07), c + rnd.gauss(0, big * .055)
+            disc(x, y, big * rnd.uniform(.04, .12))
+        for _ in range(7):
+            a = side + rnd.gauss(0, 1.1)
+            r, d = big * rnd.uniform(.022, .045), big * rnd.uniform(.12, .18)
+            reach = big * rnd.uniform(.25, .44)
+            while r > big * .006 and d < reach:
+                disc(c + d * math.cos(a), c + d * math.sin(a), r)
+                d += r * rnd.uniform(.8, 1.4)
+                r *= rnd.uniform(.8, .93)
+                a += rnd.uniform(-.08, .08)
+        for _ in range(38):
+            a = side + rnd.gauss(0, .9) if rnd.random() < .7 else rnd.uniform(0, 2 * math.pi)
+            d = big * rnd.uniform(.2, .47)
+            r = big * rnd.uniform(.004, .014) * (1.6 - d / big * 2)
+            disc(c + d * math.cos(a), c + d * math.sin(a), r, rnd.uniform(1, 1.8))
+    else:
+        disc(big * .17, c, big * .1)
+        for _ in range(8):
+            disc(big * .17 + rnd.gauss(0, big * .04), c + rnd.gauss(0, big * .04), big * rnd.uniform(.03, .07))
+        y = c
+        for k in range(36):
+            t = k / 35
+            y += rnd.gauss(0, big * .006)
+            w = big * (.075 * (1 - t) ** 1.5 + .012)
+            disc(big * (.2 + .42 * t), y, w, 1.5)
+            if rnd.random() < .5:   # a ragged edge
+                disc(big * (.2 + .42 * t), y + rnd.choice((-1, 1)) * w * .9, w * rnd.uniform(.25, .5))
+        for _ in range(54):
+            t = rnd.uniform(.3, 1) ** .8
+            r = big * (.02 * (1 - t) + .004) * rnd.uniform(.6, 1.3)
+            disc(big * (.16 + .8 * t), c + rnd.gauss(0, 1) * big * (.03 + .11 * t), r, 1.5 + 1.5 * t)
+    im = im.filter(ImageFilter.GaussianBlur(radius=big / 180))
+    return im.resize((size, size), Image.LANCZOS)
 
 
-def blood_dae():
-    """A flat unit quad on the XY plane (z up), UV 0..1, material blood."""
-    # corners of a 1x1 m quad centred on origin, slightly above z=0
+def blood_maps(size=256):
+    """The blood atlas, two squares side by side: blood_splat (u 0..0.5), the round stain, and
+    blood_spray (u 0.5..1), a spray along +u. PNG bytes of the colour (RGB) and of the opacity (L).
+    The colour is blood everywhere, also under the clear texels, so a filtered edge has no dark
+    fringe; the opacity is the stain, cut at alphaRef. Thick blood is darker (dark red to brown), thin
+    edges a little brighter and redder."""
+    import random
+    rnd = random.Random(31)
+    alpha = Image.new('L', (size * 2, size), 0)
+    alpha.paste(_blood_mask(size, 5, False), (0, 0))
+    alpha.paste(_blood_mask(size, 9, True), (size, 0))
+    thick = alpha.filter(ImageFilter.GaussianBlur(radius=size / 40))
+    px = bytearray()
+    for a, t in zip(alpha.tobytes(), thick.tobytes()):
+        k, n = t / 255, rnd.uniform(-1, 1)
+        px += bytes((int(max(0, min(255, 118 - 52 * k + 8 * n))), int(max(0, min(255, 10 - 6 * k + 2 * n))),
+                     int(max(0, min(255, 12 - 6 * k + 2 * n)))))
+    out = []
+    for im in (Image.frombytes('RGB', alpha.size, bytes(px)), alpha):
+        buf = io.BytesIO()
+        im.save(buf, format='PNG')
+        out.append(buf.getvalue())
+    return tuple(out)
+
+
+def blood_dae(shape='blood_splat'):
+    """A flat unit quad on the XY plane (z up), its UV the shape's square of the atlas, material blood."""
+    u0, u1 = BLOOD_ATLAS[shape]
     a, b, c, d = (-.5, -.5, 0), (.5, -.5, 0), (.5, .5, 0), (-.5, .5, 0)
-    # two triangles, normal +z; UVs: a(0,0) b(1,0) c(1,1) d(0,1)
     pos = [a, b, c, a, c, d]
-    uv = [(0, 0), (1, 0), (1, 1), (0, 0), (1, 1), (0, 1)]
+    uv = [(u0, 0), (u1, 0), (u1, 1), (u0, 0), (u1, 1), (u0, 1)]
     nrm = [(0, 0, 1)] * 6
     fmt = lambda rows: ' '.join(f'{x:.4f}' for row in rows for x in row)
-    idx = ' '.join(str(i) for i in range(6) for _ in (0, 1))  # pos+uv shared index per corner via two inputs
-    # simpler: interleaved indices for POSITION and TEXCOORD
-    p_idx = []
-    for i in range(6):
-        p_idx += [i, i]
     return f'''<?xml version="1.0" encoding="utf-8"?>
 <COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
   <asset><unit name="meter" meter="1"/><up_axis>Z_UP</up_axis></asset>
@@ -252,7 +301,7 @@ def blood_dae():
     </profile_COMMON></effect>
   </library_effects>
   <library_images><image id="{PREFIX}blood-img" name="{PREFIX}blood-img">
-    <init_from>blood_splat.png</init_from></image></library_images>
+    <init_from>blood.color.png</init_from></image></library_images>
   <library_materials>
     <material id="{PREFIX}blood" name="{PREFIX}blood"><instance_effect url="#{PREFIX}blood-fx"/></material>
   </library_materials>
@@ -298,21 +347,18 @@ def files():
         out[f'ped_walk{k}.dae'] = text
         counts[k] = n
     out['ped_stand.dae'], counts['stand'] = pose_dae(None)
-    out['blood_splat.dae'] = blood_dae()
-    out['blood_splat.png'] = blood_png()
+    for shape in BLOOD_ATLAS:
+        out[shape + '.dae'] = blood_dae(shape)
+    out['blood.color.png'], out['blood_o.data.png'] = blood_maps()
     mats = {}
     for m, stage in MATERIALS.items():
         mats[PREFIX + m] = {'name': PREFIX + m, 'mapTo': PREFIX + m, 'class': 'Material', 'version': 1.5,
-                            'Stages': [dict(stage), {}, {}, {}]}
-    # blood texture path inside the people art folder
-    blood_stage = mats[PREFIX + 'blood']['Stages'][0]
-    blood_stage['baseColorMap'] = f'/levels/e2r_world/art/people/blood_splat.png'
-    blood_stage.pop('diffuseMap', None)
-    blood_stage.pop('alphaMap', None)
+                            'Stages': [dict(stage), {}, {}, {}], **MATERIAL_FIELDS.get(m, {})}
+    _blood_paths(mats, 'e2r_world')
     out['people.materials.json'] = json.dumps(mats, indent=2)
     # the shapes name their materials without the prefix: map them
     for name in list(out):
-        if name.endswith('.dae') and name != 'blood_splat.dae':
+        if name.endswith('.dae') and name[:-4] not in BLOOD_ATLAS:
             text = out[name]
             for m in MATERIALS:
                 if m == 'blood':
@@ -323,13 +369,18 @@ def files():
     return out, counts
 
 
+def _blood_paths(mats, level):
+    """The blood material's maps as full paths in the level's people art folder."""
+    stage = mats[PREFIX + 'blood']['Stages'][0]
+    for field in ('baseColorMap', 'opacityMap'):
+        stage[field] = f'/levels/{level}/art/people/' + MATERIALS['blood'][field]
+
+
 def level_files(level):
     """The poses and their materials for the planet ZIP (build_mod.py)."""
     out, _ = files()
-    # blood material path must match the level
     mats = json.loads(out['people.materials.json'])
-    stage = mats[PREFIX + 'blood']['Stages'][0]
-    stage['baseColorMap'] = f'/levels/{level}/art/people/blood_splat.png'
+    _blood_paths(mats, level)
     out['people.materials.json'] = json.dumps(mats, indent=2)
     return {f'levels/{level}/art/people/{name}': text for name, text in out.items()}
 

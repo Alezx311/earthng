@@ -2,6 +2,20 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-12: blood stains that lie on the road, walls and the car
+
+- In 0.8.7 a stain was a black square: the material's `translucent` blend sat in the stage, where
+  the game does not read it, and the alpha was in `baseColorMap`, which it does not read either.
+  The car stains hung as flat squares at a fixed height in front of the bonnet, in a row.
+  Now (`world.lua` `BLOOD`, `pedhit.lua`, `earthng/people_art.py`): one atlas of a splat and a
+  spray, cut by its own `opacityMap`, `alphaTest` on the material. A hit leaves a stain where it
+  struck, one or two sprays along the car's way, one on a wall, post or fence within 4 m ahead
+  (`castRayStatic`, an upright normal from two side rays) and one on the car, hung on three of its
+  nodes on the bonnet so it moves and dents with it and goes when the car is reset. A body come to
+  rest bleeds a pool that spreads for 8 s. Ground and walls keep 20 min or until 1.5 km away, the
+  car 15 min, 96 in all. `earthng/probe/blood_hit.lua` places them in game: out/blood-06 (Kyiv),
+  car stains moved with the car (2.8 m), all ground stains 2.4 cm over the surface below.
+
 ## 2026-11-12: release 0.8.7, pedestrians with bodies and blood, and the work since 0.8.2
 
 - Planet and EarthNG.exe 0.8.7: everything since 0.8.2 (15a8ec5) in one release: the Overpass test
