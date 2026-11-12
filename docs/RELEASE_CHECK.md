@@ -4,6 +4,39 @@ Newest first. Each entry records what was checked before a release and what was 
 in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
 `MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
 
+## 0.9.0, rebuilt before publishing (2026-11-12): planet and EarthNG.exe from 9c54127
+
+The 0.9.0 below was not published. It was rebuilt with the collector fix merged into
+`exp/rust-in-mod` (9c54127): while driving there is no half-second sweep any more
+(docs/PERFORMANCE.md, "Ривки в їзді"). The build of 9fc4c38 is kept in
+`out/release/player-0.9.0-9fc4c38`.
+
+- Planet built from a clean `git archive HEAD mod` (out/release/build_planet_0_9_0.py), language
+  `en`: 280 115 008 bytes, sha256 9c5403b3…; testzip clean. Against the planet of 9fc4c38, only
+  `gc.lua` and `world.lua` changed.
+- EarthNG.exe 0.9.0 (50 170 407 bytes, sha256 398c3734…): BUILD_INFO version 0.9.0, planet 0.9.0,
+  source 9c54127. Its Lua equals the planet's except the language line of `world.lua`.
+- Unit tests at 9c54127: full discover 929 OK (20 skipped).
+- Game (BeamNG 0.40.5, isolated profiles, release planet, no other game running), the same two
+  checks as below:
+  - Vytachiv route (out/rel090b-vyt): functional status passed, no EarthNG errors, 826 m. Frames:
+    mean 11.86 ms, p99 25, 2 over 100 ms (was 12.0, 27.5, 4).
+    - No full collection of the engine after the touch-down (`luaProfile.gc`); the collector takes
+      0.21 ms a frame.
+    - Both frames over 100 ms (225 and 186 ms) are scene objects created in 209 and 167 ms. The
+      mutator's steps freed 70-108 MB in those frames, with the engine's LuaGC at 2-3 ms.
+    - No walker was hit this time.
+  - Kyiv centre with 400 flow cars, 8 real ones and 200 pedestrians (out/rel090b-kyiv): functional
+    status passed, no EarthNG errors.
+    - Landed in 32.7 s.
+    - Frames: mean 23.8 ms, p99 52, 6 over 100 ms in 216 m, worst 199 ms (was 25.3, 54.5, 7 in
+      179 m, worst 749: sweeps of 624 and 749 ms).
+    - The touch-down frame was 826 ms (was 1017).
+    - 1 hit with a body, 4 stains. `knock.step` worst 0.26 ms.
+- In the same session, before merging: five drives of the fix and two of 0.9.0 on the Vytachiv
+  route (out/gcfix-01..05, out/gcbase-05..06).
+- Not run: BeamNG 0.39, a pack build by the exe, the in-game options UI, a drive longer than 70 s.
+
 ## 0.9.0 (2026-11-12): planet 0.9.0 and EarthNG.exe 0.9.0 from 9fc4c38
 
 A polish of 0.8.7 (with its planet of 12.11, the blood fix): no `knock.step` stall when a car is
