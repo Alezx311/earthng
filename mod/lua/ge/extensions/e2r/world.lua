@@ -4685,6 +4685,13 @@ local function runTest()
     applyTune()
     result.quality = test.quality or 50
   end
+  if S.parkAfter then
+    local veh = getPlayerVehicle(0)
+    if veh and veh:getVelocity():length() < 2 then
+      veh:queueLuaCommand("input.event('brake', 0, 2) input.event('parkingbrake', 1, 2)")
+      S.parkAfter = nil
+    end
+  end
   if test.qualityCycle and S.testDone and not S.qualityCycleDone then
     local veh = getPlayerVehicle(0)
     local p = veh:getPosition()
@@ -4969,9 +4976,11 @@ local function runTest()
     end
     local limit = test.driveSeconds or 8
     if (AP and (AP.done or S.now - S.testDriving > limit)) or (not AP and S.now - S.testDriving > limit) then
-      -- and the parking brake: without it the car rolled on (into a field, out/all-11) while the
-      -- gallery placed its views round where it had stopped
-      veh:queueLuaCommand("input.event('throttle', 0, 2) input.event('brake', 1, 2) input.event('parkingbrake', 1, 2)")
+      veh:queueLuaCommand("input.event('throttle', 0, 2) input.event('brake', 1, 2)")
+      -- below 2 m/s the brake is let go and the parking brake holds (S.parkAfter): the arcade
+      -- gearbox engages reverse when the brake is held at a standstill, and the car backed away
+      -- into a field (out/all-11) while the gallery framed where it had stopped
+      S.parkAfter = true
       result.vehicleAfterDrive = {p.x, p.y, p.z, veh:getVelocity():length()}
       result.driveFrames = accStats(S.driveAcc)
       result.travelledM = AP and AP.travelled or S.travelled or 0
