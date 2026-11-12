@@ -4,6 +4,8 @@ Newest first. How things work now: [docs/README.md](docs/README.md).
 
 ## 2026-11-12: polish for 0.9.0: no knock stall, pedestrians warmed at the landing
 
+- Version 0.9.0: the planet's manifest and EarthNG.exe (`build_mod.py`, `rust/crates/app`).
+
 - `knock.step` stalled a frame for 375-558 ms once to four times a drive (central Kyiv, 400 flow
   cars, 200 pedestrians). Not the swap, rays or the collector: phase 3, the cell sweep round each
   vehicle. A car just teleported (a hand-off, a reset) reads thousands of m/s for a step, and with a
