@@ -729,13 +729,14 @@ class GeneratorTests(unittest.TestCase):
         concrete = [t for t in self.triangles(road, 'e2rf_fence_wall') if bank(t)]
         self.assertTrue(concrete)
         self.assertTrue(all(off_deck(t) <= 15 for t in concrete))
-        steep = [t for t in self.triangles(road, 'e2rf_ground') if bank(t) and slope(t) > 55]
-        self.assertTrue(steep)                                        # away from the deck: still ground
+        # away from the deck: still ground, in the land of a steep slope (VEG.land: loam, dry grass)
+        lands = ['e2rf_ground', 'e2rf_grass_dry', 'e2rf_earth'] + [f'e2rf_cut_{u}{n}' for u in ('grass', 'dry', 'lush') for n in range(1, 7)]
+        steep = [t for kind in lands for t in self.triangles(road, kind) if bank(t) and slope(t) > 55]
+        self.assertTrue(steep)
         self.assertTrue(all(off_deck(t) > 15 for t in steep))
         valley = lambda t: all(199 < p[1] < 214 and abs(p[0] - 250) < 20 for p in t)
         # under the deck's middle it stays the valley's own ground: the land of a slope (VEG.land)
-        self.assertTrue([t for kind in ('e2rf_ground', 'e2rf_grass_dry', 'e2rf_earth') for t in self.triangles(road, kind)
-                         if valley(t) and slope(t) > 55])
+        self.assertTrue([t for kind in lands for t in self.triangles(road, kind) if valley(t) and slope(t) > 55])
         self.assertEqual([t for t in self.triangles(road, 'e2rf_fence_wall') if valley(t) and slope(t) < 85], [])
 
     def test_an_osm_guard_rail_is_drawn_only_beside_a_carriageway(self):
@@ -2664,15 +2665,18 @@ class GeneratorTests(unittest.TestCase):
         near = self.build([cell], i=0, j=0)[0]
         far = self.build([cell], far=True)[2]
         lands = {'e2rf_grass_dry', 'e2rf_grass_lush', 'e2rf_earth'}
-        fades = {f'e2rf_fade_{land}{level}' for land in ('dry', 'lush', 'earth') for level in range(1, 4)}
+        levels = range(1, 7)  # VEG.land.levels, fast_style.LAND_LEVELS
+        fades = {f'e2rf_fade_{land}{level}' for land in ('dry', 'lush', 'earth') for level in levels}
         near_kinds = {mesh.material for _, mesh in self.meshes(near)}
         far_kinds = {mesh.material for _, mesh in self.meshes(far)}
         self.assertTrue(near_kinds & (lands | fades), near_kinds)
-        self.assertTrue(far_kinds & lands, far_kinds)
+        # far triangles are drawn as the near pieces are: one land whole or a cut/fade pair
+        self.assertTrue(far_kinds & (lands | fades), far_kinds)
         # a dissolve piece is two materials in the same place (cut under, fade over)
-        cuts = {f'e2rf_cut_{land}{level}' for land in ('grass', 'dry', 'lush') for level in range(1, 4)}
-        if near_kinds & fades:
-            self.assertTrue(near_kinds & cuts, near_kinds)
+        cuts = {f'e2rf_cut_{land}{level}' for land in ('grass', 'dry', 'lush') for level in levels}
+        for kinds in (near_kinds, far_kinds):
+            if kinds & fades:
+                self.assertTrue(kinds & cuts, kinds)
 
     def test_far_ground_keeps_a_hill_and_a_valley(self):
         def cell(heights):
@@ -2721,8 +2725,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_negative_tiles_share_the_ground_edge(self):
         cell = {'terrain': {'rect': [-1000, -1000, 0, 0], 'nx': 2, 'ny': 2, 'heights': [10, 40, 10, 40]}}
-        left = self.border(self.build([cell], i=-2, j=-1, far=True)[2], -500)
-        right = self.border(self.build([cell], i=-1, j=-1, far=True)[2], -500)
+        # land=False: the shared edge, not which land each side's triangles are drawn in
+        left = self.border(self.build([cell], i=-2, j=-1, far=True, land=False)[2], -500)
+        right = self.border(self.build([cell], i=-1, j=-1, far=True, land=False)[2], -500)
         self.assertTrue(left)
         self.assertEqual(left, right)
 

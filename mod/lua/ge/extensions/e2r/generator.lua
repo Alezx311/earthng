@@ -280,10 +280,23 @@ VEG.gardenFrom, VEG.gardenRamp, VEG.firFrom, VEG.firRamp = .004, .012, 450, 450
 -- (fade_<land><level>, fast_style.LAND_COVER), and the land it comes into, cut by the inverse
 -- (cut_<land><level>). They do not overlap, so nothing fights for depth at any distance (pieces
 -- laid 1 cm over the ground did, from 100 m: only whole cells showed, as blocks). moist and
--- bare: the levels' thresholds; the level past the last is the land whole.
-VEG.land = {fine = 12.5, kinds = {ground = true, meadow = true}, levels = 3,
-  moist = {.16, .32, .5, .7}, bare = {.15, .35, .55, .8}, reach = 45, farReach = 60,
+-- bare: the levels' thresholds; the level past the last is the land whole. Six levels, a
+-- seventh of the area each: with three (a quarter) the levels' borders read as a grid of 12.5 m
+-- squares from the road. under: the moisture level from which loam comes over dry or lush grass
+-- instead of the common one.
+VEG.land = {fine = 12.5, kinds = {ground = true, meadow = true}, levels = 6, under = 5,
+  moist = {.16, .25, .34, .43, .52, .61, .7}, bare = {.15, .26, .37, .48, .59, .7, .8}, reach = 45,
   solid = {dry = 'grass_dry', lush = 'grass_lush', earth = 'earth'}}
+-- The lawn on open land (lawnCarpet) from the land's raw field: none from bareness `none`,
+-- thin (dry tufts) from `thin` or moisture under -`dry`, tall from moisture `lush` where
+-- bareness is under `bare`. lawnDither: the spread of each sample's shift of them.
+VEG.lawnLand, VEG.lawnDither = {none = .55, thin = .35, dry = .5, lush = .32, bare = .15}, .12
+-- the level of `a` (0 under the first threshold) in thresholds `t`
+function VEG.land.level(t, a)
+  local l = 0
+  while t[l + 1] and a >= t[l + 1] do l = l + 1 end
+  return l
+end
 for level = 1, VEG.land.levels do
   for _, land in ipairs({'dry', 'lush', 'earth'}) do COVER_SCALE['fade_' .. land .. level] = COVER_SCALE.ground end
   for _, land in ipairs({'grass', 'dry', 'lush'}) do COVER_SCALE['cut_' .. land .. level] = COVER_SCALE.ground end
@@ -323,6 +336,21 @@ VEG.grassMesh[VEG.dryTufts[1]] = {span = .71, bottom = -.05}
 VEG.grassMesh[VEG.dryTufts[2]] = {span = 1.06, bottom = -.17}
 VEG.grassMesh[VEG.dryTufts[3]] = {span = .37, bottom = -.24}
 VEG.grassMesh[VEG.dryTufts[4]] = {span = .37, bottom = -.24}
+-- the lawn's tufts on dry land (VEG.land, detail.lua thin squares): the game's dry grass, or
+-- nil where the game lacks it (VEG.have falls back to the forest's set, not grass). Not
+-- VEG.use: that notes the set for every later build; the build that draws them warms them up.
+function VEG.dryLawn()
+  local set = VEG.have('dryTufts')
+  if VEG.dryLawnOf ~= set then
+    local shapes, spans, bottoms = {}, {}, {}
+    for _, shape in ipairs(set) do
+      local mesh = VEG.grassMesh[shape]
+      if mesh then shapes[#shapes + 1], spans[#spans + 1], bottoms[#bottoms + 1] = shape, mesh.span, mesh.bottom end
+    end
+    VEG.dryLawnOf, VEG.dryLawnSet = set, #shapes > 0 and {shapes = shapes, spans = spans, bottoms = bottoms} or false
+  end
+  return VEG.dryLawnSet or nil
+end
 -- the last of a rock set is its big one (every fifth stone)
 -- mostly Johnson Valley's tan granite; Utah's red sandstone one stone in eight (a valley of red
 -- boulders read as Utah anywhere, the Owens Valley's granite too)
@@ -1454,7 +1482,7 @@ ROADS.wing = {steep = 55, reach = 15, material = 'fence_wall', decals = {edge_gr
     steppe = true, dry_grass = true, tundra = true, alpine = true, snow = true, snow_edge = true,
     grass_dry = true, grass_lush = true, earth = true}}
 -- the open land's pieces (VEG.land): the land under is the wall, the land coming in is left out
-for level = 1, 3 do
+for level = 1, VEG.land.levels do
   for _, land in ipairs({'dry', 'lush', 'earth'}) do ROADS.wing.decals['fade_' .. land .. level] = true end
   for _, land in ipairs({'grass', 'dry', 'lush'}) do ROADS.wing.covers['cut_' .. land .. level] = true end
 end
@@ -11113,7 +11141,7 @@ local function build(cells, i, j, options)
   -- A big area (a square, a forest): bands of one sweep, aligned to the lattice rows, cut by
   -- column and diagonal. Sweeping the whole polygon alone gave hundreds of long slivers.
   local claims = {}
-  local function drapeRings(kind, rings, above)
+  local function drapeRings(kind, rings, above, land)
     local box = ringBounds(rings)
     local x0, x1 = math.max(box[1], rect[1]), math.min(box[3], rect[3])
     local y0, y1 = math.max(box[2], rect[2]), math.min(box[4], rect[4])
@@ -11174,9 +11202,11 @@ local function build(cells, i, j, options)
             out[n][6], out[n][7], out[n][8] = groundNormal(q[1], q[2])
             cx, cy = cx + q[1], cy + q[2]
           end
-          -- water is a WaterBlock (placeWater), not a textured sheet on the bed
-          if kind ~= 'water' then
-            scene.polygon(surfaceKind(cx / #half, cy / #half, kind), out, true)
+          -- water is a WaterBlock (placeWater), not a textured sheet on the bed; `land`: an edge
+          -- that stays grass is the ground's land sheet already (VEG.land)
+          local surface = kind ~= 'water' and surfaceKind(cx / #half, cy / #half, kind)
+          if surface and not (land and VEG.land.kinds[surface]) then
+            scene.polygon(surface, out, true)
           end
         end
       end
@@ -11365,12 +11395,14 @@ local function build(cells, i, j, options)
   -- WaterBlocks for the sea and OSM lakes (not the old e2rf_water mesh sheet)
   WATER.fill(scene, key, rect, sea, seaQuads, lists.areas, distant, demAt, ROADS.level, inside, ringBounds, pause)
   mark('groundsea')
+  -- set before the drapes: a meadow's drape depends on it
+  bio.landOff = options.land == false
   for _, area in ipairs(distant and NONE or lists.areas) do
     local kind = area.kind
-    -- a meadow is the ground's own sheet, and its lands are the ground's (VEG.land): no drape
-    if CLAIM[kind] and not (((area.tags or NONE).source or ''):find('worldcover', 1, true)) and ringsTouch(area.rings, rect)
-        and (kind ~= 'meadow' or bio.landOff) then
-      drapeRings(RAIL.cover(area), area.rings, .025)
+    -- a meadow claims its whole ground triangles (rock where steep, the climate's ground), but
+    -- its grass edges are the ground's own sheet and lands (VEG.land): no grass drape over grass
+    if CLAIM[kind] and not (((area.tags or NONE).source or ''):find('worldcover', 1, true)) and ringsTouch(area.rings, rect) then
+      drapeRings(RAIL.cover(area), area.rings, .025, kind == 'meadow' and not bio.landOff)
     end
     pause()
   end
@@ -11384,7 +11416,6 @@ local function build(cells, i, j, options)
   end
   -- The land at a point (VEG.land): moisture -1 (dry) .. 1 (lush) and bareness 0 .. 1, from the
   -- raw DEM `reach` m round it, so neighbouring tiles agree. Among buildings it stays lawn.
-  bio.landOff = options.land == false
   function bio.landAt(x, y, d)
     local c = demAt(x, y)
     local e, w, n, s = demAt(x + d, y), demAt(x - d, y), demAt(x, y + d), demAt(x, y - d)
@@ -11408,73 +11439,138 @@ local function build(cells, i, j, options)
     local town = math.max(0, math.min(1, (builtAt(x, y) - .015) / .045))
     return math.max(-1, math.min(1, moist)) * (1 - town), math.max(0, math.min(1, bare)) * (1 - town)
   end
-  -- as levels: moisture -4 .. 4 (0: the common grass, 4: the land whole), bareness 0 .. 4
-  function bio.landLevels(x, y, d)
-    local m, b = bio.landAt(x, y, d or VEG.land.reach)
-    local t, a = VEG.land.moist, math.abs(m)
-    local lm = a < t[1] and 0 or a < t[2] and 1 or a < t[3] and 2 or a < t[4] and 3 or 4
-    t = VEG.land.bare
-    return m < 0 and -lm or lm, b < t[1] and 0 or b < t[2] and 1 or b < t[3] and 2 or b < t[4] and 3 or 4
+  -- landAt on the VEG.land.fine lattice, bilinear between its nodes: the ground pieces and the
+  -- grass read one smooth field, each node sampled once (a tile: ~6.5k nodes, not a call for
+  -- every one of the lawn's ~250k grass samples)
+  bio.landM, bio.landB = {}, {}
+  function bio.landNear(x, y)
+    local f = VEG.land.fine
+    local gx, gy = x / f, y / f
+    local ix, iy = floor(gx), floor(gy)
+    local tx, ty = gx - ix, gy - iy
+    local M, B = bio.landM, bio.landB
+    local m, b = 0, 0
+    for c = 0, 3 do
+      local right, up = c % 2, c >= 2 and 1 or 0
+      local key = (ix + right + 524288) * 1048576 + iy + up + 524288
+      local nm = M[key]
+      if not nm then
+        nm, B[key] = bio.landAt((ix + right) * f, (iy + up) * f, VEG.land.reach)
+        M[key] = nm
+      end
+      local w = (right == 1 and tx or 1 - tx) * (up == 1 and ty or 1 - ty)
+      m, b = m + nm * w, b + B[key] * w
+    end
+    return m, b
   end
-  -- The lands of a piece: the land under ('grass', 'dry' or 'lush'), the land coming in over it
-  -- and its level 1 .. 3, or one land whole (level nil). Loam comes in over whichever grass is
-  -- there; two grasses and loam do not meet in one piece.
-  function bio.landPair(x, y, d)
-    local m, b = bio.landLevels(x, y, d)
-    local under = m <= -3 and 'dry' or m >= 3 and 'lush' or 'grass'
-    if b >= 4 then return 'earth' end
+  -- raw moisture and bareness as levels: moisture -W .. W (0: the common grass, W = levels + 1:
+  -- the land whole), bareness 0 .. W
+  function bio.landLevelsOf(m, b)
+    local L = VEG.land
+    local lm = L.level(L.moist, math.abs(m))
+    return m < 0 and -lm or lm, L.level(L.bare, b)
+  end
+  -- the levels at a point; without `d` from the near lattice (landNear)
+  function bio.landLevels(x, y, d)
+    local m, b
+    if d then m, b = bio.landAt(x, y, d) else m, b = bio.landNear(x, y) end
+    return bio.landLevelsOf(m, b)
+  end
+  -- The lands of levels m, b: the land under ('grass', 'dry' or 'lush'), the land coming in over
+  -- it and its level 1 .. VEG.land.levels, or one land whole (level nil). Loam comes in over
+  -- whichever grass is there; two grasses and loam do not meet in one piece.
+  function bio.landPairOf(m, b)
+    local L = VEG.land
+    local whole = L.levels + 1
+    local under = m <= -L.under and 'dry' or m >= L.under and 'lush' or 'grass'
+    if b >= whole then return 'earth' end
     if b > 0 then return under, 'earth', b end
-    if m >= 4 then return 'lush' elseif m <= -4 then return 'dry' end
+    if m >= whole then return 'lush' elseif m <= -whole then return 'dry' end
     if m ~= 0 then return 'grass', m > 0 and 'lush' or 'dry', math.abs(m) end
     return 'grass'
   end
-  -- a distant triangle is one land: no pieces dissolve a kilometre away
-  function bio.landFar(kind, x, y)
-    if bio.landOff or not VEG.land.kinds[kind] then return kind end
-    local under, over, level = bio.landPair(x, y, VEG.land.farReach)
-    if over and level >= 2 then under = over end
-    return VEG.land.solid[under] or kind
+  function bio.landPair(x, y, d)
+    return bio.landPairOf(bio.landLevels(x, y, d))
   end
-  -- One cell of the near lattice, its two triangles kindA (south-east) and kindB: true when it
-  -- is drawn here, in pieces; else the kinds to draw its two triangles in (one land whole).
-  function bio.landCell(x0, y0, x1, y1, kindA, kindB)
+  -- A distant triangle (farStep m and more) of open land: its lands from the mean of the near
+  -- lattice at three points inside it, drawn as the near pieces are (cut under, fade over). It
+  -- was one land whole from the level at its centre: the far ring switched whole 100 m
+  -- triangles where the near tiles beside it showed a mix.
+  function bio.landFarTri(kind, a, b, c)
+    if bio.landOff or not VEG.land.kinds[kind] then return scene.triangle(kind, a, b, c, true) end
+    local m, s = 0, 0
+    for k = 1, 3 do
+      local wa, wb, wc = k == 1 and 2 or 1, k == 2 and 2 or 1, k == 3 and 2 or 1
+      local mk, sk = bio.landNear((a[1] * wa + b[1] * wb + c[1] * wc) / 4, (a[2] * wa + b[2] * wb + c[2] * wc) / 4)
+      m, s = m + mk / 3, s + sk / 3
+    end
+    local under, over, level = bio.landPairOf(bio.landLevelsOf(m, s))
+    if over then
+      scene.triangle('cut_' .. under .. level, a, b, c, true)
+      scene.triangle('fade_' .. over .. level, a, b, c, true)
+    else
+      scene.triangle(VEG.land.solid[under] or kind, a, b, c, true)
+    end
+  end
+  -- One cell of the near lattice (corners a b c d), its two triangles kindA (south-east) and
+  -- kindB: true when it is drawn here (in its lands, or in pieces of `fine` m where they
+  -- change inside it); else the kinds to draw its two triangles in (one land whole). Each
+  -- piece's two halves take the lands at their own centres: where the levels change, their
+  -- border runs in steps of the pieces' diagonals, not round squares.
+  function bio.landCell(x0, y0, x1, y1, kindA, kindB, a, b, c, d)
     local L = VEG.land
     if bio.landOff or not (L.kinds[kindA] or L.kinds[kindB]) then return kindA, kindB end
     local n = math.max(1, floor((x1 - x0) / L.fine + .5))
     local w = (x1 - x0) / n
-    local unders, overs, levels, same = {}, {}, {}, true
+    local unders, overs, levels, same, pair = {}, {}, {}, true, true
     for sy = 0, n - 1 do
       for sx = 0, n - 1 do
-        local k = sy * n + sx + 1
-        unders[k], overs[k], levels[k] = bio.landPair(x0 + (sx + .5) * w, y0 + (sy + .5) * w)
-        if overs[k] or unders[k] ~= unders[1] then same = false end
+        for half = 1, 2 do
+          -- half 1: the triangle (p00, p10, p11), centre (2/3, 1/3) of the piece; half 2 (1/3, 2/3)
+          local k = (sy * n + sx) * 2 + half
+          local fx, fy = half == 1 and 2 / 3 or 1 / 3, half == 1 and 1 / 3 or 2 / 3
+          unders[k], overs[k], levels[k] = bio.landPair(x0 + (sx + fx) * w, y0 + (sy + fy) * w)
+          if overs[k] or unders[k] ~= unders[1] then same = false end
+          if unders[k] ~= unders[1] or overs[k] ~= overs[1] or levels[k] ~= levels[1] then pair = false end
+        end
       end
     end
     if same then
       local solid = L.solid[unders[1]]
       return L.kinds[kindA] and solid or kindA, L.kinds[kindB] and solid or kindB
     end
+    local function draw(parent, k, tri)
+      if not L.kinds[parent] then
+        roads.polygon(parent, tri, true)
+      elseif overs[k] then
+        roads.polygon('cut_' .. unders[k] .. levels[k], tri, true)
+        roadDecor.polygon('fade_' .. overs[k] .. levels[k], tri, true)
+      else
+        roads.polygon(L.solid[unders[k]] or parent, tri, true)
+      end
+    end
+    -- one pair of lands over the whole cell (the common case: they change over tens of metres)
+    if pair then
+      draw(kindA, 1, {a, b, c})
+      draw(kindB, 1, {a, c, d})
+      return true
+    end
+    -- the pieces' corners, each once
+    local P = {}
+    for vy = 0, n do
+      for vx = 0, n do
+        local px, py = x0 + vx * w, y0 + vy * w
+        P[vy * (n + 1) + vx + 1] = vertex(px, py, ground(px, py))
+      end
+    end
     for sy = 0, n - 1 do
       for sx = 0, n - 1 do
-        local k = sy * n + sx + 1
-        local ax, ay = x0 + sx * w, y0 + sy * w
-        local bx, by = ax + w, ay + w
-        local p00, p10 = vertex(ax, ay, ground(ax, ay)), vertex(bx, ay, ground(bx, ay))
-        local p11, p01 = vertex(bx, by, ground(bx, by)), vertex(ax, by, ground(ax, by))
+        local k = (sy * n + sx) * 2
+        local v = sy * (n + 1) + sx + 1
+        local p00, p10, p01, p11 = P[v], P[v + 1], P[v + n + 1], P[v + n + 2]
         -- split along the cell's own diagonal: each half lies in one of the cell's triangles
-        for half = 1, 2 do
-          local parent = kindB
-          if sx > sy or (sx == sy and half == 1) then parent = kindA end
-          local tri = half == 1 and {p00, p10, p11} or {p00, p11, p01}
-          if not L.kinds[parent] then
-            roads.polygon(parent, tri, true)
-          elseif overs[k] then
-            roads.polygon('cut_' .. unders[k] .. levels[k], tri, true)
-            roadDecor.polygon('fade_' .. overs[k] .. levels[k], tri, true)
-          else
-            roads.polygon(L.solid[unders[k]] or parent, tri, true)
-          end
-        end
+        draw(sx >= sy and kindA or kindB, k + 1, {p00, p10, p11})
+        draw(sx > sy and kindA or kindB, k + 2, {p00, p11, p01})
       end
     end
     return true
@@ -11497,7 +11593,7 @@ local function build(cells, i, j, options)
       if kindA == 'water' then kindA = WATER.bed end
       if kindB == 'water' then kindB = WATER.bed end
       if x1 > rect[1] and x0 < rect[3] and y1 > rect[2] and y0 < rect[4] then
-        kindA, kindB = bio.landCell(x0, y0, x1, y1, kindA, kindB)
+        kindA, kindB = bio.landCell(x0, y0, x1, y1, kindA, kindB, a, b, c, d)
       end
       if kindA ~= true then
         roads.polygon(kindA, {a, b, c}, true)
@@ -11511,7 +11607,8 @@ local function build(cells, i, j, options)
     for material in pairs(collector.used) do mats[#mats + 1] = material end
     table.sort(mats)
     for _, item in ipairs(collector.items) do total = total + (item.triangles or 0) end
-    local warm = VEG.warm(LAMP, BUS_STOP)
+    -- bio.dryWarm: this build's lawn has dry land's tufts (VEG.dryLawn); last, it may be nil
+    local warm = VEG.warm(LAMP, BUS_STOP, bio.dryWarm)
     -- knock.lua's debris shapes: a shape's first TSStatic costs ~35 ms (p24b), so not at its first
     -- knock; listed here so stockFor loads their materials too
     local okKnock, knock = pcall(require, 'ge/extensions/e2r/knock')
@@ -11584,7 +11681,7 @@ local function build(cells, i, j, options)
       local cx, cy = (a[1]+b[1]+c[1])/3, (a[2]+b[2]+c[2])/3
       local kind = surfaceKind(cx, cy)
       if kind == 'water' then kind = WATER.bed end
-      scene.triangle(bio.landFar(kind, cx, cy), a, b, c, true)
+      bio.landFarTri(kind, a, b, c)
     end
     local function at(x, y)
       local z = heightAt(x, y)
@@ -13408,25 +13505,30 @@ local function build(cells, i, j, options)
       for oy = y0, rect[4] - 1e-6, cell do
         for ox = x0, rect[3] - 1e-6, cell do
           if ox >= rect[1] and ox < rect[3] and oy >= rect[2] and oy < rect[4] and climate(ox + 4, oy + 4) then
-            local samples, anchor = {}, nil
+            local samples, anchor, dryAny = {}, nil, false
             for sy = 0, 3 do
               for sx = 0, 3 do
                 local x, y = ox + sx * step + 1, oy + sy * step + 1
                 local wild = x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and lawnAt(x, y)
                 if wild then
                   -- the land under it (VEG.land): no grass on bare loam, thin on dry ground and
-                  -- where loam shows through, tall in the lush hollows (detail.lua reads the flags)
+                  -- where loam shows through, tall in the lush hollows (detail.lua reads the flags).
+                  -- From the field itself, each 2 m sample's thresholds shifted by its own hash
+                  -- (VEG.lawnDither): on the levels a thin lawn ended in a straight line along
+                  -- the 12.5 m pieces
                   local flag = 0
                   if wild == 'land' and not bio.landOff then
-                    local m, b = bio.landLevels(x, y)
-                    if b >= 3 then wild = false
-                    elseif m <= -3 or b == 2 then flag = 32
-                    elseif m >= 2 and b == 0 then flag = 16 end
+                    local m, b = bio.landNear(x, y)
+                    local j, T = (ihash(5501, x, y) % 1024 / 1024 - .5) * VEG.lawnDither, VEG.lawnLand
+                    if b + j >= T.none then wild = false
+                    elseif m - j <= -T.dry or b + j >= T.thin then flag = 32
+                    elseif m + j >= T.lush and b < T.bare then flag = 16 end
                   end
                   local z = wild and ground(x, y)
                   local nx, ny, nz = groundNormal(x, y)
                   if wild and nz >= .72 and (not sea or z > sea) and not blocked(x, y, 2.4) then
                     local n = #samples
+                    if flag == 32 then dryAny = true end
                     samples[n + 1], samples[n + 2] = sy * 4 + sx + flag, z
                     samples[n + 3] = nz > 1e-4 and -nx / nz or 0
                     samples[n + 4] = nz > 1e-4 and -ny / nz or 0
@@ -13439,7 +13541,8 @@ local function build(cells, i, j, options)
               static(string.format('lawn_%d_%d', floor(ox), floor(oy)), shapes[1], anchor[1], anchor[2], anchor[3], 0, 1)
               scene.items[#scene.items].grassPatch = {
                 x = ox, y = oy, shapes = shapes, spans = spans, bottoms = bottoms, samples = samples,
-                tall = VEG.tallGrass}
+                tall = VEG.tallGrass, dry = dryAny and VEG.dryLawn() or nil}
+              if scene.items[#scene.items].grassPatch.dry then bio.dryWarm = VEG.dryLawnSet.shapes[1] end
             end
           end
           if ox % 64 == 0 then pause() end

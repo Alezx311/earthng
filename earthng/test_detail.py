@@ -56,13 +56,13 @@ class DetailTests(unittest.TestCase):
         lua = self.make()
         lua.execute(r'''
           -- near ring only: the dense short carpet, without the outer rings' broad stray tufts
-          local part = {tile={}, n=8, staticN=1, level=0, patches={{
+          local part = {tile={}, n=6, staticN=1, level=0, patches={{
             x=0, y=0, shapes={'/3d_grass/a.dae','/3d_grass/b.dae','/3d_grass/c.dae'},
             spans={0.265, 0.258, 0.255}, bottoms={-0.038, -0.033, -0.019},
             samples={0, 10, 0.1, -0.2}}},
             x={4}, y={5}, z={6}, yaw={0.2}, scale={1}, shape={'/rocks/kept.dae'}}
           local out = detail.expand(part)
-          assert(out.n==8 and out.x[1]==4 and out.shape[1]=='/rocks/kept.dae')
+          assert(out.n==6 and out.x[1]==4 and out.shape[1]=='/rocks/kept.dae')
           local minx, maxx, miny, maxy = 1e9, -1e9, 1e9, -1e9
           for k=2,out.n do
             local span = out.shape[k]=='/3d_grass/a.dae' and 0.265 or out.shape[k]=='/3d_grass/b.dae' and 0.258 or 0.255
@@ -97,10 +97,10 @@ class DetailTests(unittest.TestCase):
           end
           -- squares 0 (even) and 1 (odd): the far ring shows the even square's middle only
           local plain = {0, 5, 0, 0, 1, 5, 0, 0}
-          local far, mid, near, all = ring(plain, 2), ring(plain, 1), ring(plain, 0), ring(plain, nil)
-          assert(far.n==1 and mid.n==3 and near.n==14 and all.n==18)
+          local far, mid, inner, near, all = ring(plain, 3), ring(plain, 2), ring(plain, 1), ring(plain, 0), ring(plain, nil)
+          assert(far.n==1 and mid.n==3 and inner.n==4 and near.n==10 and all.n==18)
           local seen = {}
-          for _, out in ipairs({far, mid, near}) do
+          for _, out in ipairs({far, mid, inner, near}) do
             for k=1,out.n do
               local key = string.format('%.4f:%.4f', out.x[k], out.y[k])
               assert(not seen[key], 'a tuft belongs to one ring'); seen[key] = true
@@ -109,8 +109,17 @@ class DetailTests(unittest.TestCase):
           for k=1,all.n do assert(seen[string.format('%.4f:%.4f', all.x[k], all.y[k])]) end
           assert(far.wide[1] > far.scale[1] * 1.4, 'a far tuft is broad')
           -- thin grass on dry ground keeps two near tufts; a lush hollow's outer tufts are long
-          assert(ring({0 + 32, 5, 0, 0}, 0).n==2 and ring({0 + 32, 5, 0, 0}, 2).n==1)
-          local lush = ring({0 + 16, 5, 0, 0}, 2)
+          assert(ring({0 + 32, 5, 0, 0}, 0).n==2 and ring({0 + 32, 5, 0, 0}, 1).n==0 and ring({0 + 32, 5, 0, 0}, 3).n==1)
+          assert(ring({0 + 32, 5, 0, 0}, nil).n==4)
+          -- dry land's thin squares take its own tufts (generator VEG.dryLawn), every ring
+          local dryPatch = patch({0 + 32, 5, 0, 0, 1, 5, 0, 0})
+          dryPatch.dry = {shapes={'/dry/a.dae'}, spans={0.71}, bottoms={-0.05}}
+          local dryOut = detail.expand({tile={}, n=0, staticN=0, patches={dryPatch}})
+          assert(dryOut.n==4+9)
+          local dryN = 0
+          for k=1,dryOut.n do if dryOut.shape[k]=='/dry/a.dae' then dryN = dryN + 1 end end
+          assert(dryN==4, dryN)
+          local lush = ring({0 + 16, 5, 0, 0}, 3)
           assert(lush.n==1 and lush.shape[1]=='/3d_grass/long.dae' and lush.scale[1]*0.5>=0.5-1e-6)
         ''')
 

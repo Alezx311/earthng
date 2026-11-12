@@ -79,7 +79,7 @@ GROUND = {'ground': (110, 150, 70), 'forest': (70, 115, 55), 'park': (90, 170, 8
           'water': (90, 140, 200), 'beach': (230, 214, 170), 'heath': (160, 150, 95), 'scrub': (120, 140, 80),
           'grass_dry': (176, 168, 96), 'grass_lush': (60, 120, 50), 'earth': (170, 130, 90),
           **{f'fade_{land}{level}': c for land, c in (('dry', (176, 168, 96)), ('lush', (60, 120, 50)), ('earth', (170, 130, 90)))
-             for level in range(1, 5)},
+             for level in range(1, 8)},
           'paved': (170, 168, 165), 'road': (60, 60, 62), 'road_major': (40, 40, 42), 'sidewalk': (180, 180, 180)}
 DOTS = {'tree': (20, 70, 20), 'grass': (240, 220, 60), 'rock': (90, 60, 40), 'flower': (230, 120, 200),
         'fern': (40, 140, 60), 'bush': (40, 110, 40)}
@@ -165,6 +165,17 @@ def census(args):
         options['geo'] = lua.table_from(r['geo'])
     if r.get('nature'):
         options['nature'] = lua.table_from(r['nature'])
+    if args.no_land:
+        options['land'] = False
+    # time per generator stage (generator.lua mark(name) starts the stage `name`)
+    stage_s, clock = Counter(), {'stage': None, 't': 0.0}
+
+    def mark(name):
+        now = time.perf_counter()
+        if clock['stage']:
+            stage_s[clock['stage']] += now - clock['t']
+        clock['stage'], clock['t'] = name, now
+    options['mark'] = mark
     for key in ('maxTrees', 'maxFarTrees', 'maxGrass', 'maxRocks', 'forestSpacing', 'groundSpacing', 'groundTrees'):
         options[key] = preset[key]
     size = int(region.size)
@@ -175,7 +186,9 @@ def census(args):
     for j in range(cj - half, cj - half + args.tiles):
         for i in range(ci - half, ci - half + args.tiles):
             started = time.perf_counter()
+            clock['stage'], clock['t'] = 'setup', started
             out = build(mods['generator'], mods['cellformat'], data, slots, i, j, size, int(region.cell), options)
+            mark(None)
             times.append(time.perf_counter() - started)
             if out is None:
                 continue
@@ -202,10 +215,12 @@ def census(args):
                 items.append((layer, float(x), float(y)))
     total = sum(ground.values()) or 1
     report = {'pack': str(args.pack), 'lat': args.lat, 'lon': args.lon, 'biome': not args.no_biome,
-              'tiles': args.tiles ** 2, 'quality': args.quality,
+              'land': not args.no_land, 'tiles': args.tiles ** 2, 'quality': args.quality,
+              'ground_triangles': len(tris),
               'ground_share': {k: round(v / total, 4) for k, v in ground.most_common()},
               'plants': dict(plants.most_common()), 'sets': dict(sets.most_common()),
               'build_ms': {'mean': round(1000 * sum(times) / len(times), 1), 'max': round(1000 * max(times), 1)},
+              'stage_ms': {k: round(1000 * v / len(times), 1) for k, v in stage_s.most_common()},
               'stock_materials': sorted(stock)}
     out = ROOT / 'out/biomes' / args.label
     out.mkdir(parents=True, exist_ok=True)
@@ -241,6 +256,7 @@ def main():
     p.add_argument('--tiles', type=int, default=3, help='tiles per side round the point')
     p.add_argument('--quality', type=int, default=50)
     p.add_argument('--no-biome', action='store_true', help='without the climate (the generator as before biomes)')
+    p.add_argument('--no-land', action='store_true', help='open land as one grass sheet (no VEG.land dry/lush/loam)')
     report = census(p.parse_args())
     print(json.dumps({k: v for k, v in report.items() if k != 'stock_materials'}, indent=1))
 

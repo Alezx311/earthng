@@ -2,6 +2,24 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-12: open land in six levels, grass in four rings
+
+- Open land (`generator.lua` `VEG.land`, docs/NATURE.md): the levels a land comes into another by
+  are six, a seventh of the area each (`fast_style.LAND_COVER`, one mask, `alphaRef` per level):
+  with three, a quarter each, their borders read from the road as a grid of 12.5 m squares. Each
+  half of a piece takes the land at its own centre, so a border steps along the diagonals.
+- Far tiles draw open land as the near ones do (`bio.landFarTri`: the mean of three points of the
+  near lattice, a cut/fade pair) instead of one land per 100 m triangle from its centre.
+- The lawn reads the land's raw field (`VEG.lawnLand`), each 2 m sample's thresholds shifted by
+  its own hash (`VEG.lawnDither`): a thin lawn no longer ends in a straight line along the pieces.
+  Thin lawn is the game's dry tufts (`VEG.dryLawn`). `detail.lua`: four grass rings
+  (`grassNear`, `grassInner`, `grassMid`, `grass`), each ring's tufts wider than the nearer one's.
+- Darker `grass` and `lush` sheets (`fast_photo.MACRO`, land art version 4).
+- `test_generator_context`: the scheduler test drives at 60 m/s, so its corridor reaches a tile
+  the landing did not build (at 25 m/s the keep bubble of dbbfe0a holds only built tiles).
+- Cost (`biome_census`, Vytachiv 3x3): 63.6 k ground triangles (57.4 k with three levels, 42.3 k
+  without the layer); up to 39 land materials a tile instead of 21.
+
 ## 2026-11-11: a third less generator garbage, the landing in ~28.8 s
 
 - Generator output as FFI structs in the game (`generator.lua` `POINT`, `CORNER`, `MESHUV`): vertices

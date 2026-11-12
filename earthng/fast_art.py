@@ -505,7 +505,7 @@ def land_art(real):
     (real / 'land.version').write_text(LAND_ART_VERSION)
 
 
-LAND_ART_VERSION = '3'  # change whenever a land sheet or the mask changes
+LAND_ART_VERSION = '4'  # change whenever a land sheet or the mask changes
 
 
 def ensure(user):

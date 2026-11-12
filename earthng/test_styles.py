@@ -189,7 +189,7 @@ class RoadDecalTests(unittest.TestCase):
         self.assertTrue(real['e2rf_earth']['detailMap'].endswith('t_dirt_crumbly_b.png'))
         # a piece where one land passes into another: the land coming in over its level's share
         # of the mask, the land under it over the rest (the inverse mask), a few grey levels shared
-        for level in range(1, 4):
+        for level in range(1, style.LAND_LEVELS + 1):
             fade = style.MATERIALS[f'e2rf_fade_earth{level}']
             cut = style.MATERIALS[f'e2rf_cut_grass{level}']
             self.assertTrue(fade['alphaTest'] and cut['alphaTest'] and not fade['castShadows'])

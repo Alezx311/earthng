@@ -70,6 +70,8 @@ class BiomeTests(unittest.TestCase):
                         ground[mesh.material] += len(mesh.faces) // 3
                 elif item.kind == 'static':
                     plants[item.shape.split('/')[-1].replace('.dae', '')] += 1
+                elif item.kind in ('water', 'ocean'):     # the sea's WaterBlocks / WaterPlane
+                    ground[item.kind] += 1
         return ground, plants, scene
 
     def test_temperate_climate_builds_exactly_what_the_generator_built_before(self):
@@ -103,13 +105,13 @@ class BiomeTests(unittest.TestCase):
         climate(self.root, 4)
         lua, gen = self.generator()
         ground, _, _ = self.build(lua, gen, height=-90)    # Death Valley's floor
-        self.assertEqual(ground['e2rf_water'], 0)
+        self.assertEqual(ground['e2rf_water'] + ground['water'] + ground['ocean'], 0)
         self.assertGreater(ground['e2rf_desert'], 0)
-        # by the sea the plane stays: the same depth with the sea 2 km west
+        # by the sea the water stays: the same depth with the sea 2 km west
         climate(self.root, 4, sea_west=True)
         lua, gen = self.generator()
         ground, _, _ = self.build(lua, gen, height=-90)
-        self.assertGreater(ground['e2rf_water'], 0)
+        self.assertGreater(ground['water'] + ground['ocean'], 0)
 
 
 if __name__ == '__main__':

@@ -762,7 +762,10 @@ LANDS = {
     'lush':  ('lush', 'grass/t_grass_02/t_grass_02', .40, 'GRASS', (62, 92, 34)),
     'earth': ('earth', 'soil/dirt_crumbly/t_dirt_crumbly', .50, 'DIRT', (150, 124, 88)),
 }
-LAND_COVER = (.22, .45, .70)
+# six levels, a seventh of the area each (generator.lua VEG.land.levels, collision.lua QUIET):
+# with three, a quarter each, the levels' borders read as a grid of 12.5 m squares
+LAND_LEVELS = 6
+LAND_COVER = tuple(round(k / (LAND_LEVELS + 1), 3) for k in range(1, LAND_LEVELS + 1))
 LAND_OVERLAP = 6
 LAND_OF = {'ground': 'grass', 'meadow': 'grass', 'grass_dry': 'dry', 'grass_lush': 'lush', 'earth': 'earth'}
 FADES, CUTS = {}, {}

@@ -123,7 +123,10 @@ class GeneratorContextTests(unittest.TestCase):
         lat, lon = test_native.geographic(1750, 1750)
         mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
         test_native.NativeTests().pump(mod, count=8000)
-        mod.pose(cv(dict(x=1750, y=1750, vx=25, vy=0, state='driving')))
+        # 60 m/s: the corridor (native AHEAD.corridor s ahead) reaches a tile the landing did not
+        # build. At 25 m/s the near set is the keep bubble plus 450 m of corridor (dbbfe0a), all
+        # of it built at the landing, so no near build ran and neither yield was seen.
+        mod.pose(cv(dict(x=1750, y=1750, vx=60, vy=0, state='driving')))
         for _ in range(600):
             mod.update(.016, 2)
         states = list(lua.globals().resumeStates.values())

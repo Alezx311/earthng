@@ -18,8 +18,9 @@ for _, kind in ipairs({'mark', 'mark_yellow', 'edge_grass', 'edge_dirt', 'manhol
 end
 -- the land coming into another in a piece of open ground (generator.lua VEG.land): it lies in
 -- the ground's own triangles, and the land under it (cut_*) is the one that collides
+-- (levels: generator.lua VEG.land.levels, fast_style.LAND_LEVELS)
 for _, land in ipairs({'dry', 'lush', 'earth'}) do
-  for level = 1, 3 do
+  for level = 1, 6 do
     QUIET.road['e2rf_fade_' .. land .. level], QUIET.scene['e2rf_fade_' .. land .. level] = true, true
   end
 end

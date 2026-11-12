@@ -2,25 +2,33 @@
 -- and go together (TSStatic without collision), at most two cells a frame. Each kind has
 -- its own reach and total cap (tune.grassM / grassBudget, rockM / rockBudget).
 --
--- The lawn carpet comes in three rings, so it has no edge 35 m from the camera: every 2 m
+-- The lawn carpet comes in four rings, so it has no edge 25 m from the camera: every 2 m
 -- square of a patch holds nine tufts, of which the far ring ('grass', out to grassM) shows one
--- broad tuft in every other square, the middle ring ('grassMid', half of that) one or two more,
--- and the near ring ('grassNear', a quarter) the other seven. A ring only adds to the one
--- outside it: nothing is swapped as the camera comes closer. The three share grassBudget, the
--- near rings first.
+-- broad tuft in every other square, the middle ring ('grassMid') one or two more, the inner
+-- ring ('grassInner') two more and the near ring ('grassNear') the other five: 9, 4, 2 and
+-- 1/2 a square, no step over x2.25 (three rings stepped 9 -> 2, a wall of grass at 26 m).
+-- A ring only adds to the ones outside it: nothing is swapped as the camera comes closer. The
+-- four share grassBudget, the near rings first.
 local M = {}
 M.CELL = 32
 M.GRASS_CELL = 8
-local GROUP = {grass = 'grass', grassMid = 'grass', grassNear = 'grass', rock = 'rock'}
+local GROUP = {grass = 'grass', grassMid = 'grass', grassInner = 'grass', grassNear = 'grass', rock = 'rock'}
 local function cellSize(kind) return kind == 'rock' and M.CELL or M.GRASS_CELL end
 -- the order budgets are given in: the nearest ring first
-M.KINDS = {'grassNear', 'grassMid', 'grass', 'rock'}
+M.KINDS = {'grassNear', 'grassInner', 'grassMid', 'grass', 'rock'}
 -- ring: the patch level it shows, its reach as a share of grassM and its share of grassBudget
-M.RINGS = {grassNear = {level = 0, reach = .26, min = 12, share = .42}, grassMid = {level = 1, reach = .52, min = 20, share = .28},
-  grass = {level = 2, reach = 1, min = 0, share = 1}}
+-- (Balanced, 100 m / 9000: ~22, ~34, ~52 and ~74 m)
+M.RINGS = {grassNear = {level = 0, reach = .22, min = 12, share = .2},
+  grassInner = {level = 1, reach = .34, min = 16, share = .2},
+  grassMid = {level = 2, reach = .55, min = 22, share = .36},
+  grass = {level = 3, reach = 1, min = 0, share = 1}}
 -- stray: an outer ring's tuft stands anywhere in its square (on the 2 m grid they stood in rows)
 M.TUFT = {far = {wide = 1.9, tall = 1.45}, mid = {wide = 1.6, tall = 1.3}, corner = {wide = 1.3, tall = 1.15},
-  long = {low = .5, high = .85, wide = 1.5}, near = 7, thin = 2, stray = 1.7}
+  inner = {wide = 1.15, tall = 1.08}, long = {low = .5, high = .85, wide = 1.5}, near = 5, inner2 = 2, thin = 2,
+  stray = 1.7}
+-- the ring (level) that owns each of a square's nine tufts, (ix, iy) from -1 to 1; the middle
+-- one is the far ring's in every other square (OWN[0] is nil: centre)
+local OWN = {[-1] = {[-1] = 0, [0] = 0, [1] = 1}, [0] = {[-1] = 0, [1] = 0}, [1] = {[-1] = 1, [0] = 0, [1] = 2}}
 
 function M.kind(it)
   local s = it and it.shape
@@ -55,11 +63,13 @@ function M.patchCount(patch, level)
   for k = 1, #patch.samples, 4 do
     local slot, _, thin = sampleOf(patch.samples[k])
     local even = (slot % 4 + math.floor(slot / 4)) % 2 == 0
-    local c
-    if level == 2 then c = even and 1 or 0
-    elseif level == 1 then c = even and 1 or 2
-    elseif level == 0 then c = thin and M.TUFT.thin or M.TUFT.near
-    else c = 2 + (thin and M.TUFT.thin or M.TUFT.near) end
+    local T, c = M.TUFT
+    -- thin: the first two of the near and inner tufts (both near ones, in expand's order)
+    if level == 3 then c = even and 1 or 0
+    elseif level == 2 then c = even and 1 or 2
+    elseif level == 1 then c = thin and 0 or T.inner2
+    elseif level == 0 then c = thin and T.thin or T.near
+    else c = 2 + (thin and T.thin or T.near + T.inner2) end
     n, zs = n + c, zs + c * patch.samples[k + 1]
   end
   return n, zs
@@ -80,7 +90,7 @@ function M.expand(part, pause)
   for k = 1, part.staticN do put(part.x[k],part.y[k],part.z[k],part.yaw[k],part.scale[k],part.shape[k]) end
   local level, T = part.level, M.TUFT
   for _, patch in ipairs(part.patches) do
-    local long = patch.tall
+    local long, dry = patch.tall, patch.dry
     for k = 1, #patch.samples, 4 do
       local slot, lush, thin = sampleOf(patch.samples[k])
       local z, gx, gy = patch.samples[k+1], patch.samples[k+2], patch.samples[k+3]
@@ -90,15 +100,17 @@ function M.expand(part, pause)
       local y = patch.y + sy * 2 + 1
       local kept = 0
       for iy = -1, 1 do for ix = -1, 1 do
-        -- which ring owns this tuft: the square's middle is the far ring's in every other
-        -- square and the middle ring's in the rest, one corner the middle ring's
-        local own, shapeOf = 0, T
-        if ix == 0 and iy == 0 then own = even and 2 or 1; shapeOf = even and T.far or T.mid
-        elseif ix == 1 and iy == 1 then own = 1; shapeOf = T.corner end
+        -- which ring owns this tuft (OWN): the square's middle is the far ring's in every other
+        -- square and the middle ring's in the rest
+        local own, shapeOf = OWN[ix][iy], T
+        if not own then own = even and 3 or 2; shapeOf = even and T.far or T.mid
+        elseif own == 2 then shapeOf = T.corner
+        elseif own == 1 then shapeOf = T.inner end
         local show = level == nil or level == own
-        if show and own == 0 and thin then
+        -- thin grass keeps two of the near and inner tufts (the near ring's, by this order)
+        if own <= 1 and thin then
           kept = kept + 1
-          show = kept <= T.thin
+          show = show and kept <= T.thin
         end
         if show then
           -- Lua 5.1 leaves a negative remainder; a cell west or south of the origin is negative.
@@ -114,6 +126,12 @@ function M.expand(part, pause)
             local model = h % #long.shapes + 1
             shape, span, bottom = long.shapes[model], long.spans[model], long.bottoms[model]
             height, wide = T.long.low + r * (T.long.high - T.long.low), T.long.wide
+          elseif thin and dry then
+            -- dry land's own tufts (the game's dry grass), not green ones on a yellow slope
+            local model = h % #dry.shapes + 1
+            shape, span, bottom = dry.shapes[model], dry.spans[model], dry.bottoms[model]
+            height, wide = .3 + r * .2, 1
+            if own > 0 then height, wide = height * shapeOf.tall, shapeOf.wide end
           else
             local model = h % 3 + 1
             shape, span, bottom = patch.shapes[model], patch.spans[model], patch.bottoms[model]
