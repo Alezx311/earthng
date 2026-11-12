@@ -21,7 +21,7 @@ Choose your downloads from the [player release](https://github.com/Alezx311/eart
 
 | Download | Purpose |
 | --- | --- |
-| **earthng_planet.zip** (~270 MB) | Required native mod. Put in BeamNG's `mods` folder, keep packed. |
+| **earthng_planet.zip** (~280 MB) | Required native mod. Put in BeamNG's `mods` folder, keep packed. |
 | **[earthng_ukraine.zip](https://drive.google.com/file/d/1W9C387RI-Tst6c3ZV2YwIEsZYE3QxtYr/view)** (2.96 GB, Google Drive) | Ready Ukraine map, 80 regions. Put beside the planet ZIP, keep packed. |
 | **EarthNG.exe** (~48 MB) | Optional: makes a map of any area you choose and installs it, together with the planet. No Python needed. |
 
@@ -52,6 +52,11 @@ usual, and press **Ctrl+S**: EarthNG keeps them at once, without a restart, for 
 landing and the next game start (`settings/earthng-editor-objects.json` in your user
 folder). Generated streets, buildings and trees are not saved. See
 [World Editor objects](docs/WORLD_EDITOR.md).
+
+**Pedestrians and street props.** In the EarthNG widget, **Pedestrians** (0 to 1000)
+puts people on the sidewalks; a car that hits one meets a physical body in its place.
+**Knockable props** (on by default) lets bins, bollards and benches be knocked over.
+See [crowds](docs/CROWDS_AND_PACKS.md) and [knockdown](docs/KNOCKDOWN.md).
 
 Use BeamNG's launcher to find your user folder; custom locations are supported.
 Restart the game after replacing a ZIP. Remove the old companion-era

@@ -4,6 +4,41 @@ Newest first. Each entry records what was checked before a release and what was 
 in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
 `MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
 
+## 0.8.7 (2026-11-12): planet 0.8.7 and EarthNG.exe 0.8.7 from 3328fc1
+
+Since 0.8.2, in one release: the Overpass test query (15a8ec5) and the app's logo (3464d05);
+pedestrians and a body in their place before a hit (6a8c2ff); the faster landing (dc0ab1a); engine
+water and open-land covers (e366b52); tiles ahead at speed, knockable street props, the options
+registry (dbbfe0a); six land levels and four grass rings (ecf3bf4); blood stains, bodies outside
+the car, the tile under the car kept at speed, far tiles back after a fast drive (d7e55b6).
+
+- Planet built from a clean `git archive HEAD mod` (out/release/build_planet_0_8_7.py), language
+  `en`; it carries the 2004 map sidecars itself (none copied). 279 979 601 bytes, sha256
+  d9f1d464…; testzip clean. Against 0.8.2: 70 entries added (`knock.lua`, `options.lua`,
+  `pedhit.lua`, `walkers.lua`, `winguard.lua`, the `e2r_ped` vehicle, people art and blood, land
+  art, the EarthNG UI app), 10 changed (Lua, `materials.json`, `packs.json`, the manifest 0.8.7).
+- EarthNG.exe 0.8.7 (50 161 113 bytes, sha256 9f585dc1…): BUILD_INFO version 0.8.7, planet 0.8.7,
+  source 3328fc1. Its Lua equals the planet's but for the language line of `world.lua` (`uk` in
+  the runtime, `en` in the release planet).
+- Unit tests at d7e55b6: full discover 919 OK (1 skipped).
+- Game (BeamNG 0.40.5, isolated profiles, release planet):
+  - Kyiv oblast pack, Vytachiv route (50.1128, 30.8790), 25 m/s for 70 s, 150 pedestrians,
+    quality 50, High 1600×900: functional status passed, no EarthNG errors in the log; 825 m;
+    frames mean 13.6 ms, p99 31, 5 over 100 ms; 1 hit with a body, 2 stains.
+  - Ukraine pack of 4.11, Kyiv centre 50.4501, 30.5234, 400 flow cars and 8 real, 200 pedestrians,
+    60 s, quality 50, Normal 1280×720: functional status passed, no EarthNG errors; landed in
+    35.9 s; frames mean 24.8 ms, p99 54, 8 over 100 ms in 317 m (0.8.2 without pedestrians: 34 ms,
+    p99 79.5, 13 over 100 ms in 390 m). The straight physics drive ended upside down against a
+    building, as it meets a wall in every Kyiv check. Flow: 26 hand-offs, 4 with another body,
+    14 preempted; flow step 1.8 / worst 6.4 ms. Knocked 42 props, `knock.step` worst 565 ms.
+  - Before packaging, same route on the working tree (out/all-08..11): 1-4 hits a run, all with a
+    body, no ghost hit; the overview right after the drive shows the near ground, the far ring
+    and the horizon.
+- Known: `knock.step` stalls a frame once in a while (docs/KNOCKDOWN.md); the test's car rolled
+  away after the drive, so its gallery views after a drive were not where the car stood (fixed in
+  the test after this release).
+- Not run: BeamNG 0.39, a pack build by the exe, the in-game options UI.
+
 ## 0.8.2 (2026-11-09): planet 0.8.2 and EarthNG.exe 0.8.2 from d729e02
 
 Since 0.8.1: real cars of the traffic hand-off keep the flow car's body and paint (1c86c1f);
