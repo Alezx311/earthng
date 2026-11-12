@@ -4,6 +4,30 @@ Newest first. Each entry records what was checked before a release and what was 
 in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
 `MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
 
+## 0.8.7, planet replaced (2026-11-12): blood stains, from d60917c
+
+The first 0.8.7 planet drew every blood stain as a black square, and the car's stains hung in a
+row in front of the bonnet. Only `earthng_planet.zip` was replaced; EarthNG.exe 0.8.7 stays (the exe
+builds packs, not the planet, and its version still matches).
+
+- Planet built from a clean `git archive HEAD mod` (out/release/build_planet_0_8_7b.py), language
+  `en`: 280 110 807 bytes, sha256 b821309d…; testzip clean. Against the first 0.8.7 planet: the
+  blood art (`blood.color.png`, `blood_o.data.png`, `blood_spray.dae` added, `blood_splat.png`
+  gone, `blood_splat.dae` and `people.materials.json` changed), `pedhit.lua` and `world.lua`
+  (blood, plus the test car's parking brake of 210a9c3); nothing else.
+- Unit tests at the working tree of d60917c: full discover 921 OK (1 skipped).
+- Game (BeamNG 0.40.5, isolated profiles):
+  - Working-tree planet, Kyiv centre 50.4473, 30.5225, `earthng/probe/blood_hit.lua`
+    (out/blood-06): three hits in front of a car facing a building and a pool beside it gave
+    9 ground stains (each 2.4 cm over the surface below), 3 on the wall, 3 on the bonnet; the car
+    rolled back 3 m and its stains with it; its reset took them away. Stills in
+    `out/blood-06/user/current/e2r_probe`.
+  - Release planet, Vytachiv route as for 0.8.7 (out/rel087b-vyt): functional status passed, no
+    EarthNG errors, 828 m. No walker was hit this time. Frame times are not comparable: the
+    player's own game was running beside the test (mean 23.0 ms, p99 59, 12 over 100 ms).
+- Release body: the planet's sha256 and size, and an "Updated 12.11" line under Pedestrians.
+- Not run: a real hit while driving with the new stains, BeamNG 0.39.
+
 ## 0.8.7 (2026-11-12): planet 0.8.7 and EarthNG.exe 0.8.7 from 3328fc1
 
 Since 0.8.2, in one release: the Overpass test query (15a8ec5) and the app's logo (3464d05);
