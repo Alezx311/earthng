@@ -87,6 +87,7 @@ local EXTRA = {
   {'e2rfar_walls', {.50, .46, .42}, .85},
   {'e2rfar_tower', {.42, .41, .39}, .8},
   {'e2rfar_tower_top', {.28, .28, .28}, .8},
+  {'e2rfar_glass', {.16, .28, .36}, .12},
 }
 -- class ties in a coarser pixel go to the one listed first
 local PRIORITY = {WATER, SEA, TOWN, PAVED, FOREST, 1, 2, 4, 8, 9, 10, 11, 12, 14, 0}
@@ -455,6 +456,30 @@ local function wall(m, px, py, pb, pt, qx, qy, qb, qt)
   local d = vert(m, qx, qy, qb, nx, ny, 0)
   tri(m, a, b, c)
   tri(m, a, c, d)
+end
+
+-- glazed rows on the outside of a wall: one dark band on a short block, up to three on a tower.
+-- Inset from the corners so the concrete edge stays, and pushed out so it does not fight the wall.
+local function windowBand(m, P, Qp, z0, h)
+  local dx, dy = Qp[1] - P[1], Qp[2] - P[2]
+  local l = sqrt(dx * dx + dy * dy)
+  if l < 8 or h < 24 then return end
+  local nx, ny = dy / l, -dx / l
+  local inset = min(l * 0.12, 5)
+  local push = 0.35
+  local ax = P[1] + dx / l * inset + nx * push
+  local ay = P[2] + dy / l * inset + ny * push
+  local bx = Qp[1] - dx / l * inset + nx * push
+  local by = Qp[2] - dy / l * inset + ny * push
+  local rows = h >= 80 and 3 or (h >= 48 and 2 or 1)
+  local span = h * 0.7
+  local base = z0 + h * 0.16
+  local rowH = span / rows
+  local gh = rowH * 0.55
+  for r = 0, rows - 1 do
+    local zb = base + r * rowH
+    wall(m, ax, ay, zb, zb + gh, bx, by, zb, zb + gh)
+  end
 end
 
 -- an up-facing quad from four corner refs (anti-clockwise from above: 00, 10, 11, 01)
@@ -919,7 +944,7 @@ end
 
 -- tall buildings and towers as boxes within sight (height / distance), round p
 local function buildLandmarks(p, cam, minD, pause, out)
-  local m, top = newMesh('e2rfar_tower'), newMesh('e2rfar_tower_top')
+  local m, top, glass = newMesh('e2rfar_tower'), newMesh('e2rfar_tower_top'), newMesh('e2rfar_glass')
   local src = RS.source
   local picked = {}
   for _, R in ipairs(RS.list) do
@@ -957,12 +982,13 @@ local function buildLandmarks(p, cam, minD, pause, out)
     for i = 1, 4 do
       local P, Qp = corners[i], corners[i % 4 + 1]
       wall(m, P[1], P[2], z0, z1, Qp[1], Qp[2], z0, z1)
+      windowBand(glass, P, Qp, z0, h)
     end
     quad(top, vert(top, corners[1][1], corners[1][2], z1, 0, 0, 1), vert(top, corners[2][1], corners[2][2], z1, 0, 0, 1),
       vert(top, corners[3][1], corners[3][2], z1, 0, 0, 1), vert(top, corners[4][1], corners[4][2], z1, 0, 0, 1))
     if n % 256 == 0 then pause() end
   end
-  local list, verts, faces = finish({m, top})
+  local list, verts, faces = finish({m, top, glass})
   out.marks = {meshes = list, pos = {ox, oy, 0}, verts = verts, faces = faces, count = min(#picked, FAR.LANDMARK_MAX)}
 end
 
@@ -1262,6 +1288,16 @@ end
 M.parse = parse
 
 -- tests: the levels below `levels` for a camera at p over one raster R, built at once
+function M.buildMarks(R, p, holeR)
+  local saved = RS
+  RS = {list = {R}, byRegion = {}, home = R, pause = function() end, source = {region = R.region, regions = {},
+    geographic = function() return 0, 0 end, localPoint = function() return 0, 0 end}}
+  local cam, out = {x = p.x, y = p.y, z = p.z or 0, r0 = holeR}, {}
+  buildLandmarks(p, cam, (holeR or 0) * .5, function() end, out)
+  RS = saved
+  return out.marks
+end
+
 function M.buildLevels(R, p, holeR, levels)
   local saved = RS
   RS = {list = {R}, byRegion = {}, home = R, pause = function() end, source = {region = R.region, regions = {},

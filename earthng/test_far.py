@@ -229,6 +229,26 @@ class FarRasterTests(unittest.TestCase):
         self.assertAlmostEqual(float(lua.eval('parsed.markFloats[8 + 3]')), 41)
         self.assertEqual(float(lua.eval('parsed.markFloats[7]')), 1)
 
+    def glass_faces(self, height):
+        mark = struct.pack('<8f', 8000, 0, 100, height, 18, 12, 0, 1)
+        blob = flat_raster(20000)[:-4] + struct.pack('<I', 1) + mark
+        lua = LuaRuntime()
+        lua.globals().far = lua.execute(ROOT.read_text(encoding='utf8'))
+        lua.globals().blob = blob
+        lua.execute('R = far.parse(blob); marks = far.buildMarks(R, {x=0, y=0, z=100}, 2000)')
+        n = int(lua.eval('#marks.meshes'))
+        glass = 0
+        for i in range(1, n + 1):
+            if str(lua.eval(f'marks.meshes[{i}].material')) == 'e2rfar_glass':
+                glass = int(lua.eval(f'#marks.meshes[{i}].faces'))
+        self.assertEqual(int(lua.eval('marks.count')), 1)
+        return glass
+
+    def test_a_tall_tower_carries_more_glass_than_a_short_block(self):
+        # one row is 4 walls * 2 triangles * 3 indices; 90 m is three rows, 42 m is one
+        self.assertEqual(self.glass_faces(42), 24)
+        self.assertEqual(self.glass_faces(90), 72)
+
 
 if __name__ == '__main__':
     unittest.main()
