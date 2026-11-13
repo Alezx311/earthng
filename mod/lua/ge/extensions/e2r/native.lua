@@ -9,6 +9,10 @@ local coordinates = require('ge/extensions/e2r/coordinates')
 local cellformat = require('ge/extensions/e2r/cellformat')
 local manual = require('ge/extensions/e2r/manual')
 local manualEditor = require('ge/extensions/e2r/manual_editor')
+-- the far view's colour maps, draped over the horizon tiles once far.lua has loaded them
+local okFarModule, farModule = pcall(require, 'ge/extensions/e2r/far')
+local FARMAP = okFarModule and type(farModule) == 'table' and farModule.mapAt
+  and {at = farModule.mapAt, uv = farModule.mapUV} or nil
 local liveOk, liveMod = pcall(require, 'ge/extensions/e2r/live')
 local live = liveOk and type(liveMod) == 'table' and type(liveMod.sync) == 'function' and liveMod or nil
 -- TILE_LIMIT holds the whole wanted set (1 km near plus the 3 km far ring, ~130 tiles): a
@@ -939,7 +943,8 @@ local function priorities()
   end
   -- The vista's relief: the camera over the lowest ground of the cells decoded within 5 km.
   local outer = HORIZON_RADIUS
-  if p.z and speed < VISTA_SPEED then
+  -- the far view (far.lua) draws past the horizon from the pack's own rasters: no vista then
+  if p.z and speed < VISTA_SPEED and not M.farActive then
     local low, cs = math.huge, a.region.data.cellSize
     for key, h in pairs(a.lows) do
       local ci, cj = key:match('^(-?%d+)_(-?%d+)$')
@@ -1312,6 +1317,8 @@ local function buildTile(key, wanted)
     {tileSize = size, regionId = r.descriptor.id, center = center, pause = active.pause,
       materials = '/earthng/planet/materials.json', packs = '/e2r_stream/fast-art/v10/packs.json',
       far = wanted.far, horizon = wanted.horizon, vista = wanted.vista, farDecor = wanted.decor and true or false,
+      -- the horizon is draped in the far colour map; a far tile takes its water from it (generator.lua)
+      farMap = (wanted.horizon or wanted.far) and FARMAP or nil,
       mark = function(stage) STAGE[coroutine.running()] = stage end,
       -- a vista block's edge at 100 m (4x faster, its skirts hide the seam with the 25 m horizon)
       terrainStep = wanted.vista and 100 or nil,
@@ -2087,6 +2094,16 @@ end
 M.unload = unload
 M.setTune = setTune
 M.localPoint = function(lat, lon) if active then return localPoint(active.region, lat, lon) end end
+-- what far.lua reads: the landing region, every mounted region and the frame conversions
+M.farSource = function()
+  if not active then return nil end
+  local src = active.farSource
+  if not src then
+    src = {region = active.region, regions = regions, geographic = geographic, localPoint = localPoint}
+    active.farSource = src
+  end
+  return src
+end
 -- The World Editor layer (editor/earthngSave.lua) saves, then calls this: tiles built
 -- from now on carry the new records without a restart. Unchanged records keep their
 -- tables, so scenes already built keep spawning them.

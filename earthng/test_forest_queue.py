@@ -135,6 +135,38 @@ class ForestQueueTests(unittest.TestCase):
           assert(result.forestPendingAdds==0 and result.forestPendingRemoves==0)
         ''')
 
+    def test_trees_split_by_cell_and_small_kinds_share_a_commit(self):
+        """The engine's work for a commit grows with the crowns standing in each kind it touched."""
+        self.world()
+        self.lua.execute('''
+          local birch='/art/shapes/trees/birch/birch_a.dae'
+          assert(world.variantShape(birch,10,10)==birch)
+          assert(world.variantShape(birch,1010,10)=='/art/shapes/trees/birch/./birch_a.dae')
+          assert(world.variantShape(birch,3010,10)==birch, 'residues repeat every three cells')
+          assert(world.variantShape(birch,10,1010)=='/art/shapes/trees/birch/./././birch_a.dae')
+          -- west and south of the origin too: cell -1 is residue 2, so 2 + 3 * 2 spellings
+          assert(world.variantShape(birch,-990,-990)=='/art/shapes/trees/birch/'..string.rep('./',8)..'birch_a.dae')
+          local queue=findUp(retire,'forestQueue')
+          for v=0,2 do
+            local q=queue(world.variantShape(birch,v*1000+10,10)); q.since=1+v
+            for i=1,10 do fifo.push(q.adds,{{shape=birch,pos={v*1000+10,10,0}},{},0}) end
+          end
+          commit()
+          assert(created==30, 'three small kinds in one commit: '..created)
+          -- a kind with many crowns standing goes alone
+          local big=queue(world.variantShape(birch,10,2010)); big.live=7000; big.since=1
+          fifo.push(big.adds,{{shape=birch,pos={10,2010,0}},{},0})
+          local small=queue(birch); small.since=2; small.at=-10
+          fifo.push(small.adds,{{shape=birch,pos={10,10,0}},{},0})
+          S.now=12; commit()
+          assert(created==31 and fifo.size(small.adds)==1 and big.live==7001)
+          -- props and trees never share a commit
+          local bench=queue('bench.dae#solid'); bench.since=0
+          fifo.push(bench.adds,{{shape='bench.dae',pos={0,0,0}},{},0})
+          S.now=14; commit()
+          assert(created==32 and fifo.size(small.adds)==1)
+        ''')
+
 
 if __name__ == '__main__':
     unittest.main()

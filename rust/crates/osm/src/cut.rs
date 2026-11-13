@@ -132,6 +132,40 @@ impl Grid {
     }
 }
 
+/// The tile keys of the box (x0, x1, y0, y1) strictly between its edges whose cell centre the
+/// segments (x0, y0, x1, y1 in degrees, closed rings in any order) hold by the even-odd rule,
+/// leaving out the keys `skip` names. One scanline per tile row.
+fn interior_keys(segments: &[[f64; 4]], b: (i64, i64, i64, i64), skip: impl Fn(i64, i64) -> bool) -> Vec<(i64, i64)> {
+    let (x0, x1, y0, y1) = b;
+    let mut out = Vec::new();
+    let mut xs: Vec<f64> = Vec::new();
+    for y in y0 + 1..y1 {
+        let cy = (y as f64 + 0.5) * CELL;
+        xs.clear();
+        for s in segments {
+            if (s[1] > cy) != (s[3] > cy) {
+                xs.push(s[0] + (s[2] - s[0]) * (cy - s[1]) / (s[3] - s[1]));
+            }
+        }
+        if xs.len() < 2 {
+            continue;
+        }
+        xs.sort_by(f64::total_cmp);
+        for x in x0 + 1..x1 {
+            if skip(x, y) {
+                continue;
+            }
+            let cx = (x as f64 + 0.5) * CELL;
+            // crossings right of the centre: odd = inside
+            let right = xs.len() - xs.partition_point(|&v| v <= cx);
+            if right % 2 == 1 {
+                out.push((x, y));
+            }
+        }
+    }
+    out
+}
+
 /// a |= b for sorted, unique sets; true when a grew.
 fn union_into<A: smallvec::Array<Item = u32>>(a: &mut SmallVec<A>, b: &[u32]) -> bool {
     if b.iter().all(|t| a.binary_search(t).is_ok()) {
@@ -609,6 +643,75 @@ pub fn cut(pbf: &Path, out: &Path, region: Option<[f64; 4]>, emit: &(dyn Fn(Stri
         .collect();
     emit(format!("outside nodes: {} of {} found in {} blobs ({:.1} s)", outside.len(), missing.len(), wanted.len(), t0.elapsed().as_secs_f64()));
 
+    // Interior tiles of big multipolygons. A tile wholly inside a lake or a forest holds none of
+    // its members, so the spatial pass never gives it the relation and its cells came out as bare
+    // land: rectangles of fields in the Kyiv reservoir. Every tile between a kept multipolygon's
+    // tiles whose cell centre its rings hold (even-odd over all member ways, so no ring assembly)
+    // gets the relation and its member ways, as if one of them crossed it.
+    let coord = |id: i64| -> Option<[i32; 2]> {
+        match inside.find(id) {
+            Some(i) => Some(inside.xy[i]),
+            None => outside.get(&id).map(|(xy, _)| *xy),
+        }
+    };
+    let mut filled = 0usize;
+    let mut grow: Vec<(i64, Vec<u32>)> = Vec::new();
+    for (&rid, m) in &rel_tiles {
+        if m.len() < 8 {
+            continue; // a ring round a tile touches at least its eight neighbours
+        }
+        let Some(&ri) = rel_at.get(&rid) else { continue };
+        let r = &rels[ri as usize];
+        if select::get(&r.tags, b"type") != Some(b"multipolygon".as_slice()) || r.members.iter().any(|mb| mb.kind == 2) {
+            continue;
+        }
+        let (mut x0, mut x1, mut y0, mut y1) = (i64::MAX, i64::MIN, i64::MAX, i64::MIN);
+        for &t in m {
+            let (x, y) = grid.keys[t as usize];
+            (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
+        }
+        if x1 - x0 < 2 || y1 - y0 < 2 || ((x1 - x0 + 1) * (y1 - y0 + 1)) as usize <= m.len() {
+            continue;
+        }
+        let mut segments: Vec<[f64; 4]> = Vec::new();
+        let mut complete = true;
+        'ways: for mb in r.members.iter().filter(|mb| mb.kind == 1) {
+            let Some(&w) = way_at.get(&mb.id) else { complete = false; break };
+            let mut last: Option<[f64; 2]> = None;
+            for &id in ways[w as usize].refs.iter() {
+                let Some(p) = coord(id) else { complete = false; break 'ways };
+                let p = [f64::from(p[0]) / 1e7, f64::from(p[1]) / 1e7];
+                if let Some(q) = last {
+                    segments.push([q[0], q[1], p[0], p[1]]);
+                }
+                last = Some(p);
+            }
+        }
+        if !complete || segments.is_empty() {
+            continue;
+        }
+        let keys = interior_keys(&segments, (x0, x1, y0, y1), |x, y| {
+            let t = grid.get(x, y);
+            t == NONE || m.binary_search(&t).is_ok()
+        });
+        if !keys.is_empty() {
+            let mut add: Vec<u32> = keys.iter().map(|&(x, y)| grid.get(x, y)).collect();
+            add.sort_unstable();
+            grow.push((rid, add));
+        }
+    }
+    for (rid, add) in grow {
+        filled += add.len();
+        let ri = rel_at[&rid];
+        for mb in rels[ri as usize].members.iter().filter(|mb| mb.kind == 1) {
+            if let Some(&w) = way_at.get(&mb.id) {
+                union_into(&mut ways[w as usize].tiles, &add);
+            }
+        }
+        union_into(rel_tiles.get_mut(&rid).expect("kept relation"), &add);
+    }
+    emit(format!("interior tiles of multipolygons: {filled} ({:.1} s)", t0.elapsed().as_secs_f64()));
+
     // Per tile: its ways, the nodes they use, its POI and member nodes, its relations.
     let nt = grid.keys.len();
     let mut tile_ways: Vec<Vec<u32>> = vec![Vec::new(); nt];
@@ -740,6 +843,26 @@ mod tests {
         assert_eq!(g.keys.len(), 7 * 5);
         // touching an edge is not overlapping
         assert_eq!(region_keys([30.4, 50.3, 30.45, 50.35]), vec![(608, 1006)]);
+    }
+
+    #[test]
+    fn interior_keys_of_a_lake_with_an_island() {
+        // a lake over tiles 0..10 x 0..10 (degrees 0 .. 0.5) with an island over tiles 4..6
+        let ring = |a: f64, b: f64| {
+            let p = [[a, a], [b, a], [b, b], [a, b], [a, a]];
+            p.windows(2).map(|w| [w[0][0], w[0][1], w[1][0], w[1][1]]).collect::<Vec<_>>()
+        };
+        let mut segments = ring(0.01, 0.49);
+        segments.extend(ring(0.2, 0.3));
+        let keys = interior_keys(&segments, (0, 9, 0, 9), |x, y| x == 1 && y == 1);
+        assert!(keys.contains(&(2, 2)) && keys.contains(&(8, 8)));
+        assert!(!keys.contains(&(1, 1)), "skipped");
+        assert!(!keys.contains(&(4, 4)) && !keys.contains(&(5, 5)), "the island is land");
+        assert!(!keys.iter().any(|&(x, y)| x == 0 || y == 0 || x == 9 || y == 9), "edges are never interior");
+        // two ways of one ring, in any order and direction, count the same
+        let mut split = ring(0.01, 0.49);
+        split.reverse();
+        assert_eq!(interior_keys(&split, (0, 9, 0, 9), |_, _| false).len(), 8 * 8);
     }
 
     #[test]

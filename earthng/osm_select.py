@@ -7,7 +7,9 @@ nothing from Earth2Road.
 
 # Raw cut selection, recorded in every tile index.json: caches cut by older rules miss facts the
 # exporter now reads and are cut again. 2: every tagged node (lamps, trees, stops, entrances).
-VERSION = 2
+# 3: tiles wholly inside a multipolygon (a reservoir, a forest) get it too, in both cuts
+# (rust/crates/osm/src/cut.rs, osm_tiles._interior).
+VERSION = 3
 
 # Keys that tag no fact about the place: a node with only these stays out of the cut.
 META_KEYS = {'created_by', 'source', 'note', 'fixme', 'FIXME', 'description'}

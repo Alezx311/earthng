@@ -310,20 +310,29 @@ class DetailTests(unittest.TestCase):
         ''')
         return lua
 
-    def test_forest_commit_takes_one_kind_at_a_time(self):
+    def test_forest_commit_takes_kinds_while_few_crowns_stand_in_them(self):
+        """The engine's work for a commit grows with the crowns of every kind it touched."""
         lua = self.forest()
         lua.execute('''
-          plant('/trees/a.dae',300); plant('/trees/b.dae',200)
+          plant('/trees/a.dae',150); plant('/trees/b.dae',100)
           assert(#calls.adds==0, 'nothing reaches the Forest outside a commit')
           state.now=10; commit()
-          local first=calls.adds[1]
-          assert(#calls.adds==300 or #calls.adds==200)
-          for _,k in ipairs(calls.adds) do assert(k==first, 'one kind per commit') end
-          run(0.05); assert(#calls.adds<=300, 'commits are spaced')
-          run(0.2); assert(#calls.adds==500)
+          assert(#calls.adds==250, 'two small kinds share a commit')
           plant('/trees/a.dae',10); run(0.5)
-          assert(#calls.adds==500, 'a kind waits its interval')
-          run(1.5); assert(#calls.adds==510)
+          assert(#calls.adds==250, 'a kind waits its interval')
+          run(1.5); assert(#calls.adds==260)
+          -- kinds holding many crowns go one at a time, the oldest first, commits spaced
+          up(commit,'LIMIT').forestLive=200
+          plant('/trees/a.dae',5); plant('/trees/b.dae',5)
+          state.now=state.now+2; commit()
+          assert(#calls.adds==265 and calls.adds[265]=='/trees/a.dae', #calls.adds)
+          state.now=state.now+.05; commit(); assert(#calls.adds==265, 'commits are spaced')
+          state.now=state.now+.1; commit(); assert(#calls.adds==270 and calls.adds[270]=='/trees/b.dae')
+          -- a joining kind gets what is left of forestJoinCalls
+          local L=up(commit,'LIMIT'); L.forestLive=6000
+          plant('/trees/a.dae',350); plant('/trees/b.dae',300)
+          state.now=state.now+2; commit()
+          assert(#calls.adds==270+400, 'the first kind 350, the second the 50 left of 400: '..#calls.adds)
         ''')
 
     def test_retired_tile_skips_pending_crowns_and_removes_by_box(self):

@@ -48,10 +48,9 @@ SKY = [
      'boxWidth': 50, 'boxHeight': 50, 'dropSize': 0.2, 'splashSize': 0.2, 'minSpeed': 0.35, 'maxSpeed': 0.4,
      'hitVehicles': True, 'useTurbulence': True},
     {'class': 'ForestWindEmitter', 'name': 'e2r_wind', 'position': [0, 0, 0], 'strength': 0.4},
-    {'class': 'LevelInfo', 'name': 'theLevelInfo', 'canvasClearColor': [0.58, 0.66, 0.76, 255], 'fogAtmosphereHeight': 700,
-     # The scheduled horizon is 5 km (native.lua HORIZON_RADIUS). visibleDistance clears the
-     # outer edge of that ring; the fog keeps a ridge at 5 km present and hazy. 15 km and
-     # 30 km are not covered, so these values do not pretend that they are.
+    {'class': 'LevelInfo', 'name': 'theLevelInfo', 'canvasClearColor': [0.58, 0.66, 0.76, 255],      'fogAtmosphereHeight': 700,
+     # 8 km clears the scheduled DEM horizon (native.lua). far.lua raises the far plane and
+     # lightens the fog while its skirt is up, and puts it back on reset.
      'fogColor': [0.66, 0.71, 0.77, 1], 'fogDensity': 0.00015, 'globalEnviromentMap': 'BNG_Sky_02_cubemap', 'gravity': -9.81,
      'visibleDistance': 8000},
 ]
@@ -74,6 +73,14 @@ def pad_dae(size=60.0):
 <library_visual_scenes><visual_scene id="Scene"><node id="base00" name="base00"><node id="start01" name="start01"><node id="pad" name="pad"><instance_geometry url="#g0"><bind_material><technique_common><instance_material symbol="e2r_world_pad" target="#e2r_world_pad"/></technique_common></bind_material></instance_geometry></node></node></node></visual_scene></library_visual_scenes>
 <scene><instance_visual_scene url="#Scene"/></scene></COLLADA>
 '''
+
+
+def far_white():
+    """A flat albedo the far-view colours multiply. BeamNG tints baseColorMap by baseColorFactor."""
+    img = Image.new('RGB', (4, 4), (255, 255, 255))
+    out = io.BytesIO()
+    img.save(out, 'PNG')
+    return out.getvalue()
 
 
 def preview():
@@ -129,6 +136,7 @@ def level_files(lang='uk'):
         f'{root}/main/MissionGroup/items.level.json': ''.join(json.dumps(o) + '\n' for o in objects),
         f'{root}/main/MissionGroup/Sky/items.level.json': ''.join(json.dumps({**o, '__parent': 'Sky'}) + '\n' for o in SKY),
         f'{root}/art/pad.dae': pad_dae(),
+        f'{root}/art/far_white.png': far_white(),
         f'{root}/art/main.materials.json': json.dumps({'e2r_world_pad': {
             'name': 'e2r_world_pad', 'mapTo': 'e2r_world_pad', 'class': 'Material', 'version': 1.5,
             'Stages': [{'baseColorMap': '/assets/materials/terrain/grass/groundmesh_grass2/groundmesh_grass_b.color.png',
@@ -200,6 +208,14 @@ def build(out, lang='en'):
         for directory in sorted((HERE.parent / 'out/map-data').glob('*')):
             if directory.is_dir() and (directory / 'index.json').is_file():
                 build_map.write_archive(z, directory, 'earthng/planet/maps/' + directory.name)
+        # Far-view rasters already built for a pack (earthng-mapbuilder far): one folder per
+        # country id, <region>.bin and its colour map <region>.dds inside. The game reads them
+        # from the planet when the pack itself has none yet.
+        far_root = HERE.parent / 'out' / 'far'
+        if far_root.is_dir():
+            for directory in sorted(path for path in far_root.iterdir() if path.is_dir()):
+                for src in sorted([*directory.glob('*.bin'), *directory.glob('*.dds')]):
+                    z.write(src, f'earthng/planet/far/{directory.name}/{src.name}')
     temporary.replace(path)
     return path
 

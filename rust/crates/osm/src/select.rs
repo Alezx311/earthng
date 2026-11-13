@@ -1,7 +1,7 @@
 //! The raw cut's selection rules, as earthng/osm_select.py states them.
 
 /// osm_select.VERSION: recorded in every tile index.json.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Keys that tag no fact about the place (osm_select.META_KEYS).
 pub const META_KEYS: [&[u8]; 6] = [b"created_by", b"source", b"note", b"fixme", b"FIXME", b"description"];

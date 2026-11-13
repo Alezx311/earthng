@@ -38,6 +38,29 @@ enum Command {
         #[arg(long)]
         region: Vec<String>,
     },
+    /// Far-view rasters of every region of a pack ZIP (pack::far, earthng-far-v1) and their colour
+    /// maps (pack::far_tex): <out>/<region>.bin and .dds, one JSON line per region on stdout
+    Far {
+        pack: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// only these region ids
+        #[arg(long)]
+        region: Vec<String>,
+        /// raster step, m (a whole fraction of the cell)
+        #[arg(long, default_value_t = 200.0)]
+        step: f64,
+        /// colour map texel, m (a whole fraction of the step); 0 writes no colour map
+        #[arg(long, default_value_t = 50.0)]
+        tex_step: f64,
+        /// the colour map's largest side, texels: the game takes power-of-two sizes only, so the
+        /// map is resampled to the nearest one up to this (the roughness map to half of it)
+        #[arg(long, default_value_t = 2048)]
+        tex_max: usize,
+        /// also write <region>.ppm, the colour map as a picture
+        #[arg(long)]
+        preview: bool,
+    },
     /// Settlement nodes and main roads of a PBF for earthng/build_map.py: places as JSON lines
     /// [lat, lon, [[k, v], ...]], roads as (u8 rank, u32 n, n x (lon, lat) f64)
     MapSource {
@@ -94,6 +117,7 @@ fn main() -> Result<()> {
         Command::Ways { out } => ways(&out)?,
         Command::EncodeCells { input, output } => encode_cells(&input, &output)?,
         Command::Routing { pack, out, region } => routing(&pack, &out, &region)?,
+        Command::Far { pack, out, region, step, tex_step, tex_max, preview } => far(&pack, &out, &region, step, tex_step, tex_max, preview)?,
     }
     Ok(())
 }
@@ -279,5 +303,122 @@ fn compile(task: &std::path::Path, out: &std::path::Path) -> Result<()> {
     }
     file.flush()?;
     eprintln!("cells: {} compiled, {} left to Python ({:.2} s)", outcomes.len() - left, left, t.elapsed().as_secs_f64());
+    Ok(())
+}
+
+/// The regions of a pack ZIP: (id, "earthng/countries/<c>/regions/<id>/"), sorted, and every entry name.
+fn pack_regions(archive: &zip::ZipArchive<std::fs::File>, only: &[String]) -> (Vec<(String, String)>, Vec<String>) {
+    let names: Vec<String> = (0..archive.len()).filter_map(|k| archive.name_for_index(k).map(str::to_string)).collect();
+    let mut regions = Vec::new();
+    for name in &names {
+        if let Some(rest) = name.strip_prefix("earthng/countries/")
+            && let Some(prefix_end) = rest.find("/regions/")
+        {
+            let tail = &rest[prefix_end + "/regions/".len()..];
+            if let Some(region) = tail.strip_suffix("/manifest.json")
+                && !region.is_empty() && !region.contains('/')
+                && !rest[..prefix_end].contains('/')
+            {
+                let prefix = name[..name.len() - "manifest.json".len()].to_string();
+                if only.is_empty() || only.iter().any(|r| r == region) {
+                    regions.push((region.to_string(), prefix));
+                }
+            }
+        }
+    }
+    regions.sort();
+    (regions, names)
+}
+
+fn far(pack: &std::path::Path, out: &std::path::Path, only: &[String], step: f64, tex_step: f64, tex_max: usize, preview: bool) -> Result<()> {
+    use anyhow::Context;
+    use rayon::prelude::*;
+    use std::io::Read;
+    let archive = zip::ZipArchive::new(std::fs::File::open(pack).with_context(|| format!("open {}", pack.display()))?)?;
+    let (regions, names) = pack_regions(&archive, only);
+    std::fs::create_dir_all(out)?;
+    let read = |archive: &mut zip::ZipArchive<std::fs::File>, name: &str| -> Result<Vec<u8>> {
+        let mut entry = archive.by_name(name)?;
+        let mut data = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut data)?;
+        Ok(data)
+    };
+    let open = || zip::ZipArchive::new(std::fs::File::open(pack).expect("pack")).expect("pack zip");
+    for (region, prefix) in &regions {
+        let t = std::time::Instant::now();
+        let manifest: serde_json::Value = serde_json::from_slice(&read(&mut open(), &format!("{prefix}manifest.json"))?)?;
+        let cell = manifest.get("cellSize").and_then(|v| v.as_f64()).unwrap_or(1000.0);
+        let block = manifest.get("blockCells").and_then(|v| v.as_i64()).unwrap_or(pack::format::BLOCK);
+        let sea = manifest.get("seaLevel").and_then(|v| v.as_f64());
+        if (cell / step).fract().abs() > 1e-9 {
+            anyhow::bail!("step {step} does not divide the cell {cell}");
+        }
+        if tex_step > 0.0 && (step / tex_step).fract().abs() > 1e-9 {
+            anyhow::bail!("texel {tex_step} does not divide the step {step}");
+        }
+        // patterns of the colour map hash projected coordinates: the frame origin plus local metres
+        let origin = manifest
+            .pointer("/frame/origin")
+            .and_then(|v| v.as_array())
+            .map(|a| [a.first().and_then(|v| v.as_f64()).unwrap_or(0.0), a.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0)])
+            .unwrap_or([0.0, 0.0]);
+        let blocks: Vec<(&String, (i64, i64))> = names
+            .iter()
+            .filter(|n| n.starts_with(&format!("{prefix}blocks/")))
+            .filter_map(|n| block_of(n).map(|b| (n, b)))
+            .collect();
+        type Cells = Vec<(i64, i64, pack::far::CellRaster, Option<pack::far_tex::CellTex>)>;
+        let rasters: Vec<Result<Cells>> = blocks
+            .par_iter()
+            .map_init(open, |archive, (name, (bi, bj))| -> Result<Cells> {
+                let data = read(archive, name)?;
+                let mut cells = Vec::new();
+                for (slot, start, end) in pack::format::decode_block(&data)? {
+                    let (i, j) = (bi * block + slot as i64 % block, bj * block + slot as i64 / block);
+                    let c = pack::far::decode_far(&data, [i as f64 * cell, j as f64 * cell], start, end)
+                        .with_context(|| format!("{name} cell {i}_{j}"))?;
+                    let tex = (tex_step > 0.0).then(|| pack::far_tex::albedo(&c, i, j, cell, tex_step, sea, origin));
+                    cells.push((i, j, pack::far::rasterize(&c, i, j, cell, step, sea), tex));
+                }
+                Ok(cells)
+            })
+            .collect();
+        let mut all = Vec::new();
+        let mut texels = Vec::new();
+        for r in rasters {
+            for (i, j, raster, tex) in r? {
+                all.push((i, j, raster));
+                if let Some(t) = tex {
+                    texels.push((i, j, t));
+                }
+            }
+        }
+        let mut tex_bytes = 0;
+        if !texels.is_empty() {
+            use pack::far_tex::{pow2, resample};
+            let (w, h, img, rough) = pack::far_tex::assemble(&texels);
+            // the game loads a compressed texture only at power-of-two sizes; the roughness (water
+            // or not) needs less detail than the colour
+            let (cw, ch) = (pow2(w, tex_max), pow2(h, tex_max));
+            let img = resample(w, h, &img, cw, ch);
+            let (rw, rh) = (pow2(w, tex_max / 2), pow2(h, tex_max / 2));
+            let rough: Vec<[f32; 1]> = rough.iter().map(|&v| [v]).collect();
+            let rough: Vec<f32> = resample(w, h, &rough, rw, rh).iter().map(|v| v[0]).collect();
+            let dds = pack::far_tex::dds(cw, ch, &img);
+            tex_bytes = dds.len();
+            // the game's naming: .color is sRGB, .data linear
+            std::fs::write(out.join(format!("{region}.color.dds")), &dds)?;
+            std::fs::write(out.join(format!("{region}_r.data.dds")), pack::far_tex::dds_data(rw, rh, &rough))?;
+            if preview {
+                std::fs::write(out.join(format!("{region}.ppm")), pack::far_tex::ppm(cw, ch, &img))?;
+            }
+        }
+        let landmarks: usize = all.iter().map(|c| c.2.landmarks.len()).sum();
+        let data = pack::far::encode(&all, step, sea.unwrap_or(f64::NAN));
+        std::fs::write(out.join(format!("{region}.bin")), &data)?;
+        println!("{}", serde_json::json!({"region": region, "cells": all.len(), "landmarks": landmarks,
+                                          "bytes": data.len(), "texture": tex_bytes,
+                                          "seconds": (t.elapsed().as_secs_f64() * 10.0).round() / 10.0}));
+    }
     Ok(())
 }

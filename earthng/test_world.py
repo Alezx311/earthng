@@ -122,6 +122,7 @@ def main():
     p.add_argument('--picker-zoom', type=int, help='--picker-only: centre the map on --lat/--lon at this zoom')
     p.add_argument('--picker-hold', type=float, default=4, help='--picker-only: seconds the picker stays open')
     p.add_argument('--replay', action='store_true', help='camera/pose replay at constant speed; not a physics test')
+    p.add_argument('--no-pace', action='store_true', help='no frame gate while driving (pace.lua; A/B)')
     p.add_argument('--traffic', type=int, help="after landing: the game's AI traffic, this many cars")
     p.add_argument('--flow', type=int, help='after landing: this many flow cars without physics (flow.lua)')
     p.add_argument('--flow-real', type=int, help='of them round the player this many real cars (handoff.lua, default 8)')
@@ -251,6 +252,8 @@ def main():
         test['fog'] = a.fog
     if a.gen_budget:
         test['genBudget'] = a.gen_budget
+    if a.no_pace:
+        test['pace'] = False
     if a.lights:
         test['lights'] = a.lights
     if a.flight:

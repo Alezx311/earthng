@@ -2602,11 +2602,33 @@ class GeneratorTests(unittest.TestCase):
         wet = [p[2] for t in self.triangles(road, 'e2rf_bare_ground') for p in t if 240 <= p[1] <= 340]
         self.assertTrue(wet)
         self.assertLess(max(wet), 14 - 2)
-        rivers = [it for it in self.water_items(scene) if it.kind == 'river']
-        self.assertTrue(rivers)
-        zs = [it.nodes[k][3] for it in rivers for k in range(1, len(it.nodes) + 1)]
-        self.assertTrue(zs)
+        # 180 m wide: blocks over its wet rows, not a River (its centre line would span both banks)
+        water = self.water_items(scene)
+        self.assertTrue(water)
+        self.assertFalse([it for it in water if it.kind == 'river'])
+        zs = [it.pos[3] for it in water]
         self.assertLess(max(zs), 14.5)
+
+    def test_water_blocks_cover_the_wet_rows_and_leave_an_island_dry(self):
+        """One block on the body's box drowned its banks and islands (Dnipro, far-view-06)."""
+        river = {'id': 'dnipro', 'kind': 'water', 'tags': {'water': 'river'},
+                 'rings': [[[0, 100], [500, 300], [500, 450], [0, 250], [0, 100]],
+                           [[200, 230], [260, 230], [260, 290], [200, 290], [200, 230]]]}
+        cell = {'areas': [river], 'terrain': {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [40] * 4}}
+        scene = self.build([cell], maxTrees=0, maxGrass=0)[1]
+        blocks = [it for it in self.water_items(scene) if it.kind == 'water']
+        self.assertGreater(len(blocks), 3)
+        def wet(x, y):
+            return any(abs(x - it.pos[1]) <= it.scale[1] / 2 and abs(y - it.pos[2]) <= it.scale[2] / 2 for it in blocks)
+        self.assertFalse(wet(230, 260), 'the middle of the island is dry')
+        self.assertFalse(wet(50, 400), 'the bank north of the river is dry')
+        self.assertFalse(wet(450, 100), 'the bank south of the river is dry')
+        for x, y in ((50, 180), (450, 370), (100, 200), (350, 300)):
+            self.assertTrue(wet(x, y), (x, y))
+        # the cover reaches at most a row onto the bank
+        area = sum(it.scale[1] * it.scale[2] for it in blocks)
+        self.assertLess(area, (500 * 150 - 60 * 60) * 1.35)
+        self.assertGreater(area, 500 * 150 - 60 * 60)
 
     def test_a_lake_is_one_water_block_not_a_tile_grid(self):
         lake = {'id': 'pond', 'kind': 'water', 'tags': {'water': 'lake'},

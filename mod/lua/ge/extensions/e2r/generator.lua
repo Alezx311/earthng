@@ -63,7 +63,9 @@ local SEA_ABOVE = 0.3   -- the water surface over the DEM's flat sea / river sur
 -- is carved WATER.carve under the surface so depth fog reads; one surface Z per body so blocks
 -- do not stack as shelves. Own functions: build() is at LuaJIT's 200-local limit.
 local WATER = {bed = 'bare_ground', lakeDepth = 10, seaDepth = 80, riverDepth = 5, carve = 2.5,
-  above = SEA_ABOVE, gridNear = 5, gridFar = 16, riverStep = 40, riverMaxW = 90, riverMinAspect = 2.5}
+  above = SEA_ABOVE, gridNear = 5, gridFar = 16, riverStep = 40, riverMaxW = 90, riverMinAspect = 2.5,
+  -- rows of the wet cover (WATER.cover), m
+  coverCell = 20}
 function WATER.classOf(area, box)
   local tags = area.tags or {}
   local w = tags.water or tags.waterway or ''
@@ -127,24 +129,90 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
         if zN > 0 then
           table.sort(zs)
           local surface = zs[math.ceil(zN * .5)] + WATER.carve + WATER.above
-          if class == 'river' then
-            local nodes = WATER.riverNodes(area.rings, rect, x0, y0, x1, y1, surface, demAt, level, inside)
-            if nodes and #nodes >= 2 then
-              n = n + 1
-              scene.items[#scene.items + 1] = {
-                kind = 'river', name = string.format('e2rl_%s_river_%d', key, n),
-                nodes = nodes, look = 'river', decor = true, layer = 'scene'}
-            else
-              block(x0, y0, x1, y1, surface, WATER.lakeDepth, 'lake')
-            end
+          -- a River for a narrow channel; a wide river (its centre line would span the islands
+          -- and both arms, the Dnipro) and a lake are blocks over their wet rows
+          local nodes = class == 'river' and WATER.riverNodes(area.rings, rect, x0, y0, x1, y1, surface, demAt, level, inside)
+          local narrow = nodes and #nodes >= 2
+          for _, node in ipairs(narrow and nodes or NONE) do
+            if node[4] > WATER.riverMaxW then narrow = false; break end
+          end
+          if narrow then
+            n = n + 1
+            scene.items[#scene.items + 1] = {
+              kind = 'river', name = string.format('e2rl_%s_river_%d', key, n),
+              nodes = nodes, look = 'river', decor = true, layer = 'scene'}
           else
-            block(x0, y0, x1, y1, surface, WATER.lakeDepth, 'lake')
+            for _, r in ipairs(WATER.cover(area.rings, x0, y0, x1, y1, WATER.coverCell)) do
+              block(r[1], r[2], r[3], r[4], surface, WATER.lakeDepth, 'lake')
+            end
           end
         end
       end
     end
     pause()
   end
+end
+-- Where a water body is wet within x0..x1, y0..y1: blocks {x0, y0, x1, y1}. One WaterBlock on the
+-- body's box clipped to the tile drowned its banks and islands (the Dnipro from Hydropark,
+-- far-view-06: rectangles of water over land). Rows of `cell` m take the x-intervals inside the
+-- rings (even-odd: an island stays dry) on three scanlines across the row, so a block reaches a
+-- little onto the bank (under it where the bank rises) rather than leaving the carved bed bare;
+-- runs that repeat on the next row grow one block.
+function WATER.cover(rings, x0, y0, x1, y1, cell)
+  local nx = math.max(1, math.ceil((x1 - x0) / cell - 1e-6))
+  local ny = math.max(1, math.ceil((y1 - y0) / cell - 1e-6))
+  local w, h = (x1 - x0) / nx, (y1 - y0) / ny
+  local xs = {}
+  local function mark(y, wet)
+    local n = 0
+    for _, ring in ipairs(rings) do
+      local m = #ring
+      for k = 1, m do
+        local a, b = ring[k], ring[k % m + 1]
+        if (a[2] > y) ~= (b[2] > y) then
+          n = n + 1
+          xs[n] = a[1] + (y - a[2]) * (b[1] - a[1]) / (b[2] - a[2])
+        end
+      end
+    end
+    for k = n + 1, #xs do xs[k] = nil end
+    table.sort(xs)
+    for k = 1, n - 1, 2 do
+      local a, b = math.max(xs[k], x0), math.min(xs[k + 1], x1)
+      if b > a then
+        for c = math.max(0, math.floor((a - x0) / w)), math.min(nx - 1, math.ceil((b - x0) / w) - 1) do wet[c] = true end
+      end
+    end
+  end
+  local blocks, open = {}, {}
+  for r = 0, ny do
+    local runs = {}
+    if r < ny then
+      local wet = {}
+      mark(y0 + (r + .02) * h, wet); mark(y0 + (r + .5) * h, wet); mark(y0 + (r + .98) * h, wet)
+      local c = 0
+      while c < nx do
+        if wet[c] then
+          local start = c
+          while c < nx and wet[c] do c = c + 1 end
+          runs[#runs + 1] = start * 65536 + c
+        else
+          c = c + 1
+        end
+      end
+    end
+    local keep = {}
+    for _, key in ipairs(runs) do
+      local b = open[key]
+      if b then b[4] = r + 1; open[key] = nil else b = {math.floor(key / 65536), r, key % 65536, r + 1} end
+      keep[key] = b
+    end
+    for _, b in pairs(open) do blocks[#blocks + 1] = b end
+    open = keep
+  end
+  table.sort(blocks, function(a, b) return a[2] < b[2] or (a[2] == b[2] and a[1] < b[1]) end)
+  for k, b in ipairs(blocks) do blocks[k] = {x0 + b[1] * w, y0 + b[2] * h, x0 + b[3] * w, y0 + b[4] * h} end
+  return blocks
 end
 -- Centre line of a river polygon: samples along the long axis, width from the wet cross-section.
 function WATER.riverNodes(rings, rect, x0, y0, x1, y1, surface, demAt, level, inside)
@@ -1261,7 +1329,7 @@ local function collector(rect, key, layer, pause, mixed)
   local function uvIndex(mesh, u, v)
     local uq, vq = floor(u * 1024 + .5), floor(v * 1024 + .5)
     local uvs = mesh.uvs
-    if uq < -UVQ or uq >= UVQ or vq < -UVQ or vq >= UVQ then
+    if mesh.uvExact or uq < -UVQ or uq >= UVQ or vq < -UVQ or vq >= UVQ then
       uvs[#uvs + 1] = MESHUV(u, v)
       return #uvs - 1
     end
@@ -1323,7 +1391,9 @@ local function collector(rect, key, layer, pause, mixed)
     if not mixed and mesh and mesh.tris >= PIECE_TRIS then flushMaterial(material); mesh = nil end
     if not mesh then
       mesh = {verts = {}, normals = {}, uvs = {}, faces = {}, material = material,
-        vmap = {}, nmap = {}, umap = {}, fmap = {}, tris = 0}
+        vmap = {}, nmap = {}, umap = {}, fmap = {}, tris = 0,
+        -- a far colour map spans a whole region: 1/1024 of it is ~100 m, no welding of its UVs
+        uvExact = kind:sub(1, 7) == 'farmap_' or nil}
       groups[material], used[material] = mesh, true
     end
     local scale = plain and hooks.scale or scales[kind]
@@ -11675,12 +11745,27 @@ local function build(cells, i, j, options)
     coarse = fine * math.max(1, math.floor(coarse / fine + 1e-6))
     if size < coarse * 2 - EPS then coarse = fine end
     local x0, y0, x1, y1 = rect[1], rect[2], rect[3], rect[4]
+    -- the horizon draped in the far view's colour map (far.lua mapAt): one surface of the
+    -- aerial colours instead of a 100 m triangle per cover kind, rivers in water colour. A far
+    -- tile has no WaterBlocks (WATER.fill): its water takes the map too, not the bare bed (brown
+    -- rectangles on the Dnipro and the Kyiv reservoir from the air, far-view-06)
+    local farMap = options.farMap
+    local drape = options.horizon and farMap
+    local function mapped(p, R)
+      local u, v = farMap.uv(R, p[1], p[2])
+      return {p[1], p[2], p[3], u, v, p[6], p[7], p[8]}
+    end
     local function emitTri(a, b, c)
       if not a or not b or not c then return end
       if farRoads then farTris[#farTris + 1] = {a, b, c} end
       local cx, cy = (a[1]+b[1]+c[1])/3, (a[2]+b[2]+c[2])/3
+      local R = farMap and farMap.at(cx, cy)
+      if R and drape then return scene.triangle(R.texKind, mapped(a, R), mapped(b, R), mapped(c, R), true) end
       local kind = surfaceKind(cx, cy)
-      if kind == 'water' then kind = WATER.bed end
+      if kind == 'water' then
+        if R then return scene.triangle(R.texKind, mapped(a, R), mapped(b, R), mapped(c, R), true) end
+        kind = WATER.bed
+      end
       bio.landFarTri(kind, a, b, c)
     end
     local function at(x, y)

@@ -42,6 +42,9 @@ M.walkSim = require('ge/extensions/e2r/walkers')   -- pedestrians on the sidewal
 M.pedHit = require('ge/extensions/e2r/pedhit')   -- a physical body in a walker's place before a hit
 M.knock = require('ge/extensions/e2r/knock')   -- street furniture a vehicle knocks down (knock.lua)
 M.winguard = require('ge/extensions/e2r/winguard')   -- widget windows stay on the game screen (winguard.lua)
+M.far = NATIVE and require('ge/extensions/e2r/far') or nil   -- the land to the horizon (far.lua)
+-- the gate: scene changes while driving only after calm frames, one a frame, in bursts (pace.lua)
+M.pace = require('ge/extensions/e2r/pace')
 local detailStream
 -- the UI language: the package's LANG until the player switches it (settings/earthng.json)
 local LANG_FILE = 'settings/earthng.json'
@@ -158,10 +161,20 @@ local frameTimer = hptimer()
 -- sceneLag: s, a scene item queues as the road of a tile reached this much later (its grass 3x)
 local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128, sceneLag = 3,
   forestStep = 0.12, forestKind = 1.5, forestMax = 2500, propMax = 600,
+  -- Trees of one shape split into forestVariants^2 kinds by cells of forestCell m (0: off), and a
+  -- commit takes kinds until forestLive crowns stand in them (see forestCommit)
+  forestCell = 1000, forestVariants = 3, forestLive = 6000,
+  -- kinds joining the first one: at most this many more, while the commit has taken under
+  -- forestJoinCalls engine calls and forestJoinMs (79 kinds and 2500 calls in one commit were
+  -- 51 ms of Lua at a landing, far-view-06)
+  forestJoinKinds = 3, forestJoinCalls = 400, forestJoinMs = 4,
   collisionWant = 200, collisionLead = 4, collisionSceneLead = 2.5, collisionMargin = 200, vehicleCollision = {100, 300}, otherCars = {80, 160},
   collisionScene = {fast = 15, ahead = 1.5, want = 1, side = 100, margin = 100,
     roadSide = 120, roadKeep = 200, roadLane = 120, roadStep = 100},
   roadAhead = 18, roadUrgent = 8, roadFloorMs = 2.5,
+  -- the spawn budget of a frame the gate opens (it opens every QUIET + 1 frames at most): the
+  -- trickle of BUDGET_MS a frame in one go, the engine's cost of it landing in a single frame
+  burstMs = 10,
   -- Until the car stands on the road (the landing: the player waits and the camera hangs still)
   -- the generator and the spawn queue take most of the frame instead of BUDGET_MS: at 4 ms a
   -- frame the nine tiles of a landing in central Kyiv took 82 s, most of them idle. 60 ms: the
@@ -562,10 +575,27 @@ local function forestQueue(name)
   return q
 end
 
+-- The engine's deferred work for a Forest change (its Ticking, a few frames later) grows with
+-- every crown of each kind the change touched, ~0.5 us a crown (switzerlandNG measured it,
+-- BeamNG.Earth splits populations by path): a commit to a birch kind holding 20k crowns of the
+-- whole loaded area costs ~10 ms. A tree goes in a kind of its cell instead, cells of forestCell
+-- m in forestVariants^2 residues, each spelt with as many './' before the file name, so the
+-- tiles streaming in at the edge touch a few small kinds. The same file loads once a spelling.
+function M.variantShape(shape, x, y)
+  local cell, k = LIMIT.forestCell, LIMIT.forestVariants
+  if not cell or cell <= 0 or not k or k <= 1 then return shape end
+  local v = math.floor(x / cell) % k + k * (math.floor(y / cell) % k)
+  if v == 0 then return shape end
+  local dir, file = shape:match('^(.*/)([^/]+)$')
+  if not dir then return shape end
+  return dir .. string.rep('./', v) .. file
+end
+
 local function spawnForestItem(it, tile)
   if S.forestOff or not tile or not MatrixF then return false end
   -- a knockable prop (knock.lua's table) has no static collision while knocking is on
-  local key = it.prop and it.shape .. ((not S.knockOff and M.knock.kindOf(it.shape)) and '#knock' or '#solid') or it.shape
+  local key = it.prop and it.shape .. ((not S.knockOff and M.knock.kindOf(it.shape)) and '#knock' or '#solid')
+    or M.variantShape(it.shape, it.pos[1], it.pos[2])
   if it.prop then result.propsQueued = (result.propsQueued or 0) + 1 end
   local kind = forestFor(tile) and plantDataFor(key)
   if not kind then return false end
@@ -621,27 +651,11 @@ local function retireForest(tile)
   result.forestRetireMaxScanned = math.max(result.forestRetireMaxScanned or 0, #items)
 end
 
-local function forestCommit()
-  local queues = S.forestQ
-  if not queues or (S.now or 0) - (S.forestCommitAt or -10) < LIMIT.forestStep then return end
-  -- the kind that has waited longest, if its last commit was long enough ago
-  local name, q
-  for shape, candidate in pairs(queues) do
-    if candidate.since and (S.now or 0) - candidate.at >= LIMIT.forestKind
-        and (not q or candidate.since < q.since or (candidate.since == q.since and shape < name)) then
-      name, q = shape, candidate
-    end
-  end
-  if not q then return end
-  S.forestCommitAt, q.at = S.now, S.now
-  local timer = hptimer()
-  local f = forestFor()
-  local data = f and f:getData()
+-- One kind's queue into the Forest: removals first, then adds, `limit` engine calls in all
+-- (a field: world.lua's chunk is at Lua's 200 locals)
+function M.commitKind(name, q, data, limit)
   local removed, added = 0, 0
-  -- Retiring several dense tiles must obey the same budget as planting them.
-  -- A shared budget bounds the total engine calls, even during a quality change.
   local knockKind = name:find('#knock', 1, true) ~= nil
-  local limit = (knockKind or name:find('#solid', 1, true)) and LIMIT.propMax or LIMIT.forestMax
   local retireCount = math.min(M.fifo.size(q.removes), limit)
   for _ = 1, retireCount do
     local item = M.fifo.pop(q.removes)
@@ -649,12 +663,11 @@ local function forestCommit()
     if data and pcall(data.removeItem, data, item) then removed = removed + 1 end
   end
   local adds = q.adds
-  -- 2500 solid props of one kind made a 19 ms commit (out/overnight/drive-p6)
   local count = math.min(M.fifo.size(adds), limit - retireCount)
   local kind = data and plantDataFor(name)
   -- createNewItem copies the transform, so one matrix and two vectors serve every crown
   local m, euler, at = MatrixF(true), vec3(0, 0, 0), vec3(0, 0, 0)
-  for index = 1, count do
+  for _ = 1, count do
     local entry = M.fifo.pop(adds)
     local it, tile = entry[1], entry[2]
     if kind and not tile.dropped and not tile.vegetationDropped and (tile.forestGen or 0) == entry[3] then
@@ -682,7 +695,53 @@ local function forestCommit()
       end
     end
   end
+  q.live = math.max(0, (q.live or 0) + added - removed)
   q.since = (M.fifo.size(adds) > 0 or M.fifo.size(q.removes) > 0) and S.now or nil
+  return added, removed, retireCount + count
+end
+
+local function forestCommit()
+  local queues = S.forestQ
+  if not queues or (S.now or 0) - (S.forestCommitAt or -10) < LIMIT.forestStep then return end
+  -- the kinds that waited, longest first, if their last commit was long enough ago
+  local ready = {}
+  for shape, candidate in pairs(queues) do
+    if candidate.since and (S.now or 0) - candidate.at >= LIMIT.forestKind then
+      ready[#ready + 1] = shape
+    end
+  end
+  if #ready == 0 then return end
+  table.sort(ready, function(a, b)
+    local qa, qb = queues[a], queues[b]
+    if qa.since ~= qb.since then return qa.since < qb.since end
+    return a < b
+  end)
+  S.forestCommitAt = S.now
+  local timer = hptimer()
+  local f = forestFor()
+  local data = f and f:getData()
+  -- The oldest kind always goes. More kinds join while the crowns standing in all of them stay
+  -- under LIMIT.forestLive (the engine's cost) and the calls under the first kind's limit:
+  -- 2500 solid props of one kind made a 19 ms commit (out/overnight/drive-p6). Retiring
+  -- several dense tiles obeys the same budget as planting them.
+  local first = ready[1]
+  local limit = (first:find('#knock', 1, true) or first:find('#solid', 1, true)) and LIMIT.propMax or LIMIT.forestMax
+  local live, calls, kinds = 0, 0, 0
+  local added, removed = 0, 0
+  for index, name in ipairs(ready) do
+    local q = queues[name]
+    local standing = (q.live or 0) + M.fifo.size(q.adds)
+    if index > 1 and (live + standing > LIMIT.forestLive or kinds > LIMIT.forestJoinKinds
+        or calls >= LIMIT.forestJoinCalls or timer:stop() > LIMIT.forestJoinMs
+        or (name:find('#', 1, true) ~= nil) ~= (first:find('#', 1, true) ~= nil)) then
+      break
+    end
+    q.at = S.now
+    local a, r, c = M.commitKind(name, q, data, index > 1 and math.min(limit, LIMIT.forestJoinCalls) - calls or limit)
+    added, removed, calls, kinds = added + a, removed + r, calls + c, kinds + 1
+    live = live + (q.live or 0)
+    if index == 1 then result.forestCommitKind = name end
+  end
   result.forestPendingAdds, result.forestPendingRemoves = 0, 0
   for _, pending in pairs(queues) do
     result.forestPendingAdds = result.forestPendingAdds + M.fifo.size(pending.adds)
@@ -690,14 +749,16 @@ local function forestCommit()
   end
   if added > 0 then result.forest = 'on' end
   result.forestItems = math.max(0, (result.forestItems or 0) + added - removed)
-  if name:find('#solid', 1, true) then
+  if first:find('#solid', 1, true) then
     result.forestProps = math.max(0, (result.forestProps or 0) + added - removed)
   end
   result.forestCommits = (result.forestCommits or 0) + 1
+  result.forestCommitKinds = math.max(result.forestCommitKinds or 0, kinds)
+  result.forestCommitLive = math.max(result.forestCommitLive or 0, live)
   local ms = timer:stop()
   result.forestCommitMs = ms
   if ms > (result.forestCommitMaxMs or 0) then
-    result.forestCommitMaxMs, result.forestCommitMaxKind = ms, name
+    result.forestCommitMaxMs, result.forestCommitMaxKind = ms, first
     result.forestCommitMaxAdded, result.forestCommitMaxRemoved = added, removed
   end
 end
@@ -1012,13 +1073,15 @@ local function frameStats(list)
           p99FrameMs = sorted[math.max(1, math.ceil(#sorted * 0.99))] or 0}
 end
 
--- The whole driving phase, however long: 0.5 ms bins up to 1 s (p99 without keeping every frame).
-local function newAcc() return {n = 0, total = 0, worst = 0, over33 = 0, over100 = 0, bins = {}, worstAt = 0} end
+-- The whole driving phase, however long: 0.5 ms bins up to 1 s (p99 without keeping every frame),
+-- and the first 20000 frames in order (slow pairs, accStats).
+local function newAcc() return {n = 0, total = 0, worst = 0, over33 = 0, over100 = 0, bins = {}, worstAt = 0, ms = {}} end
 
 local function accFrame(acc, ms, now)
   -- the frames that carried a one-time wait (the flow's pool spawn) are left out
   if (acc.skip or 0) > 0 then acc.skip = acc.skip - 1; return end
   acc.n, acc.total = acc.n + 1, acc.total + ms
+  if acc.n <= 20000 then acc.ms[acc.n] = ms end
   if ms > acc.worst then acc.worst, acc.worstAt = ms, now end
   if ms > 33.3 then acc.over33 = acc.over33 + 1 end
   if ms > 100 then acc.over100 = acc.over100 + 1 end
@@ -1032,8 +1095,24 @@ local function accStats(acc)
     seen = seen + (acc.bins[b] or 0)
     if seen >= need then p99 = (b + 1) / 2; break end
   end
+  -- The engine moves the world by a smoothed frame time: a lone slow frame is filtered out,
+  -- two in a row (or slow, fast, slow) warp the game (pace.lua). slowPairs: frames that were
+  -- slow, as was one of the two before, slow being over 1.5x (and 2x) the median frame.
+  local half, p50 = math.ceil(acc.n * .5), 0
+  seen = 0
+  for b = 0, 2000 do
+    seen = seen + (acc.bins[b] or 0)
+    if seen >= half then p50 = (b + 1) / 2; break end
+  end
+  local pairs15, pairs2, list = 0, 0, acc.ms or {}
+  for k = 3, #list do
+    local a, b = list[k], math.max(list[k - 1], list[k - 2])
+    if a > 1.5 * p50 and b > 1.5 * p50 then pairs15 = pairs15 + 1 end
+    if a > 2 * p50 and b > 2 * p50 then pairs2 = pairs2 + 1 end
+  end
   return {frames = acc.n, meanFrameMs = acc.n > 0 and acc.total / acc.n or 0, p99FrameMs = p99,
-          worstFrameMs = acc.worst, worstAt = acc.worstAt, over33 = acc.over33, over100 = acc.over100}
+          worstFrameMs = acc.worst, worstAt = acc.worstAt, over33 = acc.over33, over100 = acc.over100,
+          p50FrameMs = p50, slowPairs15 = pairs15, slowPairs2 = pairs2}
 end
 
 -- --- tile streaming ------------------------------------------------------------------------------
@@ -2576,6 +2655,20 @@ local function updateTiles()
     local horizonCount = 0
     for _ in pairs(S.horizon) do horizonCount = horizonCount + 1 end
     result.horizonResident = horizonCount
+    -- the far view past the DEM horizon: its level 0 starts where the horizon (or the far ring)
+    -- is sure to have ground round the focus (500 m tiles by their centres: 354 m short)
+    if M.far then
+      local holeR = (horizonR > 0 and horizonR or (st.farRadius or 3000)) - 354
+      local on = M.farEnabled ~= false
+      native.farActive = on
+      local okFar, errFar = pcall(M.far.update, p, native.farSource(), holeR, function(id, triangles)
+        S.coll = S.coll or collision.new()
+        M.farOwner = M.farOwner or {horizon = true}
+        S.coll:track(M.farOwner, id, true, triangles)
+      end, on)
+      if not okFar then result.farError = tostring(errFar) end
+      result.far = M.far.status()
+    end
     -- Reprioritize pending work when direction changes. Ground meshes of every
     -- tile come before any plant: a nearer tile's crowns used to sit ahead of
     -- the next tile's road and the bubble painted at the forest cap.
@@ -2608,8 +2701,9 @@ local function updateTiles()
   end
 end
 
-local function stepQueue()
+local function stepQueue(burst)
   local frame = hptimer()
+  local worked = false
   -- Retires queued by updateTiles this frame start before new crowns are added.
   -- test.genBudget (showcase stills): frame time does not matter, the place must finish loading
   -- A road due within LIMIT.roadUrgent s at the head of the queue (updateTiles sorts it) gets
@@ -2618,7 +2712,7 @@ local function stepQueue()
   local urgent = NATIVE and head and not (head.scene or head.grass or head.far or head.horizon) and wanted
     and (wanted[head.key] or 1e6) < LIMIT.roadUrgent
   local budget = test and test.genBudget or (S.state == 'spawning' and (S.landOwed == false and LIMIT.loadQueueLastMs or LIMIT.loadQueueMs))
-    or math.max(urgent and LIMIT.roadFloorMs or .5, BUDGET_MS - (S.nativeMs or 0))
+    or burst or math.max(urgent and LIMIT.roadFloorMs or .5, BUDGET_MS - (S.nativeMs or 0))
   local function over() return frame:stop() >= budget end
   local function pause() if over() then coroutine.yield() end end
   if S.co and S.job and S.job.tile.dropped then S.co, S.job = nil, nil end
@@ -2637,6 +2731,7 @@ local function stepQueue()
     -- a resume far over the budget: is it the collector (Lua heap shrinks inside it)?
     local kb0, t0 = collectgarbage('count'), hptimer()
     local ok, err = coroutine.resume(S.co, pause)
+    worked = true
     local resumeMs = t0:stop()
     if resumeMs > 30 then
       result.slowResumes = result.slowResumes or {}
@@ -2688,6 +2783,7 @@ local function stepQueue()
       if S.job.scene and not tile.dropped and not S.job.item.decor then S.collisionDirty = true; tile.sceneDirty = true end
     end
   until over()
+  return worked
 end
 
 -- be:reloadCollision rebuilds the static collision of the whole loaded world; the call returns in
@@ -2855,11 +2951,20 @@ local function packLabel(p)
   return (lang == 'en' and PACK_LABELS_EN or PACK_LABELS_UK)[p[1]] or p[2] or p[1]
 end
 
--- Street lights of a night pack: a pool of PointLights moved onto the lamps nearest the camera
+-- Street lights of a night pack: a pool of lights moved onto the lamps nearest the camera
 -- (env.lights: colors, radius, brightness, height, count). Lamps are noted as tiles spawn them.
+-- A lamp is a SpotLight aimed down, as the game's own Italy level lights its road lamps (range
+-- 30-40 m, a wide cone of 120/165 degrees, brightness = lumen / 5000; switzerlandNG calibrated
+-- it in the game): a PointLight of 20 m lit a pool under each lamp and left the road between
+-- two lamps dark. env.lights.spot = false keeps the PointLights.
+-- (LIMIT.lamp: world.lua's chunk is at Lua's 200 locals)
+LIMIT.lamp = {range = 40, inner = 120, outer = 165, brightness = 1.2,
+  -- the cone's axis is the light's local +Y: a quarter turn about x points it at the ground
+  -- (used where quatFromDir is missing, see lightsStep)
+  down = {-0.70710678, 0, 0, 0.70710678}}
 local function dropLights()
   for _, l in ipairs(S.lightPool or {}) do l:delete() end
-  S.lightPool, S.lightCfg, S.lightsAt = nil, nil, nil
+  S.lightPool, S.lightCfg, S.lightsAt, S.lightSpot = nil, nil, nil, nil
 end
 
 local function showLights(cfg)
@@ -2869,9 +2974,17 @@ local function showLights(cfg)
   -- test.lights (stills): a bigger pool over a wider reach; a frame seen from above lit 1-2 lamps
   for k = 1, (test and test.lights) or cfg.count or 24 do
     local c = cfg.colors[(k - 1) % #cfg.colors + 1]
-    local l = createObject('PointLight')
-    l:setField('radius', 0, tostring(cfg.radius or 20))
-    l:setField('brightness', 0, tostring(cfg.brightness or 2))
+    local spot = cfg.spot ~= false
+    local l = createObject(spot and 'SpotLight' or 'PointLight')
+    if spot then
+      l:setField('range', 0, tostring(cfg.range or LIMIT.lamp.range))
+      l:setField('innerAngle', 0, tostring(LIMIT.lamp.inner))
+      l:setField('outerAngle', 0, tostring(LIMIT.lamp.outer))
+      l:setField('brightness', 0, tostring(cfg.spotBrightness or LIMIT.lamp.brightness))
+    else
+      l:setField('radius', 0, tostring(cfg.radius or 20))
+      l:setField('brightness', 0, tostring(cfg.brightness or 2))
+    end
     l:setField('color', 0, string.format('%f %f %f 1', c[1], c[2], c[3]))
     l:setField('castShadows', 0, '0')
     l:setField('flareType', 0, 'BNG_LightFlare_1')
@@ -2879,7 +2992,7 @@ local function showLights(cfg)
     l:registerObject('e2r_light_' .. k)
     l.canSave = false
     l:setPosition(vec3(0, 0, -10000))
-    S.lightPool[k] = l
+    S.lightPool[k], S.lightSpot = l, spot
   end
   S.lightsAt = -1
 end
@@ -2899,7 +3012,21 @@ local function lightsStep()
   result.lampsNear, result.lightsPlaced = #near, math.min(#near, #pool)
   for k, l in ipairs(pool) do
     local n = near[k]
-    if n then l:setPosition(vec3(n[2][1], n[2][2], n[2][3] + (cfg.height or 7.3))) else l:setPosition(vec3(0, 0, -10000)) end
+    local z = n and n[2][3] + (cfg.height or 7.3) or -10000
+    local x, y = n and n[2][1] or 0, n and n[2][2] or 0
+    if S.lightSpot then
+      -- the cone's axis straight down, as the game's own lighting setup aims a SpotLight
+      -- (quatFromDir of the direction it shines; up must not be parallel to it)
+      if not S.lampRot then
+        local ok, r = pcall(function() return quatFromDir(vec3(0, 0, -1), vec3(0, 1, 0)) end)
+        local d = LIMIT.lamp.down
+        S.lampRot = ok and r and {r.x, r.y, r.z, r.w} or d
+      end
+      local q = S.lampRot
+      l:setPosRot(x, y, z, q[1], q[2], q[3], q[4])
+    else
+      l:setPosition(vec3(x, y, z))
+    end
   end
 end
 
@@ -5566,11 +5693,18 @@ function M.onUpdate(dtReal, dtSim)
   S.dtSim = dtSim or dtReal
   S.forestTimer = S.forestTimer or hptimer()
   S.forestTimer:stopAndReset()
-  forestCommit()
+  -- behind the gate a commit is one of the frame's steps (below), not a change of its own
+  if not S.gate then forestCommit() end
   profAdd('forest', S.forestTimer:stop())
   profAdd('gc', M.gc.paceMs or 0)   -- the collector's slice of the frame (gc.lua M.pace)
   local frameMs = frameTimer:stopAndReset()
   table.insert(S.frames, frameMs)
+  if S.state == 'driving' and M.paceOn ~= false and not (test and test.pace == false) then
+    S.gate = S.gate or M.pace.newGate()
+    S.gate:beginFrame(frameMs, (S.dtSim or 0) == 0)
+  else
+    S.gate = nil
+  end
   S.recentAt = (S.recentAt or 0) % 240 + 1        -- the widget's FPS: the last 240 frames
   S.recent = S.recent or {}
   S.recent[S.recentAt] = frameMs
@@ -5712,29 +5846,50 @@ function M.tick(dt)
   if S.stream and (S.state == 'spawning' or S.state == 'driving') then
     -- which step made a slow frame (result.slow, automation and diagnosis)
     local timer = hptimer()
+    -- Behind the gate (driving) one frame in QUIET + 1 at most changes the scene, and then with
+    -- one step: the collision rebuild, a band of the far view, a Forest commit, or a burst of the
+    -- spawn queue with the graves and the detail stream. Without it every frame does a little.
+    local gate = S.gate
+    local work = not gate or gate:open()
+    local changed = false
+    if M.far then
+      M.far.gate = gate and function() return work and not changed end or nil
+      M.far.changed = false
+    end
     writePose()
     local tPose = timer:stopAndReset()
     local kb0 = collectgarbage('count')
     updateTiles()
+    if M.far and M.far.changed then changed = true end
     local tTiles = timer:stopAndReset()
     local kb1 = collectgarbage('count')
     -- a frame that rebuilds the collision (up to ~65 ms) spawns no mesh: together with a
     -- createMesh and the render they reached 98 ms (fast-oblast-replay-01)
-    local reloaded = updateCollision()
+    local reloaded = work and not changed and updateCollision() or false
+    if reloaded then changed = true end
+    if gate and work and not changed then
+      local before = S.forestCommitAt
+      forestCommit()
+      if S.forestCommitAt ~= before then changed = true end
+    end
     local tColl = timer:stopAndReset()
     local kb2 = collectgarbage('count')
-    if not reloaded then
-      stepQueue()
+    if work and not changed then
+      if stepQueue(gate and LIMIT.burstMs or nil) then changed = true end
       local p, vel = focus()
-      -- 60 idle / 180 at speed / 240 when many groups wait (was GRAVE_PER_FRAME)
+      -- 60 idle / 180 at speed / 240 when many groups wait (was GRAVE_PER_FRAME); a gated
+      -- frame digs for the frames it held
       local graveBudget = (vel and vel:length() >= 15) and 180 or 60
       if S.graves and #S.graves > 8 then graveBudget = math.max(graveBudget, 240) end
+      if gate and S.graves and #S.graves > 0 then graveBudget, changed = graveBudget * 3, true end
       digGraves(graveBudget)
       local detailTimer = hptimer()
-      getDetailStream():step(p, S.appliedTune or TUNE_DEFAULT, S.now, detailTimer, 1)
+      getDetailStream():step(p, S.appliedTune or TUNE_DEFAULT, S.now, detailTimer, gate and 3 or 1)
       result.detailMs = detailTimer:stop()
       result.liveGrass, result.liveRocks = detailStream.count.grass, detailStream.count.rock
     end
+    if gate and changed then gate:done() end
+    if gate then result.gate = gate:report() end
     local tQueue = timer:stopAndReset()
     local kb3 = collectgarbage('count')
     if S.state == 'driving' then
@@ -5863,6 +6018,7 @@ function M.knockState()
         tr = (os.clock() - tr) * 1000
         if tr > (ks.callMax.remove or 0) then ks.callMax.remove, ks.callMax.shape = tr, shape end
         if not removed then return false end
+        if q then q.live = math.max(0, (q.live or 0) - 1) end
         result.forestItems = math.max(0, (result.forestItems or 0) - 1)
         -- a lamp's light goes with its pole: lightsStep places the pool again on the next frame
         if shape == LAMP_SHAPE and S.lamps then

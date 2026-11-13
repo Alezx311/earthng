@@ -13,6 +13,7 @@ index.json lists every tile with its cell, coverage (the buffered box: what the 
 declared to cover in ``earth2road data import --coverage``), size, SHA-256 and counts.
 """
 import argparse
+import bisect
 import hashlib
 import json
 import math
@@ -109,7 +110,7 @@ def cut(pbf, out, region=None):
 
     # Pass 1: tile masks of nodes inside, ways touching, relevant relations.
     node_inside, poi_nodes, way_tiles = {}, {}, {}
-    rel_members, relevant = {}, set()
+    rel_members, relevant, multipolygons = {}, set(), set()
     processor = osmium.FileProcessor(str(pbf)).with_locations()
     for obj in processor:
         if obj.is_node():
@@ -129,6 +130,8 @@ def cut(pbf, out, region=None):
             rel_members[obj.id] = [(mb.type, mb.ref) for mb in obj.members]
             if obj.tags.get('type') in ('restriction', 'multipolygon') or landmark_category(obj.tags):
                 relevant.add(obj.id)
+            if obj.tags.get('type') == 'multipolygon':
+                multipolygons.add(obj.id)
     print(f'pass 1: {len(keys)} tiles, {len(node_inside)} nodes inside, {len(way_tiles)} ways '
           f'({time.monotonic()-t0:.0f} s)', flush=True)
 
@@ -149,6 +152,8 @@ def cut(pbf, out, region=None):
             if m != rel_tiles.get(rid, 0):
                 rel_tiles[rid] = m
                 changed = True
+    filled = _interior(pbf, keys, bit, rel_tiles, rel_members, multipolygons)
+    print(f'interior tiles of multipolygons: {filled} ({time.monotonic()-t0:.0f} s)', flush=True)
     # The hits above used ways touching a tile; completion adds members to the tile.
     extra_ways, extra_nodes = {}, {}
     pending = list(rel_tiles.items())
@@ -230,6 +235,74 @@ def cut(pbf, out, region=None):
     print(f"written {len(index['tiles'])} tiles, {sum(sizes)/2**20:.1f} MB total, median {sorted(sizes)[len(sizes)//2]/2**10:.0f} KB, "
           f"max {max(sizes)/2**20:.2f} MB ({index['seconds']} s)", flush=True)
     return index
+
+
+def interior_keys(segments, box, skip=lambda x, y: False):
+    """Tiles strictly inside box (x0, x1, y0, y1) whose cell centre lies inside the rings drawn by
+    segments (lon0, lat0, lon1, lat1): even-odd over all of them, so the ways of a ring may come
+    in any order and direction and an inner ring is a hole. One scanline a tile row."""
+    x0, x1, y0, y1 = box
+    out = []
+    for y in range(y0 + 1, y1):
+        cy = (y + .5) * CELL
+        xs = sorted(a + (c - a) * (cy - b) / (d - b) for a, b, c, d in segments if (b > cy) != (d > cy))
+        if len(xs) < 2:
+            continue
+        for x in range(x0 + 1, x1):
+            if skip(x, y):
+                continue
+            # crossings right of the centre: odd = inside
+            if (len(xs) - bisect.bisect_right(xs, (x + .5) * CELL)) % 2:
+                out.append((x, y))
+    return out
+
+
+def _interior(pbf, keys, bit, rel_tiles, rel_members, multipolygons):
+    """A tile wholly inside a multipolygon holds none of its members, so the spatial hits miss it:
+    the Kyiv reservoir was fields in the far colour map (13.11), and bare land near it. Such tiles
+    get the relation (completion then adds its ways), as the native cut does (cut.rs, select 3).
+    Returns the number of tiles added."""
+    want = {}
+    for rid, m in rel_tiles.items():
+        # a ring round a tile touches at least its eight neighbours
+        if rid not in multipolygons or bin(m).count('1') < 8 or any(k == 'r' for k, _ in rel_members[rid]):
+            continue
+        ks = list(_mask_keys(m, keys))
+        x0, x1 = min(k[0] for k in ks), max(k[0] for k in ks)
+        y0, y1 = min(k[1] for k in ks), max(k[1] for k in ks)
+        if x1 - x0 < 2 or y1 - y0 < 2 or (x1 - x0 + 1) * (y1 - y0 + 1) <= len(ks):
+            continue
+        want[rid] = (x0, x1, y0, y1)
+    if not want:
+        return 0
+    members = {ref for rid in want for kind, ref in rel_members[rid] if kind == 'w'}
+    coords = {}
+    for obj in osmium.FileProcessor(str(pbf), osmium.osm.NODE | osmium.osm.WAY).with_locations():
+        if obj.is_way() and obj.id in members:
+            points = [(nd.location.lon, nd.location.lat) for nd in obj.nodes if nd.location.valid()]
+            if len(points) == len(obj.nodes):
+                coords[obj.id] = points
+    filled = 0
+    for rid, box in want.items():
+        segments, complete = [], True
+        for kind, ref in rel_members[rid]:
+            if kind != 'w':
+                continue
+            points = coords.get(ref)
+            if points is None:
+                complete = False
+                break
+            segments.extend((a[0], a[1], b[0], b[1]) for a, b in zip(points, points[1:]))
+        if not complete or not segments:
+            continue
+        m = rel_tiles[rid]
+        add = 0
+        for key in interior_keys(segments, box, lambda x, y: not bit.get((x, y), 0) or m & bit[(x, y)]):
+            add |= bit[key]
+        if add:
+            rel_tiles[rid] = m | add
+            filled += bin(add).count('1')
+    return filled
 
 
 def _mask_keys(mask, order):

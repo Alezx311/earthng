@@ -93,6 +93,53 @@ class NativeToolTests(unittest.TestCase):
                     self.assertEqual(tile[field], other[field], (key, field))
                 self.assertEqual(objects(tmp / 'python' / tile['file']), objects(tmp / 'native' / other['file']), key)
 
+    def test_interior_keys_of_a_lake_with_an_island(self):
+        def ring(a, b):
+            p = [(a, a), (b, a), (b, b), (a, b), (a, a)]
+            return [(*p[i], *p[i + 1]) for i in range(4)]
+        segments = ring(.01, .49) + ring(.2, .3)
+        keys = osm_tiles.interior_keys(segments, (0, 9, 0, 9), lambda x, y: x == 1 and y == 1)
+        self.assertIn((2, 2), keys)
+        self.assertIn((8, 8), keys)
+        self.assertNotIn((1, 1), keys)
+        self.assertNotIn((4, 4), keys, 'the island is land')
+        self.assertFalse([k for k in keys if 0 in k or 9 in k], 'edges are never interior')
+        self.assertEqual(len(osm_tiles.interior_keys(ring(.01, .49)[::-1], (0, 9, 0, 9))), 64)
+
+    @unittest.skipUnless(native_tool.tool(), 'native Map Builder not built (cargo build --release in rust/)')
+    def test_a_lake_reaches_the_tiles_inside_it_in_both_cuts(self):
+        """Cells 600..605 x 1000..1005 under a lake with an island: the inner tiles hold no member."""
+        n, w, r = osmium.osm.mutable.Node, osmium.osm.mutable.Way, osmium.osm.mutable.Relation
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            pbf = tmp / 'lake.osm.pbf'
+            with osmium.SimpleWriter(str(pbf)) as out:
+                # a shore with a node every 0.02 degrees, so it touches every rim tile, as a mapped one does
+                t = [round(.01 + .02 * i, 2) for i in range(15)]
+                outer = ([(30 + a, 50.01) for a in t[:-1]] + [(30.29, 50 + a) for a in t[:-1]]
+                         + [(30 + a, 50.29) for a in t[:0:-1]] + [(30.01, 50 + a) for a in t[:0:-1]])
+                island = [(30.12, 50.12), (30.13, 50.12), (30.13, 50.13), (30.12, 50.13)]
+                for i, (lon, lat) in enumerate(outer + island):
+                    out.add_node(n(id=i + 1, location=(lon, lat)))
+                half, ring = len(outer) // 2, list(range(1, len(outer) + 1))
+                out.add_way(w(id=100, nodes=ring[:half + 1], tags={}))
+                out.add_way(w(id=101, nodes=ring[half:] + [1], tags={}))
+                isle = len(outer) + 1
+                out.add_way(w(id=102, nodes=[isle, isle + 1, isle + 2, isle + 3, isle], tags={'place': 'islet'}))
+                out.add_relation(r(id=200, members=[('w', 100, 'outer'), ('w', 101, 'outer'), ('w', 102, 'inner')],
+                                   tags={'type': 'multipolygon', 'natural': 'water', 'water': 'reservoir'}))
+            box = [30.0, 50.0, 30.3, 50.3]
+            osm_tiles.cut(pbf, tmp / 'python', box)
+            subprocess.run(native_tool.cut_command(pbf, tmp / 'native', box), check=True, capture_output=True)
+            a = json.loads((tmp / 'python' / 'index.json').read_text(encoding='utf8'))
+            b = json.loads((tmp / 'native' / 'index.json').read_text(encoding='utf8'))
+            self.assertIn('602_1003', a['tiles'], 'a tile in the middle of the lake')
+            self.assertEqual(sorted(a['tiles']), sorted(b['tiles']))
+            for key, tile in a['tiles'].items():
+                self.assertEqual(objects(tmp / 'python' / tile['file']), objects(tmp / 'native' / b['tiles'][key]['file']), key)
+                if key == '602_1003':
+                    self.assertIn(200, objects(tmp / 'python' / tile['file'])[2])
+
     @unittest.skipUnless(native_tool.tool(), 'native Map Builder not built (cargo build --release in rust/)')
     def test_selection_cut_grows_to_whole_cells_like_python(self):
         import country_fetch
