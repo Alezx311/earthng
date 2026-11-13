@@ -2585,7 +2585,9 @@ local function updateTiles()
         S.far[key] = nil
       end
     end
-    if allowLoad and graveBacklog < 8 and #S.queue < 60 then
+    -- a deep city queue used to block the ring for the whole drive (far-view-10: horizonResident 0)
+    local canRing = (allowLoad and graveBacklog < 8 and #S.queue < 60) or (LIMIT.ringTurn() and #S.queue < 200)
+    if canRing then
       local bestF, bestFD
       for key in pairs(st.far or {}) do
         local near = S.tiles[key]
@@ -2641,7 +2643,7 @@ local function updateTiles()
           if NATIVE then native.unload(key, 'horizon') end
         end
       end
-      if allowLoad and graveBacklog < 8 and #S.queue < 40 then
+      if canRing and #S.queue < 200 then
         local bestH, bestHD
         for key, info in pairs(st.horizon or {}) do
           if not S.horizon[key] and type(info) == 'table' and info.x and info.y then
@@ -2871,6 +2873,15 @@ function LIMIT.shareRing()
   if not LIMIT.nearQueued() then return false end
   S.ringShare = (S.ringShare or 0) + 1
   return S.ringShare % 5 == 0
+end
+
+-- true on the frame after a ring burst, so updateTiles can start one far or horizon
+-- tile while the city queue is still deep. shareRing itself runs later, in the spawn.
+function LIMIT.ringTurn()
+  local n = S.ringShare or 0
+  if not LIMIT.nearQueued() or n == 0 or n % 5 ~= 0 then return false end
+  S.ringShare = n + 1
+  return true
 end
 
 function LIMIT.shareFar()

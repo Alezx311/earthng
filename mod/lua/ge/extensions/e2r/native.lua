@@ -1164,7 +1164,7 @@ local function trimHorizon()
     a.evicted[worst .. ':horizon'] = a.epoch
   end
   st.horizonTiles, st.horizonTriangles = count, triangles
-  st.horizonResident = st.horizonResident or 0
+  st.horizonResident = count
 end
 
 -- A cell's elevation grid alone, for a vista block (16 cells of 1 km): nothing else decoded.

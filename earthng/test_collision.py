@@ -271,9 +271,10 @@ class CollisionTests(unittest.TestCase):
           S.ringShare = 0
           assert(not LIMIT.shareRing() and not LIMIT.shareRing())
           assert(not LIMIT.shareRing() and not LIMIT.shareRing())
-          assert(LIMIT.shareRing())
+          assert(LIMIT.shareRing() and LIMIT.ringTurn())
+          assert(not LIMIT.ringTurn())
           S.queue = {{key = '2_0', grass = true, tile = {}}}
-          assert(not LIMIT.shareRing())
+          assert(not LIMIT.shareRing() and not LIMIT.ringTurn())
         ''')
 
 
