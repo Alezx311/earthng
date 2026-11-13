@@ -1481,7 +1481,9 @@ function ROADS.collisionGround(roads, rect, step, heightAt, pause)
   -- Below 4 m the chord across one cell is centimetres, and a 1 m lattice would spawn
   -- hundreds of thousands of triangles a rebuild then hides. 10-25 m packs match the draw.
   local fine = step < 4 and 4 or step
-  local cell = math.max(64, fine)
+  -- 128 m cells: fewer objects to spawn than a 64 m grid, and the 3x3 kept in a rebuild
+  -- still covers the car at 250 km/h between the two-second gaps
+  local cell = math.max(128, fine)
   local x0, y0 = math.floor(rect[1] / cell) * cell, math.floor(rect[2] / cell) * cell
   local x1, y1 = math.ceil(rect[3] / cell) * cell, math.ceil(rect[4] / cell) * cell
   for cy = y0, y1 - 1, cell do

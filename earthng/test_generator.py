@@ -710,22 +710,14 @@ class GeneratorTests(unittest.TestCase):
         def zs(tris):
             return [p[2] for t in tris for p in t]
 
-        def shortest(tris):
-            best = 1e9
-            for t in tris:
-                for a, b in ((0, 1), (1, 2), (2, 0)):
-                    d = math.hypot(t[a][0] - t[b][0], t[a][1] - t[b][1])
-                    if d > 0.05:
-                        best = min(best, d)
-            return best
-
         gz, pz = zs(ground), zs(proxy)
         self.assertAlmostEqual(max(pz), max(gz), places=2)
         self.assertGreater(max(pz) - min(pz), 4)
-        self.assertAlmostEqual(shortest(proxy), shortest(ground), delta=0.2)
+        # a point on the peak is the drawn height, not a chord across the hill
+        self.assertAlmostEqual(self.surface_at(proxy, 50, 50), self.surface_at(ground, 50, 50), places=2)
         for item, _mesh in self.meshes(road, 'e2rf_col_ground'):
             self.assertTrue(item.proxy)
-            self.assertGreaterEqual(float(item.cell[3]), 64)
+            self.assertGreaterEqual(float(item.cell[3]), 128)
 
     def test_a_tunnel_has_a_portal_a_tube_and_a_floor(self):
         road = {'id': 't', 'nodes': ['a', 'b'], 'width': 8,
