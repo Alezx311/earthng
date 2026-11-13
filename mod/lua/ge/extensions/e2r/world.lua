@@ -181,7 +181,9 @@ local LIMIT = {pairsDriving = 3, pairsCatch = 6, pairsLanding = 24, plantBatch =
   -- tiles were ready in 18.6 s at 40 ms a frame and in 17.4 s at 90 (the picker at 6 frames a second)
   loadNativeMs = 60, loadQueueMs = 14, loadQueueLastMs = 30,
   -- while driving at speed the generator's 4 ms left the road behind the car; the native cap is 8
-  driveNativeMs = 8}
+  driveNativeMs = 8,
+  -- stopped, the far ring was capped at 2 ms and a minute of waiting barely moved it
+  parkNativeMs = 12}
 -- Read-only view for the development probe (earthng/probe.py); nothing in the mod calls it.
 function M.dbg() return {S = S, result = result, native = native, detail = detailStream, test = test} end
 
@@ -5948,7 +5950,9 @@ function M.tick(dt)
     local genBudget = test and test.genBudget or (owed and LIMIT.loadNativeMs) or BUDGET_MS
     if not (test and test.genBudget) and S.state == 'driving' then
       local _, vel = focus()
-      if vel and vel:length() >= 15 then genBudget = LIMIT.driveNativeMs end
+      local speed = vel and vel:length() or 0
+      if speed >= 15 then genBudget = LIMIT.driveNativeMs
+      elseif speed < 2 then genBudget = LIMIT.parkNativeMs end
     end
     native.update(dt, genBudget, test and test.genBudget, S.now)
     S.nativeMs = t:stop()

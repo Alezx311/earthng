@@ -1489,23 +1489,28 @@ local function update(dt, budgetMs, farBudgetMs, now)
   local dirty = active.prioritiesDirty
   local wanted, best, bestKey, bestPriority = dirty and priorities() or active.desired, nil, nil, nil
   local timer = hptimer()
+  local pose = active.pose
+  local speed = pose and math.sqrt((pose.vx or 0) ^ 2 + (pose.vy or 0) ^ 2) or 0
   -- farBudgetMs: the far ring's own budget instead of FAR_BUDGET_MS (showcase stills; the
   -- game passes none), and then the frame may take up to 50 ms
-  -- the landing (startupPinned: the player waits for the tiles) may take as much
-  budgetMs = finite(budgetMs) and math.max(0.1, math.min(active.startupPinned and 100 or (farBudgetMs and 50 or 8), budgetMs)) or 2
+  -- the landing (startupPinned: the player waits for the tiles) may take as much.
+  -- Stopped, the ring may take 12 ms: at 2 ms a minute of waiting barely filled it.
+  local driveCap = farBudgetMs and 50 or (speed < 2 and 12 or 8)
+  budgetMs = finite(budgetMs) and math.max(0.1, math.min(active.startupPinned and 100 or driveCap, budgetMs)) or 2
   if dirty or active.nearKnownAt ~= state.stream.built then
     active.nearWaiting, active.nearUrgent = nearPending(wanted)
     active.nearKnownAt = state.stream.built
   end
   local nearWork = active.nearWaiting or next(active.parked) ~= nil or next(active.parkedGrass) ~= nil
     or (active.work and not active.workFar and not active.workHorizon)
-  if not active.startupPinned and not nearWork then budgetMs = math.min(budgetMs, farBudgetMs or FAR_BUDGET_MS) end
+  if not active.startupPinned and not nearWork then
+    budgetMs = math.min(budgetMs, farBudgetMs or (speed < 2 and 12 or FAR_BUDGET_MS))
+  end
   -- the road the car reaches within seconds is missing: the frame pays for it rather than the car
   if not active.startupPinned and not farBudgetMs and active.nearUrgent then budgetMs = math.max(budgetMs, AHEAD.urgentMs) end
   state.stream.budgetMs = budgetMs
   active.timer, active.budget = timer, budgetMs
-  local p = active.pose
-  local speed = math.sqrt((p.vx or 0) ^ 2 + (p.vy or 0) ^ 2)
+  local p = pose
   local lag = AHEAD.lag + math.max(0, speed - AHEAD.slow) * AHEAD.lagPerMs
   local slow = speed < AHEAD.slow
   -- A scene the car reaches within 8 s (one tile at 250 km/h) waits 2 s at most, so the
