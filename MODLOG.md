@@ -8,7 +8,9 @@ Newest first. How things work now: [docs/README.md](docs/README.md).
   solstice: at Kyiv, time 0.08, day 20 gives 61 degrees, 110 gives 40, 200 gives 15 and 290
   gives 37. `day 200`, meant as July, lit the green summer world with a 15 degree sun. The level
   is now on day 40 (mid July) at time 0.16, about 47 degrees from the WSW. Packs with an
-  authored sun (night, rain, winter, autumn, cyber, synth) do not read it.
+  authored sun (night, rain, winter, autumn, cyber, synth, pixel) do not read it.
+- The real environment no longer sets the sun's azimuth and elevation. A switch back from
+  another pack used to put the sun at 48 degrees in the SE, not where the time of day had it.
 - `fast_tone.py` gives the real pack one tone, as the stock levels have. Each material's rendered
   colour (map mean x factor, linear) is pulled toward its class:
   - Saturation is scaled to 0.62-0.72 and capped at 0.14-0.32.

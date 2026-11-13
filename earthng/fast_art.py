@@ -459,6 +459,11 @@ def environment(pack):
                 'sun': False}
         if pack == 'pixel':
             return fast_pixel.environment(real)
+        if pack == 'real':
+            # the level's TimeOfDay places the sun: a fixed azimuth and elevation here left the
+            # sun in the SE at 48 degrees after a switch back, not where the landing had it
+            for k in ('azimuth', 'elevation'):
+                real['objects']['sunsky'].pop(k, None)
         return fast_packs.environment(pack, real) if pack in fast_packs.PACKS else real
     return {'authoredSun': True, 'objects': {
         'sunsky': {'azimuth': '250', 'elevation': '3', 'brightness': '0.45', 'skyBrightness': '6',

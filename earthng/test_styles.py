@@ -138,6 +138,9 @@ class AssetTests(unittest.TestCase):
         for name in ('pixel', 'night', 'rain', 'cyber', 'synth'):
             self.assertTrue(art.environment(name)['authoredSun'])
         self.assertFalse(art.environment('real').get('authoredSun', False))
+        # the real sun is the level's TimeOfDay's, also after a switch back; the flat packs keep theirs
+        self.assertNotIn('elevation', art.environment('real')['objects']['sunsky'])
+        self.assertEqual(art.environment('toon')['objects']['sunsky']['elevation'], '48')
 
 
 def lua_table(lua, value):
