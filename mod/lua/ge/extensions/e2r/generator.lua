@@ -1253,8 +1253,10 @@ local function collector(rect, key, layer, pause, mixed)
     mesh.vmap, mesh.nmap, mesh.umap, mesh.fmap = nil, nil, nil, nil
     local triangles = mesh.tris
     mesh.tris = nil
+    local named = mesh.material or material
     items[#items + 1] = {kind = 'proc', name = 'e2rl_' .. key .. '_' .. layer .. '_' .. #items,
-      pos = origin, meshes = {mesh}, triangles = triangles, mats = {material}, layer = layer}
+      pos = origin, meshes = {mesh}, triangles = triangles, mats = {named}, layer = layer,
+      proxy = mesh.cell ~= nil, cell = mesh.cell}
     groups[material] = nil
   end
   local function flush()
@@ -1272,7 +1274,7 @@ local function collector(rect, key, layer, pause, mixed)
         mesh.vmap, mesh.nmap, mesh.umap, mesh.fmap = nil, nil, nil, nil
         triangles = triangles + mesh.tris
         mesh.tris = nil
-        meshes[#meshes + 1], names[#names + 1] = mesh, mats[k]
+        meshes[#meshes + 1], names[#names + 1] = mesh, mesh.material or mats[k]
       end
       items[#items + 1] = {kind = 'proc', name = 'e2rl_' .. key .. '_' .. layer .. '_' .. #items,
         pos = origin, meshes = meshes, triangles = triangles, mats = names, layer = layer}
@@ -1386,15 +1388,19 @@ local function collector(rect, key, layer, pause, mixed)
       if swap then kind, plain = swap, true end
     end
     local material = 'e2rf_' .. kind
+    -- hooks.cell buckets an invisible collision proxy into its own object ({ix, iy, size})
+    local gkey = material
+    if hooks.cell then gkey = material .. '\0' .. hooks.cell[1] .. ':' .. hooks.cell[2] end
     if mixed and total >= mixed then flush() end
-    local mesh = groups[material]
-    if not mixed and mesh and mesh.tris >= PIECE_TRIS then flushMaterial(material); mesh = nil end
+    local mesh = groups[gkey]
+    if not mixed and mesh and mesh.tris >= PIECE_TRIS then flushMaterial(gkey); mesh = nil end
     if not mesh then
       mesh = {verts = {}, normals = {}, uvs = {}, faces = {}, material = material,
         vmap = {}, nmap = {}, umap = {}, fmap = {}, tris = 0,
         -- a far colour map spans a whole region: 1/1024 of it is ~100 m, no welding of its UVs
-        uvExact = kind:sub(1, 7) == 'farmap_' or nil}
-      groups[material], used[material] = mesh, true
+        uvExact = kind:sub(1, 7) == 'farmap_' or nil,
+        cell = hooks.cell and {hooks.cell[1], hooks.cell[2], hooks.cell[3]} or nil}
+      groups[gkey], used[material] = mesh, true
     end
     local scale = plain and hooks.scale or scales[kind]
     if not scale then
@@ -1458,6 +1464,117 @@ function ROADS.bridge(tags)
 end
 function ROADS.tunnel(tags)
   return tags.tunnel ~= nil and tags.tunnel ~= 'no' and tags.tunnel ~= 'building_passage'
+end
+-- A vertical lip between two road pieces punctures a tyre: the hit is the edge, not the
+-- material. True when the step is steeper than 45 degrees inside 20 cm, or a pure step.
+function ROADS.seamLip(dz, horizontal)
+  if not dz or not horizontal or horizontal >= .2 or math.abs(dz) <= .02 then return false end
+  if horizontal < 1e-4 then return true end
+  return math.abs(dz) / horizontal >= 1
+end
+-- Invisible ground the car stands on: the visual lattice at four times its step, one mesh
+-- per cell. The detailed ground stays drawn and is left out of reloadCollision.
+function ROADS.collisionGround(roads, rect, step, heightAt, pause)
+  if not roads or not heightAt or not step or step <= 0 then return end
+  local fine = step * 4
+  local cell = math.max(64, fine)
+  local x0, y0 = math.floor(rect[1] / cell) * cell, math.floor(rect[2] / cell) * cell
+  local x1, y1 = math.ceil(rect[3] / cell) * cell, math.ceil(rect[4] / cell) * cell
+  for cy = y0, y1 - 1, cell do
+    for cx = x0, x1 - 1, cell do
+      roads.hooks.cell = {math.floor(cx / cell + 1e-6), math.floor(cy / cell + 1e-6), cell}
+      for y = cy, math.min(cy + cell, y1) - fine, fine do
+        for x = cx, math.min(cx + cell, x1) - fine, fine do
+          if x + fine > rect[1] and x < rect[3] and y + fine > rect[2] and y < rect[4] then
+            local h00, h10 = heightAt(x, y), heightAt(x + fine, y)
+            local h11, h01 = heightAt(x + fine, y + fine), heightAt(x, y + fine)
+            if h00 and h10 and h11 and h01 then
+              roads.polygon('col_ground', {{x, y, h00}, {x + fine, y, h10}, {x + fine, y + fine, h11}}, true)
+              roads.polygon('col_ground', {{x, y, h00}, {x + fine, y + fine, h11}, {x, y + fine, h01}}, true)
+            end
+          end
+        end
+      end
+      roads.hooks.cell = nil
+      if pause then pause() end
+    end
+  end
+end
+-- One quad of the building shell, in the cell of the wall's midpoint. The drawn facade
+-- (windows, a dozen pieces) stays visible and out of the collision rebuild.
+function ROADS.collisionWall(scene, a, b, bottom, top, step)
+  if not scene or not a or not b or top - bottom < .2 then return end
+  local size = math.max(64, (step or 16) * 4)
+  local mx, my = (a[1] + b[1]) * .5, (a[2] + b[2]) * .5
+  scene.hooks.cell = {math.floor(mx / size), math.floor(my / size), size}
+  scene.polygon('col_bldg', {{a[1], a[2], bottom}, {b[1], b[2], bottom}, {b[1], b[2], top}, {a[1], a[2], top}}, false)
+  scene.hooks.cell = nil
+end
+-- A tunnel the surface pass skips: a floor, a tube, a portal at each mouth that does not
+-- run on into another tunnel, and a ceiling light every 24 m.
+ROADS.portal = {side = .6, head = 5.2, thick = .4, material = 'fence_wall', light = 'lens_yellow', lamp = 24}
+function ROADS.portals(ctx)
+  local spec, strips, rect, face = ROADS.portal, ctx.strips or {}, ctx.rect, ctx.face
+  if not face or not rect then return end
+  local shared = {}
+  for _, strip in ipairs(strips) do
+    if ROADS.tunnel(strip.tags or {}) and strip.road and strip.road.nodes then
+      local nodes = strip.road.nodes
+      local a, b = nodes[1], nodes[#nodes]
+      if a ~= nil then shared[tostring(a)] = (shared[tostring(a)] or 0) + 1 end
+      if b ~= nil and b ~= a then shared[tostring(b)] = (shared[tostring(b)] or 0) + 1 end
+    end
+  end
+  local function inside(p)
+    return p and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4]
+  end
+  for _, strip in ipairs(strips) do
+    local pts, edge = strip.points, strip.edge
+    if ROADS.tunnel(strip.tags or {}) and edge and pts and #pts >= 2 then
+      local hw = (strip.hw or 4) + spec.side
+      local nodes = strip.road and strip.road.nodes or {}
+      local function mouth(k)
+        local id = k == 1 and nodes[1] or nodes[#nodes]
+        return id == nil or (shared[tostring(id)] or 0) <= 1
+      end
+      local function lift(p, z)
+        return {p[1], p[2], (p[3] or 0) + z}
+      end
+      for k = 1, #pts - 1 do
+        if inside(pts[k]) or inside(pts[k + 1]) then
+          local l0, r0 = edge(k, hw, 0), edge(k, -hw, 0)
+          local l1, r1 = edge(k + 1, hw, 0), edge(k + 1, -hw, 0)
+          local f0, f1 = edge(k, strip.hw or 4, 0), edge(k, -(strip.hw or 4), 0)
+          local g0, g1 = edge(k + 1, strip.hw or 4, 0), edge(k + 1, -(strip.hw or 4), 0)
+          face({f0, g0, g1, f1}, 0, 0, 1, strip.material or 'road_asphalt')
+          face({l0, l1, lift(l1, spec.head), lift(l0, spec.head)}, 0, 0, 0, spec.material)
+          face({r1, r0, lift(r0, spec.head), lift(r1, spec.head)}, 0, 0, 0, spec.material)
+          face({lift(l0, spec.head), lift(r0, spec.head), lift(r1, spec.head), lift(l1, spec.head)}, 0, 0, -1, spec.material)
+          local span = (strip.dist and strip.dist[k + 1] or 0) - (strip.dist and strip.dist[k] or 0)
+          local lit = strip.dist and math.floor((strip.dist[k] or 0) / spec.lamp) ~= math.floor((strip.dist[k + 1] or 0) / spec.lamp)
+          if lit or span >= spec.lamp then
+            local m = {(l0[1] + r1[1]) * .5, (l0[2] + r1[2]) * .5, (pts[k][3] or 0) + spec.head - .15}
+            face({{m[1] - .4, m[2], m[3]}, {m[1] + .4, m[2], m[3]}, {m[1] + .4, m[2] + .4, m[3]}, {m[1] - .4, m[2] + .4, m[3]}},
+              0, 0, -1, spec.light)
+          end
+        end
+      end
+      for _, endK in ipairs({1, #pts}) do
+        if mouth(endK) and inside(pts[endK]) then
+          local l, r = edge(endK, hw, 0), edge(endK, -hw, 0)
+          local z = pts[endK][3] or 0
+          local dx = (endK == 1 and pts[2][1] or pts[endK - 1][1]) - pts[endK][1]
+          local dy = (endK == 1 and pts[2][2] or pts[endK - 1][2]) - pts[endK][2]
+          local len = math.max(EPS, math.sqrt(dx * dx + dy * dy))
+          dx, dy = dx / len, dy / len
+          ROADS.box(face, spec.material, l[1], l[2], dx, dy, spec.thick, spec.thick, z, z + spec.head + .3, 1)
+          ROADS.box(face, spec.material, r[1], r[2], dx, dy, spec.thick, spec.thick, z, z + spec.head + .3, 1)
+          face({lift(l, spec.head), lift(r, spec.head), lift(r, spec.head + .35), lift(l, spec.head + .35)}, dx, dy, 0, spec.material)
+        end
+      end
+      if ctx.pause then ctx.pause() end
+    end
+  end
 end
 -- A foot bridge is the only foot way among the roads (fast_sources.foot_segments): a deck for
 -- people, with no sidewalks, no traffic and no say in the height of the roads round it.
@@ -1804,13 +1921,29 @@ function ROADS.guardRail(ctx, path)
         end
       end
     end
+    -- a steep bank: one retaining wall under the beam, and the posts reach that ground
+    local bankA, bankB
+    if ctx.beside and mine then
+      local ox, oy = -ty * behind, tx * behind
+      bankA = ctx.beside(a[1] + ox * 1.5, a[2] + oy * 1.5)
+      bankB = ctx.beside(b[1] + ox * 1.5, b[2] + oy * 1.5)
+      if bankA and bankB and (a[3] - rail.sink - bankA > .8 or b[3] - rail.sink - bankB > .8) then
+        face({{a[1] + ox * .3, a[2] + oy * .3, bankA}, {b[1] + ox * .3, b[2] + oy * .3, bankB},
+          {b[1] + ox * .3, b[2] + oy * .3, b[3]}, {a[1] + ox * .3, a[2] + oy * .3, a[3]}},
+          -oy, ox, 0, 'fence_wall')
+      else
+        bankA, bankB = nil, nil
+      end
+    end
     -- posts at 0, posts, 2 * posts, ... metres along the rail, each in the segment holding it
     while post <= along[k + 1] + EPS do
       if mine then
         local t = math.max(0, math.min(1, (post - along[k]) / math.max(EPS, along[k + 1] - along[k])))
         local off = (rail.thick / 2 + rail.post / 2) * behind
+        local z0 = a[3] + (b[3] - a[3]) * t - rail.sink
+        if bankA and bankB then z0 = math.min(z0, bankA + (bankB - bankA) * t) end
         ROADS.box(face, rail.material, a[1] + dx * t - ty * off, a[2] + dy * t + tx * off, tx, ty,
-          rail.post / 2, rail.post / 2, a[3] + (b[3] - a[3]) * t - rail.sink, a[3] + (b[3] - a[3]) * t + rail.height - .02, 1)
+          rail.post / 2, rail.post / 2, z0, a[3] + (b[3] - a[3]) * t + rail.height - .02, 1)
       end
       post = post + rail.posts
     end
@@ -2383,7 +2516,7 @@ function ROADS.embankmentRails(ctx)
         end
         close(dist[n])
         for _, rails in ipairs(paths) do
-          ROADS.guardRail({rect = ctx.rect, face = ctx.face, behind = sign}, rails)
+          ROADS.guardRail({rect = ctx.rect, face = ctx.face, behind = sign, beside = ctx.dem}, rails)
         end
       end
     end
@@ -10584,7 +10717,13 @@ local function build(cells, i, j, options)
           strip.nodes = strip.nodes or {}
           strip.nodes[k] = node
           local ux, uy = n[1] / nl * hw, n[2] / nl * hw
-          local zp, zn = (p[3] or 0) + lift - .01, (node[3] or 0) + lift - .01
+          -- a centimetre drop read as a knife edge and punctured tyres; a steep lip is
+          -- welded to one height, a gentle grade is left as the road solved it
+          local zp, zn = (p[3] or 0) + lift, (node[3] or 0) + lift
+          if ROADS.seamLip(zn - zp, math.sqrt((p[1] - node[1]) ^ 2 + (p[2] - node[2]) ^ 2)) then
+            zp = (zp + zn) * .5
+            zn = zp
+          end
           local quad = {{p[1] + ux, p[2] + uy, zp}, {p[1] - ux, p[2] - uy, zp},
             {node[1] - ux, node[2] - uy, zn}, {node[1] + ux, node[2] + uy, zn}}
           strip.corridors[k] = quad
@@ -10762,6 +10901,7 @@ local function build(cells, i, j, options)
     ROADS.unitedDecks({strips = strips, rect = rect, ground = ground, face = face, roads = roads,
       lift = lift, pause = pause, sidewalk = tune.sidewalk, onOther = onOtherSurface})
     ROADS.substructure({strips = strips, rect = rect, ground = ground, face = face, pause = pause, sidewalk = tune.sidewalk})
+    ROADS.portals({strips = strips, rect = rect, face = face, pause = pause})
     ROADS.embankmentRails({strips = strips, rect = rect, dem = #terrain > 0 and demAt or nil, face = face, pause = pause, sidewalk = tune.sidewalk,
       crowded = function(x, y, road, clear)
         for _, segment in ipairs(segmentBins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE) do
@@ -11672,6 +11812,7 @@ local function build(cells, i, j, options)
     end
     pause()
   end
+  if not distant then ROADS.collisionGround(roads, rect, step, ground, pause) end
   local function manifest(collector, layer)
     local mats, total = {}, 0
     for material in pairs(collector.used) do mats[#mats + 1] = material end
@@ -12039,6 +12180,9 @@ local function build(cells, i, j, options)
         for k, piece in ipairs(walls) do
           local a, b, length, hide = piece[1], piece[2], piece[3], piece[5]
           local wallKind = kind
+          if not distant and not options.far and not hide and length > .4 then
+            ROADS.collisionWall(scene, a, b, bottom, top, step)
+          end
           if piece.full < 16 and (kind:find('wall_pnl_', 1, true) == 1 or kind:find('wall_lgg_', 1, true) == 1 or kind:find('wall_brk_', 1, true) == 1) then wallKind = kind .. '_end' end
           local door = doors and ((use == 'garages' and length >= 8) or (use == 'garage' and length <= 4.5))
           local scale = BLD.facadeScale(wallKind)
@@ -12263,7 +12407,7 @@ local function build(cells, i, j, options)
         for _, piece in ipairs(ROADS.besideRoads(strips, run, tune.sidewalk)) do
           local path = {}
           for k, p in ipairs(piece) do path[k] = {p[1], p[2], 0} end
-          ROADS.guardRail({rect = rect, ground = ground, face = function(poly, ox, oy, oz, material)
+          ROADS.guardRail({rect = rect, ground = ground, beside = ground, face = function(poly, ox, oy, oz, material)
             ROADS.orient(scene.polygon, material, poly, ox, oy, oz)
           end}, path)
         end
@@ -13786,6 +13930,7 @@ M.shopMark = BLD.shopMark
 M.shopHeight = BLD.height
 M.coverIndex, M.hiddenRuns, M.wallPieces = BLD.cover, BLD.hidden, BLD.pieces
 M.shopStyle = BLD.shopStyle
+M.seamLip = ROADS.seamLip
 M.triangulate = triangulate
 M.clip = clip
 M.EDGE_MAPS = EDGE_MAPS

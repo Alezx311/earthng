@@ -226,8 +226,8 @@ const FLAT_ROOFS: [([u8; 3], u32); 5] = [
     ([96, 96, 94], 30),    // bitumen
     ([122, 120, 116], 25), // concrete
     ([82, 84, 86], 20),    // dark membrane
-    ([146, 144, 138], 15), // gravel
-    ([170, 170, 168], 10), // light membrane
+    ([118, 116, 112], 15), // gravel (a lighter pad read as snow from the air)
+    ([132, 130, 126], 10), // membrane, kept well under a snow grey
 ];
 
 fn pick(palette: &[([u8; 3], u32)], h: u64) -> [u8; 3] {

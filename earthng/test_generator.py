@@ -685,6 +685,36 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(rails(21), [])                               # a low bank: none
         self.assertEqual(rails(24, register=True), [])                # the register knows better
         self.assertEqual(rails(24, highway='residential'), [])
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 6, 'points': [[0, 250, 24], [500, 250, 24]],
+                'tags': {'highway': 'trunk_link', 'oneway': 'yes', 'sidewalk': 'no'}}
+        scene = self.build([{'roads': [road], 'terrain': terrain}])[1]
+        wall = [p[2] for t in self.triangles(scene, 'e2rf_fence_wall') for p in t]
+        self.assertTrue(wall)
+        self.assertLess(min(wall), 21)                                # the posts reach the bank
+
+    def test_a_vertical_lip_is_a_puncture_and_a_grade_is_not(self):
+        self.assertTrue(self.generator.seamLip(0.05, 0.05))
+        self.assertFalse(self.generator.seamLip(0.05, 0.5))
+
+    def test_the_collision_ground_is_coarser_than_the_drawn_lattice(self):
+        source = [{'terrain': {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [10] * 4}}]
+        road = self.build(source, land=False)[0]
+        ground = list(self.triangles(road, 'e2rf_ground'))
+        proxy = list(self.triangles(road, 'e2rf_col_ground'))
+        self.assertTrue(ground and proxy)
+        self.assertLess(len(proxy), len(ground) / 4)
+        for item, _mesh in self.meshes(road, 'e2rf_col_ground'):
+            self.assertTrue(item.proxy)
+            self.assertGreaterEqual(float(item.cell[3]), 64)
+
+    def test_a_tunnel_has_a_portal_a_tube_and_a_floor(self):
+        road = {'id': 't', 'nodes': ['a', 'b'], 'width': 8,
+                'points': [[100, 250, 0], [400, 250, 0]],
+                'tags': {'highway': 'residential', 'tunnel': 'yes', 'sidewalk': 'no'}}
+        scene = self.build([{'roads': [road]}], land=False)[1]
+        self.assertTrue(list(self.triangles(scene, 'e2rf_fence_wall')))
+        self.assertTrue(list(self.triangles(scene, 'e2rf_lens_yellow')))
+        self.assertTrue(list(self.triangles(scene, 'e2rf_road')))
 
     def test_a_guard_rail_rounds_its_corners_and_shades_smooth(self):
         rail = {'id': 'g', 'kind': 'guard_rail', 'tags': {'barrier': 'guard_rail'},

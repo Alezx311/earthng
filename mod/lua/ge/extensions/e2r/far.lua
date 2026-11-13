@@ -39,7 +39,7 @@ local FAR = {
   LANDMARK_MAX = 1800,
   R_EFF = 6371000 / (1 - .13),  -- the Earth's radius bent by standard refraction (k = 0.13), m
   VIEW = 100000,           -- nothing is drawn past this, m (the far plane)
-  FOG = 0.000032,          -- haze: 27 % at 10 km, 47 % at 20 km, 96 % at 100 km
+  FOG = 0.00006,           -- haze, the density Ticino settled on (6e-5): 45 % at 10 km, 70 % at 20 km
   FOG_HEIGHT = 2500,       -- the haze thins with height over this (fogAtmosphereHeight)
   CLEAR = 2000,            -- visibleDistance pad past VIEW
   WHITE = '/levels/e2r_world/art/far_white.png',
@@ -68,7 +68,7 @@ local CLASS = {
   {'e2rfar_meadow', {.50, .66, .32}, .95},
   {'e2rfar_forest', {.10, .32, .12}, .95},
   {'e2rfar_orchard', {.36, .52, .22}, .95},
-  {'e2rfar_town', {.62, .58, .52}, .9},
+  {'e2rfar_town', {.46, .42, .38}, .9},
   {'e2rfar_water', {.22, .52, .74}, .12},
   {'e2rfar_paved', {.50, .50, .48}, .9},
   {'e2rfar_park', {.33, .45, .26}, .95},
@@ -83,8 +83,8 @@ local FOREST, TOWN, PAVED, WATER, SEA, NO_DATA = 3, 5, 7, 6, 13, 255
 local EXTRA = {
   {'e2rfar_canopy', {.08, .26, .10}, .95},
   {'e2rfar_canopy_side', {.06, .18, .07}, .95},
-  {'e2rfar_roofs', {.52, .50, .47}, .85},
-  {'e2rfar_walls', {.62, .60, .56}, .85},
+  {'e2rfar_roofs', {.40, .36, .33}, .85},
+  {'e2rfar_walls', {.50, .46, .42}, .85},
   {'e2rfar_tower', {.42, .41, .39}, .8},
   {'e2rfar_tower_top', {.28, .28, .28}, .8},
 }
@@ -611,6 +611,53 @@ local function buildLevel(L, P, cam, pause, out)
     end
     pause()
   end
+  -- A coarse edge is never left under the finer ground beside it: a rim node rises to the
+  -- highest sample along its step (the fine level has a point in the middle of it), and the
+  -- skirt later drops to the lowest, so the seam cannot open into a dark gap or a floating lip.
+  -- raw DEM, then the same bend the node already has. Comparing bent samples would lift a rim
+  -- toward a nearer, less curved point and open a lip above the ground.
+  local function rawAt(x, y)
+    local R, fx, fy = rasterAt(x, y)
+    return R and heightOf(R, fx, fy)
+  end
+  local function place(x, y, raw)
+    if circle then raw = raw - nearDrop(sqrt((x - circle[1]) ^ 2 + (y - circle[2]) ^ 2), circle[3]) end
+    return bent(raw, x, y, cam)
+  end
+  local function terrainAt(x, y)
+    local raw = rawAt(x, y)
+    if not raw then return nil end
+    return place(x, y, raw)
+  end
+  if hole then
+    local function touches(a, b, wantIn)
+      if a < 0 or b < 0 or a >= nx or b >= ny then return false end
+      local inside = inHole[b * nx + a + 1]
+      if wantIn then return inside end
+      return Q[b * nx + a + 1] and not inside
+    end
+    for b = 0, ny do
+      for a = 0, nx do
+        local k = b * w + a + 1
+        local h = H[k]
+        if h then
+          local inn = touches(a - 1, b - 1, true) or touches(a, b - 1, true) or touches(a - 1, b, true) or touches(a, b, true)
+          local out = touches(a - 1, b - 1, false) or touches(a, b - 1, false) or touches(a - 1, b, false) or touches(a, b, false)
+          if inn and out then
+            local x, y = sq[1] + a * s, sq[2] + b * s
+            local raw, hi = rawAt(x, y), rawAt(x, y)
+            if hi then
+              for _, d in ipairs({{-1, 0}, {1, 0}, {0, -1}, {0, 1}}) do
+                local z = rawAt(x + d[1] * s * .5, y + d[2] * s * .5)
+                if z and z > hi then hi = z end
+              end
+              if raw and hi > raw + .05 then H[k] = place(x, y, hi) end
+            end
+          end
+        end
+      end
+    end
+  end
   -- Textured land swells where forests and towns stand: a node rises by the mean lift of the
   -- quads round it, so a forest edge is a slope one quad wide and a wood a soft dome, not a box.
   -- No lift on a level's outer edge or its hole rim (the levels meet there), nor where level 0
@@ -642,15 +689,23 @@ local function buildLevel(L, P, cam, pause, out)
       end
     end
   end
-  -- normals from the grid
+  -- normals from central differences. Clamping a node to the level's own edge made the slope
+  -- there half of the true one (or zero): a grid of dark lines on every level boundary. A sample
+  -- past the edge comes from the raster, the same height the next level draws. One side missing
+  -- is a one-sided difference, not a difference over two steps that ends on the node itself.
   local Nn = {}
-  local function hAt(a, b)
-    a, b = max(0, min(nx, a)), max(0, min(ny, b))
-    return H[b * w + a + 1]
+  local function grade(h, hm, hp)
+    if hm and hp then return (hp - hm) / (2 * s) end
+    if hp and h then return (hp - h) / s end
+    if hm and h then return (h - hm) / s end
+    return 0
   end
-  local function hlAt(a, b)
-    a, b = max(0, min(nx, a)), max(0, min(ny, b))
-    return HL[b * w + a + 1]
+  local function sampleH(a, b, lifted)
+    if a >= 0 and b >= 0 and a <= nx and b <= ny then
+      local h = (lifted and HL or H)[b * w + a + 1]
+      if h then return h end
+    end
+    return terrainAt(sq[1] + a * s, sq[2] + b * s)
   end
   -- ground
   -- meshes per band of BAND rows: a band is one object, made in a frame of its own
@@ -676,8 +731,8 @@ local function buildLevel(L, P, cam, pause, out)
     local n = Nn[k]
     if not n then
       local h = H[k]
-      local hl, hr, hd, hu = hAt(a - 1, b) or h, hAt(a + 1, b) or h, hAt(a, b - 1) or h, hAt(a, b + 1) or h
-      local gx, gy = (hr - hl) / (2 * s), (hu - hd) / (2 * s)
+      local hl, hr, hd, hu = sampleH(a - 1, b, false), sampleH(a + 1, b, false), sampleH(a, b - 1, false), sampleH(a, b + 1, false)
+      local gx, gy = grade(h, hl, hr), grade(h, hd, hu)
       local l = sqrt(gx * gx + gy * gy + 1)
       n = POINT(-gx / l, -gy / l, 1 / l)
       Nn[k] = n
@@ -700,8 +755,8 @@ local function buildLevel(L, P, cam, pause, out)
     local n = TN[k]
     if not n then
       local h = HL[k]
-      local hl, hr, hd, hu = hlAt(a - 1, b) or h, hlAt(a + 1, b) or h, hlAt(a, b - 1) or h, hlAt(a, b + 1) or h
-      local gx, gy = (hr - hl) / (2 * s), (hu - hd) / (2 * s)
+      local hl, hr, hd, hu = sampleH(a - 1, b, true), sampleH(a + 1, b, true), sampleH(a, b - 1, true), sampleH(a, b + 1, true)
+      local gx, gy = grade(h, hl, hr), grade(h, hd, hu)
       local l = sqrt(gx * gx + gy * gy + 1)
       n = POINT(-gx / l, -gy / l, 1 / l)
       TN[k] = n
@@ -789,7 +844,16 @@ local function buildLevel(L, P, cam, pause, out)
   end
   -- skirts down from the rim of the hole, facing the camera inside it
   if hole then
-    local depth = M.skirt(L)
+    local skirt = M.skirt(L)
+    -- the skirt reaches the lowest ground along that edge, and at least the curvature step
+    local function edgeDepth(x0, y0, x1, y1, top)
+      local lo = top
+      for t = 0, 4 do
+        local z = terrainAt(x0 + (x1 - x0) * t / 4, y0 + (y1 - y0) * t / 4)
+        if z and z < lo then lo = z end
+      end
+      return max(skirt, top - lo)
+    end
     for b = 0, ny - 1 do
       band = floor(b / FAR.BAND)
       for a = 0, nx - 1 do
@@ -797,20 +861,41 @@ local function buildLevel(L, P, cam, pause, out)
         local c = Q[k]
         local R = RQ[k]
         if c and R then
-          if a > 0 and inHole[k - 1] then twall(R, a, b + 1, a, b, depth) end
-          if a < nx - 1 and inHole[k + 1] then twall(R, a + 1, b, a + 1, b + 1, depth) end
-          if b > 0 and inHole[k - nx] then twall(R, a, b, a + 1, b, depth) end
-          if b < ny - 1 and inHole[k + nx] then twall(R, a + 1, b + 1, a, b + 1, depth) end
+          local function td(pa, pb, qa, qb)
+            local px, py = sq[1] + pa * s, sq[2] + pb * s
+            local qx, qy = sq[1] + qa * s, sq[2] + qb * s
+            local hp, hq = HL[pb * w + pa + 1], HL[qb * w + qa + 1]
+            return max(edgeDepth(px, py, qx, qy, hp), edgeDepth(px, py, qx, qy, hq))
+          end
+          if a > 0 and inHole[k - 1] then twall(R, a, b + 1, a, b, td(a, b + 1, a, b)) end
+          if a < nx - 1 and inHole[k + 1] then twall(R, a + 1, b, a + 1, b + 1, td(a + 1, b, a + 1, b + 1)) end
+          if b > 0 and inHole[k - nx] then twall(R, a, b, a + 1, b, td(a, b, a + 1, b)) end
+          if b < ny - 1 and inHole[k + nx] then twall(R, a + 1, b + 1, a, b + 1, td(a + 1, b + 1, a, b + 1)) end
         elseif c then
           local name = CLASS[c] and CLASS[c][1] or CLASS[0][1]
           local m = mesh(name)
           local x0, y0 = sq[1] + a * s - ox, sq[2] + b * s - oy
           local x1, y1 = x0 + s, y0 + s
           local h00, h10, h11, h01 = H[b * w + a + 1], H[b * w + a + 2], H[(b + 1) * w + a + 2], H[(b + 1) * w + a + 1]
-          if a > 0 and inHole[k - 1] then wall(m, x0, y1, h01 - depth, h01, x0, y0, h00 - depth, h00) end
-          if a < nx - 1 and inHole[k + 1] then wall(m, x1, y0, h10 - depth, h10, x1, y1, h11 - depth, h11) end
-          if b > 0 and inHole[k - nx] then wall(m, x0, y0, h00 - depth, h00, x1, y0, h10 - depth, h10) end
-          if b < ny - 1 and inHole[k + nx] then wall(m, x1, y1, h11 - depth, h11, x0, y1, h01 - depth, h01) end
+          local function wd(xa, ya, za, xb, yb, zb)
+            return max(edgeDepth(xa + ox, ya + oy, xb + ox, yb + oy, za), edgeDepth(xa + ox, ya + oy, xb + ox, yb + oy, zb))
+          end
+          if a > 0 and inHole[k - 1] then
+            local d0, d1 = wd(x0, y0, h00, x0, y1, h01), wd(x0, y0, h00, x0, y1, h01)
+            wall(m, x0, y1, h01 - d1, h01, x0, y0, h00 - d0, h00)
+          end
+          if a < nx - 1 and inHole[k + 1] then
+            local d0, d1 = wd(x1, y0, h10, x1, y1, h11), wd(x1, y0, h10, x1, y1, h11)
+            wall(m, x1, y0, h10 - d0, h10, x1, y1, h11 - d1, h11)
+          end
+          if b > 0 and inHole[k - nx] then
+            local d0, d1 = wd(x0, y0, h00, x1, y0, h10), wd(x0, y0, h00, x1, y0, h10)
+            wall(m, x0, y0, h00 - d0, h00, x1, y0, h10 - d1, h10)
+          end
+          if b < ny - 1 and inHole[k + nx] then
+            local d0, d1 = wd(x1, y1, h11, x0, y1, h01), wd(x1, y1, h11, x0, y1, h01)
+            wall(m, x1, y1, h11 - d0, h11, x0, y1, h01 - d1, h01)
+          end
         end
       end
       if b % 16 == 15 then pause() end
@@ -862,7 +947,13 @@ local function buildLandmarks(p, cam, minD, pause, out)
       local u, v = uv[1] * ha, uv[2] * hb
       corners[i] = {x + u * c - v * sn, y + u * sn + v * c}
     end
-    local z0, z1 = z - 3, z + h
+    -- the box stands on the coarse ground. A base taken from the fine valley floor sank
+    -- the building into the coarser surface that bridges the valley.
+    local Rg, fx, fy = rasterAt(q[1], q[2])
+    local gh = Rg and heightOf(Rg, fx, fy)
+    local gz = gh and bent(gh, q[1], q[2], cam)
+    local z0 = (gz and max(z, gz) or z) - 1
+    local z1 = z0 + h
     for i = 1, 4 do
       local P, Qp = corners[i], corners[i % 4 + 1]
       wall(m, P[1], P[2], z0, z1, Qp[1], Qp[2], z0, z1)
@@ -877,8 +968,16 @@ end
 
 -- --- the game side -----------------------------------------------------------------------------
 
--- the material of one region's colour map: its name, nil when the engine refuses it
-local texDone = {}
+-- the material of one region's colour map: its name, nil when the engine refuses it.
+-- A material bound while its texture is still converting stays on the placeholder, so the
+-- same file is applied again for a few seconds after the first bind (M.refreshTextures).
+local texDone, texSpecs = {}, {}
+local function applyTex(spec)
+  return pcall(function()
+    jsonWriteFile(spec.file, spec.defs, false)
+    loadJsonMaterialsFile('/' .. spec.file)
+  end)
+end
 function M.texMaterial(id, path, roughPath)
   local safe = tostring(id):gsub('[^%w]', '_')
   local name = 'e2rfar_tex_' .. safe
@@ -895,13 +994,14 @@ function M.texMaterial(id, path, roughPath)
   local horizon = 'e2rf_farmap_' .. safe
   defs[horizon] = {name = horizon, mapTo = horizon, class = 'Material', version = 1.5, castShadows = false,
     Stages = {stage(), {}, {}, {}}}
-  local ok = pcall(function()
-    local file = 'e2r_world/far_tex_' .. name .. '.json'
-    jsonWriteFile(file, defs, false)
-    loadJsonMaterialsFile('/' .. file)
-  end)
+  local spec = {file = 'e2r_world/far_tex_' .. name .. '.json', defs = defs, path = path}
+  local ok = applyTex(spec)
+  if ok then texSpecs[name] = spec end
   texDone[name] = ok and name or false
   return ok and name or nil
+end
+function M.refreshTextures()
+  for _, spec in pairs(texSpecs) do applyTex(spec) end
 end
 
 local function materials()
@@ -1021,6 +1121,11 @@ function M.update(p, source, holeR, track, enabled)
     RS = {list = {}, byRegion = {}, source = source, pause = function() end}
     materials()
     active = true
+  end
+  -- re-bind the colour map a few times: the first bind can land while the texture converts
+  if texSpecs and os.clock() - (M.texAt or 0) > 1 and (M.texTries or 0) < 8 then
+    M.texAt, M.texTries = os.clock(), (M.texTries or 0) + 1
+    M.refreshTextures()
   end
   if RS.empty then
     stats.state = 'no far data'

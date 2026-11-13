@@ -63,6 +63,16 @@ class GateTests(unittest.TestCase):
         self.assertTrue(any(went))
         self.assertGreater(int(self.lua.eval('g.timeouts')), 0)
 
+    def test_yield_holds_the_slot_without_counting(self):
+        for _ in range(70):
+            self.frame(10, want=False)
+        self.lua.execute('g:beginFrame(10, false)')
+        self.assertTrue(self.lua.eval('g:open()'))
+        opened = int(self.lua.eval('g.opened'))
+        self.lua.execute('g:yield()')
+        self.assertEqual(int(self.lua.eval('g.opened')), opened)
+        self.assertFalse(self.lua.eval('g:open()'))
+
     def test_open_while_paused(self):
         self.assertTrue(self.frame(200, paused=True))
         self.assertTrue(self.lua.eval('g:open()'))

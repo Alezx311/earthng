@@ -174,7 +174,7 @@ local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128, sceneLag =
   roadAhead = 18, roadUrgent = 8, roadFloorMs = 2.5,
   -- the spawn budget of a frame the gate opens (it opens every QUIET + 1 frames at most): the
   -- trickle of BUDGET_MS a frame in one go, the engine's cost of it landing in a single frame
-  burstMs = 10,
+  burstMs = 20,
   -- Until the car stands on the road (the landing: the player waits and the camera hangs still)
   -- the generator and the spawn queue take most of the frame instead of BUDGET_MS: at 4 ms a
   -- frame the nine tiles of a landing in central Kyiv took 82 s, most of them idle. 60 ms: the
@@ -896,9 +896,13 @@ local function spawnItem(it, group, pause, tile, layer)
     group:addObject(obj.obj)
     obj:createMesh({meshes})
     obj:setPosition(vec3(it.pos[1], it.pos[2], it.pos[3]))
+    -- a collision proxy is invisible until a rebuild unhides the cells round the car
+    if it.proxy then obj:setHidden(true) end
     if NATIVE and tile then
       S.coll = S.coll or collision.new()
-      S.coll:track(tile, obj:getID(), not (tile.far or tile.horizon) and collision.quiet(meshes, layer), it.triangles, layer)
+      S.coll:track(tile, obj:getID(),
+        not (tile.far or tile.horizon) and not it.proxy and collision.quiet(meshes, layer),
+        it.triangles, layer, it.proxy and it.cell)
     end
     if it.lens and M.signals then M.signals.addMesh(obj:getID(), it.lens, it.colour) end
     local ms = t:stop()
@@ -2800,6 +2804,21 @@ function LIMIT.collisionRadius(v)
   return math.max(650, math.min(1600, speed * ((S.deliveryP99 or 2) + 10) + 400))
 end
 
+-- true when this open gate may insert into the scene. A road due inside roadUrgent always
+-- may. Everything else waits a second since the last packet, and an early slot is yielded
+-- so the gate's next change is still two calm frames away.
+function LIMIT.allowSpawn(gate)
+  if not gate then return true end
+  local head = S.queue and S.queue[1]
+  local wanted = S.status and S.status.stream and S.status.stream.wanted
+  local urgent = head and not (head.scene or head.grass or head.far or head.horizon)
+    and wanted and (wanted[head.key] or 1e6) < LIMIT.roadUrgent
+  S.urgentRoad = urgent and true or false
+  if S.urgentRoad or S.now - (S.burstAt or -1e9) >= 1 then return true end
+  gate:yield()
+  return false
+end
+
 -- Natively a rebuild keeps only the tiles round the car, a parked car and the traffic
 -- (collision.lua: central Kyiv 133 + 34 ms -> ~40 + 12 ms). Collision has to stay ahead of
 -- the next rebuild, not of the generator: the car's reach grows with speed, and the tiles it
@@ -2953,12 +2972,12 @@ end
 
 -- Street lights of a night pack: a pool of lights moved onto the lamps nearest the camera
 -- (env.lights: colors, radius, brightness, height, count). Lamps are noted as tiles spawn them.
--- A lamp is a SpotLight aimed down, as the game's own Italy level lights its road lamps (range
--- 30-40 m, a wide cone of 120/165 degrees, brightness = lumen / 5000; switzerlandNG calibrated
--- it in the game): a PointLight of 20 m lit a pool under each lamp and left the road between
--- two lamps dark. env.lights.spot = false keeps the PointLights.
+-- A lamp is a SpotLight aimed down, as the game's own Italy level lights its road lamps
+-- (range 30, cone 100/140 degrees, brightness = lumens / 5000; 6000 lm is the pool's lamp).
+-- A PointLight lit a pool under each lamp and left the road between two lamps dark.
+-- env.lights.spot = false keeps the PointLights.
 -- (LIMIT.lamp: world.lua's chunk is at Lua's 200 locals)
-LIMIT.lamp = {range = 40, inner = 120, outer = 165, brightness = 1.2,
+LIMIT.lamp = {range = 30, inner = 100, outer = 140, brightness = 6000 / 5000,
   -- the cone's axis is the light's local +Y: a quarter turn about x points it at the ground
   -- (used where quatFromDir is missing, see lightsStep)
   down = {-0.70710678, 0, 0, 0.70710678}}
@@ -4805,6 +4824,44 @@ local function drawTune()
   S.tuneApplyNow = nil
 end
 
+-- The stock big map (M) shows only tiles the level has loaded. Ours is the planet page:
+-- click lands there (the stream follows), it does not teleport the car into an empty world.
+function LIMIT.bigMapHook()
+  S.bigHook = true
+  local ext = rawget(_G, 'freeroam_bigMapMode') or rawget(_G, 'freeroam_bigMap')
+  if type(ext) ~= 'table' then S.bigKey = true; return end
+  local function open() S.bigMap = not S.bigMap end
+  if ext.toggleBigMap then ext.toggleBigMap = open end
+  if ext.enterBigMap then ext.enterBigMap = open end
+end
+
+function LIMIT.bigMapKey()
+  if not im or not im.IsKeyPressed(im.GetKeyIndex(im.Key_M)) then return end
+  local io = im.GetIO()
+  if io and io.WantTextInput then return end
+  S.bigMap = not S.bigMap
+end
+
+function LIMIT.drawBigMap()
+  local io = im.GetIO()
+  local w, h = io.DisplaySize.x, io.DisplaySize.y
+  im.SetNextWindowPos(im.ImVec2(0, 0), im.Cond_Always)
+  im.SetNextWindowSize(im.ImVec2(w, h), im.Cond_Always)
+  local flags = im.WindowFlags_NoTitleBar + im.WindowFlags_NoResize + im.WindowFlags_NoMove + im.WindowFlags_NoCollapse
+  M.winguard.begin(im, 'EarthNG##bigmap', flags)
+  S.big = S.big or {center = {lat = S.center.lat, lon = S.center.lon}, zoom = S.zoom or 12, follow = false}
+  if not S.big.onClick then
+    S.big.onClick = function(lat, lon)
+      goTo(lat, lon, S.big.zoom or 12)
+      land()
+      S.bigMap = false
+    end
+  end
+  drawMap(w, math.max(1, h - 36), S.big)
+  if im.Button(L('Закрити', 'Close')) or im.IsKeyPressed(im.GetKeyIndex(im.Key_Escape)) then S.bigMap = false end
+  im.End()
+end
+
 local function drawWindow()
   if test and test.clean then return end   -- a clean screen for recorded video
   if M.location and S.location and S.state == 'driving' and not S.locationOff then
@@ -5783,6 +5840,9 @@ function M.onUpdate(dtReal, dtSim)
   end
   local wkb, wt = collectgarbage('count'), hptimer()
   drawWindow()
+  if not S.bigHook then LIMIT.bigMapHook() end
+  if S.bigKey then LIMIT.bigMapKey() end
+  if S.bigMap then LIMIT.drawBigMap() end
   -- a setting the widget (or anything else) changed reaches the UI app within POLL_EVERY s
   if M.options then M.options.poll(S.now) end
   if S.prof then profAdd('window', wt:stop(), collectgarbage('count') - wkb) end
@@ -5874,7 +5934,10 @@ function M.tick(dt)
     end
     local tColl = timer:stopAndReset()
     local kb2 = collectgarbage('count')
-    if work and not changed then
+    -- props and scenes land as one 20 ms packet a second; a road the car is about to reach
+    -- still spawns on the open gate. An idle slot is yielded so the next change waits.
+    if work and not changed and LIMIT.allowSpawn(gate) then
+      if gate and not S.urgentRoad then S.burstAt = S.now end
       if stepQueue(gate and LIMIT.burstMs or nil) then changed = true end
       local p, vel = focus()
       -- 60 idle / 180 at speed / 240 when many groups wait (was GRAVE_PER_FRAME); a gated

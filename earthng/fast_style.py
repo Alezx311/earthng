@@ -937,6 +937,17 @@ def dds(obj):
 
 
 MATERIALS = dds({'e2rf_' + k: material(k) for k in KINDS})
+
+
+def _proxy(name, source):
+    """An invisible collision stand-in. Same maps as `source`, its own material name."""
+    src = MATERIALS['e2rf_' + source]
+    stage0 = dict(src['Stages'][0])
+    return {**src, 'name': name, 'mapTo': name, 'Stages': [stage0, *src['Stages'][1:]]}
+
+
+MATERIALS['e2rf_col_ground'] = _proxy('e2rf_col_ground', 'ground')
+MATERIALS['e2rf_col_bldg'] = _proxy('e2rf_col_bldg', 'ground')
 for _kind, _glow in LENS.items():
     MATERIALS['e2rf_' + _kind]['Stages'][0]['emissiveFactor'] = [c * 4 for c in _glow]
 # The tree shapes' own materials (game textures under /assets): this level does not define

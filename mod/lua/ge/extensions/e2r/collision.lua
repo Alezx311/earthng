@@ -2,7 +2,13 @@
 -- the scene, whatever its group, flags or material (~0.27 ms per 1000 triangles: central Kyiv
 -- 116-145 ms, plus 20-30 ms of physics the next frame). A hidden object is left out, and stays
 -- out once shown again until the next rebuild (night 18.10 collision probe), so each rebuild
--- hides, for its duration only, what the car cannot touch:
+-- hides, for its duration only, what the car cannot touch.
+--
+-- The ground and the building shells the car can actually meet are separate invisible meshes
+-- (generator col_ground / col_bldg): the ground is the lattice at four times the visual step,
+-- the shell is one quad per wall instead of the windowed facade. A rebuild keeps the proxy
+-- cells in the 3x3 around the car (and the other focus points) and leaves the detailed
+-- ground and facade walls out. Roads stay the meshes they are drawn with.
 --   - the horizon, and far tiles out of the car's reach (Kyiv: 145 -> 67 ms);
 --   - near tiles out of that reach too: they are rebuilt with collision as the car comes;
 --   - markings and edge decals (mm to cm over the road and verge), roofs, and the scene's ground covers: areas and paths
@@ -32,15 +38,42 @@ for _, kind in ipairs({'roof', 'roof_tile', 'roof_metal', 'roof_sheet', 'roof_mt
   QUIET.scene['e2rf_' .. kind] = true
 end
 M.QUIET = QUIET
+-- the detailed ground the road layer draws. The coarse proxy (e2rf_col_ground) collides instead,
+-- so these stay out of the rebuild. Roads, kerbs and sidewalks are not in this set.
+local TERRAIN = {}
+for _, kind in ipairs({'ground', 'meadow', 'grass', 'grass_dry', 'grass_lush', 'earth', 'park', 'forest',
+    'farmland', 'orchard', 'vineyard', 'heath', 'scrub', 'wetland', 'bare_ground', 'beach', 'bare_rock',
+    'scree', 'sand', 'desert', 'dune', 'steppe', 'dry_grass', 'tundra', 'alpine', 'snow', 'snow_edge'}) do
+  TERRAIN['e2rf_' .. kind] = true
+end
 
 -- true when no mesh of a near object ('road' or 'scene' layer) needs collision
 function M.quiet(meshes, layer)
   local set = QUIET[layer]
   if not set or not meshes or #meshes == 0 then return false end
   for _, mesh in ipairs(meshes) do
-    if not set[mesh.material] then return false end
+    local name = mesh.material or ''
+    -- the proxies are the collision; a facade wall (e2rf_wall_*) is drawn, the shell collides
+    if name == 'e2rf_col_ground' or name == 'e2rf_col_bldg' then return false end
+    local skip = set[name]
+      or (layer == 'road' and (TERRAIN[name] or name:sub(1, 9) == 'e2rf_cut_'))
+      or (layer == 'scene' and name:sub(1, 10) == 'e2rf_wall_')
+    if not skip then return false end
   end
   return true
+end
+
+-- a proxy cell {ix, iy, size} is kept when a focus point lies in its 3x3
+function M.nearCell(cell, points)
+  if not cell then return false end
+  if not points or #points == 0 then return true end
+  local size = cell[3] or 64
+  if size < 1 then size = 64 end
+  for _, q in ipairs(points) do
+    local cx, cy = math.floor(q[1] / size), math.floor(q[2] / size)
+    if math.abs(cx - cell[1]) <= 1 and math.abs(cy - cell[2]) <= 1 then return true end
+  end
+  return false
 end
 
 -- distance from (x, y) to the owner's tile square; nil for owners without a tile
@@ -89,7 +122,18 @@ function M.new()
   -- owner: a near tile {i, j}, a far tile {i, j, far = true} or a horizon block {horizon = true};
   -- dropped owners (owner.dropped) are graves until the engine has deleted their objects
   -- triangles, layer (optional): what a rebuild keeps, for the automation report (lastKept)
-  function self:track(owner, id, quiet, triangles, layer)
+  -- cell: {ix, iy, size} of an invisible proxy mesh (kept only in the 3x3 round the car)
+  function self:track(owner, id, quiet, triangles, layer, cell)
+    if cell then
+      local list = owner.proxyIds
+      if not list then list = {}; owner.proxyIds = list end
+      list[#list + 1] = id
+      local cells = owner.proxyCell
+      if not cells then cells = {}; owner.proxyCell = cells end
+      cells[id] = cell
+      self.owners[owner] = true
+      return
+    end
     local key = quiet and 'quietIds' or (layer == 'scene' and 'sceneIds') or 'solidIds'
     local list = owner[key]
     if not list then list = {}; owner[key] = list end
@@ -121,8 +165,28 @@ function M.new()
   -- find(id) -> object or nil; reload() runs the engine rebuild. Everything hidden here is
   -- shown again even when reload() fails, so a failed rebuild cannot blank the world.
   function self:rebuild(points, size, find, reload)
-    local hidden, solid, scenes, kept = {}, 0, 0, {}
+    local hidden, opened, solid, scenes, kept = {}, {}, 0, 0, {}
     for owner in pairs(self.owners) do
+      if owner.proxyIds then
+        local cells, n, k = owner.proxyCell, #owner.proxyIds, 1
+        while k <= n do
+          local id = owner.proxyIds[k]
+          local obj = find(id)
+          if obj then
+            if M.nearCell(cells and cells[id], points) then
+              if obj:isHidden() then obj:setHidden(false); opened[#opened + 1] = obj end
+            elseif not obj:isHidden() then
+              obj:setHidden(true)
+            end
+            k = k + 1
+          else
+            owner.proxyIds[k] = owner.proxyIds[n]
+            owner.proxyIds[n] = nil
+            if cells then cells[id] = nil end
+            n = n - 1
+          end
+        end
+      end
       local live = hide(owner.quietIds, find, hidden)
       local tris = owner.solidTris or {}
       if M.solid(owner, points, size) then
@@ -143,9 +207,11 @@ function M.new()
           live = live + hide(owner.sceneIds, find, hidden)
         end
       end
+      live = live + #(owner.proxyIds or {})
       if owner.dropped and live == 0 then self.owners[owner] = nil end
     end
     local ok, err = pcall(reload)
+    for k = 1, #opened do opened[k]:setHidden(true) end
     for k = 1, #hidden do hidden[k]:setHidden(false) end
     self.lastHidden, self.lastSolid, self.lastScenes, self.lastKept = #hidden, solid, scenes, kept
     if not ok then error(err, 0) end

@@ -15,6 +15,20 @@ from lupa.luajit21 import LuaRuntime
 ROOT = Path(__file__).resolve().parents[1] / 'mod/lua/ge/extensions/e2r/far.lua'
 
 
+def slope_raster(half=2000.0, step=200.0, grade=0.2, base=200.0, cls=2):
+    """EGF1 whose height rises with x, so an edge normal is the slope, not half of it."""
+    n = int(2 * half / step)
+    u0 = v0 = -n // 2
+    heights = []
+    for _v in range(n + 1):
+        for u in range(n + 1):
+            heights.append(int((base + grade * (u0 + u) * step + 500) * 4))
+    elev = struct.pack(f'<{len(heights)}H', *heights)
+    classes = bytes([cls]) * (n * n)
+    head = b'EGF1' + bytes([1]) + struct.pack('<iiIIff', u0, v0, n, n, step, float('nan'))
+    return head + elev + classes + bytes(n * n) + bytes(n * n) + struct.pack('<I', 0)
+
+
 def flat_raster(half, step=200.0, height=100.0, cls=2, forest_box=None):
     """An EGF1 blob: a square region of `half` metres round the origin at one height and class."""
     n = int(2 * half / step)
@@ -116,6 +130,30 @@ class FarLevelTests(unittest.TestCase):
         self.assertTrue(canopy)
         for x, y, z in canopy:
             self.assertGreater(z, 100 - float(self.far.curve(math.hypot(x, y), 4600)) + 10)
+
+    def test_an_edge_normal_is_the_full_slope(self):
+        self.assertAlmostEqual(float(self.far.FAR.FOG), 6e-5)
+        self.lua.globals().blob = slope_raster()
+        self.lua.execute('R = far.parse(blob)')
+        built = self.levels(cam=(0.0, 0.0), hole=400.0, levels=1)
+        meadow = built[0]['e2rfar_meadow']
+        # west edge of the level: the old clamp made this about half the slope (-0.1)
+        west = min(v[0] for v in meadow)
+        normals = self.lua.globals().out[0].bands
+        steep = []
+        for b in range(1, len(normals) + 1):
+            band = normals[b]
+            px = float(self.lua.globals().out[0].pos[1])
+            for k in range(1, len(band.meshes) + 1):
+                mesh = band.meshes[k]
+                if str(mesh.material) != 'e2rfar_meadow':
+                    continue
+                for i in range(1, len(mesh.verts) + 1):
+                    z = float(mesh.verts[i].z)
+                    if abs(float(mesh.verts[i].x) + px - west) < 1 and z > 200 + 0.2 * west - 2:
+                        steep.append(float(mesh.normals[i].x))
+        self.assertTrue(steep, 'no ground vertex on the west edge')
+        self.assertLess(max(steep), -0.15)
 
     def test_nothing_past_the_far_plane(self):
         self.lua.execute('far.FAR.VIEW = 12000')

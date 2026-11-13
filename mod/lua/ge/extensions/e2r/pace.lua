@@ -89,6 +89,12 @@ function Gate:done()
   self.worked, self.last, self.since = true, self.frame, nil
 end
 
+-- the slot was open but the only candidate waits (the spawn packet is once a second):
+-- the next change still stands two calm frames away, and this one is not counted
+function Gate:yield()
+  self.worked, self.last, self.since = true, self.frame, nil
+end
+
 function Gate:report()
   return {base = self.base and floor(self.base * 100) / 100, opened = self.opened, timeouts = self.timeouts,
     held = self.held}

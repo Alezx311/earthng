@@ -39,12 +39,15 @@ class CollisionTests(unittest.TestCase):
         lua.execute('''
           local q = collision.quiet
           assert(q(mesh('mark'), 'road') and q(mesh('mark_yellow'), 'scene'))
-          -- the road layer's ground takes a cover's material where the cover fills a cell
-          assert(not q(mesh('park'), 'road') and not q(mesh('ground'), 'road') and not q(mesh('road'), 'road'))
+          -- the detailed ground is drawn and left out of the rebuild; the coarse proxy collides
+          assert(q(mesh('park'), 'road') and q(mesh('ground'), 'road') and q(mesh('cut_grass0'), 'road'))
+          assert(not q(mesh('road'), 'road') and not q(mesh('col_ground'), 'road'))
           assert(q(mesh('park'), 'scene') and q(mesh('footway', 'paved', 'roof'), 'scene'))
-          -- one solid material keeps the whole object
-          assert(not q(mesh('roof', 'wall_brk_red'), 'scene') and not q(mesh('car'), 'scene'))
-          assert(not q(mesh('fence_mesh'), 'scene') and not q({}, 'scene') and not q(mesh('mark'), nil))
+          -- a facade wall is drawn; the shell (col_bldg) and a fence the car can hit stay solid
+          assert(q(mesh('wall_brk_red'), 'scene') and q(mesh('roof', 'wall_brk_red'), 'scene'))
+          assert(not q(mesh('col_bldg'), 'scene') and not q(mesh('car'), 'scene'))
+          assert(not q(mesh('fence_wall'), 'scene') and not q(mesh('fence_mesh'), 'scene'))
+          assert(not q({}, 'scene') and not q(mesh('mark'), nil))
         ''')
 
     def test_rebuild_keeps_only_what_is_in_reach_and_shows_everything_after(self):
@@ -177,6 +180,33 @@ class CollisionTests(unittest.TestCase):
             coll:rebuild({{0, 0, 600, 800}}, 500, find, function() error('engine') end)
           end)
           assert(not ok and tostring(err):find('engine') and shown())
+        ''')
+
+    def test_proxy_cells_join_only_the_3x3_and_hide_again(self):
+        lua = self.make()
+        lua.execute('''
+          function makeProxy(owner, cell)
+            serial = serial + 1
+            objects[serial] = {id = serial, hidden = true,
+              isHidden = function(self) return self.hidden end,
+              setHidden = function(self, h) self.hidden = h end}
+            coll:track(owner, serial, false, 8, 'road', cell)
+            return serial
+          end
+          local owner = {i = 0, j = 0}
+          local near = makeProxy(owner, {0, 0, 64})
+          local far = makeProxy(owner, {5, 5, 64})
+          coll:rebuild({{10, 10, 100, 200}}, 500, find, reload)
+          assert(not seen[near] and seen[far])
+          assert(objects[near].hidden and objects[far].hidden)
+          local ok = pcall(function()
+            objects[near].hidden, objects[far].hidden = true, true
+            coll:rebuild({{10, 10, 100, 200}}, 500, find, function() error('engine') end)
+          end)
+          assert(not ok and objects[near].hidden and objects[far].hidden)
+          assert(collision.nearCell({0, 0, 64}, {{10, 10}}) and not collision.nearCell({5, 5, 64}, {{10, 10}}))
+          -- no focus: every proxy cell is kept for the rebuild
+          assert(collision.nearCell({5, 5, 64}, {}))
         ''')
 
 
