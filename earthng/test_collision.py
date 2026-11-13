@@ -210,5 +210,46 @@ class CollisionTests(unittest.TestCase):
         ''')
 
 
+    def test_near_tiles_spawn_on_every_open_gate(self):
+        # a packet once a second left the city unpainted: the far view took the slot, and
+        # three meshes a second never caught up however long the car waited
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_widget import load_world
+        lua = self.make()
+        lua.execute('''
+          ui_imgui = setmetatable({ArrayChar=function() return {} end}, {__index=function() return function() end end})
+          realRequire, require = require, function() return {} end
+          hptimer=function() return {stopAndReset=function() return 1 end, stop=function() return 1 end} end''')
+        src = (ROOT / 'world.lua').read_text(encoding='utf8')
+        lua.globals().mod = load_world(lua, src)
+        lua.execute('''
+          local function up(fn, name)
+            for i = 1, 200 do local n, v = debug.getupvalue(fn, i); if not n then return end; if n == name then return v end end
+          end
+          local LIMIT = up(mod.tick, 'LIMIT')
+          local S = up(mod.tick, 'S')
+          S.now, S.burstAt, S.state = 10, 10, 'driving'
+          S.status = {stream = {wanted = {['1_0'] = 2}}}
+          local yielded = false
+          local gate = {yield = function() yielded = true end}
+          S.queue = {{key = '1_0', tile = {}}}
+          assert(LIMIT.nearQueued() and LIMIT.allowSpawn(gate) and not yielded)
+          -- buildings of a near tile are the same: they do not wait out the second
+          S.queue = {{key = '9_9', far = true, tile = {}}, {key = '1_0', scene = true, tile = {}}}
+          assert(LIMIT.nearQueued() and LIMIT.allowSpawn(gate))
+          -- grass and the far ring still share the packet
+          yielded = false
+          S.queue = {{key = '2_0', grass = true, tile = {}}, {key = '3_0', far = true, tile = {}}}
+          assert(not LIMIT.nearQueued() and not LIMIT.allowSpawn(gate) and yielded)
+          S.burstAt, yielded = 0, false
+          assert(LIMIT.allowSpawn(gate) and not yielded)
+          -- a dropped near job does not hold the gate open for itself
+          S.burstAt = 10
+          S.queue = {{key = '1_0', tile = {dropped = true}}, {key = '4_0', horizon = true, tile = {}}}
+          yielded = false
+          assert(not LIMIT.nearQueued() and not LIMIT.allowSpawn(gate) and yielded)
+        ''')
+
+
 if __name__ == '__main__':
     unittest.main()

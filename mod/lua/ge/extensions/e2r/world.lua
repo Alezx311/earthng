@@ -159,7 +159,7 @@ local test, result = nil, {status = 'waiting', shots = {}}
 local frameTimer = hptimer()
 -- Streaming limits; see the comments where each is used.
 -- sceneLag: s, a scene item queues as the road of a tile reached this much later (its grass 3x)
-local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128, sceneLag = 3,
+local LIMIT = {pairsDriving = 3, pairsCatch = 6, pairsLanding = 24, plantBatch = 128, sceneLag = 3,
   forestStep = 0.12, forestKind = 1.5, forestMax = 2500, propMax = 600,
   -- Trees of one shape split into forestVariants^2 kinds by cells of forestCell m (0: off), and a
   -- commit takes kinds until forestLive crowns stand in them (see forestCommit)
@@ -179,7 +179,9 @@ local LIMIT = {pairsDriving = 3, pairsLanding = 24, plantBatch = 128, sceneLag =
   -- the generator and the spawn queue take most of the frame instead of BUDGET_MS: at 4 ms a
   -- frame the nine tiles of a landing in central Kyiv took 82 s, most of them idle. 60 ms: the
   -- tiles were ready in 18.6 s at 40 ms a frame and in 17.4 s at 90 (the picker at 6 frames a second)
-  loadNativeMs = 60, loadQueueMs = 14, loadQueueLastMs = 30}
+  loadNativeMs = 60, loadQueueMs = 14, loadQueueLastMs = 30,
+  -- while driving at speed the generator's 4 ms left the road behind the car; the native cap is 8
+  driveNativeMs = 8}
 -- Read-only view for the development probe (earthng/probe.py); nothing in the mod calls it.
 function M.dbg() return {S = S, result = result, native = native, detail = detailStream, test = test} end
 
@@ -775,7 +777,10 @@ end
 -- The queue and the grass cells have separate allowances, so streaming meshes cannot
 -- starve the grass round the car.
 local function pairsLeft()
-  return (S.state == 'driving' and LIMIT.pairsDriving or LIMIT.pairsLanding) - (S.pairsFrame or 0)
+  local cap = S.state == 'driving' and LIMIT.pairsDriving or LIMIT.pairsLanding
+  -- a deep queue is a hole in the world: six new materials on the open gate, three once it is caught up
+  if S.state == 'driving' and LIMIT.nearQueued() and #(S.queue or {}) > 24 then cap = LIMIT.pairsCatch end
+  return cap - (S.pairsFrame or 0)
 end
 
 -- layer: 'road' or 'scene' for a near tile's job (collision.quiet), nil otherwise
@@ -2804,17 +2809,39 @@ function LIMIT.collisionRadius(v)
   return math.max(650, math.min(1600, speed * ((S.deliveryP99 or 2) + 10) + 400))
 end
 
--- true when this open gate may insert into the scene. A road due inside roadUrgent always
--- may. Everything else waits a second since the last packet, and an early slot is yielded
--- so the gate's next change is still two calm frames away.
+-- a near road or its buildings, still in the queue (not grass, the far ring or the horizon)
+function LIMIT.nearQueued()
+  local q = S.queue
+  if not q then return false end
+  for i = 1, #q do
+    local job = q[i]
+    if job and not (job.tile and job.tile.dropped) and not job.grass and not job.far and not job.horizon then
+      return true
+    end
+  end
+  return false
+end
+
+-- true when this open gate may insert into the scene. Near roads and buildings go on every
+-- open gate: a packet once a second left tiles unpainted however long the car waited, because
+-- the far view's bands took the only slot and three meshes a second never caught a city.
+-- Grass, the far ring and the horizon still wait a second. A road due inside roadUrgent is
+-- marked so its own floor applies. An early decor slot is yielded.
 function LIMIT.allowSpawn(gate)
   if not gate then return true end
-  local head = S.queue and S.queue[1]
+  local head
+  local q = S.queue
+  if q then
+    for i = 1, #q do
+      local job = q[i]
+      if job and not (job.tile and job.tile.dropped) then head = job; break end
+    end
+  end
   local wanted = S.status and S.status.stream and S.status.stream.wanted
   local urgent = head and not (head.scene or head.grass or head.far or head.horizon)
     and wanted and (wanted[head.key] or 1e6) < LIMIT.roadUrgent
   S.urgentRoad = urgent and true or false
-  if S.urgentRoad or S.now - (S.burstAt or -1e9) >= 1 then return true end
+  if LIMIT.nearQueued() or S.urgentRoad or S.now - (S.burstAt or -1e9) >= 1 then return true end
   gate:yield()
   return false
 end
@@ -5868,7 +5895,12 @@ function M.tick(dt)
     local loading = S.state == 'generating' or S.state == 'warmup' or S.state == 'spawning'
     if test and loading then M.loadEngine(S.state) end
     local owed = loading and (S.state ~= 'spawning' or S.landOwed ~= false)
-    native.update(dt, test and test.genBudget or (owed and LIMIT.loadNativeMs) or BUDGET_MS, test and test.genBudget, S.now)
+    local genBudget = test and test.genBudget or (owed and LIMIT.loadNativeMs) or BUDGET_MS
+    if not (test and test.genBudget) and S.state == 'driving' then
+      local _, vel = focus()
+      if vel and vel:length() >= 15 then genBudget = LIMIT.driveNativeMs end
+    end
+    native.update(dt, genBudget, test and test.genBudget, S.now)
     S.nativeMs = t:stop()
     profAdd('native', S.nativeMs, collectgarbage('count') - kb)
     S.profKb = collectgarbage('count')
@@ -5912,8 +5944,12 @@ function M.tick(dt)
     local gate = S.gate
     local work = not gate or gate:open()
     local changed = false
+    -- a long grave list used to block new tiles while this dig ran only inside the spawn
+    -- packet, so a stopped car kept the holes (allowLoad waits for fewer than 16 groups)
+    if S.graves and #S.graves >= 8 then digGraves(48) end
     if M.far then
-      M.far.gate = gate and function() return work and not changed end or nil
+      -- bands of the far view wait while a near road or its buildings are still queued
+      M.far.gate = gate and function() return work and not changed and not LIMIT.nearQueued() end or nil
       M.far.changed = false
     end
     writePose()
@@ -5927,24 +5963,25 @@ function M.tick(dt)
     -- createMesh and the render they reached 98 ms (fast-oblast-replay-01)
     local reloaded = work and not changed and updateCollision() or false
     if reloaded then changed = true end
-    if gate and work and not changed then
+    -- the forest commit waits while a near road or its buildings are queued: it used to take
+    -- the open gate every 0.12 s and the city never finished painting
+    if gate and work and not changed and not LIMIT.nearQueued() then
       local before = S.forestCommitAt
       forestCommit()
       if S.forestCommitAt ~= before then changed = true end
     end
     local tColl = timer:stopAndReset()
     local kb2 = collectgarbage('count')
-    -- props and scenes land as one 20 ms packet a second; a road the car is about to reach
-    -- still spawns on the open gate. An idle slot is yielded so the next change waits.
+    -- near roads and buildings spawn on every open gate (20 ms, a few materials). Grass and
+    -- the far ring still share one packet a second. An idle decor slot is yielded.
     if work and not changed and LIMIT.allowSpawn(gate) then
-      if gate and not S.urgentRoad then S.burstAt = S.now end
+      if gate and not LIMIT.nearQueued() and not S.urgentRoad then S.burstAt = S.now end
       if stepQueue(gate and LIMIT.burstMs or nil) then changed = true end
       local p, vel = focus()
-      -- 60 idle / 180 at speed / 240 when many groups wait (was GRAVE_PER_FRAME); a gated
-      -- frame digs for the frames it held
-      local graveBudget = (vel and vel:length() >= 15) and 180 or 60
-      if S.graves and #S.graves > 8 then graveBudget = math.max(graveBudget, 240) end
-      if gate and S.graves and #S.graves > 0 then graveBudget, changed = graveBudget * 3, true end
+      -- graves also drain above, before tiles are chosen; this finishes a group the frame
+      -- something spawns, without a triple budget that hitch the same frame
+      local graveBudget = (vel and vel:length() >= 15) and 80 or 40
+      if S.graves and #S.graves > 8 then graveBudget = math.max(graveBudget, 120) end
       digGraves(graveBudget)
       local detailTimer = hptimer()
       getDetailStream():step(p, S.appliedTune or TUNE_DEFAULT, S.now, detailTimer, gate and 3 or 1)
