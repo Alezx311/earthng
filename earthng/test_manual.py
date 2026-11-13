@@ -83,7 +83,7 @@ class ManualTests(unittest.TestCase):
         self.lua.globals().doc = self.document([self.object()])
         self.lua.execute('''
           records=assert(manual.validate(doc)); records[1].x=500; records[1].y=250
-          options={tileSize=500, terrainStep=100, maxTrees=0, maxGrass=0, propSpacing=0,
+          options={tileSize=500, terrainStep=100, maxTrees=0, maxGrass=0, propSpacing=0, relief=false,
             manualPlan=function(rect, lists, segments, scene, signs)
               return manual.plan(records, rect, lists, segments, scene, signs)
             end,

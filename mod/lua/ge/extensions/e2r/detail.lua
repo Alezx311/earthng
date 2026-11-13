@@ -50,14 +50,59 @@ function M.limits(kind, tune)
 end
 
 -- A sample of a patch: its 2 m square (0..15) with flags, 16: a lush hollow's long grass,
--- 32: thin grass on dry ground (generator.lua lawnCarpet).
+-- 32: thin grass on dry ground, 64: a field of ripe wheat, 128: a field's crop rows, 256:
+-- those rows run along y (generator.lua lawnCarpet, FIELD). crop: nil, 'wheat', 'rows' or 'rowsY'.
 local function sampleOf(value)
   local slot = value % 16
   local flags = (value - slot) / 16
-  return slot, flags % 2 == 1, flags >= 2
+  local crop = math.floor(flags / 4) % 2 == 1 and 'wheat' or nil
+  if math.floor(flags / 8) % 2 == 1 then crop = math.floor(flags / 16) % 2 == 1 and 'rowsY' or 'rows' end
+  return slot, flags % 2 == 1, math.floor(flags / 2) % 2 == 1, crop
 end
 
--- tufts of a patch in a ring's level, and the sum of their heights (the cell's mean z)
+-- A field's standing crop near the road: wheat as dense dry tufts to the knee (the game's dry
+-- grass, the patch's dry set), the rows of sunflower or maize as long green tufts on the 2/3 m
+-- grid, straight across the rows and loose along them (the field's texture has its rows on the
+-- same grid, generator FIELD, fast_photo field_sheet). Even everywhere: a field is sown, not wild.
+M.CROP = {wheat = {low = .62, high = .88, stray = .9}, rows = {low = .45, high = .7, across = .06, along = 1.2}}
+
+-- The lawn is not one mown carpet (seen from a parked car it was): its height sways in patches
+-- (tall: 0..1 of noise over 9 and 23 m, a square's tufts from low to high of their height),
+-- it thins out to bare ground in places (gap: under from .. to of noise over 6 and 15 m, a tuft
+-- kept with the share of that ramp) and coarse weeds stand in clumps (weed: noise over 5 m above
+-- `from`, the long grass of lush hollows at its own height). All from the square's place, so
+-- every ring shows the same lawn.
+M.WILD = {tall = {low = .62, high = 1.5, power = 1.3}, gap = {from = .16, to = .34}, weed = {from = .8, low = .55, high = 1}}
+local HMOD = 2147483647
+local function knot(seed, a, b)
+  local h = (seed * 1000003 + a) % HMOD
+  h = (h * 1000003 + b) % HMOD
+  h = (h * 48271 + 11) % HMOD
+  return (h * 48271 + 7) % HMOD % 1000 / 1000
+end
+-- smooth 0..1 noise with `size` m features (generator.lua RELIEF.noise)
+function M.noise(x, y, size, seed)
+  local fx, fy = x / size, y / size
+  local gx, gy = math.floor(fx), math.floor(fy)
+  local tx, ty = fx - gx, fy - gy
+  tx, ty = tx * tx * (3 - 2 * tx), ty * ty * (3 - 2 * ty)
+  local a = knot(seed, gx, gy) + (knot(seed, gx + 1, gy) - knot(seed, gx, gy)) * tx
+  local b = knot(seed, gx, gy + 1) + (knot(seed, gx + 1, gy + 1) - knot(seed, gx, gy + 1)) * tx
+  return a + (b - a) * ty
+end
+-- a square's height factor, the share of its tufts kept and whether weeds stand there
+function M.wild(x, y)
+  local W = M.WILD
+  local tall = M.noise(x, y, 9, 11) * .6 + M.noise(x, y, 23, 12) * .4
+  local height = W.tall.low + (W.tall.high - W.tall.low) * tall ^ W.tall.power
+  local gap = M.noise(x, y, 6, 13) * .55 + M.noise(x, y, 15, 14) * .45
+  local keep = math.max(0, math.min(1, (gap - W.gap.from) / (W.gap.to - W.gap.from)))
+  return height, keep, M.noise(x, y, 5, 15) > W.weed.from
+end
+
+-- tufts of a patch in a ring's level, and the sum of their heights (the cell's mean z). An upper
+-- bound: expand drops the tufts of the lawn's bare gaps (M.WILD.gap), not counted here (the noise
+-- per square cost more at a tile's build than the few tufts of budget it frees)
 function M.patchCount(patch, level)
   local n, zs = 0, 0
   for k = 1, #patch.samples, 4 do
@@ -92,13 +137,14 @@ function M.expand(part, pause)
   for _, patch in ipairs(part.patches) do
     local long, dry = patch.tall, patch.dry
     for k = 1, #patch.samples, 4 do
-      local slot, lush, thin = sampleOf(patch.samples[k])
+      local slot, lush, thin, crop = sampleOf(patch.samples[k])
       local z, gx, gy = patch.samples[k+1], patch.samples[k+2], patch.samples[k+3]
       local sx, sy = slot % 4, math.floor(slot / 4)
       local even = (sx + sy) % 2 == 0
       local x = patch.x + sx * 2 + 1
       local y = patch.y + sy * 2 + 1
       local kept = 0
+      local wildHeight, wildKeep, weeds = M.wild(x, y)
       for iy = -1, 1 do for ix = -1, 1 do
         -- which ring owns this tuft (OWN): the square's middle is the far ring's in every other
         -- square and the middle ring's in the rest
@@ -112,30 +158,51 @@ function M.expand(part, pause)
           kept = kept + 1
           show = show and kept <= T.thin
         end
+        -- Lua 5.1 leaves a negative remainder; a cell west or south of the origin is negative.
+        local h = math.floor(x) * 73856093 + math.floor(y) * 19349663 + (ix + 2) * 83492791 + (iy + 2) * 2654435761
+        h = h % 2147483647
+        if h < 0 then h = h + 2147483647 end
+        -- thinned to bare ground (M.WILD.gap): the same tufts go in every ring; a field is not
+        if show and wildKeep < 1 and not crop then show = (math.floor(h / 1030301) % 997) / 997 < wildKeep end
         if show then
-          -- Lua 5.1 leaves a negative remainder; a cell west or south of the origin is negative.
-          local h = math.floor(x) * 73856093 + math.floor(y) * 19349663 + (ix + 2) * 83492791 + (iy + 2) * 2654435761
-          h = h % 2147483647
-          if h < 0 then h = h + 2147483647 end
           local stray = own > 0 and T.stray or .12
-          local dx = ix * (2 / 3) + ((h % 101) / 100 - .5) * stray
-          local dy = iy * (2 / 3) + ((math.floor(h / 101) % 101) / 100 - .5) * stray
+          local jx, jy = (h % 101) / 100 - .5, (math.floor(h / 101) % 101) / 100 - .5
+          local dx, dy = ix * (2 / 3) + jx * stray, iy * (2 / 3) + jy * stray
           local r = (math.floor(h / 10201) % 101) / 100
           local shape, span, bottom, height, wide
-          if lush and long and own > 0 then
+          if crop == 'wheat' then
+            local C, set = M.CROP.wheat, dry or patch
+            local model = h % #set.shapes + 1
+            shape, span, bottom = set.shapes[model], set.spans[model], set.bottoms[model]
+            dx, dy = ix * (2 / 3) + jx * C.stray, iy * (2 / 3) + jy * C.stray
+            height, wide = C.low + r * (C.high - C.low), 1
+            if own > 0 then wide = shapeOf.wide end
+          elseif crop and long then
+            -- rows across x (rows: lines of constant y) or across y (rowsY)
+            local C, model = M.CROP.rows, h % #long.shapes + 1
+            shape, span, bottom = long.shapes[model], long.spans[model], long.bottoms[model]
+            if crop == 'rowsY' then dx, dy = ix * (2 / 3) + jx * C.across, iy * (2 / 3) + jy * C.along
+            else dx, dy = ix * (2 / 3) + jx * C.along, iy * (2 / 3) + jy * C.across end
+            height, wide = C.low + r * (C.high - C.low), own > 0 and T.long.wide or 1
+          elseif lush and long and own > 0 then
             local model = h % #long.shapes + 1
             shape, span, bottom = long.shapes[model], long.spans[model], long.bottoms[model]
             height, wide = T.long.low + r * (T.long.high - T.long.low), T.long.wide
+          elseif weeds and long and not thin and own > 0 then
+            -- a clump of coarse weeds in the short grass (M.WILD.weed)
+            local W, model = M.WILD.weed, h % #long.shapes + 1
+            shape, span, bottom = long.shapes[model], long.spans[model], long.bottoms[model]
+            height, wide = W.low + r * (W.high - W.low), T.long.wide
           elseif thin and dry then
             -- dry land's own tufts (the game's dry grass), not green ones on a yellow slope
             local model = h % #dry.shapes + 1
             shape, span, bottom = dry.shapes[model], dry.spans[model], dry.bottoms[model]
-            height, wide = .3 + r * .2, 1
+            height, wide = (.3 + r * .2) * wildHeight, 1
             if own > 0 then height, wide = height * shapeOf.tall, shapeOf.wide end
           else
             local model = h % 3 + 1
             shape, span, bottom = patch.shapes[model], patch.spans[model], patch.bottoms[model]
-            height, wide = .32 + r * .18, 1
+            height, wide = (.27 + r * .28) * wildHeight, 1
             if own > 0 then height, wide = height * shapeOf.tall, shapeOf.wide
             elseif lush then height = height * 1.35 end
           end

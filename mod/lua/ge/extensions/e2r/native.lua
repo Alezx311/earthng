@@ -12,7 +12,7 @@ local manualEditor = require('ge/extensions/e2r/manual_editor')
 -- the far view's colour maps, draped over the horizon tiles once far.lua has loaded them
 local okFarModule, farModule = pcall(require, 'ge/extensions/e2r/far')
 local FARMAP = okFarModule and type(farModule) == 'table' and farModule.mapAt
-  and {at = farModule.mapAt, uv = farModule.mapUV} or nil
+  and {at = farModule.mapAt, uv = farModule.mapUV, lift = farModule.liftAt} or nil
 local liveOk, liveMod = pcall(require, 'ge/extensions/e2r/live')
 local live = liveOk and type(liveMod) == 'table' and type(liveMod.sync) == 'function' and liveMod or nil
 -- TILE_LIMIT holds the whole wanted set (1 km near plus the 3 km far ring, ~130 tiles): a

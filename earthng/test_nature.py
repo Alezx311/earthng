@@ -133,7 +133,10 @@ class Runtime(unittest.TestCase):
             for options, index in (({}, 0), ({'far': True}, 2), ({'horizon': True}, 2)):
                 with self.subTest(kind=kind, options=options):
                     manifest = self.g.build([cell], **options)[index]
-                    self.assertTrue(list(self.g.triangles(manifest, 'e2rf_' + kind)))
+                    # a field is drawn as its crop (generator FIELD): farmland, _wheat, _rows_y...
+                    names = {mesh.material for _, mesh in self.g.meshes(manifest)}
+                    crops = {n for n in names if n.startswith('e2rf_farmland')} if kind == 'farmland' else set()
+                    self.assertTrue(crops or list(self.g.triangles(manifest, 'e2rf_' + kind)), names)
 
     def test_far_plants_are_exact_near_subset_with_same_shape_transform(self):
         cell = {'terrain': terrain(1200), 'areas': [patch('forest', tags={'leaf_type': 'needleleaved'})],
@@ -149,6 +152,24 @@ class Runtime(unittest.TestCase):
         self.assertGreater(sum('douglasfir' in s[0] for s in far), len(far) / 2)
         self.assertTrue(all(not (100 < s[1][0] < 200 and 100 < s[1][1] < 200) for s in near))
         self.assertEqual(near, self.statics(self.g.build([copy.deepcopy(cell)])[1]))
+
+    def test_a_far_wood_stands_its_edge_not_an_even_scatter(self):
+        # a wood over the west half of the tile, open farmland east of it: a far tile's cap goes
+        # first to the wood's edge (x 225..250, EDGE_TURN a cell), not one crown in every cell
+        cell = {'terrain': terrain(), 'areas': [patch('forest', (0, 0, 250, 500)), patch('farmland', (250, 0, 500, 500))]}
+        def trees(**extra):
+            return [s for s in self.statics(self.g.build([cell], groundTrees=False, **extra)[2 if extra.get('far') else 1])
+                    if 'grass' not in s[0] and 'rock' not in s[0]]
+        far = trees(far=True, maxFarTrees=120)
+        near = trees()
+        self.assertTrue(far and len(far) <= 120)
+        self.assertTrue(set(far).issubset(set(near)), 'far stays a prefix of near')
+        edge = sum(1 for s in far if s[1][0] >= 225)
+        # the edge's 20 cells take three a turn, the other 180 one: the edge holds ~25 %, not 10 %
+        self.assertGreater(edge / len(far), .2, (edge, len(far)))
+        # the tile's own border is not an edge: no line of crowns along y = 0..25
+        border = sum(1 for s in far if s[1][1] < 25 and s[1][0] < 225)
+        self.assertLess(border / len(far), .12, (border, len(far)))
 
     def test_vegetation_excludes_water_rock_and_regional_tree_line(self):
         cell = {'terrain': terrain(), 'areas': [patch('forest'), patch('water', (0, 0, 250, 500)),

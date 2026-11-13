@@ -50,7 +50,7 @@ local CLAIM = {paved = 1, ballast = 1, water = 2, glacier = 3, bare_rock = 4, sc
 -- (fast_style.ROAD_M, DETAIL_M).
 local COVER_SCALE = {ground = 96, forest = 24, park = 24, meadow = 96, orchard = 24,
   grass_dry = 96, grass_lush = 96, earth = 96,   -- the open land's sheets (fast_style.MACRO_M)
-  scrub = 24, heath = 24, glacier = 24, farmland = 24, vineyard = 12, bare_rock = 12,
+  scrub = 24, heath = 24, glacier = 24, farmland = 32, vineyard = 12, bare_rock = 12,
   scree = 12, beach = 12, wetland = 12, bare_ground = 12, ballast = 4,
   road = 30, road_major = 30, road_worn = 30, footway_asphalt = 30, road_sett = 3,
   -- the climate's open ground (biome.lua): photo sheets of fast_photo.GROUND_M
@@ -339,6 +339,12 @@ local VEG = {
 -- gardenRamp (a village street reads .04-.14). Firs from firFrom m above the sea, fully at
 -- firFrom + firRamp: the Polissia and steppe pinewoods stay pine, the Carpathians turn fir.
 VEG.gardenFrom, VEG.gardenRamp, VEG.firFrom, VEG.firRamp = .004, .012, 450, 450
+-- The clearings of open land, and residential land away from its buildings: copses where noise
+-- over `size` m passes `from` (`chance` of the lattice planted, in open land one in `bush` a
+-- bush) and a lone tree at `lone` (twice that in residential land). An even 6 % of open land,
+-- and a residential polygon's groves on its 16 m lattice, stood every clearing, pasture and
+-- village slope as a savanna (the user, 13.11).
+VEG.copse = {size = 26, from = .74, chance = .55, lone = .012, bush = 3}
 -- Open land (ground without a mapped cover, and meadows) is not one sheet of grass: it dries on
 -- slopes and ridges, the more the more a slope faces the sun, grows lush in hollows, and is bare
 -- loam where it is steep (build(): bio.landAt). The relief reads by it. A ProceduralMesh has no
@@ -352,9 +358,13 @@ VEG.gardenFrom, VEG.gardenRamp, VEG.firFrom, VEG.firRamp = .004, .012, 450, 450
 -- seventh of the area each: with three (a quarter) the levels' borders read as a grid of 12.5 m
 -- squares from the road. under: the moisture level from which loam comes over dry or lush grass
 -- instead of the common one.
+-- dither: the share of a level a piece's half shifts its field by its own hash, so a border
+-- between two levels is a scatter of both, not a straight run of the pieces' edges (a dry slope
+-- read as triangles and steps from the road). The field itself changes over 85 m and more: a
+-- term of 23 m jumped a level or two from one 12.5 m piece to the next.
 VEG.land = {fine = 12.5, kinds = {ground = true, meadow = true}, levels = 6, under = 5,
   moist = {.16, .25, .34, .43, .52, .61, .7}, bare = {.15, .26, .37, .48, .59, .7, .8}, reach = 45,
-  solid = {dry = 'grass_dry', lush = 'grass_lush', earth = 'earth'}}
+  solid = {dry = 'grass_dry', lush = 'grass_lush', earth = 'earth'}, dither = .8}
 -- The lawn on open land (lawnCarpet) from the land's raw field: none from bareness `none`,
 -- thin (dry tufts) from `thin` or moisture under -`dry`, tall from moisture `lush` where
 -- bareness is under `bare`. lawnDither: the spread of each sample's shift of them.
@@ -1599,6 +1609,79 @@ function ROADS.level(x, y, base, demAt)
     if z and z < base then base = z end
   end
   return base
+end
+-- The ground's own unevenness (build(): a pass over the lattice's nodes before anything reads
+-- them). A 25-30 m DEM is smooth between its samples, and open land read from the road as a
+-- billiard table: from 1.7 m a rise of half a metre a hundred metres off hides the ground behind
+-- it, and the sun shades its sides. Each node is lifted by noise of `octaves` ({feature size m,
+-- amplitude m, seed}); the amplitude sways over vary[1] m between vary[3] and all of it, so a
+-- field is calm here and rolling there. Nothing on and beside roads (from road[1] m off a road's
+-- edge, whole from road[2]), in towns (built-up share town[1] .. town[2]: walls and yards stand
+-- on the ground as it was), where the DEM is within `sea` m of the sea (one plane: a dip would
+-- flood) and nothing downwards within `shore` m of a water body's box (its blocks reach a little
+-- onto the bank). Collision, grass, trees and the far view all read the same nodes.
+local RELIEF = {road = {3, 16}, town = {.003, .03}, sea = 3, shore = 30,
+  octaves = {{55, .4, 81}, {130, .6, 83}, {310, .8, 85}}, vary = {700, 87, .35}}
+-- smooth 0..1 value noise with `size` m features (bio.noise's twin outside build())
+function RELIEF.noise(x, y, size, seed)
+  local fx, fy = x / size, y / size
+  local gx, gy = floor(fx), floor(fy)
+  local tx, ty = fx - gx, fy - gy
+  tx, ty = tx * tx * (3 - 2 * tx), ty * ty * (3 - 2 * ty)
+  local v00, v10 = ihash(seed, gx, gy) % 1000 / 1000, ihash(seed, gx + 1, gy) % 1000 / 1000
+  local v01, v11 = ihash(seed, gx, gy + 1) % 1000 / 1000, ihash(seed, gx + 1, gy + 1) % 1000 / 1000
+  local a, b = v00 + (v10 - v00) * tx, v01 + (v11 - v01) * tx
+  return a + (b - a) * ty
+end
+-- the lift at a point before it fades by roads, towns and water (m, either way)
+function RELIEF.raw(x, y)
+  local h = 0
+  for _, o in ipairs(RELIEF.octaves) do h = h + (RELIEF.noise(x, y, o[1], o[3]) - .5) * o[2] end
+  local v = RELIEF.vary
+  return h * (v[3] + (1 - v[3]) * RELIEF.noise(x, y, v[1], v[2]))
+end
+local function smooth01(t)
+  t = t < 0 and 0 or (t > 1 and 1 or t)
+  return t * t * (3 - 2 * t)
+end
+-- the lift of a node: near is the distance to the nearest road's edge (math.huge: none within
+-- reach), built the built-up share there, base the DEM, seaLevel nil inland
+function RELIEF.lift(x, y, near, built, base, seaLevel)
+  local R = RELIEF
+  local f = smooth01((near - R.road[1]) / (R.road[2] - R.road[1])) * (1 - smooth01((built - R.town[1]) / (R.town[2] - R.town[1])))
+  if seaLevel then f = f * smooth01((base - seaLevel) / R.sea) end
+  if f <= 0 then return 0 end
+  local lift = R.raw(x, y) * f
+  if lift < 0 then
+    for _, water in ipairs(ROADS.waters or NONE) do
+      local b, s = water.bounds, R.shore
+      if x >= b[1] - s and x <= b[3] + s and y >= b[2] - s and y <= b[4] + s then return 0 end
+    end
+  end
+  return lift
+end
+-- Fields: one crop a field, as a July drive past them shows (fast_style.FIELDS: ploughed black
+-- soil, ripe wheat with its tramlines, stubble, sunflower or maize in rows). The crop comes from
+-- the field's own id, its rows run along the field's longer side (a '_y' kind: along y). One
+-- 24 m sheet of soil and straw blots over every field read as a checker from the road.
+local FIELD = {crops = {'farmland', 'farmland', 'farmland_wheat', 'farmland_wheat', 'farmland_wheat',
+  'farmland_stubble', 'farmland_stubble', 'farmland_rows', 'farmland_rows', 'farmland_rows'}}
+for _, crop in ipairs({'farmland', 'farmland_wheat', 'farmland_stubble', 'farmland_rows'}) do
+  for _, kind in ipairs({crop, crop .. '_y'}) do
+    COVER_SCALE[kind], CLAIM[kind] = COVER_SCALE.farmland, CLAIM.farmland
+  end
+end
+-- the kind a mapped area is drawn in: a field's crop, any other area its own kind
+function FIELD.of(area, kind)
+  if kind ~= 'farmland' or not area then return kind end
+  local crop = area.fieldKind
+  if not crop then
+    crop = FIELD.crops[hash(tostring(area.id or '')) % #FIELD.crops + 1]
+    local b = ringBounds(area.rings or NONE)
+    if b and b[4] - b[2] > b[3] - b[1] then crop = crop .. '_y' end
+    area.fieldKind = crop
+  end
+  return crop
 end
 -- a deck's concrete: its edge face reaches depth under the road, a parapet height over it.
 -- Piers: a wall every `every` m of a bridge at least `min` long, `across` of the half width,
@@ -10141,9 +10224,10 @@ local function build(cells, i, j, options)
       if heightOperations % 512 == 0 then pause() end
     end
     -- wet bed is carved under the WaterBlock / River surface so depth fog has volume
-    if near > tune.shoulder and ROADS.wet(x, y) then return ROADS.level(x, y, base, demAt) - WATER.carve end
-    if sa > 0 then return base + (sz / sa - base) * pull end
-    return base
+    -- (second value: the nearest road edge's distance, -1 on the bed: RELIEF leaves it)
+    if near > tune.shoulder and ROADS.wet(x, y) then return ROADS.level(x, y, base, demAt) - WATER.carve, -1 end
+    if sa > 0 then return base + (sz / sa - base) * pull, near end
+    return base, near
   end
 
   mark('segments')
@@ -10157,12 +10241,14 @@ local function build(cells, i, j, options)
   -- disagrees. The extra ring is only for those samples; drawn quads stay in the tile.
   local n0x, n0y = floor(rect[1] / step + .5) - 1, floor(rect[2] / step + .5) - 1
   local count = math.max(1, floor(size / step + .5))
-  local nodes, lower = {}, {}
+  -- nodes.near: each node's distance to the nearest road edge, for the RELIEF pass
+  local nodes, lower = {near = {}}, {}
   local function nodeKey(gx, gy) return (gx - n0x) * 4096 + (gy - n0y) end
   for gy = n0y - 1, n0y + count + 3 do
     for gx = n0x - 1, n0x + count + 3 do
-      local z = pulled(gx * step, gy * step)
+      local z, near = pulled(gx * step, gy * step)
       if z == nil then nodes[nodeKey(gx, gy)] = nil else nodes[nodeKey(gx, gy)] = z - tune.groundDrop end
+      nodes.near[nodeKey(gx, gy)] = near
     end
     pause()
   end
@@ -10414,7 +10500,7 @@ local function build(cells, i, j, options)
     local kind, area = coverAt(x, y)
     -- Satellite classes are already a coarse raster. Sample the base lattice
     -- instead of triangulating every staircase/OSM cut-out a second time.
-    if area and ((area.tags or NONE).source or ''):find('worldcover', 1, true) then return kind end
+    if area and ((area.tags or NONE).source or ''):find('worldcover', 1, true) then return FIELD.of(area, kind) end
     return 'ground'
   end
   mark('lattice')
@@ -10495,6 +10581,22 @@ local function build(cells, i, j, options)
     local b = s01 + (s11 - s01) * tx
     return a + (b - a) * ty
   end
+  -- the ground's own unevenness (RELIEF) on the lattice's nodes; nothing has read them yet
+  if options.relief ~= false and not options.vista then
+    local seaLevel = type(options.seaLevel) == 'number' and options.seaLevel or nil
+    for gy = n0y - 1, n0y + count + 3 do
+      for gx = n0x - 1, n0x + count + 3 do
+        local key = nodeKey(gx, gy)
+        local z, near = nodes[key], nodes.near[key]
+        if z and near and near >= 0 then
+          local x, y = gx * step, gy * step
+          nodes[key] = z + RELIEF.lift(x, y, near, builtAt(x, y), demAt(x, y) or z, seaLevel)
+        end
+      end
+      pause()
+    end
+  end
+  nodes.near = nil
   -- Junctions from the road graph itself. A source road is one graph segment, its two ends
   -- the nodes road.nodes names, so a node's mouths are the road ends sharing its id. The pack
   -- builder's rules (fast_sources.write_index, fast.junction_star): a node of two or more mouths
@@ -11614,7 +11716,7 @@ local function build(cells, i, j, options)
     -- a meadow claims its whole ground triangles (rock where steep, the climate's ground), but
     -- its grass edges are the ground's own sheet and lands (VEG.land): no grass drape over grass
     if CLAIM[kind] and not (((area.tags or NONE).source or ''):find('worldcover', 1, true)) and ringsTouch(area.rings, rect) then
-      drapeRings(RAIL.cover(area), area.rings, .025, kind == 'meadow' and not bio.landOff)
+      drapeRings(FIELD.of(area, RAIL.cover(area)), area.rings, .025, kind == 'meadow' and not bio.landOff)
     end
     pause()
   end
@@ -11644,10 +11746,10 @@ local function build(cells, i, j, options)
     steep = steep * steep * (3 - 2 * steep)
     local n1, n2, n3 = bio.noise(x, y, 320, 71), bio.noise(x, y, 85, 73), bio.noise(x, y, 23, 75)
     local moist = math.max(-1, math.min(1, curve * 9)) * .9 - steep * (.75 + .45 * sun) * 1.1
-      + (n1 - .5) * 1.1 + (n2 - .5) * .5 + (n3 - .5) * .2
+      + (n1 - .5) * 1.1 + (n2 - .5) * .5 + (n3 - .5) * .05
     local cliff = math.max(0, math.min(1, (slope - .3) / .32))
     local brow = math.max(0, math.min(1, (slope - .12) / .18))
-    local bare = cliff * cliff * (3 - 2 * cliff) + math.max(0, -curve * 6 - .25) * brow + (n3 - .5) * .3 * brow
+    local bare = cliff * cliff * (3 - 2 * cliff) + math.max(0, -curve * 6 - .25) * brow + (n3 - .5) * .1 * brow
     local town = math.max(0, math.min(1, (builtAt(x, y) - .015) / .045))
     return math.max(-1, math.min(1, moist)) * (1 - town), math.max(0, math.min(1, bare)) * (1 - town)
   end
@@ -11682,10 +11784,18 @@ local function build(cells, i, j, options)
     local lm = L.level(L.moist, math.abs(m))
     return m < 0 and -lm or lm, L.level(L.bare, b)
   end
-  -- the levels at a point; without `d` from the near lattice (landNear)
+  -- the field shifted by VEG.land.dither of a level, by a hash of the point (a piece's centre)
+  function bio.landDither(x, y, m, b)
+    local L = VEG.land
+    local h = ihash(5507, floor(x * 4), floor(y * 4))
+    local jm, jb = (h % 1000 / 1000 - .5) * L.dither, (floor(h / 1000) % 1000 / 1000 - .5) * L.dither
+    m = m + (m < 0 and -1 or 1) * jm * (L.moist[2] - L.moist[1])
+    return m, b + jb * (L.bare[2] - L.bare[1])
+  end
+  -- the levels at a point; without `d` from the near lattice (landNear), dithered
   function bio.landLevels(x, y, d)
     local m, b
-    if d then m, b = bio.landAt(x, y, d) else m, b = bio.landNear(x, y) end
+    if d then m, b = bio.landAt(x, y, d) else m, b = bio.landDither(x, y, bio.landNear(x, y)) end
     return bio.landLevelsOf(m, b)
   end
   -- The lands of levels m, b: the land under ('grass', 'dry' or 'lush'), the land coming in over
@@ -11716,7 +11826,7 @@ local function build(cells, i, j, options)
       local mk, sk = bio.landNear((a[1] * wa + b[1] * wb + c[1] * wc) / 4, (a[2] * wa + b[2] * wb + c[2] * wc) / 4)
       m, s = m + mk / 3, s + sk / 3
     end
-    local under, over, level = bio.landPairOf(bio.landLevelsOf(m, s))
+    local under, over, level = bio.landPairOf(bio.landLevelsOf(bio.landDither((a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3, m, s)))
     if over then
       scene.triangle('cut_' .. under .. level, a, b, c, true)
       scene.triangle('fade_' .. over .. level, a, b, c, true)
@@ -11906,6 +12016,26 @@ local function build(cells, i, j, options)
       local u, v = farMap.uv(R, p[1], p[2])
       return {p[1], p[2], p[3], u, v, p[6], p[7], p[8]}
     end
+    -- Woods stand up over the draped horizon as they do past it (far.lua liftAt: a forest pixel
+    -- its canopy): a node rises by the mean lift CANOPY.reach m round it, so a wood is a soft
+    -- dome and its edge a slope, lit by that slope. From the far ring to the far view's raised
+    -- levels the woods were a painted sheet (2.4-6.4 km, the user 13.11: the distance is empty).
+    -- A tile's edge hangs a wall from its lifted rim to the ground under it (a wood's edge seen
+    -- from the far ring; between two horizon tiles inside the canopy, out of sight).
+    -- Samples and nodes are kept for the tile (a node stands in ~6 triangles, a sample in 4
+    -- nodes' means): looked up afresh the canopy took a tile from 30 to 73 ms.
+    local CANOPY = {reach = 50, wall = 2, samples = {}, nodes = {}}
+    local lift = drape and options.canopy ~= false and farMap.lift
+    local function liftOf(x, y)
+      local k = x * 1e7 + y
+      local v = CANOPY.samples[k]
+      if not v then v = lift(x, y); CANOPY.samples[k] = v end
+      return v
+    end
+    local function liftAt(x, y)
+      local r = CANOPY.reach
+      return (liftOf(x - r, y - r) + liftOf(x + r, y - r) + liftOf(x - r, y + r) + liftOf(x + r, y + r)) / 4
+    end
     local function emitTri(a, b, c)
       if not a or not b or not c then return end
       if farRoads then farTris[#farTris + 1] = {a, b, c} end
@@ -11917,12 +12047,30 @@ local function build(cells, i, j, options)
         if R then return scene.triangle(R.texKind, mapped(a, R), mapped(b, R), mapped(c, R), true) end
         kind = WATER.bed
       end
+      -- a field keeps its crop in the far ring (FIELD)
+      if kind == 'farmland' then kind = FIELD.of(select(2, coverAt(cx, cy)), kind) end
       bio.landFarTri(kind, a, b, c)
     end
     local function at(x, y)
+      if not lift then
+        local z = heightAt(x, y)
+        return z and vertex(x, y, z)
+      end
+      local k = x * 1e7 + y
+      local kept = CANOPY.nodes[k]
+      if kept then return {x, y, kept[1], nil, nil, kept[2], kept[3], kept[4]} end
+      if kept == false then return nil end
       local z = heightAt(x, y)
-      if not z then return nil end
-      return vertex(x, y, z)
+      if not z then CANOPY.nodes[k] = false; return nil end
+      local r = CANOPY.reach
+      local p = vertex(x, y, z + liftAt(x, y))
+      local nz = math.max(p[8], .05)
+      local gx = -p[6] / nz + (liftAt(x + r, y) - liftAt(x - r, y)) / (2 * r)
+      local gy = -p[7] / nz + (liftAt(x, y + r) - liftAt(x, y - r)) / (2 * r)
+      local n = math.sqrt(gx * gx + gy * gy + 1)
+      p[6], p[7], p[8] = -gx / n, -gy / n, 1 / n
+      CANOPY.nodes[k] = {p[3], p[6], p[7], p[8]}
+      return p
     end
     local ix0, iy0, ix1, iy1 = x0 + coarse, y0 + coarse, x1 - coarse, y1 - coarse
     if ix1 > ix0 + EPS and iy1 > iy0 + EPS then
@@ -12051,6 +12199,28 @@ local function build(cells, i, j, options)
         end
       end
       if iy % 4 == 3 then pause() end
+    end
+    -- the woods' walls on the tile's rim (CANOPY above), facing out of the tile
+    if lift then
+      for _, e in ipairs({{x0, y0, x1, y0, 0, -1}, {x1, y0, x1, y1, 1, 0}, {x1, y1, x0, y1, 0, 1}, {x0, y1, x0, y0, -1, 0}}) do
+        local m = math.floor(math.max(math.abs(e[3] - e[1]), math.abs(e[4] - e[2])) / fine + .5)
+        for k = 0, m - 1 do
+          local ax, ay = e[1] + (e[3] - e[1]) * k / m, e[2] + (e[4] - e[2]) * k / m
+          local bx, by = e[1] + (e[3] - e[1]) * (k + 1) / m, e[2] + (e[4] - e[2]) * (k + 1) / m
+          local la, lb = liftAt(ax, ay), liftAt(bx, by)
+          local za, zb = heightAt(ax, ay), heightAt(bx, by)
+          local R = farMap.at((ax + bx) / 2, (ay + by) / 2)
+          if R and za and zb and la + lb > .1 then
+            local function wall(x, y, z) return mapped({x, y, z, 0, 0, e[5], e[6], 0}, R) end
+            local p, q = wall(ax, ay, za + la), wall(bx, by, zb + lb)
+            local pb, qb = wall(ax, ay, za - CANOPY.wall), wall(bx, by, zb - CANOPY.wall)
+            if -(by - ay) * e[5] + (bx - ax) * e[6] < 0 then p, q, pb, qb = q, p, qb, pb end
+            scene.triangle(R.texKind, p, q, qb, false)
+            scene.triangle(R.texKind, p, qb, pb, false)
+          end
+        end
+        pause()
+      end
     end
     -- A vista block's edge runs at 100 m, the 5 km horizon's beside it at 25 m: a ridge between
     -- two of its knots showed the sky through the seam. Every edge hangs a skirt in the ground's
@@ -13370,7 +13540,14 @@ local function build(cells, i, j, options)
                 -- A low floor left whole 65 m groves almost empty, which read as a broken forest.
                 -- Parks and yards keep a lower chance so the town reads as lawns with trees, not canopy.
                 local chance = kind == 'forest' and (.8 + .2 * cluster) or (townChance[kind] or 1)
-                if kind == 'residential' then chance = grove(x, y) > .45 and .6 or .1 end
+                -- A village's residential polygon holds its back gardens and the slopes round it:
+                -- groves only among its buildings, copses and a lone tree elsewhere and between the
+                -- groves (VEG.copse). Its groves on a 16 m lattice stood a bare hill as a savanna.
+                if kind == 'residential' then
+                  local C = VEG.copse
+                  local copse = grove(x, y, C.size, 23) > C.from and C.chance or 2 * C.lone
+                  chance = (builtAt(x, y) > VEG.gardenFrom and grove(x, y) > .45) and .6 or copse
+                end
                 -- A wood drawn over a village (Hatne's houses stand in an 11 ha forest polygon)
                 -- thins round the houses to a sixth, its crowns kept off them like yard trees.
                 local wooded = false
@@ -13422,7 +13599,10 @@ local function build(cells, i, j, options)
             -- the private sector): sparse garden trees. Among a town's buildings: a few groves.
             local built, houses = builtAt(x, y), builtAt(x, y, true)
             local cluster = ihash(3, floor(x / 65), floor(y / 65)) % 1000 / 1000
-            local chance, kind = grove(x, y, 110, 9) > .32 and .94 + .06 * cluster or .06, 'ground'
+            local C = VEG.copse
+            local wood = grove(x, y, 110, 9) > .32
+            local copse = not wood and grove(x, y, C.size, 21) > C.from
+            local chance, kind = wood and .94 + .06 * cluster or (copse and C.chance or C.lone), 'ground'
             local garden = math.max(0, math.min(1, (built - VEG.gardenFrom) / VEG.gardenRamp))
             if garden > 0 then
               chance = chance + ((grove(x, y) > .45 and .4 or .12) - chance) * garden
@@ -13439,6 +13619,7 @@ local function build(cells, i, j, options)
             -- another climate's open land (bio.open); shrubs only near: they do not read from 3 km
             local p, shrub = bio.on and bio.at(x, y), false
             if p then chance, kind, shrub = bio.open(p, x, y, chance, kind, rawHeight(x, y) - bio.sea) end
+            if copse and kind == 'ground' and h % C.bush == 0 then shrub = true end
             if keyHash(4, position) % 1000 / 1000 < chance and not (shrub and distant) then
               candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = kind, tags = NONE, shrub = shrub}
             end
@@ -13466,7 +13647,12 @@ local function build(cells, i, j, options)
     -- bucket the same order as one sort of the whole list did, with pauses between buckets
     -- (that sort ran 15-30 ms unbroken in a city tile).
     local function byHash(a, b) return a.hash == b.hash and a.key < b.key or a.hash < b.hash end
-    local function spread(list, limit, cell, accept)
+    -- edge: a cell beside one with no candidates (a wood's or a grove's edge, a tree row) takes
+    -- this many a turn, the rest one. A far tile's cap, one crown a cell, stood every wood and
+    -- grove as an even savanna from 1 km; from the road a wood is its edge (the user 13.11:
+    -- the distance is empty). The same sequence near and far: far stays a prefix.
+    local EDGE_TURN = 3
+    local function spread(list, limit, cell, accept, edges)
       if limit <= 0 then return end
       local buckets, ids = {}, {}
       for index = 1, #list do
@@ -13486,6 +13672,32 @@ local function build(cells, i, j, options)
         table.sort(buckets[ids[index]], byHash)
         if index % 16 == 0 then pause() end
       end
+      -- turns a round: EDGE_TURN on an edge cell (ids hold (ix + 32768) * 65536 + iy + 32768)
+      -- A neighbour past the tile's rect counts as full: the tile's border is not an edge.
+      local turns = {}
+      if edges then
+        local ix0, iy0 = floor(rect[1] / cell) + 32768, floor(rect[2] / cell) + 32768
+        local ix1, iy1 = floor((rect[3] - 1e-6) / cell) + 32768, floor((rect[4] - 1e-6) / cell) + 32768
+        local function full(ix, iy)
+          return ix < ix0 or ix > ix1 or iy < iy0 or iy > iy1 or buckets[ix * 65536 + iy] ~= nil
+        end
+        for index = 1, #ids do
+          local id = ids[index]
+          local ix, iy = floor(id / 65536), id % 65536
+          local edge = not (full(ix - 1, iy) and full(ix + 1, iy) and full(ix, iy - 1) and full(ix, iy + 1))
+          turns[id] = edge and EDGE_TURN or 1
+        end
+        -- a round's order: edges first, then by a hash of the cell. A far cap ends inside a round,
+        -- and by the cells' sorted ids that round's crowns stood all in the tile's west strip.
+        local mixed = {}
+        for index = 1, #ids do local id = ids[index]; mixed[id] = ihash(9, floor(id / 65536), id % 65536) end
+        table.sort(ids, function(a, b)
+          if turns[a] ~= turns[b] then return turns[a] > turns[b] end
+          if mixed[a] ~= mixed[b] then return mixed[a] < mixed[b] end
+          return a < b
+        end)
+        pause()
+      end
       local cursor, planted, moving = {}, 0, true
       while planted < limit and moving do
         moving = false
@@ -13493,15 +13705,14 @@ local function build(cells, i, j, options)
           if planted >= limit then break end
           local id = ids[index]
           local bucket = buckets[id]
-          local at = (cursor[id] or 0) + 1
-          while at <= #bucket do
+          local at, took = (cursor[id] or 0) + 1, 0
+          while at <= #bucket and took < (turns[id] or 1) and planted < limit do
             pause() -- Bound even a long run of rejected candidates.
             local item = bucket[at]
             at = at + 1
             if accept(item) then
-              planted = planted + 1
+              planted, took = planted + 1, took + 1
               moving = true
-              break
             end
           end
           cursor[id] = at - 1
@@ -13616,7 +13827,7 @@ local function build(cells, i, j, options)
       static(string.format('tree_%s_%d', candidate.kind, candidate.key), set[h % #set + 1], x, y, z,
         h % 6283 / 1000, scale)
       return true
-    end)
+    end, true)
     -- Grass, forest floor and loose stone. Far keeps only a ranked handful of rocks:
     -- tufts do not read at the horizon, and the far list stays inside the near list.
     local SEED = {grass = 11, bush = 12, rock = 13, flower = 14, fern = 15}
@@ -13723,8 +13934,12 @@ local function build(cells, i, j, options)
       if distant or maxGrass <= 0 then return end
       local cell, step = 8, 2
       local lawn = {ground = true, park = true, meadow = true, residential = true}
+      -- a field's crop that stands (FIELD): ripe wheat, and the rows of sunflower or maize, each
+      -- as a flag detail.lua reads (64 wheat, 128 rows, 256 their rows along y)
+      local CROP = {farmland_wheat = 64, farmland_wheat_y = 64, farmland_rows = 128, farmland_rows_y = 384}
       local function lawnAt(x, y)
         local kind, where = coverAt(x, y)
+        if kind == 'farmland' then return CROP[FIELD.of(where, kind)] or false end
         if not lawn[kind] or (where and VEG.fields[(where.tags or NONE).leisure]) then return false end
         return VEG.land.kinds[kind] and 'land' or true
       end
@@ -13756,6 +13971,7 @@ local function build(cells, i, j, options)
                   -- (VEG.lawnDither): on the levels a thin lawn ended in a straight line along
                   -- the 12.5 m pieces
                   local flag = 0
+                  if type(wild) == 'number' then flag, dryAny = wild, dryAny or wild == 64 end
                   if wild == 'land' and not bio.landOff then
                     local m, b = bio.landNear(x, y)
                     local j, T = (ihash(5501, x, y) % 1024 / 1024 - .5) * VEG.lawnDither, VEG.lawnLand
@@ -13765,7 +13981,9 @@ local function build(cells, i, j, options)
                   end
                   local z = wild and ground(x, y)
                   local nx, ny, nz = groundNormal(x, y)
-                  if wild and nz >= .72 and (not sea or z > sea) and not blocked(x, y, 2.4) then
+                  -- squares from 1.5 m off a road's edge: the verge grows to the road (2.4 m left
+                  -- a mown strip beside every track, seen from the car)
+                  if wild and nz >= .72 and (not sea or z > sea) and not blocked(x, y, 1.5) then
                     local n = #samples
                     if flag == 32 then dryAny = true end
                     samples[n + 1], samples[n + 2] = sy * 4 + sx + flag, z
@@ -13802,8 +14020,9 @@ local function build(cells, i, j, options)
     end
     -- Forest floor and mapped fields stay a thin scatter. Lawn kinds are absent here,
     -- so a town tile does not plant a second tuft on the carpet.
-    scatter('grass', {farmland = 8, heath = 7, forest = 12, orchard = 5, vineyard = 9},
-      {farmland = .35, heath = .5, forest = .2, orchard = .55, vineyard = .28},
+    -- (no green tufts on fields: one every 8 m stood alone on the ploughed soil and the wheat)
+    scatter('grass', {heath = 7, forest = 12, orchard = 5, vineyard = 9},
+      {heath = .5, forest = .2, orchard = .55, vineyard = .28},
       VEG.grass, maxGrass, 0, 0.20, 0.30, .72, {forest = treeline + 80})
     lawnCarpet()
     scatter('bush', {forest = 14, park = 18},

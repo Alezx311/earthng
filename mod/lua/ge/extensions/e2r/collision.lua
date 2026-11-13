@@ -36,6 +36,12 @@ for _, kind in ipairs({'win_pvc', 'win_wood', 'door_house', 'door_garage', 'door
     'meadow', 'heath', 'scrub', 'forest', 'park', 'bare_ground', 'ballast', 'track', 'rail', 'rail_side'}) do
   QUIET.scene['e2rf_' .. kind] = true
 end
+-- a field's crops (generator.lua FIELD), each along x and along y
+local FIELDS = {}
+for _, crop in ipairs({'farmland', 'farmland_wheat', 'farmland_stubble', 'farmland_rows'}) do
+  FIELDS[#FIELDS + 1], FIELDS[#FIELDS + 2] = crop, crop .. '_y'
+end
+for _, kind in ipairs(FIELDS) do QUIET.scene['e2rf_' .. kind] = true end
 M.QUIET = QUIET
 -- the detailed ground the road layer draws. The coarse proxy (e2rf_col_ground) collides instead,
 -- so these stay out of the rebuild. Roads, kerbs and sidewalks are not in this set.
@@ -45,6 +51,7 @@ for _, kind in ipairs({'ground', 'meadow', 'grass', 'grass_dry', 'grass_lush', '
     'scree', 'sand', 'desert', 'dune', 'steppe', 'dry_grass', 'tundra', 'alpine', 'snow', 'snow_edge'}) do
   TERRAIN['e2rf_' .. kind] = true
 end
+for _, kind in ipairs(FIELDS) do TERRAIN['e2rf_' .. kind] = true end
 
 -- true when no mesh of a near object ('road' or 'scene' layer) needs collision
 function M.quiet(meshes, layer)

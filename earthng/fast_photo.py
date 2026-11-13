@@ -8,6 +8,7 @@ The same composition as Earth2Road's BeamNG photo style (texture_styles.py): a f
 
 A wall kind is 'wall_<name>' (fast_style.KINDS); its repeat in metres is PHOTO_WALLS[name][2].
 """
+import functools
 import hashlib
 from pathlib import Path
 
@@ -408,12 +409,14 @@ MACRO_PX = 2048
 MACRO = {
     # grass and lush: a field seen past the tufts is the tufts with their shade (12.11, land-02:
     # the lit sheet stood 40-50 % brighter and greyer than the carpet's edge)
-    'grass': ((71, 92, 30), [((87, 101, 36), .34, 3, .3), ((58, 81, 24), .34, 5, .26),
-                             ((104, 110, 45), .08, 9, .12), ((82, 79, 39), .02, 17, .06)]),
+    # (13.11: blue a little over the tufts' mean, for fast_tone to reach the land's saturation
+    # with a factor under its 1.6 cap; the toned colour is what stands beside the tufts)
+    'grass': ((71, 92, 35), [((87, 101, 41), .34, 3, .3), ((58, 81, 29), .34, 5, .26),
+                             ((104, 110, 50), .08, 9, .12), ((82, 79, 44), .02, 17, .06)]),
     'dry':   ((140, 134, 76), [((158, 148, 88), .34, 4, .28), ((116, 120, 60), .26, 6, .2),
                               ((172, 160, 104), .09, 11, .1), ((122, 104, 70), .04, 15, .06)]),
-    'lush':  ((54, 85, 26), [((66, 95, 29), .34, 4, .28), ((43, 70, 22), .30, 6, .22),
-                             ((78, 103, 33), .08, 10, .1), ((48, 63, 23), .03, 16, .06)]),
+    'lush':  ((54, 85, 34), [((66, 95, 37), .34, 4, .28), ((43, 70, 30), .30, 6, .22),
+                             ((78, 103, 41), .08, 10, .1), ((48, 63, 31), .03, 16, .06)]),
     'earth': ((150, 126, 90), [((166, 142, 102), .32, 4, .26), ((128, 104, 74), .28, 7, .18),
                                ((126, 122, 70), .10, 9, .08), ((108, 88, 64), .05, 19, .06)]),
 }
@@ -435,6 +438,185 @@ def _octaves(seed, cycles):
     fine = np.asarray(Image.fromarray(fine, mode='F').resize((MACRO_PX, MACRO_PX), Image.BICUBIC), dtype=np.float32)
     n = n + (fine - .5) * .12
     return (n - n.min()) / (n.max() - n.min())
+
+
+def _tiled(seed, cells, px=MACRO_PX):
+    """Smooth 0..1 random field of `cells` x `cells` knots that repeats with the sheet (bicubic)."""
+    rng = np.random.default_rng(seed)
+    n = np.pad(rng.random((cells, cells), dtype=np.float32), 2, mode='wrap')
+    big = np.asarray(Image.fromarray(n, mode='F').resize(((cells + 4) * px // cells,) * 2, Image.BICUBIC), dtype=np.float32)
+    k = 2 * px // cells
+    return big[k:k + px, k:k + px]
+
+
+# The open land's own relief, in metres over one MACRO_M sheet (fast_style.macro_stage normalMap):
+# from a parked car the ground was lit as one plane between the 2 m detail grain and the 25 m
+# lattice, like plastic. Mounds of 3-8 m (the ground settling, old furrows, mole runs), tussocks
+# of 0.4-1.2 m in patches (grass clumps and the hollows between them) and clods of 10-25 cm.
+# Every land shares it, so a piece's two lands (cut_/fade_) lie on the same bumps.
+RELIEF_SEED = 6151
+# metres of height of the mounds, tussocks and clods
+RELIEF_MOUNDS, RELIEF_TUSSOCKS, RELIEF_CLODS = .34, .11, .028
+
+
+@functools.lru_cache(maxsize=1)
+def relief_height():
+    s = RELIEF_SEED
+    # mounds of 3-8 m (knots every 6 and 3.2 m) over a slow swell of the sheet's own noise
+    mounds = (_tiled(s, 16) * .55 + _tiled(s + 1, 30) * .45 - .5) * RELIEF_MOUNDS + (_noise(s + 6, 9) - .5) * .12
+    # tussocks: knolls standing out of a lower floor, thick in some patches and gone in others
+    t = _tiled(s + 2, 110) * .6 + _tiled(s + 3, 190) * .4
+    patch = np.clip((_noise(s + 4, 7) - .25) / .35, 0, 1)
+    tussocks = np.clip(t - .4, 0, None) ** 1.3 * patch * (RELIEF_TUSSOCKS / .4 ** 1.3)
+    clods = (_tiled(s + 5, 520) * .7 + _tiled(s + 7, 1024) * .3 - .5) * RELIEF_CLODS
+    return (mounds + tussocks + clods).astype(np.float32)
+
+
+def relief_normal():
+    """The relief as a normal map (green down, as fast_photo.ground_sheet flips ambientCG's)."""
+    h = relief_height()
+    texel = MACRO_M / MACRO_PX
+    dx = (np.roll(h, -1, 1) - np.roll(h, 1, 1)) / (2 * texel)
+    dy = (np.roll(h, -1, 0) - np.roll(h, 1, 0)) / (2 * texel)
+    n = np.stack([-dx, dy, np.ones_like(h)], -1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    # green down: a row further down the image is further +v
+    n[..., 1] = -n[..., 1]
+    return Image.fromarray(np.clip((n * .5 + .5) * 255 + .5, 0, 255).astype('uint8'))
+
+
+def relief_shade():
+    """Light and dark the relief puts into colour: hollows between tussocks and the foot of a
+    mound darker, their tops lighter (a multiplier near 1)."""
+    h = relief_height()
+    small = Image.fromarray(h, mode='F').resize((MACRO_PX // 16,) * 2, Image.BOX)
+    pad = np.pad(np.asarray(small, dtype=np.float32), 2, mode='wrap')
+    big = np.asarray(Image.fromarray(pad, mode='F').resize(((MACRO_PX // 16 + 4) * 16,) * 2, Image.BICUBIC), dtype=np.float32)
+    local = big[32:32 + MACRO_PX, 32:32 + MACRO_PX]
+    return np.clip(1 + (h - local) * 3.2, .8, 1.2).astype(np.float32)
+
+
+# --- fields: one crop a field (generator.lua FIELD, fast_style.FIELDS) --------------------------
+# A FIELD_M sheet of rows running along x (the '_y' kinds turn it), colour and height. July in
+# the steppe: ploughed black soil in furrows, ripe wheat with a tractor's tramlines, stubble with
+# the combine's swaths, sunflower or maize in rows over dark soil. Rows repeat as fields do, so a
+# sheet's tiling does not show; the old sheet's 12 m blots of straw on soil did (a checker).
+FIELD_M = 32.0
+FIELD_PX = 2048
+FIELD_CROPS = ('soil', 'wheat', 'stubble', 'rows')
+
+
+def _photo_sheet(name, metres, which='albedo'):
+    """A photo set tiled over the FIELD_M sheet (metres a repeat), with a turned copy over half of
+    it on a noise mask to hide its grid; float RGB 0..1 (sRGB)."""
+    repeats = max(1, round(FIELD_M / metres))
+    cell = FIELD_PX // repeats
+    im = Image.open(TEXTURES / name / f'{which}.jpg').convert('RGB').resize((cell, cell), Image.LANCZOS)
+    tile = np.asarray(im, dtype=np.float32) / 255
+    sheet = np.tile(tile, (repeats, repeats, 1))[:FIELD_PX, :FIELD_PX]
+    if sheet.shape[0] != FIELD_PX:
+        sheet = np.asarray(Image.fromarray((sheet * 255).astype('uint8')).resize((FIELD_PX, FIELD_PX), Image.LANCZOS),
+                           dtype=np.float32) / 255
+    turned = np.roll(np.rot90(sheet), (cell // 2, cell // 3), (0, 1))
+    k = np.clip((_tiled(len(name) * 31 + 7, 12, FIELD_PX) - .4) / .2, 0, 1)[..., None]
+    return sheet * (1 - k) + turned * k
+
+
+def _rows(period_m, wobble_m, seed):
+    """Across-row phase 0..1 of every texel (rows along x, wobbling `wobble_m` along them)."""
+    v = np.arange(FIELD_PX, dtype=np.float32)[:, None] * (FIELD_M / FIELD_PX)
+    bend = (_tiled(seed, 8, FIELD_PX) - .5) * 2 * wobble_m
+    return ((v + bend) / period_m) % 1.0
+
+
+def _tint(grey, dark, light):
+    """A luminance 0..1 mapped between two sRGB colours."""
+    d, l = np.array(dark, np.float32) / 255, np.array(light, np.float32) / 255
+    return d + (l - d) * grey[..., None]
+
+
+def _lum(rgb):
+    return rgb @ np.array([.3, .59, .11], dtype=np.float32)
+
+
+def _norm01(a):
+    lo, hi = np.percentile(a, 1), np.percentile(a, 99)
+    return np.clip((a - lo) / max(hi - lo, 1e-6), 0, 1)
+
+
+@functools.lru_cache(maxsize=4)
+def field_sheet(crop):
+    """(colour float RGB sRGB 0..1, height in metres) of a crop's sheet, rows along x."""
+    texel = FIELD_M / FIELD_PX
+    slow = _noise(FIELD_CROPS.index(crop) * 17 + 5, 3) - .5   # a sway of shade over the sheet
+    v = np.arange(FIELD_PX, dtype=np.float32)[:, None] * texel
+    if crop == 'soil':
+        photo = _photo_sheet('mat_soil', 2.0)
+        grain = _norm01(_lum(photo))
+        phase = _rows(.42, .05, 11)
+        ridge = .5 - .5 * np.cos(phase * 2 * np.pi)               # 1 on the ridge, 0 in the furrow
+        clods = _tiled(12, 640, FIELD_PX)
+        height = ridge * .055 + (clods - .5) * .03 + (grain - .5) * .012
+        shade = .78 + .3 * ridge + .14 * (clods - .5) + .18 * slow
+        colour = _tint(grain, (40, 33, 28), (104, 88, 74)) * shade[..., None]
+        # the drier crest of a ridge a little paler and greyer
+        colour = colour * (1 - .12 * ridge[..., None]) + np.array([.42, .38, .34], np.float32) * .12 * ridge[..., None]
+    elif crop == 'wheat':
+        blades = _norm01(_lum(_photo_sheet('photo_meadow', 1.6)))
+        ears = _tiled(21, 900, FIELD_PX)
+        drills = .5 - .5 * np.cos(_rows(.15, .02, 22) * 2 * np.pi)
+        height = (blades - .5) * .05 + (ears - .5) * .04 + drills * .015
+        # tramlines: two bare wheel tracks 1.8 m apart every 16 m
+        track = np.zeros_like(v[:, 0])
+        for centre in (7.1, 8.9, 23.1, 24.9):
+            track = np.maximum(track, np.clip(1 - np.abs(v[:, 0] - centre) / .28, 0, 1))
+        track = track[:, None] * np.ones((1, FIELD_PX), np.float32)
+        height = height * (1 - track) - .12 * track
+        g = np.clip(blades * .7 + ears * .3, 0, 1)
+        colour = _tint(g, (126, 98, 46), (222, 192, 118)) * (.94 + .2 * slow)[..., None]
+        soil = _tint(_norm01(_lum(_photo_sheet('mat_soil', 2.0))), (66, 54, 42), (128, 108, 84))
+        colour = colour * (1 - track[..., None] * .85) + soil * track[..., None] * .85
+    elif crop == 'stubble':
+        photo = _photo_sheet('mat_stubble', 2.0)
+        grain = _norm01(_lum(photo))
+        straw = _tiled(31, 700, FIELD_PX)
+        drills = .5 - .5 * np.cos(_rows(.15, .02, 32) * 2 * np.pi)
+        # the combine's swaths: bands of 8 m a little paler and darker in turn
+        swath = .5 + .5 * np.sign(np.sin(v / 8.0 * np.pi))
+        height = (grain - .5) * .03 + drills * .02 + (straw - .5) * .015
+        colour = photo * (.9 + .1 * swath + .16 * slow)[..., None]
+        colour = _tint(grain, (104, 84, 56), (204, 182, 132)) * .55 + colour * .45
+    else:   # rows: sunflower or maize, a broad band of leaves over every 2/3 m of dark soil
+        # (48 rows to the sheet, centred 1/3 m off its edge: the grid of detail.lua's row tufts)
+        leaves = _norm01(_lum(_photo_sheet('photo_meadow', 2.4)))
+        phase = _rows(2 / 3, .04, 41)
+        # plants every 0.3 m along the row, each a clump a little apart from the next
+        u = np.arange(FIELD_PX, dtype=np.float32)[None, :] * texel
+        plant = .5 + .5 * np.cos((u / .3 + _tiled(42, 40, FIELD_PX) * 3) * 2 * np.pi)
+        across = np.clip(1 - np.abs(phase - .5) / (.33 + .06 * plant), 0, 1)
+        canopy = np.clip(across * 1.6 - .2, 0, 1)
+        canopy = canopy * (.82 + .3 * _tiled(43, 160, FIELD_PX))
+        canopy = np.clip(canopy, 0, 1)
+        height = canopy * .12 + (leaves - .5) * .02 * canopy
+        green = _tint(leaves, (38, 58, 24), (112, 138, 60)) * (.92 + .2 * slow)[..., None]
+        soil = _tint(_norm01(_lum(_photo_sheet('mat_soil', 2.0))), (44, 36, 30), (108, 92, 76))
+        colour = soil * (1 - canopy[..., None]) + green * canopy[..., None]
+    return np.clip(colour, 0, 1).astype(np.float32), height.astype(np.float32)
+
+
+def field_images(crop, along_y=False):
+    """(colour, normal) images of a crop's sheet; along_y turns the rows to run along y."""
+    colour, height = field_sheet(crop)
+    if along_y:
+        colour, height = np.rot90(colour), np.rot90(height)
+    texel = FIELD_M / FIELD_PX
+    dx = (np.roll(height, -1, 1) - np.roll(height, 1, 1)) / (2 * texel)
+    dy = (np.roll(height, -1, 0) - np.roll(height, 1, 0)) / (2 * texel)
+    n = np.stack([-dx, dy, np.ones_like(height)], -1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    n[..., 1] = -n[..., 1]
+    img = lambda a: Image.fromarray(np.clip(a * 255 + .5, 0, 255).astype('uint8'))
+    return img(colour), img(n * .5 + .5)
 
 
 def macro_sheet(kind):
@@ -460,6 +642,8 @@ def macro_sheet(kind):
         big = np.asarray(Image.fromarray(n, mode='F').resize(((cells + 4) * MACRO_PX // cells,) * 2, Image.BICUBIC), dtype=np.float32)
         k = 2 * MACRO_PX // cells
         colour = colour * (1 + amount * (big[k:k + MACRO_PX, k:k + MACRO_PX, None] - .5))
+    # the relief's own light and dark, at the same places as its normals (relief_normal)
+    colour = colour * relief_shade()[..., None]
     return Image.fromarray(np.clip(_srgb(colour) * 255 + .5, 0, 255).astype('uint8'))
 
 

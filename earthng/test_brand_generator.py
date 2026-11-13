@@ -27,7 +27,7 @@ class BrandGeneratorTests(unittest.TestCase):
         return value
 
     def build(self, cells, i=0, far=False):
-        return self.g.build(self.table(cells), i, 0, self.table({'terrainStep': 100, 'far': far, 'maxTrees': 0}))[2 if far else 1]
+        return self.g.build(self.table(cells), i, 0, self.table({'terrainStep': 100, 'far': far, 'maxTrees': 0, 'relief': False}))[2 if far else 1]
 
     def corners(self, scene, material='e2rf_brand_sign'):
         """Triangles as three (x, y, z, u, v) corners, in world metres."""

@@ -692,8 +692,10 @@ local function buildLevel(L, P, cam, pause, out)
   end
   -- Textured land swells where forests and towns stand: a node rises by the mean lift of the
   -- quads round it, so a forest edge is a slope one quad wide and a wood a soft dome, not a box.
-  -- No lift on a level's outer edge or its hole rim (the levels meet there), nor where level 0
-  -- still lies under the DEM horizon.
+  -- No lift on a level's outer edge or its hole rim (the levels meet there). Past the DEM horizon
+  -- it comes in over 600 m: the horizon's tiles stand their own woods up (M.liftAt), 10 m over
+  -- level 0's sunk canopy; it came in from 1.4 km past them, and the woods from the far ring to
+  -- 6.4 km stood as a painted sheet (user, 13.11).
   local HL = H
   if next(RQ) then
     HL = {}
@@ -712,7 +714,7 @@ local function buildLevel(L, P, cam, pause, out)
             local lift = sum / 4
             if circle then
               local d = sqrt((sq[1] + a * s - circle[1]) ^ 2 + (sq[2] + b * s - circle[2]) ^ 2)
-              lift = lift * max(0, min(1, (d - circle[4] - 1400) / 1000))
+              lift = lift * max(0, min(1, (d - circle[4]) / 600))
             end
             h = h + lift
           end
@@ -1345,6 +1347,26 @@ function M.mapAt(x, y)
   return nil
 end
 M.mapUV = texUV
+
+-- How far the land stands up at landing-frame (x, y): a forest pixel its canopy (FAR.CANOPY), 0
+-- elsewhere or where no loaded raster has data (as mapAt, nothing is read from disk here). The
+-- DEM horizon's tiles swell by it (generator.lua), as the raised levels do past them.
+function M.liftAt(x, y)
+  if not RS then return 0 end
+  local R, fx, fy = RS.home, x, y
+  if not (R and R.texMat and hasData(R, fx, fy)) then
+    R = nil
+    for _, o in ipairs(RS.others or {}) do
+      if o.R and o.R.texMat then
+        fx, fy = toRegion(o, x, y)
+        if hasData(o.R, fx, fy) then R = o.R; break end
+      end
+    end
+  end
+  if not R then return 0 end
+  local at, mip = pixelOf(R, fx, fy, 0)
+  return at and mip.cls[at] == FOREST and FAR.CANOPY or 0
+end
 
 function M.status()
   return {active = active, radius = M.radius(), levels = (function() local n = 0; for k in pairs(LV) do if type(k) == 'number' then n = n + 1 end end; return n end)(),

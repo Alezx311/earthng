@@ -52,8 +52,13 @@ class DetailTests(unittest.TestCase):
           p={x=0,y=0,z=500}; step(100); assert(stream.count.grass==0 and next(live)==nil)
         ''')
 
+    def tame(self, lua):
+        # the lawn's own chaos (detail.WILD) off: these tests check the rings' shares
+        lua.execute('detail.WILD = {tall = {low = 1, high = 1, power = 1}, gap = {from = -2, to = -1}, weed = {from = 2, low = .55, high = 1}}')
+
     def test_lawn_patch_expands_to_an_even_short_carpet(self):
         lua = self.make()
+        self.tame(lua)
         lua.execute(r'''
           -- near ring only: the dense short carpet, without the outer rings' broad stray tufts
           local part = {tile={}, n=6, staticN=1, level=0, patches={{
@@ -85,6 +90,7 @@ class DetailTests(unittest.TestCase):
 
     def test_lawn_rings_split_a_patch_without_overlap(self):
         lua = self.make()
+        self.tame(lua)
         lua.execute(r'''
           local function patch(samples) return {x=0, y=0, shapes={'/3d_grass/a.dae','/3d_grass/b.dae','/3d_grass/c.dae'},
             spans={0.265, 0.258, 0.255}, bottoms={-0.038, -0.033, -0.019}, samples=samples,
@@ -121,6 +127,76 @@ class DetailTests(unittest.TestCase):
           assert(dryN==4, dryN)
           local lush = ring({0 + 16, 5, 0, 0}, 3)
           assert(lush.n==1 and lush.shape[1]=='/3d_grass/long.dae' and lush.scale[1]*0.5>=0.5-1e-6)
+        ''')
+
+    def test_wild_lawn_sways_thins_and_counts_an_upper_bound(self):
+        lua = self.make()
+        lua.execute(r'''
+          local hs, gaps, weeds = {}, 0, 0
+          for x = 0, 400, 2 do
+            local height, keep, weed = detail.wild(x, 17)
+            assert(height >= detail.WILD.tall.low - 1e-9 and height <= detail.WILD.tall.high + 1e-9)
+            assert(keep >= 0 and keep <= 1)
+            hs[#hs + 1] = height
+            if keep < 1 then gaps = gaps + 1 end
+            if weed then weeds = weeds + 1 end
+          end
+          table.sort(hs)
+          assert(hs[#hs] - hs[1] > .3, 'the lawn sways in height')
+          assert(gaps > 5 and gaps < 150, gaps)
+          assert(weeds > 0 and weeds < 80, weeds)
+          -- a patch over a gap shows fewer tufts than its count, never more
+          local samples = {}
+          for slot = 0, 15 do samples[#samples + 1] = slot; samples[#samples + 1] = 0; samples[#samples + 1] = 0; samples[#samples + 1] = 0 end
+          local fewer = false
+          for px = 0, 400, 8 do
+            local patch = {x = px, y = 40, shapes = {'/3d_grass/a.dae', '/3d_grass/b.dae', '/3d_grass/c.dae'},
+              spans = {.26, .26, .26}, bottoms = {0, 0, 0}, samples = samples}
+            local out = detail.expand({tile = {}, n = 0, staticN = 0, patches = {patch}})
+            local n = detail.patchCount(patch, nil)
+            assert(out.n <= n)
+            if out.n < n then fewer = true end
+          end
+          assert(fewer)
+        ''')
+
+    def test_field_crops_stand_even_wheat_and_straight_rows(self):
+        lua = self.make()
+        lua.execute(r'''
+          local function field(flag)
+            local samples = {}
+            for slot = 0, 15 do samples[#samples + 1] = slot + flag; samples[#samples + 1] = 0; samples[#samples + 1] = 0; samples[#samples + 1] = 0 end
+            return {x = 0, y = 0, shapes = {'/3d_grass/a.dae', '/3d_grass/b.dae', '/3d_grass/c.dae'},
+              spans = {.26, .26, .26}, bottoms = {0, 0, 0}, samples = samples,
+              tall = {shapes = {'/3d_grass/long.dae'}, spans = {.5}, bottoms = {0}},
+              dry = {shapes = {'/dry/a.dae'}, spans = {.7}, bottoms = {0}}}
+          end
+          -- wheat: every tuft of every square (no wild gaps), dry ones, knee high
+          local wheat = field(64)
+          local out = detail.expand({tile = {}, n = 0, staticN = 0, patches = {wheat}})
+          assert(out.n == 16 * 9 and out.n == detail.patchCount(wheat, nil), out.n)
+          for k = 1, out.n do
+            assert(out.shape[k] == '/dry/a.dae')
+            local h = out.scale[k] * .7
+            assert(h >= detail.CROP.wheat.low - 1e-6 and h <= detail.CROP.wheat.high + 1e-6, h)
+          end
+          -- rows across x: each tuft within a hand of its row (y on the 2/3 m grid)
+          for _, case in ipairs({{128, 'y'}, {384, 'x'}}) do
+            local rows = field(case[1])
+            out = detail.expand({tile = {}, n = 0, staticN = 0, patches = {rows}})
+            assert(out.n == 16 * 9)
+            local spread = 0
+            for k = 1, out.n do
+              assert(out.shape[k] == '/3d_grass/long.dae')
+              local across = case[2] == 'y' and out.y[k] or out.x[k]
+              local along = case[2] == 'y' and out.x[k] or out.y[k]
+              local off = (across - 1/3) / (2/3)
+              assert(math.abs(off - math.floor(off + .5)) * 2/3 <= detail.CROP.rows.across / 2 + 1e-6, across)
+              local a = (along - 1/3) / (2/3)
+              spread = math.max(spread, math.abs(a - math.floor(a + .5)) * 2/3)
+            end
+            assert(spread > .2, 'loose along the row')
+          end
         ''')
 
     def test_lawn_rings_share_the_grass_budget(self):

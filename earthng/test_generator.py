@@ -98,6 +98,9 @@ class GeneratorTests(unittest.TestCase):
         return value
 
     def build(self, cells, i=0, j=0, **options):
+        # the open land's own relief (generator RELIEF) off: these cells' DEMs are exact heights.
+        # Its own tests pass relief=True.
+        options.setdefault('relief', False)
         return self.generator.build(self.table(cells), i, j, self.table(options))
 
     def meshes(self, manifest, material=None):
@@ -2808,6 +2811,56 @@ class GeneratorTests(unittest.TestCase):
         # x = 500 is DEM column 60 m. Away from the road the surface is that minus groundDrop.
         self.assertAlmostEqual(near[0][0], 59.75, places=2)
         self.assertNotAlmostEqual(near[250][0], near[0][0], places=2)
+
+    def test_open_land_relief_breaks_the_plain_but_not_roads_seams_or_lods(self):
+        # a flat 50 m plain with a road across it: the land (RELIEF) rises and falls in mounds
+        # away from the road, the road's own ground and the tile seams stay where they were
+        cell = {'roads': [{'id': 'road', 'nodes': [1, 2], 'width': 10,
+                           'tags': {'highway': 'residential', 'sidewalk': 'no'},
+                           'points': [[0, 250, 50], [1000, 250, 50]]}],
+                'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 5, 'ny': 5, 'heights': [50.0] * 25}}
+        flat = self.build([cell], land=False)[0]
+        rough = self.build([cell], land=False, relief=True)[0]
+        def heights(manifest):
+            return {(round(x, 3), round(y, 3)): z for t in self.triangles(manifest, 'e2rf_ground') for x, y, z in t}
+        a, b = heights(flat), heights(rough)
+        far_off = [b[k] - a[k] for k in a if k in b and abs(k[1] - 250) > 40]
+        near_road = [b[k] - a[k] for k in a if k in b and abs(k[1] - 250) < 7]
+        self.assertTrue(far_off and near_road)
+        self.assertGreater(max(far_off) - min(far_off), .4)
+        self.assertLess(max(map(abs, far_off)), .95)       # RELIEF.octaves: half their sum
+        self.assertLess(max(map(abs, near_road)), 1e-6)
+        # the near tiles either side share their edge, and a far tile meets a near one exactly
+        left = self.border(rough, 500, surface=True)
+        right = self.border(self.build([cell], i=1, land=False, relief=True)[0], 500, surface=True)
+        far = self.border(self.build([cell], i=1, far=True, land=False, relief=True)[2], 500, surface=True)
+        self.assertTrue(left)
+        self.assertEqual(left, right)
+        self.assertEqual(left, far)
+
+    def test_horizon_woods_stand_up_as_a_canopy_with_walls_at_the_rim(self):
+        # a flat 40 m plain draped in a far colour map whose forest runs x 100..400 (far.lua
+        # liftAt): the horizon tile swells there and hangs a wall on its rim, the rest stays flat
+        cell = {'terrain': {'rect': [0, 0, 2000, 2000], 'nx': 3, 'ny': 3, 'heights': [40.0] * 9}}
+        farmap = self.lua.eval('''{at = function(x, y) return {texKind = 'farmap_t'} end,
+          uv = function(R, x, y) return x / 2000, y / 2000 end,
+          lift = function(x, y) return (x >= 100 and x < 400) and 16 or 0 end}''')
+        def zs(**extra):
+            far = self.build([cell], horizon=True, horizonStep=100, farMap=farmap, **extra)[2]
+            return [(x, y, z) for t in self.triangles(far, 'e2rf_farmap_t') for x, y, z in t]
+        flat = zs(canopy=False)
+        self.assertTrue(flat)
+        self.assertLess(max(abs(z - 39.75) for _, _, z in flat), .01)
+        tall = zs()
+        inside = [z for x, y, z in tall if 200 <= x <= 300 and 0 < y < 500]
+        outside = [z for x, y, z in tall if (x <= 40 or x >= 460) and 0 < y < 500]
+        self.assertTrue(inside and outside)
+        self.assertAlmostEqual(min(inside), 39.75 + 16, places=2)
+        self.assertLess(max(abs(z - 39.75) for z in outside), .01)
+        # the rim: a wall from the canopy down under the ground, only where the wood reaches it
+        rim = [(x, z) for x, y, z in tall if abs(y) < 1e-6 and z < 39.75 - 1]
+        self.assertTrue(rim)
+        self.assertTrue(all(25 <= x <= 475 for x, _ in rim), rim)
 
     def test_negative_tiles_share_the_ground_edge(self):
         cell = {'terrain': {'rect': [-1000, -1000, 0, 0], 'nx': 2, 'ny': 2, 'heights': [10, 40, 10, 40]}}

@@ -384,7 +384,18 @@ def stylised_decal(kind, f):
 
 def pack_fields(pack, base, toned=True):
     """Material name -> stage-0 fields for one pack (all map fields present, '' clears).
-    The real pack's colours are toned (fast_tone); the seasonal packs start from the untoned ones."""
+    The real pack's colours are toned (fast_tone); the seasonal packs start from the untoned ones.
+    A field's crops (fast_style.CROPS) are the real pack's own: every other pack draws them as
+    its farmland."""
+    out = _pack_fields(pack, base, toned)
+    if pack != 'real':
+        for kind, like in style.CROP_LIKE.items():
+            if 'e2rf_' + like in out:
+                out['e2rf_' + kind] = dict(out['e2rf_' + like])
+    return out
+
+
+def _pack_fields(pack, base, toned=True):
     if pack == 'pixel':
         return fast_pixel.fields(base)
     if pack in fast_packs.PACKS:
@@ -403,7 +414,7 @@ def pack_fields(pack, base, toned=True):
                 f['emissiveMap'] = f'{base}/synth/{w}.glow.png'; f['emissiveFactor'] = '1 1 1'
             f['baseColorFactor'] = '1 1 1 1'
         elif pack == 'real':
-            if kind in style.TURF or kind in style.PHOTO_GROUND or kind in style.MACRO:
+            if kind in style.TURF or kind in style.PHOTO_GROUND or kind in style.MACRO or kind in style.CROPS:
                 f.update(style.real_stage(kind))
                 f['baseColorFactor'] = '1 1 1 1'
             elif kind in style.nature.NATURAL:
@@ -509,6 +520,14 @@ def land_art(real):
     """The open land's colour sheets and the mask they dissolve by (fast_photo.macro_sheet)."""
     for name in photo.MACRO:
         photo.macro_sheet(name).save(real / f'macro_{name}.color.png')
+    photo.relief_normal().save(real / 'macro_relief.normal.png')
+    # the fields' crops (fast_style.CROPS)
+    for crop in photo.FIELD_CROPS:
+        for along_y in (False, True):
+            colour, normal = photo.field_images(crop, along_y)
+            name = f'field_{crop}{"_y" if along_y else ""}'
+            colour.save(real / f'{name}.color.png')
+            normal.save(real / f'{name}.normal.png')
     mask = photo.blend_mask()
     mask.save(real / 'land_blend_o.data.png')
     # the land a piece comes into is cut by the inverse (fast_style.CUTS)
@@ -516,7 +535,7 @@ def land_art(real):
     (real / 'land.version').write_text(LAND_ART_VERSION)
 
 
-LAND_ART_VERSION = '4'  # change whenever a land sheet or the mask changes
+LAND_ART_VERSION = '6'  # change whenever a land sheet, the relief, a field's crop or the mask changes
 
 
 def ensure(user):

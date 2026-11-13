@@ -2,6 +2,50 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-14: ground from eye level, fields and the distance
+
+Seen from beside the car at Vytachiv (50.1128, 30.8790), quality 50. Full notes are in
+[docs/VISUAL_1_0.md](docs/VISUAL_1_0.md), section "Земля зблизька і далечінь".
+
+Open land:
+- Open-land lattice nodes rise and fall by three octaves of noise (55, 130 and 310 m, up to
+  ±0.9 m). There is none within 3-16 m of a road, in built-up ground, at the sea or in hollows by
+  water (`RELIEF`). Collision, grass, trees and far tiles read the same ground, and the near/far
+  seam stays exact.
+- The macro land sheets carry a relief normal map and its light and shade: mean tilt 4.75
+  degrees.
+- The lawn's height sways in patches, it thins to bare ground in places and weeds stand in
+  clumps (`detail.lua` `WILD`). The verge grows to 1.5 m from the road (was 2.4).
+- Land levels are dithered by a hash at each piece. Triangles +1.3 %.
+
+Fields:
+- Each OSM field has one crop by its id (`FIELD`): soil, wheat with tramlines, stubble, or rows
+  every 2/3 m. The rows turn with a long field.
+- The crops have their own tone class (`crop`).
+- Near the road wheat stands as dry tufts of 0.62-0.88 m, and the rows as green tufts on the
+  texture's own 2/3 m grid (lawnCarpet flags 64/128/256, `detail.lua` `CROP`).
+- The 24 m checker and the lone green tufts on fields are gone.
+
+The distance:
+- Horizon tiles (2.4-5 km) stand their woods up as a canopy from the far map (`far.liftAt`), with
+  walls on the tile rim. far.lua's canopy now starts right past the DEM horizon (600 m) instead
+  of 1.4 km beyond it.
+- Tree spread: an edge cell takes three crowns a round (`EDGE_TURN`), and rounds go edges first,
+  then by a hash of the cell. A far tile's cap now stands a wood's edge, not one crown per 25 m.
+  It also no longer plants a partial round all in the tile's west strip. Far stays a prefix of
+  near.
+- Clearings plant copses and a few lone trees, not an even scatter (`VEG.copse`). Residential
+  land keeps its groves only among buildings: on a 16 m lattice they stood a bare village hill as
+  a savanna. At Vytachiv, residential trees in 3x3 tiles fell from 1228 to 543, and the freed cap
+  went to the woods.
+
+Other changes:
+- The grass and lush macro sheets have a little more blue, so the tone reaches its saturation
+  under its 1.6 cap. `tone_means.json` is re-measured: the old means were taken from stale art.
+- Cost: a horizon tile is 31.5 ms in game with the canopy (~30 without). Tree caps are unchanged.
+- Tests: generator harnesses build with `relief=False` for exact DEM heights. New tests cover the
+  relief, the horizon canopy, the far wood edge, crops and the wild lawn.
+
 ## 2026-11-13: the real pack's look for 1.0
 
 - The level's sun was a December one. BeamNG counts TimeOfDay `day` from about the June

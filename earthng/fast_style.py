@@ -717,7 +717,7 @@ for _k, _ground in BIOME_GROUND.items():
                                               'snow': (232, 236, 242), 'snow_edge': (206, 212, 204)}[_k]), 1],
                  _ground, _photo.GROUND_M, 'plan')
 KINDS['glacier'] = KINDS['glacier'][:3] + (_photo.GROUND_M,) + KINDS['glacier'][4:]
-PHOTO_GROUND = ('ground', 'park', 'forest', *BIOME_GROUND, 'glacier', 'farmland')
+PHOTO_GROUND = ('ground', 'park', 'forest', *BIOME_GROUND, 'glacier')
 
 # Lawns, parks and meadows are soil with a fine relief, not the flat lawn photo. The mesh UV
 # repeats every COVER_SCALE metre (generator.lua, 24). The detail maps tile every 2 m, the same
@@ -792,6 +792,8 @@ def macro_stage(kind):
     sheet, detail, strength, _, _ = LANDS[land]
     stage = {
         'baseColorMap': f'{ART}/real/macro_{sheet}.color.png',
+        # the ground's own mounds, tussocks and clods (fast_photo.relief_normal), one for every land
+        'normalMap': f'{ART}/real/macro_relief.normal.png',
         'roughnessFactor': .96 if land == 'earth' else .93,
         'detailMap': _TERRAIN + detail + '_b.png',
         'detailNormalMap': _TERRAIN + detail + '_nm.png',
@@ -806,6 +808,38 @@ def macro_stage(kind):
     elif kind in CUTS:
         stage['opacityMap'] = f'{ART}/real/land_blend_inv_o.data.png'
     return stage
+
+
+# Fields (generator.lua FIELD): one crop a field, its rows along x or, in the '_y' kinds, along y
+# (fast_photo.field_sheet), under one of the game's grey terrain detail maps over 2 m. Other
+# packs draw every crop as their farmland (fast_art.pack_fields, CROP_LIKE). (FIELDS are the
+# mapped pitches and tracks.)
+CROPS = {}
+for _crop, _kind in (('soil', 'farmland'), ('wheat', 'farmland_wheat'), ('stubble', 'farmland_stubble'), ('rows', 'farmland_rows')):
+    CROPS[_kind], CROPS[_kind + '_y'] = (_crop, False), (_crop, True)
+for _k in CROPS:
+    KINDS[_k] = KINDS['farmland'][:3] + (_photo.FIELD_M,) + KINDS['farmland'][4:]
+CROP_LIKE = {_k: 'farmland' for _k in CROPS if _k != 'farmland'}
+_CROP_DETAIL = {'soil': ('soil/dirt_crumbly/t_dirt_crumbly', .3), 'wheat': ('grass/t_dirt_dry_grass/t_dirt_dry_grass', .22),
+                 'stubble': ('grass/t_dirt_dry_grass/t_dirt_dry_grass', .3), 'rows': ('soil/dirt_crumbly/t_dirt_crumbly', .22)}
+
+
+def crop_stage(kind):
+    crop, along_y = CROPS[kind]
+    name = f'field_{crop}{"_y" if along_y else ""}'
+    detail, strength = _CROP_DETAIL[crop]
+    return {
+        'baseColorMap': f'{ART}/real/{name}.color.png',
+        'normalMap': f'{ART}/real/{name}.normal.png',
+        'roughnessFactor': .96 if crop == 'soil' else .93,
+        'detailMap': _TERRAIN + detail + '_b.png',
+        'detailNormalMap': _TERRAIN + detail + '_nm.png',
+        'roughnessDetailMap': _TERRAIN + detail + '_r.png',
+        'detailScale': [_photo.FIELD_M / LAND_DETAIL_M] * 2,
+        'detailBaseColorMapStrength': strength,
+        'detailNormalMapStrength': .7,
+        'detailRoughnessMapStrength': .3,
+    }
 
 
 def real_stage(kind):
@@ -833,6 +867,8 @@ def real_stage(kind):
         if 'normalMap' in TEXTURES[w]:
             stage['normalMap'] = TEXTURES[w]['normalMap']
         return stage
+    if kind in CROPS:
+        return crop_stage(kind)
     if kind in PHOTO_GROUND:
         return {'baseColorMap': f'{ART}/real/ground_{kind}.color.png', 'normalMap': f'{ART}/real/ground_{kind}.normal.png'}
     return dict(TEXTURES[tex]) if tex else {'diffuseColor': colour}
@@ -841,7 +877,7 @@ def real_stage(kind):
 def material(kind):
     _, colour, ground, _, _ = KINDS[kind]
     stage = real_stage(kind)
-    if kind in TINT and kind not in PHOTO_GROUND and kind not in TURF and kind not in MACRO:
+    if kind in TINT and kind not in PHOTO_GROUND and kind not in TURF and kind not in MACRO and kind not in CROPS:
         stage['baseColorFactor'] = TINT[kind]
     toned = _tone.factor(kind, stage)     # the real pack's one tone (fast_tone)
     if toned:

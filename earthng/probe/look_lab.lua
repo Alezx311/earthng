@@ -9,7 +9,8 @@
 --          settle = 2.5, viewSettle = 25, prefix = 'lab'}
 -- A variant's mul = {e2rf_x = {r, g, b}} multiplies a material's baseColorFactor (a palette lab).
 -- The CEF UI is hidden while the lab runs and shown again at the end.
--- A height ending in 'a' is absolute (z), otherwise it is over the ground under the point.
+-- A height ending in 'a' is absolute (z), otherwise it is over the ground under the point. A
+-- target's height ending in 'c' is over the camera (a look at the horizon over tiles not loaded).
 -- The views are the outer loop: a camera jump streams tiles in, a variant only changes fields.
 -- Every field is put back after its variant. Shots: <user>/current/screenshots/<prefix>-<view>-<variant>.png
 local W = extensions.e2r_world
@@ -22,11 +23,12 @@ local function ground(x, y)
   return d and d < 12000 and 6000 - d or 0
 end
 
-local function point(lat, lon, agl)
+local function point(lat, lon, agl, cam)
   local x, y = native.localPoint(lat, lon)
   if not x then return nil end
   local s = tostring(agl)
   if s:sub(-1) == 'a' then return vec3(x, y, tonumber(s:sub(1, -2))) end
+  if s:sub(-1) == 'c' and cam then return vec3(x, y, cam.z + tonumber(s:sub(1, -2))) end
   return vec3(x, y, ground(x, y) + (tonumber(s) or 2))
 end
 
@@ -98,7 +100,8 @@ return P.task(function()
         cam, look = at(v.car[1], v.car[2], v.car[3]), at(v.car[4], v.car[5], v.car[6])
       end
     else
-      cam, look = point(v[2], v[3], v[4]), point(v[5], v[6], v[7])
+      cam = point(v[2], v[3], v[4])
+      look = cam and point(v[5], v[6], v[7], cam)
     end
     if not (cam and look) then vi = vi + 1; return end
     local q = quatFromDir(look - cam, vec3(0, 0, 1))
@@ -110,7 +113,19 @@ return P.task(function()
     local st = dbg.S and dbg.S.status and dbg.S.status.stream or {}
     local queue = dbg.S and #(dbg.S.queue or {}) or 0
     local quiet = queue == 0 and (st.pending or 0) == 0
-    if (quiet and now - at > 6) or now - at > viewSettle then phase, ki = 'variant', 0 end
+    if (quiet and now - at > 6) or now - at > viewSettle then
+      -- a geo view over the ground: the ray at the jump may have missed tiles not yet streamed
+      -- (the camera stood under the ground), so it is put over the ground again
+      if not v.car then
+        local cam = point(v[2], v[3], v[4])
+        local look = cam and point(v[5], v[6], v[7], cam)
+        if cam and look then
+          local q = quatFromDir(look - cam, vec3(0, 0, 1))
+          core_camera.setPosRot(0, cam.x, cam.y, cam.z, q.x, q.y, q.z, q.w)
+        end
+      end
+      phase, ki = 'variant', 0
+    end
   elseif phase == 'variant' then
     if restore then undo(restore) end
     ki = ki + 1

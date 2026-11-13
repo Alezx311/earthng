@@ -19,6 +19,9 @@ from pathlib import Path
 # class -> (keep of saturation, cap of sRGB saturation, pivot Y, gamma, max Y, both ways)
 CLASSES = {
     'land': (.72, .32, .10, .60, .15, True),
+    # a field's crop (fast_style.CROPS): ripe wheat stays gold and stubble straw beside the black
+    # soil and the green rows; under the land's caps the three read as one grey beige
+    'crop': (.85, .46, .10, .70, .21, True),
     'wall': (.62, .30, .30, .60, .50, False),
     'roof': (.62, .32, .18, .60, .36, False),
     'pave': (.70, .14, .16, .50, .28, False),
@@ -28,8 +31,9 @@ CLASSES = {
 SKIP = re.compile(r'(^wall_off_|glass|windows|^wall_shop_|roof_gold|lens|glyph|plate|paint_red|^mark|brand|'
                   r'^car$|wire|water|sign|fascia|snow|glacier|^farmap_|^col_|storefront)')
 RULES = (
+    ('crop', re.compile(r'^farmland')),
     ('land', re.compile(r'^(cut_|fade_|edge_grass|edge_dirt|ground$|meadow|grass_|dry_grass|earth$|forest$|scrub|'
-                        r'heath|orchard|park$|farmland|steppe|vineyard|wetland|bare_ground|road_track|tundra)')),
+                        r'heath|orchard|park$|steppe|vineyard|wetland|bare_ground|road_track|tundra)')),
     ('wall', re.compile(r'^(hw_|wall_|gable|plinth|chimney|fence_|clad_|parapet)')),
     ('roof', re.compile(r'^roof_')),
     ('pave', re.compile(r'^(sidewalk|curb|footway$|trodden|yard$|paved$|track$|manhole|drain)')),

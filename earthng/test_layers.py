@@ -115,7 +115,7 @@ class GeneratorTests(unittest.TestCase):
 
     def build(self, **cell):
         cell.setdefault('roads', [STREET])
-        return self.g.build(self.table([cell]), 0, 0, self.table({'terrainStep': 100, 'maxTrees': 0}))[1]
+        return self.g.build(self.table([cell]), 0, 0, self.table({'terrainStep': 100, 'maxTrees': 0, 'relief': False}))[1]
 
     def corners(self, scene, material):
         out = []
