@@ -1472,11 +1472,15 @@ function ROADS.seamLip(dz, horizontal)
   if horizontal < 1e-4 then return true end
   return math.abs(dz) / horizontal >= 1
 end
--- Invisible ground the car stands on: the visual lattice at four times its step, one mesh
--- per cell. The detailed ground stays drawn and is left out of reloadCollision.
+-- Invisible ground the car stands on: the same lattice the ground is drawn with, one mesh
+-- per cell. A step four times coarser chorded across hills, so the car sank into the
+-- texture or rode above it. The detailed ground stays drawn and is left out of
+-- reloadCollision; only the cells round the car join a rebuild, so the full step is cheap.
 function ROADS.collisionGround(roads, rect, step, heightAt, pause)
   if not roads or not heightAt or not step or step <= 0 then return end
-  local fine = step * 4
+  -- Below 4 m the chord across one cell is centimetres, and a 1 m lattice would spawn
+  -- hundreds of thousands of triangles a rebuild then hides. 10-25 m packs match the draw.
+  local fine = step < 4 and 4 or step
   local cell = math.max(64, fine)
   local x0, y0 = math.floor(rect[1] / cell) * cell, math.floor(rect[2] / cell) * cell
   local x1, y1 = math.ceil(rect[3] / cell) * cell, math.ceil(rect[4] / cell) * cell

@@ -696,13 +696,33 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(self.generator.seamLip(0.05, 0.05))
         self.assertFalse(self.generator.seamLip(0.05, 0.5))
 
-    def test_the_collision_ground_is_coarser_than_the_drawn_lattice(self):
-        source = [{'terrain': {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [10] * 4}}]
-        road = self.build(source, land=False)[0]
+    def test_the_collision_ground_follows_the_drawn_hill(self):
+        # a step four times coarser drew a flat chord over this 8 m peak, and the car
+        # either sank into the texture or floated above it
+        heights = [0.0] * 25
+        heights[12] = 8
+        terrain = {'rect': [0, 0, 100, 100], 'nx': 5, 'ny': 5, 'heights': heights}
+        road = self.build([{'terrain': terrain}], land=False)[0]
         ground = list(self.triangles(road, 'e2rf_ground'))
         proxy = list(self.triangles(road, 'e2rf_col_ground'))
         self.assertTrue(ground and proxy)
-        self.assertLess(len(proxy), len(ground) / 4)
+
+        def zs(tris):
+            return [p[2] for t in tris for p in t]
+
+        def shortest(tris):
+            best = 1e9
+            for t in tris:
+                for a, b in ((0, 1), (1, 2), (2, 0)):
+                    d = math.hypot(t[a][0] - t[b][0], t[a][1] - t[b][1])
+                    if d > 0.05:
+                        best = min(best, d)
+            return best
+
+        gz, pz = zs(ground), zs(proxy)
+        self.assertAlmostEqual(max(pz), max(gz), places=2)
+        self.assertGreater(max(pz) - min(pz), 4)
+        self.assertAlmostEqual(shortest(proxy), shortest(ground), delta=0.2)
         for item, _mesh in self.meshes(road, 'e2rf_col_ground'):
             self.assertTrue(item.proxy)
             self.assertGreaterEqual(float(item.cell[3]), 64)

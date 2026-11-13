@@ -5,7 +5,7 @@
 -- hides, for its duration only, what the car cannot touch.
 --
 -- The ground and the building shells the car can actually meet are separate invisible meshes
--- (generator col_ground / col_bldg): the ground is the lattice at four times the visual step,
+-- (generator col_ground / col_bldg): the ground is the same lattice the ground is drawn with,
 -- the shell is one quad per wall instead of the windowed facade. A rebuild keeps the proxy
 -- cells in the 3x3 around the car (and the other focus points) and leaves the detailed
 -- ground and facade walls out. Roads stay the meshes they are drawn with.

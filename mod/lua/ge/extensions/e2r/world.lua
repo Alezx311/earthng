@@ -2900,8 +2900,20 @@ local function collisionPoints(p, v)
 end
 
 local function updateCollision()
-  if not S.collisionDirty or S.now - S.collisionAt < COLLISION_EVERY then return end
+  if not S.collisionDirty then return end
   local p, v = focus()
+  -- the proxy stays hidden until a rebuild. Waiting the full gap left the car on a tile
+  -- whose texture was already there and whose collision was not (a fall at 250 km/h).
+  local wait = COLLISION_EVERY
+  if S.state == 'driving' and p then
+    local i, j = tileOf(p.x, p.y)
+    local under = S.tiles[i .. '_' .. j]
+    if under and under.state == 'loaded' and not under.collided and not under.failed and under.manifest
+        and not under.manifest.empty and itemCount(under.manifest) > 0 then
+      wait = 0
+    end
+  end
+  if S.now - S.collisionAt < wait then return end
   local fast = S.stream and S.stream.generator
   local radius = fast and LIMIT.collisionRadius(v) or COLLISION_R
   -- the descent waits for collision on every tile within 500 m of the spawn (tick): a corner
