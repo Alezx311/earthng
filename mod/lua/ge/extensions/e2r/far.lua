@@ -37,6 +37,9 @@ local FAR = {
   BAND = 32,               -- rows of a level in one object (~8k triangles: ~15 ms of createMesh)
   LANDMARK_SIGHT = .0006,  -- a tower is drawn while height / distance is over this (30 m: 50 km)
   LANDMARK_MAX = 1800,
+  -- vertices in one landmark object. Kyiv's 1800 towers with their glass rows were 94k in one
+  -- createMesh, and the game spun in it for good (16-bit counts); 36k without the glass passed.
+  MARK_VERTS = 16000,
   R_EFF = 6371000 / (1 - .13),  -- the Earth's radius bent by standard refraction (k = 0.13), m
   VIEW = 100000,           -- nothing is drawn past this, m (the far plane)
   FOG = 0.00006,           -- haze, the density Ticino settled on (6e-5): 45 % at 10 km, 70 % at 20 km
@@ -505,8 +508,9 @@ local function snap(v, s) return floor(v / s + .5) * s end
 
 -- the squares and holes of every level for a camera at p: level L covers the hole of level L+1
 -- (a square aligned to L+1's grid, inside the natural square of L), level 0 the ring from the
--- DEM horizon out to that hole
-local function plan(p, holeR)
+-- DEM horizon out to that hole. holeR: where built ground round p ends (quads inside are
+-- skipped); dropR: the planned DEM horizon (level 0 sinks under it, the Earth bends past it).
+local function plan(p, holeR, dropR)
   local out, N, top = {}, FAR.N, FAR.LEVELS - 1
   for L = 0, top do
     local s = FAR.BASE * 2 ^ L
@@ -520,7 +524,7 @@ local function plan(p, holeR)
   local h = N / 2 * out[top].s
   out[top].square = {out[top].cx - h, out[top].cy - h, out[top].cx + h, out[top].cy + h}
   for L = top - 1, 0, -1 do out[L].square = out[L + 1].hole end
-  out[0].circle = {p.x, p.y, holeR}
+  out[0].circle = {p.x, p.y, holeR, dropR or holeR}
   return out
 end
 
@@ -555,7 +559,7 @@ local function buildLevel(L, P, cam, pause, out)
         h = R and heightOf(R, fx, fy)
       end
       if h then
-        if circle then h = h - nearDrop(sqrt((x - circle[1]) ^ 2 + (y - circle[2]) ^ 2), circle[3]) end
+        if circle then h = h - nearDrop(sqrt((x - circle[1]) ^ 2 + (y - circle[2]) ^ 2), circle[4]) end
         H[b * w + a + 1] = bent(h, x, y, cam)
       else
         H[b * w + a + 1] = false
@@ -591,8 +595,11 @@ local function buildLevel(L, P, cam, pause, out)
       local skip = hole and x0 >= hole[1] and x0 + s <= hole[3] and y0 >= hole[2] and y0 + s <= hole[4]
       if skip then inHole[k] = true end
       if not skip and circle then
-        local cx, cy = x0 + s / 2 - circle[1], y0 + s / 2 - circle[2]
-        skip = cx * cx + cy * cy < circle[3] * circle[3]
+        -- only a quad wholly inside: one skipped by its centre left up to 141 m of sky at the rim
+        -- (the hole stops at the first cell whose ground is not in)
+        local fx = max(abs(x0 - circle[1]), abs(x0 + s - circle[1]))
+        local fy = max(abs(y0 - circle[2]), abs(y0 + s - circle[2]))
+        skip = fx * fx + fy * fy < circle[3] * circle[3]
       end
       if not skip then
         -- the quad's nearest point to the camera past the far plane
@@ -646,7 +653,7 @@ local function buildLevel(L, P, cam, pause, out)
     return R and heightOf(R, fx, fy)
   end
   local function place(x, y, raw)
-    if circle then raw = raw - nearDrop(sqrt((x - circle[1]) ^ 2 + (y - circle[2]) ^ 2), circle[3]) end
+    if circle then raw = raw - nearDrop(sqrt((x - circle[1]) ^ 2 + (y - circle[2]) ^ 2), circle[4]) end
     return bent(raw, x, y, cam)
   end
   local function terrainAt(x, y)
@@ -705,7 +712,7 @@ local function buildLevel(L, P, cam, pause, out)
             local lift = sum / 4
             if circle then
               local d = sqrt((sq[1] + a * s - circle[1]) ^ 2 + (sq[2] + b * s - circle[2]) ^ 2)
-              lift = lift * max(0, min(1, (d - circle[3] - 1400) / 1000))
+              lift = lift * max(0, min(1, (d - circle[4] - 1400) / 1000))
             end
             h = h + lift
           end
@@ -944,7 +951,14 @@ end
 
 -- tall buildings and towers as boxes within sight (height / distance), round p
 local function buildLandmarks(p, cam, minD, pause, out)
-  local m, top, glass = newMesh('e2rfar_tower'), newMesh('e2rfar_tower_top'), newMesh('e2rfar_glass')
+  -- the boxes go into parts of at most MARK_VERTS vertices, one object each
+  local parts, m, top, glass = {}, nil, nil, nil
+  local function flush()
+    if not m then return end
+    local list, verts, faces = finish({m, top, glass})
+    if #list > 0 then parts[#parts + 1] = {meshes = list, verts = verts, faces = faces} end
+    m, top, glass = nil, nil, nil
+  end
   local src = RS.source
   local picked = {}
   for _, R in ipairs(RS.list) do
@@ -964,6 +978,7 @@ local function buildLandmarks(p, cam, minD, pause, out)
   table.sort(picked, function(a, b) return a[4] / a[8] > b[4] / b[8] end)
   local ox, oy = snap(p.x, 1000), snap(p.y, 1000)
   for n = 1, min(#picked, FAR.LANDMARK_MAX) do
+    if not m then m, top, glass = newMesh('e2rfar_tower'), newMesh('e2rfar_tower_top'), newMesh('e2rfar_glass') end
     local q = picked[n]
     local x, y, z, h, ha, hb, ang = q[1] - ox, q[2] - oy, q[3], q[4], max(q[5], 4), max(q[6], 4), q[7]
     local c, sn = math.cos(ang), math.sin(ang)
@@ -986,10 +1001,13 @@ local function buildLandmarks(p, cam, minD, pause, out)
     end
     quad(top, vert(top, corners[1][1], corners[1][2], z1, 0, 0, 1), vert(top, corners[2][1], corners[2][2], z1, 0, 0, 1),
       vert(top, corners[3][1], corners[3][2], z1, 0, 0, 1), vert(top, corners[4][1], corners[4][2], z1, 0, 0, 1))
+    if #m.verts + #top.verts + #glass.verts >= FAR.MARK_VERTS then flush() end
     if n % 256 == 0 then pause() end
   end
-  local list, verts, faces = finish({m, top, glass})
-  out.marks = {meshes = list, pos = {ox, oy, 0}, verts = verts, faces = faces, count = min(#picked, FAR.LANDMARK_MAX)}
+  flush()
+  local verts, faces = 0, 0
+  for _, part in ipairs(parts) do verts, faces = verts + part.verts, faces + part.faces end
+  out.marks = {parts = parts, pos = {ox, oy, 0}, verts = verts, faces = faces, count = min(#picked, FAR.LANDMARK_MAX)}
 end
 
 -- --- the game side -----------------------------------------------------------------------------
@@ -1134,10 +1152,57 @@ function M.radius()
   return active and FAR.VIEW or 0
 end
 
--- p: the focus (car or free camera); source: native.farSource(); holeR: where the DEM horizon
--- (or the far ring) is sure to have ground round p; track(id, triangles): the collision owner
-function M.update(p, source, holeR, track, enabled)
+-- the hole of the level 0 in sight, {x, y, r, dropR}, or nil: ground under it must stay until a
+-- batch without it is in (world.lua LIMIT.bury)
+function M.shownHole()
+  local l0 = active and LV[0]
+  return l0 and l0.circle or nil
+end
+
+-- the hole of the batch being built or spawned: it was planned from the ground standing when the
+-- build began, so ground leaving meanwhile would open under it (far-hole-02, one grey tile)
+function M.pendingHole()
+  local P = job and job.plan or (staged and staged.done.plan)
+  return active and P and P[0] and P[0].circle or nil
+end
+
+-- How far round p the near world already stands: the distance to the nearest t-metre cell that
+-- the far view could draw (a loaded raster has data there) while built(i, j, x, y) says its
+-- ground is not in yet; maxR when nothing is missing. Only rasters already loaded are read:
+-- this runs outside the build coroutine, and loading one would yield.
+function M.groundReach(p, maxR, built, t)
+  t = t or 500
+  if not RS or #RS.list == 0 then return maxR end
+  local best = maxR
+  local ci, cj = floor(p.x / t), floor(p.y / t)
+  local n = math.ceil(maxR / t) + 1
+  for i = ci - n, ci + n do
+    local x0 = i * t
+    local dx = max(x0, min(p.x, x0 + t)) - p.x
+    for j = cj - n, cj + n do
+      local y0 = j * t
+      local dy = max(y0, min(p.y, y0 + t)) - p.y
+      local d = sqrt(dx * dx + dy * dy)
+      if d < best then
+        local x, y, data = x0 + t / 2, y0 + t / 2, false
+        for _, R in ipairs(RS.list) do
+          local fx, fy = x, y
+          if R.other then fx, fy = toRegion(R.other, x, y) end
+          if hasData(R, fx, fy) then data = true; break end
+        end
+        if data and not built(i, j, x, y) then best = d end
+      end
+    end
+  end
+  return best
+end
+
+-- p: the focus (car or free camera); source: native.farSource(); holeR: where built ground
+-- round p ends (M.groundReach); dropR: the planned DEM horizon (default holeR), which level 0
+-- sinks under; track(id, triangles): the collision owner
+function M.update(p, source, holeR, track, enabled, dropR)
   trackFn = track
+  dropR = dropR or holeR
   if not enabled or not ffi or not source or not source.region then
     if active then M.reset() end
     return
@@ -1187,11 +1252,10 @@ function M.update(p, source, holeR, track, enabled)
       end
       if done.out.marks then
         batch.names.marks = {}
-        if #done.out.marks.meshes > 0 then
-          local name = 'e2rfar_marks_g' .. gen
-          batch.items[#batch.items + 1] = {name = name, meshes = done.out.marks.meshes, pos = done.out.marks.pos,
-            faces = done.out.marks.faces}
-          batch.names.marks[1] = name
+        for k, part in ipairs(done.out.marks.parts) do
+          local name = string.format('e2rfar_marks_%d_g%d', k, gen)
+          batch.items[#batch.items + 1] = {name = name, meshes = part.meshes, pos = done.out.marks.pos, faces = part.faces}
+          batch.names.marks[k] = name
         end
       end
       staged = batch
@@ -1231,12 +1295,13 @@ function M.update(p, source, holeR, track, enabled)
     return
   end
   -- what changed: the coarsest level whose centre moved takes every finer one with it
-  local P = plan(p, holeR)
+  local P = plan(p, holeR, dropR)
   local from = nil
   for L = FAR.LEVELS - 1, 0, -1 do
     local o, old = P[L], LV[L]
-    if not old or old.cx ~= o.cx or old.cy ~= o.cy or (L == 0 and ((old.circle[1] - p.x) ^ 2 + (old.circle[2] - p.y) ^ 2 > FAR.DRIFT ^ 2
-        or abs(old.circle[3] - holeR) > 200)) then
+    -- M.stale (world.lua): ground held for the hole in sight has no ground of its own left under it
+    if not old or old.cx ~= o.cx or old.cy ~= o.cy or (L == 0 and (M.stale or (old.circle[1] - p.x) ^ 2 + (old.circle[2] - p.y) ^ 2 > FAR.DRIFT ^ 2
+        or abs(old.circle[3] - holeR) > 200 or abs((old.circle[4] or old.circle[3]) - dropR) > 200)) then
       from = L
       break
     end
@@ -1244,7 +1309,7 @@ function M.update(p, source, holeR, track, enabled)
   local marksDue = not LV.marks or (LV.marks.x - p.x) ^ 2 + (LV.marks.y - p.y) ^ 2 > 1500 ^ 2
   if not from and not marksDue then return end
   local pos = {x = p.x, y = p.y}
-  local cam = {x = pos.x, y = pos.y, z = p.z or 0, r0 = holeR}
+  local cam = {x = pos.x, y = pos.y, z = p.z or 0, r0 = dropR}
   job = {plan = P, out = {}, p = pos, cam = cam}
   job.co = coroutine.create(function()
     local t = hptimer()
@@ -1257,7 +1322,9 @@ function M.update(p, source, holeR, track, enabled)
     if from then
       for L = from, 0, -1 do buildLevel(L, P, cam, pause, job.out) end
     end
-    if marksDue or from == FAR.LEVELS - 1 then buildLandmarks(pos, cam, holeR * .5, pause, job.out) end
+    -- towers the near world draws itself stay out (by the planned horizon: a box left over a
+    -- building that loads later would stand in it)
+    if marksDue or from == FAR.LEVELS - 1 then buildLandmarks(pos, cam, dropR * .5, pause, job.out) end
     job.ms = t:stop()
   end)
 end
@@ -1298,15 +1365,23 @@ function M.buildMarks(R, p, holeR)
   return out.marks
 end
 
-function M.buildLevels(R, p, holeR, levels)
+function M.buildLevels(R, p, holeR, levels, dropR)
   local saved = RS
   RS = {list = {R}, byRegion = {}, home = R, pause = function() end, source = {region = R.region, regions = {},
     geographic = function() return 0, 0 end, localPoint = function() return 0, 0 end}}
-  local P = plan(p, holeR)
-  local cam, out = {x = p.x, y = p.y, z = p.z or 0, r0 = holeR}, {}
+  local P = plan(p, holeR, dropR)
+  local cam, out = {x = p.x, y = p.y, z = p.z or 0, r0 = dropR or holeR}, {}
   for L = (levels or FAR.LEVELS) - 1, 0, -1 do buildLevel(L, P, cam, function() end, out) end
   RS = saved
   return out, P
+end
+
+function M.reachOver(R, p, maxR, built, t)
+  local saved = RS
+  RS = {list = {R}, byRegion = {}, home = R, pause = function() end}
+  local r = M.groundReach(p, maxR, built, t)
+  RS = saved
+  return r
 end
 
 return M

@@ -42,9 +42,12 @@ class CollisionTests(unittest.TestCase):
           -- the detailed ground is drawn and left out of the rebuild; the coarse proxy collides
           assert(q(mesh('park'), 'road') and q(mesh('ground'), 'road') and q(mesh('cut_grass0'), 'road'))
           assert(not q(mesh('road'), 'road') and not q(mesh('col_ground'), 'road'))
-          assert(q(mesh('park'), 'scene') and q(mesh('footway', 'paved', 'roof'), 'scene'))
+          assert(q(mesh('park'), 'scene') and q(mesh('footway', 'paved'), 'scene'))
           -- a facade wall is drawn; the shell (col_bldg) and a fence the car can hit stay solid
-          assert(q(mesh('wall_brk_red'), 'scene') and q(mesh('roof', 'wall_brk_red'), 'scene'))
+          assert(q(mesh('wall_brk_red'), 'scene') and not q(mesh('roof', 'wall_brk_red'), 'scene'))
+          for _, roof in ipairs({'roof', 'roof_tile', 'roof_metal', 'roof_sheet', 'roof_mtile_red', 'roof_mtile_brown', 'roof_mtile_green'}) do
+            assert(not q(mesh(roof), 'scene'), roof)
+          end
           assert(not q(mesh('col_bldg'), 'scene') and not q(mesh('car'), 'scene'))
           assert(not q(mesh('fence_wall'), 'scene') and not q(mesh('fence_mesh'), 'scene'))
           assert(not q({}, 'scene') and not q(mesh('mark'), nil))
@@ -196,17 +199,65 @@ class CollisionTests(unittest.TestCase):
           local owner = {i = 0, j = 0}
           local near = makeProxy(owner, {0, 0, 64})
           local far = makeProxy(owner, {5, 5, 64})
+          assert(coll:missingProxies({{10, 10}}))
           coll:rebuild({{10, 10, 100, 200}}, 500, find, reload)
           assert(not seen[near] and seen[far])
+          assert(not coll:missingProxies({{10, 10}}))
+          assert(coll:missingProxies({{320, 320}}))
           assert(objects[near].hidden and objects[far].hidden)
           local ok = pcall(function()
             objects[near].hidden, objects[far].hidden = true, true
             coll:rebuild({{10, 10, 100, 200}}, 500, find, function() error('engine') end)
           end)
           assert(not ok and objects[near].hidden and objects[far].hidden)
+          assert(coll:missingProxies({{320, 320}})) -- a failed reload did not change coverage
+          owner.dropped = true
+          assert(not coll:missingProxies({{320, 320}}))
+          coll:rebuild({{10, 10}}, 500, find, reload)
+          assert(seen[near] and seen[far])
           assert(collision.nearCell({0, 0, 64}, {{10, 10}}) and not collision.nearCell({5, 5, 64}, {{10, 10}}))
           -- no focus: every proxy cell is kept for the rebuild
           assert(collision.nearCell({5, 5, 64}, {}))
+        ''')
+
+    def test_a_moving_focus_rebuilds_missing_proxies_even_when_tile_is_clean(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_widget import load_world
+        lua = self.make()
+        lua.execute('''
+          ui_imgui = setmetatable({ArrayChar=function() return {} end}, {__index=function() return function() end end})
+          require = function() return {} end
+          hptimer=function() return {stopAndReset=function() return 1 end, stop=function() return 1 end} end
+        ''')
+        lua.globals().mod = load_world(lua, (ROOT / 'world.lua').read_text(encoding='utf8'))
+        lua.execute('''
+          local function up(fn, name, replacement)
+            for i = 1, 200 do
+              local n, v = debug.getupvalue(fn, i)
+              if not n then return end
+              if n == name then if replacement then debug.setupvalue(fn, i, replacement) end; return v end
+            end
+          end
+          local update = up(mod.tick, 'updateCollision')
+          local S = up(mod.tick, 'S')
+          up(update, 'collision', collision)
+          local p = {x=10, y=10}
+          local v = {x=0, y=0, length=function() return 0 end}
+          up(update, 'focus', function() return p, v end)
+          S.state, S.now, S.collisionAt = 'driving', 10, 0
+          S.collisionDirty, S.stream, S.tiles, S.coll = false, {tile=500, generator=true}, {}, coll
+          local owner = {i=0,j=0}
+          serial=serial+1
+          local id=serial
+          objects[id]={id=id, hidden=true, isHidden=function(self) return self.hidden end,
+                       setHidden=function(self,h) self.hidden=h end}
+          coll:track(owner,id,false,2,'road',{5,5,64})
+          be={getObjectCount=function() return 0 end, reloadCollision=function() reload() end}
+          scenetree={findObjectById=find}
+          assert(not update()) -- the clean tile has no proxy near the original focus
+          p.x, p.y = 320, 320
+          assert(update() and not seen[id]) -- moving into its cell requires a rebuild
+          assert(not S.collisionDirty and not update())
         ''')
 
 
@@ -241,6 +292,9 @@ class CollisionTests(unittest.TestCase):
           yielded = false
           S.queue = {{key = '2_0', grass = true, tile = {}}, {key = '3_0', far = true, tile = {}}}
           assert(not LIMIT.nearQueued() and not LIMIT.allowSpawn(gate) and yielded)
+          S.now, yielded = 10.3, false
+          assert(LIMIT.allowSpawn(gate) and not yielded) -- near vegetation need not wait a full second
+          S.now = 10
           S.burstAt, yielded = 0, false
           assert(LIMIT.allowSpawn(gate) and not yielded)
           -- a dropped near job does not hold the gate open for itself
@@ -275,6 +329,11 @@ class CollisionTests(unittest.TestCase):
           assert(not LIMIT.ringTurn())
           S.queue = {{key = '2_0', grass = true, tile = {}}}
           assert(not LIMIT.shareRing() and not LIMIT.ringTurn())
+          local tiles = {far = {sceneStarted=true}, near = {sceneStarted=true}, gone = {sceneStarted=true, dropped=true}}
+          local grass = {far=true, near=true, gone=true}
+          assert(LIMIT.nextGrass(tiles, grass, {far=20, near=1, gone=0}) == 'near')
+          tiles.near.grassStarted = true
+          assert(LIMIT.nextGrass(tiles, grass, {far=20, near=1}) == 'far')
         ''')
 
 

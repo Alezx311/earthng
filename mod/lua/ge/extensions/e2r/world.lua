@@ -909,7 +909,7 @@ local function spawnItem(it, group, pause, tile, layer)
     if NATIVE and tile then
       S.coll = S.coll or collision.new()
       S.coll:track(tile, obj:getID(),
-        not (tile.far or tile.horizon) and not it.proxy and collision.quiet(meshes, layer),
+        not (tile.far or tile.horizon) and not it.proxy and not it.forceCollision and collision.quiet(meshes, layer),
         it.triangles, layer, it.proxy and it.cell)
     end
     if it.lens and M.signals then M.signals.addMesh(obj:getID(), it.lens, it.colour) end
@@ -2485,8 +2485,10 @@ local function updateTiles()
       or (dueNear(key) and not isBehind)
     if not held and (d > unloadR or isBehind) then
       retireForest(tile)
-      -- bury roads too: dropGroup on a dense tile hitching the frame; digGraves drains them
-      buryGroup('E2RT_' .. key); buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
+      -- bury roads too: dropGroup on a dense tile hitching the frame; digGraves drains them.
+      -- The ground waits while the far view in sight still has its hole over it.
+      LIMIT.bury('E2RT_' .. key, tile.i * tileSize, tile.j * tileSize, tileSize)
+      buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
       if M.signals then M.signals.dropTile(key) end
       if tile.flowLights and #tile.flowLights > 0 then S.flowLightVersion = (S.flowLightVersion or 0) + 1 end
       S.tiles[key] = nil
@@ -2547,9 +2549,8 @@ local function updateTiles()
     if bestS and sceneOk and (not best or bestSD < bestD) then startScene(bestS[1], bestS[2]) end
   end
   if NATIVE and st.grass then
-    for key, tile in pairs(S.tiles) do
-      if st.grass[key] and tile.sceneStarted and not tile.grassStarted then startGrass(key, tile); break end
-    end
+    local key = LIMIT.nextGrass(S.tiles, st.grass, st.wanted)
+    if key then startGrass(key, S.tiles[key]) end
   end
   if fast then
     -- the far city (earthng/fast_far.py): a tile without its own scene, within farRadius, gets
@@ -2570,7 +2571,8 @@ local function updateTiles()
       if near and near.sceneStarted then retireForest(far); far.vegetationDropped = true end
       if d > farR + 500 or (near and near.sceneComplete) or behind(cx, cy, d) then
         retireForest(far)
-        buryGroup('E2RF_' .. key)
+        if near and near.sceneComplete then buryGroup('E2RF_' .. key)
+        else LIMIT.bury('E2RF_' .. key, far.i * tileSize, far.j * tileSize, tileSize) end
         far.dropped = true
         S.far[key] = nil
         if NATIVE then native.unload(key, 'far') end
@@ -2637,7 +2639,8 @@ local function updateTiles()
         local cy = info and info.y or spawned.y or p.y
         -- DEM horizon stays a full ring (native wants it all round); behind culling is near/far
         if not info or math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) > horizonR + 800 then
-          buryGroup(spawned.groupName or ('E2RH_' .. key:gsub('[^%w_]', '_')))
+          local size = spawned.size or (info and info.size) or 1000
+          LIMIT.bury(spawned.groupName or ('E2RH_' .. key:gsub('[^%w_]', '_')), cx - size / 2, cy - size / 2, size)
           spawned.dropped = true
           S.horizon[key] = nil
           if NATIVE then native.unload(key, 'horizon') end
@@ -2658,7 +2661,7 @@ local function updateTiles()
             loadNewMaterials(manifest.materials, manifest.stockMaterials)
             local groupName = 'E2RH_' .. bestH:gsub('[^%w_]', '_')
             local horizon = {left = #manifest.items, group = tileGroup(groupName, true), horizon = true,
-              serial = info.serial, x = info.x, y = info.y, groupName = groupName}
+              serial = info.serial, x = info.x, y = info.y, size = info.size, groupName = groupName}
             S.horizon[bestH] = horizon
             if horizon.left == 0 then native.release(bestH, 'horizon')
             else
@@ -2673,18 +2676,19 @@ local function updateTiles()
     local horizonCount = 0
     for _ in pairs(S.horizon) do horizonCount = horizonCount + 1 end
     result.horizonResident = horizonCount
-    -- the far view past the DEM horizon: its level 0 starts where the horizon (or the far ring)
-    -- is sure to have ground round the focus (500 m tiles by their centres: 354 m short)
+    -- the far view past the DEM horizon: level 0 sinks under the planned horizon (500 m tiles
+    -- by their centres: 354 m short) and starts where ground round the focus is really built
     if M.far then
       local holeR = (horizonR > 0 and horizonR or (st.farRadius or 3000)) - 354
       local on = M.farEnabled ~= false
       native.farActive = on
-      local okFar, errFar = pcall(M.far.update, p, native.farSource(), holeR, function(id, triangles)
+      local okFar, errFar = pcall(M.far.update, p, native.farSource(), on and LIMIT.groundHole(p, holeR) or holeR, function(id, triangles)
         S.coll = S.coll or collision.new()
         M.farOwner = M.farOwner or {horizon = true}
         S.coll:track(M.farOwner, id, true, triangles)
-      end, on)
+      end, on, holeR)
       if not okFar then result.farError = tostring(errFar) end
+      LIMIT.releaseHeld()
       result.far = M.far.status()
     end
     -- Reprioritize pending work when direction changes. Ground meshes of every
@@ -2841,11 +2845,24 @@ function LIMIT.nearQueued()
   return false
 end
 
+-- Deliver the nearest finished grass first; pairs() order can otherwise put a remote
+-- tile ahead of the one under the car when several finish together.
+function LIMIT.nextGrass(tiles, grass, wanted)
+  local best, due
+  for key, tile in pairs(tiles or {}) do
+    if grass[key] and tile.sceneStarted and not tile.grassStarted and not tile.dropped then
+      local priority = (wanted and wanted[key]) or 1e6
+      if not best or priority < due or (priority == due and key < best) then best, due = key, priority end
+    end
+  end
+  return best
+end
+
 -- true when this open gate may insert into the scene. Near roads and buildings go on every
 -- open gate: a packet once a second left tiles unpainted however long the car waited, because
 -- the far view's bands took the only slot and three meshes a second never caught a city.
--- Grass, the far ring and the horizon still wait a second. A road due inside roadUrgent is
--- marked so its own floor applies. An early decor slot is yielded.
+-- Nearby grass waits a quarter second; the far ring and horizon wait a second. A road due
+-- inside roadUrgent is marked so its own floor applies. An early decor slot is yielded.
 function LIMIT.allowSpawn(gate)
   if not gate then return true end
   local head
@@ -2860,7 +2877,8 @@ function LIMIT.allowSpawn(gate)
   local urgent = head and not (head.scene or head.grass or head.far or head.horizon)
     and wanted and (wanted[head.key] or 1e6) < LIMIT.roadUrgent
   S.urgentRoad = urgent and true or false
-  if LIMIT.nearQueued() or S.urgentRoad or S.now - (S.burstAt or -1e9) >= 1 then return true end
+  local interval = head and head.grass and not (head.far or head.horizon) and .25 or 1
+  if LIMIT.nearQueued() or S.urgentRoad or S.now - (S.burstAt or -1e9) >= interval then return true end
   gate:yield()
   return false
 end
@@ -2873,6 +2891,87 @@ function LIMIT.shareRing()
   if not LIMIT.nearQueued() then return false end
   S.ringShare = (S.ringShare or 0) + 1
   return S.ringShare % 5 == 0
+end
+
+-- Where the far view's level 0 may start round p: the planned DEM horizon (maxR), or nearer
+-- while ground there is still missing. Ground counts as in when the near tile's road layer is
+-- complete, or its far-ring tile or DEM-horizon block is fully spawned. The planned radius alone
+-- left a disc of nothing round the city while the ring was queued (13.11, farM 8000).
+-- Rechecked twice a second or after 50 m: ~500 cells and their keys.
+function LIMIT.groundHole(p, maxR)
+  local g = S.groundHole
+  if g and g.max == maxR and S.now - g.at < .5 and (g.x - p.x) ^ 2 + (g.y - p.y) ^ 2 < 2500 then return g.r end
+  local r = M.far.groundReach(p, maxR, LIMIT.groundBuilt, S.stream and S.stream.tile or 500)
+  S.groundHole = {at = S.now, x = p.x, y = p.y, max = maxR, r = r}
+  result.farHole = math.floor(r)
+  return r
+end
+
+-- the ground of cell (i, j), centre (x, y), is in (see groundHole)
+function LIMIT.groundBuilt(i, j, x, y)
+  local key = i .. '_' .. j
+  local near = S.tiles[key]
+  if near and near.roadComplete and not near.dropped and not near.failed then return true end
+  local ring = S.far and S.far[key]
+  if ring and ring.left == 0 and not ring.dropped then return true end
+  local h = S.horizon
+  local block = h and (h[string.format('h1000:%d_%d', math.floor(x / 1000), math.floor(y / 1000))] or h['h500:' .. key])
+  return block and block.left == 0 and not block.dropped or false
+end
+
+-- A ground group leaving while the far view in sight still has its hole over it stays until a far
+-- batch without that hole is in. far-hole-01: the camera jumped 5 km, the city tiles unloaded, and
+-- the old batch, built round them, showed the sky for the seconds its rebuild takes (2.2 ms a
+-- frame). x0, y0, size: the group's square. Held groups do not count as built ground.
+function LIMIT.bury(name, x0, y0, size)
+  S.groundHole = nil   -- the reach changed: a build starting now must not take the old one
+  local g = LIMIT.underFar(x0, y0, size) and scenetree.findObject(name)
+  if not g then return buryGroup(name) end
+  g:setName('')
+  S.held = S.held or {}
+  table.insert(S.held, {g = g, x0 = x0, y0 = y0, size = size, at = S.now})
+  result.heldGround = (result.heldGround or 0) + 1
+end
+
+function LIMIT.underHole(hole, x0, y0, size)
+  if not hole then return false end
+  local dx = math.max(x0, math.min(hole[1], x0 + size)) - hole[1]
+  local dy = math.max(y0, math.min(hole[2], y0 + size)) - hole[2]
+  return dx * dx + dy * dy < hole[3] * hole[3]
+end
+
+-- the square lies under the hole in sight or under the one of the batch going in
+function LIMIT.underFar(x0, y0, size)
+  local far = M.far
+  if not (far and far.shownHole) then return false end
+  return LIMIT.underHole(far.shownHole(), x0, y0, size) or LIMIT.underHole(far.pendingHole(), x0, y0, size)
+end
+
+-- Held ground goes to the graves once neither far hole covers its square, once a new tile has put
+-- its ground there again, after 30 s, or with force (the world is left). Ground still held under
+-- the hole in sight makes that hole stale: the far view rebuilds without waiting for 200 m.
+function LIMIT.releaseHeld(force)
+  local held = S.held
+  if not held or #held == 0 then
+    if M.far then M.far.stale = false end
+    return
+  end
+  local stale, shown = false, M.far and M.far.shownHole and M.far.shownHole()
+  local t = S.stream and S.stream.tile or 500
+  for k = #held, 1, -1 do
+    local h = held[k]
+    local x, y = h.x0 + h.size / 2 - 1, h.y0 + h.size / 2 - 1
+    if force or S.now - h.at > 30 or not LIMIT.underFar(h.x0, h.y0, h.size)
+        or LIMIT.groundBuilt(math.floor(x / t), math.floor(y / t), x, y) then
+      S.graves = S.graves or {}
+      table.insert(S.graves, h.g)
+      table.remove(held, k)
+    elseif LIMIT.underHole(shown, h.x0, h.y0, h.size) then
+      stale = true
+    end
+  end
+  if M.far then M.far.stale = stale end
+  result.heldNow = #held
 end
 
 -- true on the frame after a ring burst, so updateTiles can start one far or horizon
@@ -2951,8 +3050,11 @@ local function collisionPoints(p, v)
 end
 
 local function updateCollision()
-  if not S.collisionDirty then return end
   local p, v = focus()
+  local size = S.stream and S.stream.tile or 500
+  local points = NATIVE and collisionPoints(p, v) or {}
+  local missing = NATIVE and S.coll and S.coll:missingProxies(points)
+  if not S.collisionDirty and not missing then return end
   -- the proxy stays hidden until a rebuild. Waiting the full gap left the car on a tile
   -- whose texture was already there and whose collision was not (a fall at 250 km/h).
   local wait = COLLISION_EVERY
@@ -2971,9 +3073,7 @@ local function updateCollision()
   -- tile's centre is up to ~1060 m away, and when such a tile came in last nothing else asked for
   -- a rebuild and the landing waited forever (native-perf-10)
   if S.state ~= 'driving' then radius = math.max(radius, 500 * math.sqrt(2) + S.stream.tile * 0.71) end
-  local size = S.stream and S.stream.tile or 500
-  local points = NATIVE and collisionPoints(p, v) or {}
-  local near = S.removedCollision or false
+  local near = missing or S.removedCollision or false
   for _, tile in pairs(S.tiles) do
     local empty = tile.manifest.empty or itemCount(tile.manifest) == 0
     if NATIVE then
@@ -3426,6 +3526,7 @@ local function beginArrival(job, early)
   local arrival, arrivalTimer = {}, hptimer()
   result.arrivalMs = arrival
   -- leave the previous region
+  LIMIT.releaseHeld(true)
   for key, tile in pairs(S.tiles) do
     retireForest(tile)
     dropGroup('E2RT_' .. key); dropGroup('E2RD_' .. key); dropGroup('E2RS_' .. key); tile.dropped = true
@@ -5081,6 +5182,7 @@ local function refreshCountries()
   S.status, S.coverage, S.centredOnPackage = native.status(), nil, nil
   -- A removed/disabled pack must stop contributing geometry as well as map coverage.
   if S.stream then
+    LIMIT.releaseHeld(true)
     for key, tile in pairs(S.tiles) do
       retireForest(tile)
       dropGroup('E2RT_' .. key); dropGroup('E2RD_' .. key); dropGroup('E2RS_' .. key); tile.dropped = true

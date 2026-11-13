@@ -1478,33 +1478,26 @@ end
 -- reloadCollision; only the cells round the car join a rebuild, so the full step is cheap.
 function ROADS.collisionGround(roads, rect, step, heightAt, pause)
   if not roads or not heightAt or not step or step <= 0 then return end
-  -- Below 4 m the chord across one cell is centimetres, and a 1 m lattice would spawn
-  -- hundreds of thousands of triangles a rebuild then hides. 10-25 m packs match the draw.
-  local fine = step < 4 and 4 or step
-  -- 128 m cells: fewer objects to spawn than a 64 m grid, and the 3x3 kept in a rebuild
-  -- still covers the car at 250 km/h between the two-second gaps
-  local cell = math.max(128, fine)
-  local x0, y0 = math.floor(rect[1] / cell) * cell, math.floor(rect[2] / cell) * cell
-  local x1, y1 = math.ceil(rect[3] / cell) * cell, math.ceil(rect[4] / cell) * cell
-  for cy = y0, y1 - 1, cell do
-    for cx = x0, x1 - 1, cell do
-      roads.hooks.cell = {math.floor(cx / cell + 1e-6), math.floor(cy / cell + 1e-6), cell}
-      for y = cy, math.min(cy + cell, y1) - fine, fine do
-        for x = cx, math.min(cx + cell, x1) - fine, fine do
-          if x + fine > rect[1] and x < rect[3] and y + fine > rect[2] and y < rect[4] then
-            local h00, h10 = heightAt(x, y), heightAt(x + fine, y)
-            local h11, h01 = heightAt(x + fine, y + fine), heightAt(x, y + fine)
-            if h00 and h10 and h11 and h01 then
-              roads.polygon('col_ground', {{x, y, h00}, {x + fine, y, h10}, {x + fine, y + fine, h11}}, true)
-              roads.polygon('col_ground', {{x, y, h00}, {x + fine, y + fine, h11}, {x, y + fine, h01}}, true)
-            end
-          end
-        end
+  -- Walk the very same global lattice as the drawn mesh. Restarting a 25 m grid at
+  -- each 128 m bucket both shifted its diagonals and left 3 m gaps between buckets.
+  local cell = math.max(128, step)
+  local nx = math.max(1, math.floor((rect[3] - rect[1]) / step + .5))
+  local ny = math.max(1, math.floor((rect[4] - rect[2]) / step + .5))
+  local gx0, gy0 = math.floor(rect[1] / step + .5), math.floor(rect[2] / step + .5)
+  for gy = gy0, gy0 + ny - 1 do
+    for gx = gx0, gx0 + nx - 1 do
+      local x, y = gx * step, gy * step
+      local h00, h10 = heightAt(x, y), heightAt(x + step, y)
+      local h11, h01 = heightAt(x + step, y + step), heightAt(x, y + step)
+      if h00 and h10 and h11 and h01 then
+        roads.hooks.cell = {math.floor((x + step * .5) / cell), math.floor((y + step * .5) / cell), cell}
+        roads.polygon('col_ground', {{x, y, h00}, {x + step, y, h10}, {x + step, y + step, h11}}, true)
+        roads.polygon('col_ground', {{x, y, h00}, {x + step, y + step, h11}, {x, y + step, h01}}, true)
       end
-      roads.hooks.cell = nil
-      if pause then pause() end
     end
+    if pause then pause() end
   end
+  roads.hooks.cell = nil
 end
 -- One quad of the building shell, in the cell of the wall's midpoint. The drawn facade
 -- (windows, a dozen pieces) stays visible and out of the collision rebuild.
@@ -9947,6 +9940,9 @@ local function build(cells, i, j, options)
     ROADS.liftDecks(carried, pause)
   end
   local roads, scene = collector(rect, key, 'road', pause), collector(rect, key, layerName, pause, distant and MIXED_TRIS or nil)
+  -- Verges can share the ground material but stand above the terrain lattice. Keep
+  -- them in separate objects so collision can retain them while hiding the ground.
+  roads.verges = collector(rect, key .. '_verge', 'road', pause)
   local roadDecor, sceneDecor = collector(rect, key .. '_marks', 'road', pause), collector(rect, key .. '_cars', 'scene', pause)
   -- A far tile (the ring past the near radius, ~1 km) draws each road's surface into its scene layer,
   -- decoration without collision: it kept the guard rails and fences, and from a free camera the
@@ -10961,7 +10957,7 @@ local function build(cells, i, j, options)
         end
         return nil
       end
-      for _, c in ipairs({roads, scene, roadDecor}) do
+      for _, c in ipairs({roads, scene, roadDecor, roads.verges}) do
         c.hooks.steep, c.hooks.nz, c.hooks.scale = steep, math.cos(math.rad(wing.steep)), ROADS.deck.repeatU
       end
     end
@@ -11446,7 +11442,7 @@ local function build(cells, i, j, options)
         local outerA = {quad[3][1], quad[3][2], ground(quad[3][1], quad[3][2])}
         local outerB = {quad[4][1], quad[4][2], ground(quad[4][1], quad[4][2])}
         outerA[9], outerB[9] = 1, 1
-        emit(distant and scene or roads, vergeKind, {quad[1], quad[2], outerA, outerB}, nil, true)
+        emit(distant and scene or roads.verges, vergeKind, {quad[1], quad[2], outerA, outerB}, nil, true)
       end
     end
   end
@@ -11492,9 +11488,9 @@ local function build(cells, i, j, options)
         verge[2][3], verge[3][3] = ground(verge[2][1], verge[2][2]), ground(verge[3][1], verge[3][2])
         -- [9] marks the outer edge. The clip resamples it from ground() so both tiles agree.
         verge[2][9], verge[3][9] = 1, 1
-        local groundMesh = distant and scene or roads
+        local groundMesh = distant and scene or roads.verges
         if tune.vergeCut > 0 then emit(groundMesh, vergeKind, verge, item[2], true)
-        elseif visualRoads then roads.polygon(vergeKind, verge, true)
+        elseif visualRoads then roads.verges.polygon(vergeKind, verge, true)
         elseif distant then scene.polygon(vergeKind, verge, true) end
         if kind and item.edge then
           emitEdge(kind, strip, item)
@@ -11866,6 +11862,14 @@ local function build(cells, i, j, options)
   local roadManifest
   local function finishRoad()
     roads.finish()
+    roads.verges.finish()
+    for k = 1, #roads.verges.items do
+      local item = roads.verges.items[k]
+      item.forceCollision = true
+      roads.items[#roads.items + 1] = item
+      roads.verges.items[k] = nil
+    end
+    for material in pairs(roads.verges.used) do roads.used[material] = true end
     roadDecor.finish()
     -- The collector closes over this array. Move its contents rather than retaining a
     -- second reference to delivered road meshes while the scene coroutine is parked.

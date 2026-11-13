@@ -719,6 +719,28 @@ class GeneratorTests(unittest.TestCase):
             self.assertTrue(item.proxy)
             self.assertGreaterEqual(float(item.cell[3]), 128)
 
+    def test_collision_covers_the_same_lattice_across_proxy_cells(self):
+        # 25 does not divide 128: bucket-local loops used to leave gaps and chord hills.
+        heights = [float((x * x + 3 * y * y + 7 * x * y) % 47) for y in range(21) for x in range(21)]
+        terrain = {'rect': [0, 0, 500, 500], 'nx': 21, 'ny': 21, 'heights': heights}
+        road = self.build([{'terrain': terrain}], land=False, terrainStep=25)[0]
+        ground = list(self.triangles(road, 'e2rf_ground'))
+        proxy = list(self.triangles(road, 'e2rf_col_ground'))
+        self.assertAlmostEqual(sum(map(area, proxy)), 500 * 500, places=2)
+        for x in (101, 124, 127, 129, 151, 254, 257, 381, 498):
+            for y in (103, 127, 129, 251, 257, 383, 497):
+                with self.subTest(x=x, y=y):
+                    self.assertAlmostEqual(self.surface_at(proxy, x, y), self.surface_at(ground, x, y), places=2)
+
+    def test_ground_coloured_road_verges_remain_solid(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8,
+                'points': [[50, 250, 5], [450, 250, 5]],
+                'tags': {'highway': 'residential', 'sidewalk': 'no'}}
+        manifest = self.build([{'roads': [road]}], land=False)[0]
+        ground_items = [item for item, _ in self.meshes(manifest, 'e2rf_ground')]
+        self.assertTrue(any(item.forceCollision for item in ground_items))
+        self.assertTrue(any(not item.forceCollision and not item.proxy for item in ground_items))
+
     def test_a_tunnel_has_a_portal_a_tube_and_a_floor(self):
         road = {'id': 't', 'nodes': ['a', 'b'], 'width': 8,
                 'points': [[100, 250, 0], [400, 250, 0]],

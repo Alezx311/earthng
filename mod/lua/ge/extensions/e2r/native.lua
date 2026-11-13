@@ -41,12 +41,12 @@ local VISTA_RADIUS, VISTA_BLOCK, VISTA_STEP, VISTA_RELIEF, VISTA_SPEED = 24000, 
 -- A tile's road goes out before its scene (generator.lua roadReady): its scene waits `lag` s plus
 -- `lagPerMs` s for every m/s over `slow`, in at most `parked` suspended builds. Under `urgent` s
 -- from a missing road the frame gives the generator `urgentMs`. A scene goes out before its grass,
--- flowers and loose stones (generator sceneReady): they wait `grassLag` s more, in at most
--- `grassParked` builds; a tile that lost its grass that way is built again for it only when the
+-- flowers and loose stones (generator sceneReady): nearby grass waits a smaller fixed offset,
+-- otherwise `grassLag` s more, in at most `grassParked` builds; a tile that lost its grass is built again only when the
 -- car is under `slow` m/s.
 local AHEAD = {across = 3, back = 3, slow = 10, fast = 30, corridor = 18, half = 150, reach = 2500,
   around = 450, backM = 200, backS = 3.5,
-  lag = 3, lagPerMs = .1, parked = 3, urgent = 6, urgentMs = 6, grassLag = 10, grassParked = 2}
+  lag = 3, lagPerMs = .1, parked = 3, urgent = 6, urgentMs = 6, grassLag = 10, grassParked = 4}
 local GRASS = {}   -- buildTile's yield once the scene is out (AHEAD marks the road)
 -- the generator stage each build last finished (status().stream.stageMs: where streaming time goes)
 local STAGE = setmetatable({}, {__mode = 'k'})
@@ -1520,6 +1520,13 @@ local function update(dt, budgetMs, farBudgetMs, now)
     if eta < 8 then return math.min(lag, 2) end
     return lag
   end
+  -- Finish the grass near the car before distant scenery, while roads and the same
+  -- tile's scene still come first. Otherwise the speed-dependent lag plus ten seconds
+  -- kept grass behind an endless stream of roads and discarded its suspended build.
+  local function grassWait(eta)
+    if eta < 8 then return sceneWait(eta) + 3 end
+    return lag + AHEAD.grassLag
+  end
   local steps = 0
   repeat
     -- At the frame's first step a scene build (its road is out) goes back among the parked, and a
@@ -1611,7 +1618,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
         if not want or want.far or want.horizon then
           loseGrass(key)
         else
-          local priority = want.priority + lag + AHEAD.grassLag
+          local priority = want.priority + grassWait(want.priority)
           grassCount = grassCount + 1
           if not grassPriority or priority < grassPriority then grassKey, grassPriority = key, priority end
         end

@@ -11,7 +11,7 @@
 -- ground and facade walls out. Roads stay the meshes they are drawn with.
 --   - the horizon, and far tiles out of the car's reach (Kyiv: 145 -> 67 ms);
 --   - near tiles out of that reach too: they are rebuilt with collision as the car comes;
---   - markings and edge decals (mm to cm over the road and verge), roofs, and the scene's ground covers: areas and paths
+--   - markings and edge decals (mm to cm over the road and verge), and the scene's ground covers: areas and paths
 --     are drapes 2.5-4 cm over the ground mesh, which collides. The road layer's ground
 --     takes those same cover materials where a cover fills a cell, so they stay solid there;
 --   - railway tracks (generator.lua RAIL): flush on a carriageway, 20 cm over the ground beside it.
@@ -30,9 +30,8 @@ for _, land in ipairs({'dry', 'lush', 'earth'}) do
     QUIET.road['e2rf_fade_' .. land .. level], QUIET.scene['e2rf_fade_' .. land .. level] = true, true
   end
 end
-for _, kind in ipairs({'roof', 'roof_tile', 'roof_metal', 'roof_sheet', 'roof_mtile_red', 'roof_mtile_brown',
-    'win_pvc', 'win_wood', 'door_house', 'door_garage', 'door_rust', 'chimney', 'pipe', 'ac_unit', 'dish', 'plate', 'glyphs', 'glyphs_dark', 'sign_white', 'lens_dark', 'lens_red', 'lens_yellow', 'lens_green', 'paint_red', 'fascia',
-    'roof_mtile_green', 'footway', 'footway_asphalt', 'trodden', 'ground', 'grass_dry', 'grass_lush', 'earth',
+for _, kind in ipairs({'win_pvc', 'win_wood', 'door_house', 'door_garage', 'door_rust', 'chimney', 'pipe', 'ac_unit', 'dish', 'plate', 'glyphs', 'glyphs_dark', 'sign_white', 'lens_dark', 'lens_red', 'lens_yellow', 'lens_green', 'paint_red', 'fascia',
+    'footway', 'footway_asphalt', 'trodden', 'ground', 'grass_dry', 'grass_lush', 'earth',
     'paved', 'water', 'glacier', 'bare_rock', 'scree', 'beach', 'wetland', 'orchard', 'vineyard', 'farmland',
     'meadow', 'heath', 'scrub', 'forest', 'park', 'bare_ground', 'ballast', 'track', 'rail', 'rail_side'}) do
   QUIET.scene['e2rf_' .. kind] = true
@@ -117,7 +116,20 @@ function M.sceneSolid(owner, points, size)
 end
 
 function M.new()
-  local self = {owners = {}, lastHidden = 0, lastSolid = 0, lastScenes = 0}
+  local self = {owners = {}, activeProxies = {}, lastHidden = 0, lastSolid = 0, lastScenes = 0}
+
+  -- Tile-level collision can already be marked ready while a later proxy cell was
+  -- excluded from the last rebuild. Ask again when a focus approaches that cell.
+  function self:missingProxies(points)
+    for owner in pairs(self.owners) do
+      if not owner.dropped and owner.proxyIds then
+        for _, id in ipairs(owner.proxyIds) do
+          if not self.activeProxies[id] and M.nearCell(owner.proxyCell[id], points) then return true end
+        end
+      end
+    end
+    return false
+  end
 
   -- owner: a near tile {i, j}, a far tile {i, j, far = true} or a horizon block {horizon = true};
   -- dropped owners (owner.dropped) are graves until the engine has deleted their objects
@@ -165,7 +177,7 @@ function M.new()
   -- find(id) -> object or nil; reload() runs the engine rebuild. Everything hidden here is
   -- shown again even when reload() fails, so a failed rebuild cannot blank the world.
   function self:rebuild(points, size, find, reload)
-    local hidden, opened, solid, scenes, kept = {}, {}, 0, 0, {}
+    local hidden, opened, solid, scenes, kept, active = {}, {}, 0, 0, {}, {}
     for owner in pairs(self.owners) do
       if owner.proxyIds then
         local cells, n, k = owner.proxyCell, #owner.proxyIds, 1
@@ -173,7 +185,8 @@ function M.new()
           local id = owner.proxyIds[k]
           local obj = find(id)
           if obj then
-            if M.nearCell(cells and cells[id], points) then
+            if not owner.dropped and M.nearCell(cells and cells[id], points) then
+              active[id] = true
               if obj:isHidden() then obj:setHidden(false); opened[#opened + 1] = obj end
             elseif not obj:isHidden() then
               obj:setHidden(true)
@@ -215,6 +228,7 @@ function M.new()
     for k = 1, #hidden do hidden[k]:setHidden(false) end
     self.lastHidden, self.lastSolid, self.lastScenes, self.lastKept = #hidden, solid, scenes, kept
     if not ok then error(err, 0) end
+    self.activeProxies = active
     return #hidden
   end
 

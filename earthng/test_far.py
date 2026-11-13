@@ -79,9 +79,10 @@ class FarLevelTests(unittest.TestCase):
         self.lua.globals().blob = flat_raster(30000, forest_box=(-12000, 6000, -8000, 9000))
         self.lua.execute('R = far.parse(blob)')
 
-    def levels(self, cam=(150.0, -90.0), hole=4600.0, levels=2):
+    def levels(self, cam=(150.0, -90.0), hole=4600.0, levels=2, drop=None):
         lua = self.lua
-        lua.execute(f'out, P = far.buildLevels(R, {{x = {cam[0]}, y = {cam[1]}, z = 102}}, {hole}, {levels})')
+        lua.execute(f'out, P = far.buildLevels(R, {{x = {cam[0]}, y = {cam[1]}, z = 102}}, {hole}, {levels}, '
+                    f'{"nil" if drop is None else drop})')
         out = lua.globals().out
         result = {}
         for level in range(levels):
@@ -117,6 +118,44 @@ class FarLevelTests(unittest.TestCase):
                 top = max(top, z)
         # nothing out there rises over the near ground: no bowl
         self.assertLess(top, 100 - float(self.far.curve(15000, 4600)) + .01)
+
+    def test_level_zero_fills_up_to_the_built_ground_and_sinks_under_the_planned_horizon(self):
+        # 13.11: the hole went to the planned DEM horizon (4.6 km) while only the city tiles were
+        # in, and a disc of nothing stood round them. Now the hole is where built ground ends.
+        cam = (150.0, -90.0)
+        built = self.levels(cam, hole=1000.0, levels=1, drop=4600.0)
+        ground = [v for v in built[0].get('e2rfar_meadow', []) if v[2] > 90]
+        near = [math.hypot(x - cam[0], y - cam[1]) for x, y, _ in ground]
+        self.assertGreater(len(ground), 100)
+        self.assertGreater(min(near), 1000 - 200 * math.sqrt(2))
+        self.assertLess(min(near), 1400)
+        drop = float(self.far.FAR.DROP)
+        for (x, y, z), d in zip(ground, near):
+            if d <= 4600:   # under the planned horizon: sunk, and the Earth still flat
+                self.assertAlmostEqual(z, 100 - drop, delta=.01)
+            elif d < 4600 + 1000:   # sunk, and bent from the planned horizon on
+                self.assertAlmostEqual(z, 100 - drop - float(self.far.curve(d, 4600)), delta=.01)
+
+    def test_ground_reach_stops_at_the_first_missing_cell_with_data(self):
+        lua = self.lua
+        lua.execute('''
+          p = {x = 250, y = 250}
+          inside = function(i, j, x, y) return math.sqrt((x - 250) ^ 2 + (y - 250) ^ 2) < 1600 end
+          everything = function() return true end
+          nothing = function() return false end
+        ''')
+        self.assertEqual(float(lua.eval('far.reachOver(R, p, 4600, everything)')), 4600)
+        self.assertEqual(float(lua.eval('far.reachOver(R, p, 4600, nothing)')), 0)
+        reach = float(lua.eval('far.reachOver(R, p, 4600, inside)'))
+        # the 3x3 ring round the car's cell is in (centres up to 707 m), the next one starts 750 m out
+        self.assertGreater(reach, 700)
+        self.assertLess(reach, 1600)
+        # past the raster's data nothing is waited for: a small region counts as all built
+        small = LuaRuntime()
+        small.globals().far = small.execute(ROOT.read_text(encoding='utf8'))
+        small.globals().blob = flat_raster(1000)
+        small.execute('R = far.parse(blob); p = {x = 0, y = 0}; inside = function(i, j, x, y) return math.abs(x) < 1000 and math.abs(y) < 1000 end')
+        self.assertEqual(float(small.eval('far.reachOver(R, p, 4600, inside)')), 4600)
 
     def test_a_coarse_level_hangs_a_skirt_from_its_hole(self):
         built = self.levels()
@@ -236,11 +275,12 @@ class FarRasterTests(unittest.TestCase):
         lua.globals().far = lua.execute(ROOT.read_text(encoding='utf8'))
         lua.globals().blob = blob
         lua.execute('R = far.parse(blob); marks = far.buildMarks(R, {x=0, y=0, z=100}, 2000)')
-        n = int(lua.eval('#marks.meshes'))
+        self.assertEqual(int(lua.eval('#marks.parts')), 1)
+        n = int(lua.eval('#marks.parts[1].meshes'))
         glass = 0
         for i in range(1, n + 1):
-            if str(lua.eval(f'marks.meshes[{i}].material')) == 'e2rfar_glass':
-                glass = int(lua.eval(f'#marks.meshes[{i}].faces'))
+            if str(lua.eval(f'marks.parts[1].meshes[{i}].material')) == 'e2rfar_glass':
+                glass = int(lua.eval(f'#marks.parts[1].meshes[{i}].faces'))
         self.assertEqual(int(lua.eval('marks.count')), 1)
         return glass
 
@@ -248,6 +288,29 @@ class FarRasterTests(unittest.TestCase):
         # one row is 4 walls * 2 triangles * 3 indices; 90 m is three rows, 42 m is one
         self.assertEqual(self.glass_faces(42), 24)
         self.assertEqual(self.glass_faces(90), 72)
+
+    def test_a_city_of_towers_spawns_in_parts_the_game_can_take(self):
+        # Kyiv: 1800 towers with glass were 94k vertices in one createMesh, and the game spun in
+        # it (13.11). Every object stays under MARK_VERTS plus one box, every index list under 16 bits.
+        marks = [struct.pack('<8f', 6000 + 40 * (k % 60), 40 * (k // 60), 100, 90, 18, 12, 0, 1) for k in range(2000)]
+        blob = flat_raster(20000)[:-4] + struct.pack('<I', len(marks)) + b''.join(marks)
+        lua = LuaRuntime()
+        lua.globals().far = lua.execute(ROOT.read_text(encoding='utf8'))
+        lua.globals().blob = blob
+        lua.execute('R = far.parse(blob); marks = far.buildMarks(R, {x=0, y=0, z=100}, 2000)')
+        self.assertEqual(int(lua.eval('marks.count')), 1800)
+        parts = int(lua.eval('#marks.parts'))
+        self.assertGreater(parts, 1)
+        total = 0
+        for k in range(1, parts + 1):
+            verts = int(lua.eval(f'marks.parts[{k}].verts'))
+            self.assertLessEqual(verts, 16000 + 68)
+            total += verts
+            for i in range(1, int(lua.eval(f'#marks.parts[{k}].meshes')) + 1):
+                self.assertLess(int(lua.eval(f'#marks.parts[{k}].meshes[{i}].faces')), 65536)
+        self.assertEqual(total, int(lua.eval('marks.verts')))
+        # 1800 boxes: 16 wall + 4 roof vertices each, and three glass rows of 4 walls * 4
+        self.assertEqual(total, 1800 * (16 + 4 + 48))
 
 
 if __name__ == '__main__':

@@ -1184,9 +1184,9 @@ class NativeV2Tests(NativeTests.__base__):
                     waiting.add(key)
             parked = max(parked, stream.parkedGrass or 0)
             lost = max(lost, stream.grassLost or 0)
-        # the scene goes out first; a grass build waits in one of two slots, the latest is let go
+        # The scene goes out first; keep a bounded set of suspended grass builds.
         self.assertTrue(waiting)
-        self.assertLessEqual(parked, 2)
+        self.assertLessEqual(parked, 4)
         got = {key for key in mod.status().stream.grass.keys()}
         self.assertTrue(got)
         # stopped, a near tile that lost its grass is built again for it (its road and scene stay)

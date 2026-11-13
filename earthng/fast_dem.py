@@ -37,6 +37,79 @@ STALL=8
 DEADLINE=20
 _local=threading.local()
 
+# Terrarium has seams of impossible depth: along 30 degrees E in the Black Sea a stripe four pixels
+# wide down to -13 km (-3.3 km on the shore at 46.3 N). The exporter's 5 x 5 despike (25 m steps)
+# mends one pixel, not four: the pack carried an 8.7 km trench and EGB3 refused its cells (Ukraine
+# v3, 13.11). A pixel further than SEAM from the lower median of the eight pixels SEAM_RING away
+# (across the pixel where the ring leaves the tile) takes that median. No real slope differs from its surroundings by a
+# kilometre within 6 pixels (~160-230 m).
+SEAM=1000.
+SEAM_RING=6
+# A tile where more pixels than this would change is noise, not a seam (south of Crimea: deep sea
+# with 70 % of its pixels at 0): the median only swaps the two, so the tile stays as it is.
+SEAM_MAX=4096
+
+
+def terrarium_heights(rgb):
+    """Metres of an (h, w, 3) Terrarium RGB array."""
+    import numpy as np
+    a=np.asarray(rgb,dtype=np.float64)
+    return a[...,0]*256+a[...,1]+a[...,2]/256-32768
+
+
+def terrarium_rgb(heights):
+    """The (h, w, 3) uint8 Terrarium encoding of metres (1/256 m steps)."""
+    import numpy as np
+    v=np.round((np.asarray(heights,dtype=np.float64)+32768)*256).astype(np.int64)
+    v=np.clip(v,0,(1<<24)-1)
+    return np.stack([v>>16,(v>>8)&255,v&255],axis=-1).astype(np.uint8)
+
+
+def mend_seams(heights):
+    """(heights, mended pixel count) of one tile: see SEAM. The input is not changed."""
+    import numpy as np
+    h=np.asarray(heights,dtype=np.float64)
+    if not h.size or float(h.max()-h.min())<=SEAM:
+        return h,0      # no pixel can stand SEAM from a median of the tile's own values
+    r=SEAM_RING
+    n,m=h.shape
+
+    def along(size,d):
+        # a ring point past the tile edge is taken across the pixel instead: an edge reflection
+        # brought a stripe four pixels wide back onto itself
+        k=np.arange(size)+d
+        return np.where((k<0)|(k>=size),np.arange(size)-d,k)
+
+    ring=np.stack([h[np.ix_(along(n,dy),along(m,dx))] for dy in (-r,0,r) for dx in (-r,0,r) if dy or dx])
+    ring.sort(axis=0)
+    median=ring[3]      # the lower median: always one of the pixels, so the encoding is exact
+    bad=np.abs(h-median)>SEAM
+    if not bad.any() or int(bad.sum())>SEAM_MAX:
+        return h,0
+    out=h.copy(); out[bad]=median[bad]
+    return out,int(bad.sum())
+
+
+def mend_file(path, backup=None):
+    """Mend a cached tile's seams in place (PNG rewritten only when a pixel changed; the original
+    copied to backup/<x>/<y>.png first when backup is given). Returns the count of pixels mended."""
+    import shutil
+    import numpy as np
+    from PIL import Image
+    path=Path(path)
+    with Image.open(path) as image:
+        rgb=np.asarray(image.convert('RGB'))
+    heights,count=mend_seams(terrarium_heights(rgb))
+    if count:
+        if backup is not None:
+            keep=Path(backup)/path.parent.name/path.name
+            keep.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(path,keep)
+        tmp=path.with_suffix(f'.{os.getpid()}.mend.part')
+        Image.fromarray(terrarium_rgb(heights),'RGB').save(tmp,format='PNG')
+        os.replace(tmp,path)
+    return count
+
 
 def _download(url_path):
     """GET over this thread's kept-alive connection; the connection is dropped on any failure."""
@@ -83,6 +156,7 @@ def fetch(path):
         if image.size!=(256,256):
             raise ValueError(f'invalid DEM {url}')
         image.verify()
+    mend_file(tmp)      # Terrarium seams, before any reader (Python or native) sees the tile
     for attempt in range(10):   # an antivirus may hold the fresh .part for a moment (WinError 32)
         try:
             os.replace(tmp,path); return
@@ -106,11 +180,33 @@ def height(lat,lon,cache):
     return ((at(x0,y0)*(1-u)+at(x0+1,y0)*u)*(1-v)+(at(x0,y0+1)*(1-u)+at(x0+1,y0+1)*u)*v)
 
 
+def mend_cache(cache, emit=print, jobs=8, backup=None):
+    """mend_file over every cached z12 tile (tiles fetched before the seam repair). Returns
+    {path: mended pixels} of the tiles that changed."""
+    paths=sorted((Path(cache)/'terrain'/'12').glob('*/*.png'))
+    changed={}
+    with ThreadPoolExecutor(jobs) as pool:
+        for path,count in zip(paths,pool.map(lambda p: mend_file(p,backup),paths)):
+            if count:
+                changed[str(path)]=count
+                emit(f'mended {count} px: {path}')
+    emit(f'DEM seams: {len(changed)} of {len(paths)} tiles mended')
+    return changed
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--sources',required=True); p.add_argument('--cache',required=True)
+    p.add_argument('--sources'); p.add_argument('--cache',required=True)
     p.add_argument('--download',action='store_true')
-    a=p.parse_args(); index=json.loads((Path(a.sources)/'index.json').read_text())
+    p.add_argument('--mend',action='store_true',help='mend Terrarium seams in every cached tile (SEAM)')
+    p.add_argument('--backup',help='with --mend: keep the original of every changed tile here')
+    a=p.parse_args()
+    if a.mend:
+        mend_cache(a.cache,backup=a.backup)
+        return
+    if not a.sources:
+        p.error('--sources is required')
+    index=json.loads((Path(a.sources)/'index.json').read_text())
     paths=audit(index,a.cache); missing=[p for p in paths if not p.exists()]
     print(f'DEM: {len(paths)-len(missing)}/{len(paths)} local; {len(missing)} missing',flush=True)
     if a.download:
