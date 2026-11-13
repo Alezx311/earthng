@@ -248,6 +248,24 @@ class CollisionTests(unittest.TestCase):
           S.queue = {{key = '1_0', tile = {dropped = true}}, {key = '4_0', horizon = true, tile = {}}}
           yielded = false
           assert(not LIMIT.nearQueued() and not LIMIT.allowSpawn(gate) and yielded)
+          -- the far view keeps one open gate in four while the city is queued, and all of them after
+          S.queue = {{key = '1_0', tile = {}}}
+          S.farShare = 0
+          local turns = {}
+          for _ = 1, 8 do turns[#turns + 1] = LIMIT.shareFar() end
+          assert(not turns[1] and not turns[2] and not turns[3] and turns[4])
+          assert(not turns[5] and turns[8])
+          S.queue = {{key = '2_0', grass = true, tile = {}}}
+          assert(LIMIT.shareFar() and LIMIT.shareFar())
+          local deep = {}
+          for i = 1, 12 do deep[i] = {key = '1_0', tile = {}} end
+          S.queue = deep
+          S.now, S.forestCommitAt = 10, 10
+          assert(not LIMIT.shareForest())
+          S.forestCommitAt = 8
+          assert(LIMIT.shareForest())
+          S.queue = {}
+          assert(LIMIT.shareForest())
         ''')
 
 

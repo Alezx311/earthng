@@ -2846,6 +2846,21 @@ function LIMIT.allowSpawn(gate)
   return false
 end
 
+-- While the city is still queued, the far view still gets one open gate in four: taking
+-- none left the horizon frozen for the whole drive, and taking every one left the streets blank.
+function LIMIT.shareFar()
+  if not LIMIT.nearQueued() then return true end
+  S.farShare = (S.farShare or 0) + 1
+  return S.farShare % 4 == 0
+end
+
+-- Forest commits while the near queue is short, and at least once a second when it is not,
+-- so crowns are not postponed until the car stops.
+function LIMIT.shareForest()
+  if not LIMIT.nearQueued() or #(S.queue or {}) < 12 then return true end
+  return S.now - (S.forestCommitAt or -10) >= 1
+end
+
 -- Natively a rebuild keeps only the tiles round the car, a parked car and the traffic
 -- (collision.lua: central Kyiv 133 + 34 ms -> ~40 + 12 ms). Collision has to stay ahead of
 -- the next rebuild, not of the generator: the car's reach grows with speed, and the tiles it
@@ -5960,8 +5975,10 @@ function M.tick(dt)
     -- packet, so a stopped car kept the holes (allowLoad waits for fewer than 16 groups)
     if S.graves and #S.graves >= 8 then digGraves(48) end
     if M.far then
-      -- bands of the far view wait while a near road or its buildings are still queued
-      M.far.gate = gate and function() return work and not changed and not LIMIT.nearQueued() end or nil
+      -- one far band in four open gates while a near tile is queued; every gate once it is not
+      M.far.gate = gate and function()
+        return work and not changed and LIMIT.shareFar()
+      end or nil
       M.far.changed = false
     end
     writePose()
@@ -5975,9 +5992,9 @@ function M.tick(dt)
     -- createMesh and the render they reached 98 ms (fast-oblast-replay-01)
     local reloaded = work and not changed and updateCollision() or false
     if reloaded then changed = true end
-    -- the forest commit waits while a near road or its buildings are queued: it used to take
-    -- the open gate every 0.12 s and the city never finished painting
-    if gate and work and not changed and not LIMIT.nearQueued() then
+    -- a forest commit every 0.12 s used to take the open gate and the city never finished;
+    -- a deep queue still gets one a second so the crowns are not postponed until the car stops
+    if gate and work and not changed and LIMIT.shareForest() then
       local before = S.forestCommitAt
       forestCommit()
       if S.forestCommitAt ~= before then changed = true end
