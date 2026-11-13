@@ -5976,9 +5976,11 @@ function M.tick(dt)
     local gate = S.gate
     local work = not gate or gate:open()
     local changed = false
-    -- a long grave list used to block new tiles while this dig ran only inside the spawn
-    -- packet, so a stopped car kept the holes (allowLoad waits for fewer than 16 groups)
-    if S.graves and #S.graves >= 8 then digGraves(48) end
+    -- a long grave list blocks new tiles (allowLoad waits for fewer than 16 groups).
+    -- Dig on the open gate, before the tiles are chosen, so a stopped car still clears the
+    -- holes. Digging every calm frame deleted dozens of objects a frame, the gate never saw
+    -- a calm pair, and it opened only on the 24-frame timeout: tiles painted much more slowly.
+    if work and S.graves and #S.graves >= 8 then digGraves(48) end
     if M.far then
       -- one far band in four open gates while a near tile is queued; every gate once it is not
       M.far.gate = gate and function()
