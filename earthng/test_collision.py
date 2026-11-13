@@ -266,6 +266,14 @@ class CollisionTests(unittest.TestCase):
           assert(LIMIT.shareForest())
           S.queue = {}
           assert(LIMIT.shareForest())
+          -- the far ring is behind the city in the queue; every fifth near burst it goes first
+          S.queue = {{key = '1_0', tile = {}}, {key = '8_0', far = true, tile = {}}}
+          S.ringShare = 0
+          assert(not LIMIT.shareRing() and not LIMIT.shareRing())
+          assert(not LIMIT.shareRing() and not LIMIT.shareRing())
+          assert(LIMIT.shareRing())
+          S.queue = {{key = '2_0', grass = true, tile = {}}}
+          assert(not LIMIT.shareRing())
         ''')
 
 

@@ -2730,6 +2730,16 @@ local function stepQueue(burst)
   local function over() return frame:stop() >= budget end
   local function pause() if over() then coroutine.yield() end end
   if S.co and S.job and S.job.tile.dropped then S.co, S.job = nil, nil end
+  if not S.co and LIMIT.shareRing() then
+    local q = S.queue
+    for i = 1, #q do
+      local job = q[i]
+      if job and not (job.tile and job.tile.dropped) and (job.far or job.horizon) then
+        if i > 1 then table.remove(q, i); table.insert(q, 1, job) end
+        break
+      end
+    end
+  end
   repeat
     if not S.co then
       local job = table.remove(S.queue, 1)
@@ -2853,6 +2863,14 @@ end
 
 -- While the city is still queued, the far view still gets one open gate in four: taking
 -- none left the horizon frozen for the whole drive, and taking every one left the streets blank.
+-- The far ring's own tiles sit behind every near job in the spawn queue, so a city drive
+-- never reached them. Every fifth near burst pulls one ring tile to the front.
+function LIMIT.shareRing()
+  if not LIMIT.nearQueued() then return false end
+  S.ringShare = (S.ringShare or 0) + 1
+  return S.ringShare % 5 == 0
+end
+
 function LIMIT.shareFar()
   if not LIMIT.nearQueued() then return true end
   S.farShare = (S.farShare or 0) + 1
