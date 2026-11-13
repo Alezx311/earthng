@@ -20,6 +20,7 @@ import fast_facade
 import fast_packs
 import fast_pixel
 import fast_storefront
+import fast_tone
 import fast_photo as photo
 import fast_style as style
 
@@ -381,12 +382,13 @@ def stylised_decal(kind, f):
         f['opacityMap'] = ''
 
 
-def pack_fields(pack, base):
-    """Material name -> stage-0 fields for one pack (all map fields present, '' clears)."""
+def pack_fields(pack, base, toned=True):
+    """Material name -> stage-0 fields for one pack (all map fields present, '' clears).
+    The real pack's colours are toned (fast_tone); the seasonal packs start from the untoned ones."""
     if pack == 'pixel':
         return fast_pixel.fields(base)
     if pack in fast_packs.PACKS:
-        return fast_packs.fields(pack, base, pack_fields('real', base))
+        return fast_packs.fields(pack, base, pack_fields('real', base, toned=False))
     out = {}
     for kind, (tex, fallback, _, _, mode) in style.KINDS.items():
         f = {k: '' for k in MAP_FIELDS}
@@ -432,6 +434,10 @@ def pack_fields(pack, base):
             f['baseColorFactor'] = '1 1 1 1'
         if pack != 'real':
             stylised_decal(kind, f)
+        if pack == 'real' and toned:
+            t = fast_tone.factor(kind, f)
+            if t:
+                f['baseColorFactor'] = ' '.join(f'{c:.3f}' for c in t[:3]) + f' {float(t[3]):g}'
         # a field is set from a string (detailScale '15.0 15.0')
         out['e2rf_' + kind] = {k: ' '.join(map(str, v)) if isinstance(v, list) else v for k, v in f.items()}
     return out

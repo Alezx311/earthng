@@ -2,6 +2,35 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-13: the real pack's look for 1.0
+
+- The level's sun was a December one. BeamNG counts TimeOfDay `day` from about the June
+  solstice: at Kyiv, time 0.08, day 20 gives 61 degrees, 110 gives 40, 200 gives 15 and 290
+  gives 37. `day 200`, meant as July, lit the green summer world with a 15 degree sun. The level
+  is now on day 40 (mid July) at time 0.16, about 47 degrees from the WSW. Packs with an
+  authored sun (night, rain, winter, autumn, cyber, synth) do not read it.
+- `fast_tone.py` gives the real pack one tone, as the stock levels have. Each material's rendered
+  colour (map mean x factor, linear) is pulled toward its class:
+  - Saturation is scaled to 0.62-0.72 and capped at 0.14-0.32.
+  - Brightness is compressed above a pivot (both ways for land).
+  - Brightness is capped per class: sidewalk 0.28, roofs 0.36, walls 0.50, land 0.15.
+  - Before, the sidewalk was 0.51, a metal roof 0.83, house paints had saturation 0.5-0.64 and
+    grass 0.53.
+  - Glass towers, road paint, signs, lenses, water and snow are kept.
+  - Map means are in `tone_means.json`, measured by `tone_means.py`.
+  - The seasonal packs are built from the untoned real fields, so they are unchanged.
+- Tried and dropped:
+  - The 0.40 sky barely reacts to the legacy ScatterSky fields: ambient, colorize, gradients,
+    skyBrightness, mie and fog.
+  - The HDR combine pass's HSV multiplier and colour ramp are rewritten by the game every frame.
+- Frames at Kyiv (50.4501, 30.5234) and Vytachiv (50.1128, 30.8790), quality 50:
+  - Shadows p5: 0.12-0.16 before, 0.19-0.25 now.
+  - Oversaturated pixels in Kyiv: 2.2 % before, 0.3 % now.
+  - Green saturation at Vytachiv: 0.55 before, 0.47 now.
+- `probe/look_lab.lua` shoots the same views under variants of sky, fog and material fields in a
+  manual probe session.
+- Research, competitors and what is left: [docs/VISUAL_1_0.md](docs/VISUAL_1_0.md).
+
 ## 2026-11-12: no collector sweep while driving
 
 - The 0.4-0.6 s frame every 15-25 s of a drive, where the GE Lua heap fell by 80-150 MB, was the

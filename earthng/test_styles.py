@@ -13,6 +13,7 @@ import fast_style as style
 import fast_packs
 import fast_photo as photo
 import fast_dds
+import fast_tone as tone
 
 ROOT = Path(__file__).resolve().parents[1]
 from lupa.luajit21 import LuaRuntime
@@ -178,7 +179,9 @@ class RoadDecalTests(unittest.TestCase):
             self.assertEqual(stage['detailScale'], [style.TURF_BASE_M / style.TURF_DETAIL_M] * 2, kind)
             self.assertEqual(stage['detailNormalMapStrength'], 1.0, kind)
             self.assertEqual(stage['detailBaseColorMapStrength'], .55 if kind == 'park' else .38, kind)
-            self.assertNotIn('baseColorFactor', stage, kind)
+            # no tint of its own: only the real pack's tone (fast_tone) of the map's colour
+            self.assertEqual(stage.get('baseColorFactor'),
+                             tone.factor(kind, {k: v for k, v in stage.items() if k != 'baseColorFactor'}), kind)
             self.assertNotIn('ground_ground', stage['baseColorMap'])
         self.assertEqual(real['e2rf_park']['detailScale'], '12.0 12.0')
         self.assertTrue(real['e2rf_park']['baseColorMap'].endswith('t_macro_clumpy_b.color.dds'))
@@ -408,6 +411,38 @@ class BuildingStyleTests(unittest.TestCase):
         half = style._factor((137, 137, 137), .5)[0]
         self.assertAlmostEqual(half, .735, places=2)
         self.assertEqual(style._factor((255, 0, 0), .2), [1.0, 0.0, 0.0, 1])
+
+    def test_real_pack_is_toned_and_the_seasonal_packs_are_not(self):
+        base = '/e2r_stream/fast-art/' + art.VERSION
+        raw, real = art.pack_fields('real', base, toned=False), art.pack_fields('real', base)
+        means = tone.means()
+
+        def albedo(fields, name):
+            f, m = fields[name], means[tone.key(fields[name]['baseColorMap'])]
+            c = [tone._lin(float(x)) for x in f['baseColorFactor'].split()[:3]]
+            rgb = [m[i] * c[i] for i in range(3)]
+            return .2126 * rgb[0] + .7152 * rgb[1] + .0722 * rgb[2], tone._sat(rgb)
+        # the sidewalk was twice a stock level's (.51 against ~.27), a white house .82
+        for name, top in (('e2rf_sidewalk', .29), ('e2rf_curb', .29), ('e2rf_roof_metal', .37), ('e2rf_hw_white', .51)):
+            self.assertGreater(albedo(raw, name)[0], top + .1, name)
+            self.assertLessEqual(albedo(real, name)[0], top, name)
+        # house paints and grass lose their loudness, glass towers and road paint keep their colour
+        for name in ('e2rf_hw_render_ochre', 'e2rf_hw_yellow', 'e2rf_ground', 'e2rf_scrub', 'e2rf_orchard'):
+            self.assertLessEqual(albedo(real, name)[1], .33, name)
+            self.assertLess(albedo(real, name)[1], albedo(raw, name)[1], name)
+        for name in ('e2rf_wall_off_blue', 'e2rf_mark', 'e2rf_mark_yellow', 'e2rf_water', 'e2rf_lens_red'):
+            self.assertEqual(real[name].get('baseColorFactor'), raw[name].get('baseColorFactor'), name)
+        # the level's materials are the real pack: the same tone, or a switch back would change them
+        for name in ('e2rf_sidewalk', 'e2rf_ground', 'e2rf_wall_pnl_beige', 'e2rf_hw_white'):
+            stage = style.MATERIALS[name]['Stages'][0]
+            self.assertEqual(' '.join(f'{c:.3f}' for c in stage['baseColorFactor'][:3]),
+                             ' '.join(real[name]['baseColorFactor'].split()[:3]), name)
+        # the seasonal packs start from the untoned real pack: their look is unchanged
+        with patch.object(fast_packs, 'fields', wraps=fast_packs.fields) as seasonal:
+            art.pack_fields('winter', base)
+        self.assertEqual(seasonal.call_args[0][2], raw)
+        # a map nobody measured keeps its factor
+        self.assertIsNone(tone.factor('sidewalk', {'baseColorMap': '/nowhere/x.png', 'baseColorFactor': [1, 1, 1, 1]}))
 
     def test_building_kinds_fall_back_and_roofs_are_double_sided(self):
         for kind in style.BUILDING_FALLBACK:

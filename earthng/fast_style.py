@@ -6,6 +6,7 @@ import os
 import zlib
 import nature
 import retail
+import fast_tone as _tone
 
 TEXTURES = {
     'asphalt': {
@@ -842,6 +843,9 @@ def material(kind):
     stage = real_stage(kind)
     if kind in TINT and kind not in PHOTO_GROUND and kind not in TURF and kind not in MACRO:
         stage['baseColorFactor'] = TINT[kind]
+    toned = _tone.factor(kind, stage)     # the real pack's one tone (fast_tone)
+    if toned:
+        stage['baseColorFactor'] = toned
     if kind == 'road_worn':
         stage['roughnessFactor'] = .96
     elif kind in ('road_gravel', 'road_dirt', 'road_broken', 'road_track'):

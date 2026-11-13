@@ -42,8 +42,13 @@ SKY = [
     # the game's own environment controls (time of day, rain, wind, weather presets of
     # core_weather) act on the level's first TimeOfDay/Precipitation/ForestWindEmitter: without
     # them those sliders did nothing here. Rain starts off; world.lua moves the sun to the landing.
-    {'class': 'TimeOfDay', 'name': 'tod', 'position': [0, 0, 0], 'axisTilt': 23.44, 'day': 200, 'dayLength': 1800,
-     'latitude': 50.45, 'longitude': 30.52, 'play': False, 'startTime': 0.08, 'time': 0.08, 'version': 2},
+    # The engine counts `day` from about the June solstice (measured at Kyiv, time 0.08: day 20 ->
+    # 61 degrees, 110 -> 40, 200 -> 15, 290 -> 37): 'day 200' meant July but lit a green summer
+    # world with the December sun, low, long-shadowed and blue (docs/VISUAL_1_0.md). Day 40 is mid
+    # July; time 0.16 an afternoon sun at ~47 degrees from the WSW, as the stock levels pick
+    # (9-10 am or 3-4 pm): it models facades where the noon sun flattens them.
+    {'class': 'TimeOfDay', 'name': 'tod', 'position': [0, 0, 0], 'axisTilt': 23.44, 'day': 40, 'dayLength': 1800,
+     'latitude': 50.45, 'longitude': 30.52, 'play': False, 'startTime': 0.16, 'time': 0.16, 'version': 2},
     {'class': 'Precipitation', 'name': 'e2r_weather_rain', 'position': [0, 0, 0], 'dataBlock': 'rain_drop', 'numDrops': 0,
      'boxWidth': 50, 'boxHeight': 50, 'dropSize': 0.2, 'splashSize': 0.2, 'minSpeed': 0.35, 'maxSpeed': 0.4,
      'hitVehicles': True, 'useTurbulence': True},
