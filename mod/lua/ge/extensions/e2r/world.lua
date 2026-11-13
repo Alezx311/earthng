@@ -2529,7 +2529,7 @@ local function updateTiles()
   end
   -- the nearest scene (look-ahead point too) whose road is in: it used to wait for every road tile
   -- in loadR and then took any one, so buildings next to the car came after roads 1 km away
-  if allowLoad and fast and #S.queue < 300 and st.scenes then
+  if fast and #S.queue < 300 and st.scenes then
     local bestS, bestSD
     for key, tile in pairs(S.tiles) do
       if tile.roadComplete and not tile.sceneStarted and st.scenes[key] then
@@ -2538,7 +2538,11 @@ local function updateTiles()
         if not bestSD or d < bestSD then bestS, bestSD = {key, tile}, d end
       end
     end
-    if bestS and (not best or bestSD < bestD) then startScene(bestS[1], bestS[2]) end
+    -- graves block a distant scene, not the street the car reaches within roadUrgent:
+    -- at 250 km/h tiles leave constantly, the grave list stays over 16, and the city never started
+    local sceneDue = bestS and dueNear(bestS[1])
+    local sceneOk = allowLoad or (sceneDue and sceneDue < LIMIT.roadUrgent)
+    if bestS and sceneOk and (not best or bestSD < bestD) then startScene(bestS[1], bestS[2]) end
   end
   if NATIVE and st.grass then
     for key, tile in pairs(S.tiles) do

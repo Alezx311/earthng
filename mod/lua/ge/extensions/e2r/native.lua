@@ -1508,6 +1508,13 @@ local function update(dt, budgetMs, farBudgetMs, now)
   local speed = math.sqrt((p.vx or 0) ^ 2 + (p.vy or 0) ^ 2)
   local lag = AHEAD.lag + math.max(0, speed - AHEAD.slow) * AHEAD.lagPerMs
   local slow = speed < AHEAD.slow
+  -- A scene the car reaches within 2 s waits 1.5 s at most, so the street under the wheels
+  -- is built while roads several seconds out still wait. A nearer road keeps its lead:
+  -- its own priority is the raw ETA, and this penalty never drops it behind that road.
+  local function sceneWait(eta)
+    if eta < 2 then return math.min(lag, 1.5) end
+    return lag
+  end
   local steps = 0
   repeat
     -- At the frame's first step a scene build (its road is out) goes back among the parked, and a
@@ -1561,7 +1568,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
           ready = cached and cached.road and not cached.sceneLost
             and not (cached.grassLost and slow and next(active.parkedGrass) == nil)
           -- a scene owed comes after the roads due before it, as a parked one does
-          if cached and cached.road then priority = priority + lag end
+          if cached and cached.road then priority = priority + sceneWait(entry.priority) end
         end
         local layerKey = key .. (entry.horizon and ':horizon' or (entry.far and ':far' or ':road'))
         local again = active.evicted[layerKey] ~= active.epoch
@@ -1586,7 +1593,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
         if not want or want.far or want.horizon then
           loseScene(key)
         else
-          local priority = want.priority + lag
+          local priority = want.priority + sceneWait(want.priority)
           parkedCount = parkedCount + 1
           if not parkedPriority or priority < parkedPriority then parkedKey, parkedPriority = key, priority end
           if not worstPriority or priority > worstPriority then worstKey, worstPriority = key, priority end
