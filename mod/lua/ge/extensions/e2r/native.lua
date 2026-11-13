@@ -1508,11 +1508,11 @@ local function update(dt, budgetMs, farBudgetMs, now)
   local speed = math.sqrt((p.vx or 0) ^ 2 + (p.vy or 0) ^ 2)
   local lag = AHEAD.lag + math.max(0, speed - AHEAD.slow) * AHEAD.lagPerMs
   local slow = speed < AHEAD.slow
-  -- A scene the car reaches within 2 s waits 1.5 s at most, so the street under the wheels
-  -- is built while roads several seconds out still wait. A nearer road keeps its lead:
-  -- its own priority is the raw ETA, and this penalty never drops it behind that road.
+  -- A scene the car reaches within 8 s (one tile at 250 km/h) waits 2 s at most, so the
+  -- street around the car is built while later roads wait. A road due sooner than that
+  -- still goes first: its priority is the raw ETA, and this penalty never puts the scene ahead of it.
   local function sceneWait(eta)
-    if eta < 2 then return math.min(lag, 1.5) end
+    if eta < 8 then return math.min(lag, 2) end
     return lag
   end
   local steps = 0
