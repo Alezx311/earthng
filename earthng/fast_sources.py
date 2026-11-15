@@ -21,7 +21,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point
 from shapely.ops import transform
 
-VERSION = 'fast-24'         # source index cache: directional lane counts affect road width
+VERSION = 'fast-26'         # source index cache: points of interest as 'pin' points (docs/POI.md)
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -1117,7 +1117,7 @@ class Store:
     def build_scene(self, entry):
         """Records (fid, kind, {'tags'}, local geometry) of one raw OSM tile, sorted by fid."""
         import osmium
-        found={}; lines={}; retail_areas={}; marks=[]; factory=osmium.geom.WKBFactory()
+        found={}; lines={}; retail_areas={}; pin_areas={}; marks=[]; factory=osmium.geom.WKBFactory()
         import fast_style
         import retail
         import venues
@@ -1125,13 +1125,14 @@ class Store:
             def area(self,a):
                 tags = retail.enriched(a.tags)
                 point_kind = retail.kind(tags)
+                pin = fast_style.pin_category(a.tags)
                 kind='building' if tags.get('building') not in (None,'no') else (
                     'water' if tags.get('natural')=='water' or tags.get('waterway')=='riverbank' else None)
                 if kind is None and tags.get('building:part') not in (None,'no'):
                     kind='building'; tags['e2r_part']='1'
                 if kind is None:
                     kind=fast_style.ground_kind(tags)
-                if (kind and a.id not in found) or point_kind:
+                if (kind and a.id not in found) or point_kind or pin:
                     try:
                         geometry=shapely.from_wkb(factory.create_multipolygon(a))
                     except RuntimeError:
@@ -1143,13 +1144,17 @@ class Store:
                     if point_kind and not geometry.is_empty:
                         retail_areas[-(2*10**12+a.id)]=(point_kind,tags,geometry)
                         found[-(3*10**12+a.id)]=(point_kind + '_site',tags,geometry)
+                    # a hotel's building, a car park, a picnic site: its pin at a point inside
+                    if pin and not geometry.is_empty:
+                        pin_areas[-(5*10**12+a.id)]=(fast_style.pin_tags(a.tags),geometry)
             def node(self,n):
                 # bus stops and traffic signals where OSM has them (way nodes keep their tags
                 # in the source tiles); keyed apart from areas and ways
                 tags=dict(n.tags)
                 kind=fast_style.point_kind(tags)
                 if kind and n.location.valid():
-                    marks.append((-(10**12+n.id),kind,retail.enriched(tags),n.location.lon,n.location.lat))
+                    marks.append((-(10**12+n.id),kind,fast_style.pin_tags(tags) if kind=='pin' else retail.enriched(tags),
+                                  n.location.lon,n.location.lat))
             def way(self,w):
                 # footpaths, fences, tree rows: lines, not areas (an area id is 2 x way id,
                 # so a line keys as -way id to stay apart)
@@ -1181,6 +1186,15 @@ class Store:
                 nodes[int(i)][3] == tags.get('e2r_post_type') and geometry.covers(nodes[int(i)][2]) for i in tree.query(geometry)))
             if not duplicate:
                 lines[ident] = (kind, tags, geometry.representative_point())
+        # A place mapped both as a node and as its area keeps the node: an area pin goes when a
+        # node pin of its category stands inside it.
+        pins = [(tags['e2r_cat'], geom) for kind, tags, geom in lines.values() if kind == 'pin']
+        tree = shapely.STRtree([entry[1] for entry in pins]) if pins else None
+        for ident, (tags, geometry) in pin_areas.items():
+            category = tags['e2r_cat']
+            if not (tree and any(pins[int(i)][0] == category and geometry.covers(pins[int(i)][1])
+                                 for i in tree.query(geometry))):
+                lines[ident] = ('pin', tags, geometry.representative_point())
         link_parts(found)
         # places from a register (venues.py): every scene holds them, a query takes those it covers
         for n,(venue,record) in enumerate(venues.located()):

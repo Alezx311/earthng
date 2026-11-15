@@ -36,10 +36,12 @@ class PoiPointTests(unittest.TestCase):
                      {'amenity': 'pharmacy'}, {'amenity': 'cafe', 'name': 'Кава'}):
             with self.subTest(tags=tags):
                 self.assertEqual(style.point_kind(tags), 'poi')
-        for tags in ({'amenity': 'school'}, {'amenity': 'parking'},
+        for tags in ({'amenity': 'school'},
                      {'shop': 'vacant'}, {'shop': 'no'}, {'office': 'closed'}, {'disused:shop': 'yes'}):
             with self.subTest(tags=tags):
                 self.assertIsNone(style.point_kind(tags))
+        # a car park is a map pin of its own (docs/POI.md, wave 1), not a shop
+        self.assertEqual(style.point_kind({'amenity': 'parking'}), 'pin')
         # an existing class wins: a shop's staircase door is still an entrance, a lamp a lamp
         self.assertEqual(style.point_kind({'entrance': 'staircase', 'shop': 'kiosk'}), 'entrance')
         self.assertEqual(style.point_kind({'highway': 'street_lamp', 'amenity': 'cafe'}), 'lamp')

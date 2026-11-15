@@ -234,7 +234,7 @@ def keep_scenery(kind, include):
         return bool(include.get('buildings', True))
     if kind == 'stop':
         return bool(include.get('stops', True))
-    if kind in ('poi', 'bench', 'waste_basket', 'gate', 'lift_gate'):
+    if kind in ('poi', 'pin', 'bench', 'waste_basket', 'gate', 'lift_gate'):
         return bool(include.get('pois', True))
     if kind == 'power':
         return bool(include.get('barriers', True))

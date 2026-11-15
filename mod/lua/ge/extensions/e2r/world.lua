@@ -23,6 +23,8 @@ local collision = require('ge/extensions/e2r/collision')
 local parking = require('ge/extensions/e2r/parking')
 M.fifo = require('ge/extensions/e2r/fifo') -- keep below LuaJIT's 200 chunk locals
 M.brandStyles = NATIVE and require('ge/extensions/e2r/generator').BRANDS or {}
+M.pins = NATIVE and require('ge/extensions/e2r/pins') or nil   -- points of interest on the map (pins.lua)
+M.pinBox = {}
 -- the route to a point picked on the map (docs/NAVIGATION.md); on M for the same reason
 M.navigator = NATIVE and require('ge/extensions/e2r/navigator') or nil
 M.location = NATIVE and require('ge/extensions/e2r/location') or nil
@@ -4205,30 +4207,11 @@ local function drawMap(width, height, view, pick)
     end
   end
   -- Mark only loaded scenes, so the map and the generated world use the same OSM facts.
-  -- Bound both the draw count and crowding in dense streets; no per-frame world scan.
-  if NATIVE and S.stream and z >= 15 then
-    local occupied, count = {}, 0
-    for _, tile in pairs(S.tiles) do
-      for _, poi in ipairs(tile.brandPOIs or {}) do
-        local lat, lon = worldToGeo(poi.x, poi.y)
-        if lat and lat <= north and lat >= south and lon >= west and lon <= east and count < 80 then
-          local x, y = screen(lat, lon)
-          local key = math.floor(x / 20) .. ':' .. math.floor(y / 20)
-          if not occupied[key] then
-            occupied[key], count = true, count + 1
-            local brand = M.brandStyles[poi.brand]
-            local rgb = poi.rgb or (brand and brand[3])
-            local c = rgb and col(rgb[1] / 255, rgb[2] / 255, rgb[3] / 255)
-              or (poi.kind == 'fuel' and col(0.10, 0.43, 0.70) or col(0.16, 0.55, 0.27))
-            im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), 7, col(1, 1, 1))
-            im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), 5.5, c)
-            if z >= 17 and (poi.brand or poi.label) then
-              im.ImDrawList_AddText1(dl, im.ImVec2(x + 8, y - 7), col(0.12, 0.12, 0.12), poi.label or (brand and brand[2] or poi.brand))
-            end
-          end
-        end
-      end
-    end
+  -- Bound both the draw count and crowding in dense streets; no per-frame world scan (pins.lua).
+  if NATIVE and S.stream and z >= 12 then
+    local box = M.pinBox
+    box.n, box.s, box.e, box.w = north, south, east, west
+    M.pins.draw(im, dl, S.tiles, z, box, worldToGeo, screen, col, M.brandStyles)
   end
   -- the route and its flag, over the streets and under the labels
   if M.navigator and S.state == 'driving' then

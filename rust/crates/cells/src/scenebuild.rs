@@ -317,7 +317,7 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
             let tags = Tags::dict(&pairs);
             if let Some(kind) = rules.point_kind(&tags) {
                 if valid(x, y) {
-                    arena.push(rules.enriched(&tags));
+                    arena.push(if kind == "pin" { rules.pin_tags(&tags) } else { rules.enriched(&tags) });
                     marks.push(Rec {
                         fid: -(1_000_000_000_000 + id),
                         kind: kind.into(),
@@ -369,6 +369,7 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
     // ---- areas, in osmium's callback order ----
     let mut found: Vec<Rec> = Vec::new();
     let mut retail_areas: Vec<(i64, &'static str, usize, Geo)> = Vec::new();
+    let mut pin_areas: Vec<(i64, usize, Geo)> = Vec::new();
     for area in &areas {
         let pairs: Vec<(&str, &str)> = match &area.how {
             AreaFrom::Broken => continue, // its create_multipolygon raised: Python skips it
@@ -378,7 +379,9 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
             },
             AreaFrom::Wkb(t, _) => t.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(),
         };
-        let mut tags = rules.enriched(&Tags::dict(&pairs));
+        let raw_tags = Tags::dict(&pairs);
+        let pin = rules.pin_category(&raw_tags).is_some();
+        let mut tags = rules.enriched(&raw_tags);
         let point_kind = rules.retail_kind(&tags);
         let mut kind: Option<&str> = if !matches!(tags.get("building"), None | Some("no")) {
             Some("building")
@@ -394,7 +397,7 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
         if kind.is_none() {
             kind = rules.ground_kind(&tags);
         }
-        if kind.is_none() && point_kind.is_none() {
+        if kind.is_none() && point_kind.is_none() && !pin {
             continue;
         }
         let geo = match &area.how {
@@ -413,7 +416,12 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
         if let Some(pk) = point_kind {
             // never empty: osmium made it
             retail_areas.push((-(2_000_000_000_000 + area.id), pk, shared, geo.clone()));
-            found.push(Rec { fid: -(3_000_000_000_000 + area.id), kind: format!("{pk}_site"), tags: TagsOf::Shared(shared), geo });
+            found.push(Rec { fid: -(3_000_000_000_000 + area.id), kind: format!("{pk}_site"), tags: TagsOf::Shared(shared), geo: geo.clone() });
+        }
+        if pin {
+            // a hotel's building, a car park, a picnic site: its pin at a point inside
+            arena.push(rules.pin_tags(&raw_tags));
+            pin_areas.push((-(5_000_000_000_000 + area.id), arena.len() - 1, geo));
         }
     }
     lines.extend(marks);
@@ -458,6 +466,36 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
     drop(tree);
     drop(nodes);
     lines.extend(kept);
+
+    // ---- a place mapped both as a node and as its area: the area's pin goes ----
+    let pins: Vec<(String, Geom)> = lines
+        .iter()
+        .filter(|r| r.kind == "pin")
+        .map(|r| Ok((arena[shared(&r.tags)].get("e2r_cat").unwrap_or("").to_string(), r.geo.geos()?)))
+        .collect::<Result<_>>()?;
+    let pin_geoms: Vec<&Geom> = pins.iter().map(|p| &p.1).collect();
+    let pin_tree = if pins.is_empty() { None } else { Some(Tree::new(&pin_geoms)?) };
+    let mut kept_pins = Vec::new();
+    for (ident, t, geo) in &pin_areas {
+        let category = arena[*t].get("e2r_cat").unwrap_or("");
+        let g = geo.geos()?;
+        let mut duplicate = false;
+        if let Some(tree) = &pin_tree {
+            for i in tree.query(&g)? {
+                if pins[i].0 == category && g.covers(&pins[i].1)? {
+                    duplicate = true;
+                    break;
+                }
+            }
+        }
+        if !duplicate {
+            let p = g.point_on_surface()?.coords()?[0];
+            kept_pins.push(Rec { fid: *ident, kind: "pin".into(), tags: TagsOf::Shared(*t), geo: Geo::Point(p) });
+        }
+    }
+    drop(pin_tree);
+    drop(pins);
+    lines.extend(kept_pins);
 
     stage("retail");
     if let Err(why) = link_parts(&found, &mut arena, rules) {

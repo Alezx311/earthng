@@ -753,6 +753,20 @@ def _scene_fixture(path):
     node(20, 700, {'highway': 'traffic_signals'})
     node(30, 700, {'natural': 'tree', 'leaf_type': 'broadleaved'})
     node(40, 700, {'highway': 'bus_stop', 'name': 'Зупинка "Центр"\n'})
+    # pins (docs/POI.md): nodes, an area with its node inside, areas alone, a bank's ATM
+    node(50, 700, {'amenity': 'atm', 'operator': 'ПриватБанк', 'opening_hours': '24/7'})
+    node(60, 700, {'historic': 'wayside_cross', 'material': 'wood'})
+    node(70, 700, {'natural': 'peak', 'ele': '312', 'name': 'Лиса гора', 'name:en': 'Bald Hill'})
+    # under ground and indoors: map only (fast_style.pin_inside)
+    node(80, 700, {'amenity': 'atm', 'level': ' -1;0'})
+    node(90, 700, {'shop': 'kiosk', 'indoor': 'room'})
+    node(100, 700, {'vending': 'water', 'location': 'underground'})
+    node(110, 700, {'amenity': 'atm', 'level': '0', 'indoor': 'no', 'location': 'kiosk'})
+    ring(50, [(1200, 0), (1300, 0), (1300, 100), (1200, 100)], {'building': 'yes', 'tourism': 'hotel', 'name': 'Готель'})
+    node(1250, 50, {'tourism': 'hotel', 'name': 'Готель', 'stars': '3'})
+    ring(51, [(1400, 0), (1500, 0), (1500, 100), (1400, 100)], {'amenity': 'parking', 'access': 'customers', 'fee': 'no'})
+    ring(52, [(1600, 0), (1700, 0), (1700, 100), (1600, 100)], {'tourism': 'picnic_site', 'name': 'Галявина'})
+    node(1650, 50, {'tourism': 'viewpoint'})
     with osmium.SimpleWriter(str(path)) as writer:
         for o in nodes:
             writer.add_node(o)
@@ -790,6 +804,17 @@ class NativeScenesTests(unittest.TestCase):
             self.assertEqual(by[22][1]['e2r_of'], '20')
             self.assertIn('grocery_site', kinds)
             self.assertIn(41, fids)                                        # the relation's water
+            pins = {fid: tags for fid, (kind, tags) in by.items() if kind == 'pin'}
+            self.assertEqual(sorted(tags['e2r_cat'] for tags in pins.values()),
+                             ['atm', 'atm', 'atm', 'cross', 'hotel', 'kiosk', 'parking', 'peak', 'picnic', 'viewpoint',
+                              'water_vending'])
+            atm = next(t for t in pins.values() if t.get('operator'))
+            self.assertEqual(atm, {'operator': 'ПриватБанк', 'e2r_cat': 'atm', 'e2r_brand': 'privatbank'})
+            self.assertEqual(sorted(t['e2r_cat'] for t in pins.values() if t.get('e2r_in') == 'yes'),
+                             ['atm', 'kiosk', 'water_vending'])
+            self.assertNotIn(-(5 * 10**12 + 100), fids)                    # the hotel's node stays, its area pin goes
+            self.assertIn(-(5 * 10**12 + 102), fids)                       # the car park's pin
+            self.assertIn(-(5 * 10**12 + 104), fids)                       # the picnic site (the viewpoint is another category)
             self.assertNotIn(42, fids)                                     # the bow tie
             with patch.dict(os.environ, {'EARTHNG_NATIVE': '0'}):
                 self.assertIsNotNone(native_tool.build_scene(store, entry, tmp / 'off.scene'))

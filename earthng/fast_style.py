@@ -571,7 +571,7 @@ UNMARKED = ('no', 'none', 'unmarked')
 
 
 # Every key point_kind reads: the exporter hands Python only nodes with one of them.
-POINT_KEYS = ('highway', 'traffic_sign', 'railway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'brand', 'operator', 'name',
+POINT_KEYS = ('highway', 'traffic_sign', 'railway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'tourism', 'historic', 'mountain_pass', 'brand', 'operator', 'name',
               'brand:uk', 'brand:en', 'name:uk', 'name:en', 'name:ru', 'operator:uk',
               'operator:en', 'operator:ru', 'brand:wikidata', 'operator:wikidata')
 
@@ -627,9 +627,72 @@ def point_kind(tags):
         return 'gate'
     if POIS and poi(tags):
         return 'poi'
+    if pin_category(tags):
+        return 'pin'
     if POIS and tags.get('entrance') in DOORS:
         return 'door'
     return None
+
+
+# Points of interest a driver looks for (docs/POI.md, wave 1): (key, value, category), the
+# first match wins. A node becomes a 'pin' point, an area a pin at a point inside it unless a
+# node of the same category stands there. The runtime draws a category's icon on the map and,
+# for some, an object in the world (generator.lua PIN); a category it does not know it skips.
+# Mirrored by rust/crates/cells (rules.rs pin_category) through native_tool.scene_rules.
+PIN_RULES = (
+    ('amenity', 'atm', 'atm'), ('amenity', 'payment_terminal', 'payment_terminal'),
+    ('amenity', 'bureau_de_change', 'exchange'),
+    ('vending', 'water', 'water_vending'), ('vending', 'drinking_water', 'water_vending'),
+    ('vending', 'coffee', 'coffee_vending'),
+    ('amenity', 'toilets', 'toilets'), ('amenity', 'parking', 'parking'),
+    ('amenity', 'drinking_water', 'drinking_water'), ('amenity', 'bbq', 'picnic'),
+    ('shop', 'car', 'car_dealer'), ('shop', 'car_parts', 'car_parts'), ('shop', 'motorcycle', 'car_parts'),
+    ('shop', 'kiosk', 'kiosk'),
+    ('highway', 'rest_area', 'rest_area'), ('highway', 'services', 'rest_area'),
+    ('tourism', 'motel', 'motel'), ('tourism', 'hotel', 'hotel'), ('tourism', 'hostel', 'hotel'),
+    ('tourism', 'guest_house', 'hotel'), ('tourism', 'apartment', 'hotel'), ('tourism', 'chalet', 'hotel'),
+    ('tourism', 'picnic_site', 'picnic'), ('leisure', 'picnic_table', 'picnic'),
+    ('tourism', 'viewpoint', 'viewpoint'),
+    ('historic', 'wayside_cross', 'cross'), ('man_made', 'cross', 'cross'), ('historic', 'wayside_shrine', 'shrine'),
+    ('natural', 'peak', 'peak'), ('natural', 'volcano', 'peak'),
+    ('mountain_pass', 'yes', 'pass'), ('natural', 'saddle', 'pass'),
+    ('natural', 'spring', 'spring'), ('man_made', 'water_well', 'well'),
+    ('railway', 'tram_stop', 'tram_stop'),
+)
+# The tags a pin keeps, in this order, then e2r_cat and (money points of a known bank) e2r_brand
+PIN_TAGS = ('name', 'name:uk', 'name:en', 'brand', 'operator', 'ele', 'access', 'fee')
+PIN_MONEY = ('atm', 'payment_terminal', 'exchange')
+
+
+def pin_category(tags):
+    """The PIN_RULES category of an OSM object, else None."""
+    for key, value, category in PIN_RULES:
+        if tags.get(key) == value:
+            return category
+    return None
+
+
+def pin_inside(tags):
+    """Under ground or indoors (a passage's ATM, a mall's kiosk): the map shows it, the street
+    has no object for it."""
+    return (tags.get('level', '').strip().startswith('-') or tags.get('indoor', 'no') != 'no'
+            or tags.get('location') in ('underground', 'indoor'))
+
+
+def pin_tags(tags):
+    """A pin's tags: PIN_TAGS it has, its category, its bank (retail's network) for money points,
+    e2r_in = yes under ground or indoors."""
+    tags = tags if isinstance(tags, dict) else dict(tags)
+    category = pin_category(tags)
+    out = {key: tags[key] for key in PIN_TAGS if tags.get(key)}
+    out['e2r_cat'] = category
+    if category in PIN_MONEY:
+        network = retail._recognized(tags)
+        if network in retail.SERVICE_NETWORKS:
+            out['e2r_brand'] = network
+    if pin_inside(tags):
+        out['e2r_in'] = 'yes'
+    return out
 
 
 ENTRANCES = ('staircase', 'main', 'home')

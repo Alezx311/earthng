@@ -179,6 +179,7 @@ class WidgetTests(unittest.TestCase):
         lua.globals().navigator_src = (root / 'mod/lua/ge/extensions/e2r/navigator.lua').read_text(encoding='utf8')
         lua.globals().routing_src = (root / 'mod/lua/ge/extensions/e2r/routing.lua').read_text(encoding='utf8')
         lua.globals().winguard_src = (root / 'mod/lua/ge/extensions/e2r/winguard.lua').read_text(encoding='utf8')
+        lua.globals().pins_src = (root / 'mod/lua/ge/extensions/e2r/pins.lua').read_text(encoding='utf8')
         lua.execute('''
           ui_imgui = setmetatable({ArrayChar=function(n) return require('ffi').new('char[?]', n) end,
             Button=function(label) return label == clicked end,
@@ -239,6 +240,7 @@ class WidgetTests(unittest.TestCase):
             if name == 'ge/extensions/e2r/navigator' then return loadstring(navigator_src)() end
             if name == 'ge/extensions/e2r/routing' then return loadstring(routing_src)() end
             if name == 'ge/extensions/e2r/winguard' then return loadstring(winguard_src)() end
+            if name == 'ge/extensions/e2r/pins' then return loadstring(pins_src)() end
             if name == 'bit' then return realRequire('bit') end
             if name == 'ui/imguiUtils' then return {texObj=function(path) return {texId=1, path=path} end} end
             if name == 'ffi' then return realRequire('ffi') end

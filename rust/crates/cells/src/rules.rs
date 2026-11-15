@@ -105,6 +105,9 @@ pub struct Rules {
     pub poi_amenity: HashSet<String>,
     pub poi_not: HashSet<String>,
     pub doors: HashSet<String>,
+    pub pin_rules: Vec<(String, String, String)>,
+    pub pin_tags: Vec<String>,
+    pub pin_money: HashSet<String>,
     // fast_sources.py
     pub part_tags: Vec<String>,
     #[serde(skip)]
@@ -323,6 +326,36 @@ impl Rules {
         within(t.get("amenity"), &self.poi_amenity)
     }
 
+    /// fast_style.pin_category: the first PIN_RULES (key, value) the tags have
+    pub fn pin_category(&self, t: &impl Get) -> Option<&str> {
+        self.pin_rules.iter().find(|(k, v, _)| t.get(k) == Some(v.as_str())).map(|(_, _, c)| c.as_str())
+    }
+
+    /// fast_style.pin_tags: PIN_TAGS it has (non-empty), e2r_cat, the bank of a money point
+    pub fn pin_tags(&self, t: &Tags) -> Tags {
+        let category = self.pin_category(t).unwrap_or("");
+        let mut out = Tags::default();
+        for key in &self.pin_tags {
+            if let Some(v) = t.get(key).filter(|v| !v.is_empty()) {
+                out.set(key, v);
+            }
+        }
+        out.set("e2r_cat", category);
+        if self.pin_money.contains(category) {
+            if let Some(network) = self.recognized(t).filter(|n| self.networks.contains(n)) {
+                out.set("e2r_brand", &network);
+            }
+        }
+        // fast_style.pin_inside: under ground or indoors, a pin for the map only
+        let inside = t.get("level").map_or(false, |v| v.trim().starts_with('-'))
+            || t.get("indoor").map_or(false, |v| v != "no")
+            || matches!(t.get("location"), Some("underground") | Some("indoor"));
+        if inside {
+            out.set("e2r_in", "yes");
+        }
+        out
+    }
+
     pub fn point_kind(&self, t: &Tags) -> Option<&'static str> {
         let retail = self.retail_kind(t);
         if let Some(r) = retail {
@@ -377,6 +410,9 @@ impl Rules {
         }
         if self.pois && self.poi(t) {
             return Some("poi");
+        }
+        if self.pin_category(t).is_some() {
+            return Some("pin");
         }
         if self.pois && within(t.get("entrance"), &self.doors) {
             return Some("door");

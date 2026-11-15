@@ -7183,6 +7183,15 @@ function BLD.shopSites(shops, lists, rect, scene, ground, segmentBins, pause)
       table.insert(shops.points[key], {pos = p, cell = cell, kind = poi.kind, name = BLD.shopName(poi.tags), class = BLD.shopClass(poi.tags)})
       any = true
     end
+    -- a pin with a sign (BLD.PIN.signs) and a name: its name in letters, never a word of ours
+    local sign = p and poi.kind == 'pin' and not (poi.tags or NONE).e2r_in and BLD.PIN.signs[(poi.tags or NONE).e2r_cat]
+    local name = sign and BLD.pinName(poi.tags)
+    if name then
+      local key = math.floor(p[1] / 100) * 65536 + math.floor(p[2] / 100)
+      shops.points[key] = shops.points[key] or {}
+      table.insert(shops.points[key], {pos = p, cell = sign, kind = 'pin', name = name, class = 0, plain = true})
+      any = true
+    end
   end
   local sites = {}
   for _, site in ipairs(lists.areas) do
@@ -7445,7 +7454,8 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
   local shown, parts = {}, {}
   if own then shown[own] = true end
   for _, poi in ipairs(points) do
-    if not shown[poi.cell] then shown[poi.cell], parts[#parts + 1] = true, poi end
+    local key = poi.plain and 'pin:' .. poi.name or poi.cell
+    if not shown[key] then shown[key], parts[#parts + 1] = true, poi end
   end
   local small = footprint <= W.area and height <= W.height and not S.homes[tags.building or 'yes']
     and not (tags['building:levels'] and number(tags['building:levels'], 1) > 2)
@@ -7495,7 +7505,7 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
               BLD.shopPhoto(scene, a, b, length, s0, s0 + gw, base + .4, base + .4 + gh, .06, photo.glass)
             end
           end
-        else
+        elseif not info.plain then
           BLD.shopFront(scene, a, b, length, length * (1 - W.front) / 2, length * (1 + W.front) / 2, bottom, glass,
             BLD.frontFloor(a, b, length, length / 2, base, ground), info.class)
         end
@@ -7526,7 +7536,7 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
     end
     for side = 1, 4 do
       local wall = sides[side]
-      if wall and wall.length >= 4 and not (tower and wall == front) and not chars then
+      if wall and wall.length >= 4 and not (tower and wall == front) and not chars and not info.plain then
         -- as tall as the fascia, more on a long wall (a 100 m hypermarket's name is read from the
         -- far side of its car park), at most half the building and clear of the glazing
         local h = math.min(math.max(fh * (aspect == 1 and 1.15 or .8), sides[side + 4] * W.long[aspect == 1 and 2 or 1]),
@@ -7558,6 +7568,7 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
       local a, b, length = best.a, best.b, best.length
       local chars, size
       if not BLD.shopBranded(poi.cell) then chars, size = BLD.signFit(poi.name, math.min(length, P.most) - .6, (z1 - z0) * S.letters) end
+      if chars or not poi.plain then
       local bay = BLD.FRONT.bay
       local span = math.min(length, bay * math.max(2, math.ceil(((chars and #chars * size * BLD.PLATE.aspect or h * aspect) + P.margin) / bay)))
       local s = math.max(span / 2, math.min(length - span / 2, bestT * length))
@@ -7567,7 +7578,10 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
         under = z0 - P.accent
         BLD.shopBand(scene, a, b, length, s - span / 2, s + span / 2, under, z0, .07, BLD.shopFlat(poi.cell, 3))
       end
-      BLD.shopFront(scene, a, b, length, s - span / 2, s + span / 2, bottom, under, BLD.frontFloor(a, b, length, s, base, ground), poi.class)
+      -- a pin's sign has no shop front: the fronts' posters carry words (fast_storefront.POSTERS)
+      if not poi.plain then
+        BLD.shopFront(scene, a, b, length, s - span / 2, s + span / 2, bottom, under, BLD.frontFloor(a, b, length, s, base, ground), poi.class)
+      end
       local m = (z0 + z1) / 2
       if chars then
         BLD.signLetters(scene, a, b, length, s, chars, size, m - size / 2, .09)
@@ -7578,6 +7592,7 @@ function BLD.shopSigns(scene, building, rings, base, bottom, height, own, points
       if style.pylon == 'arches' then
         BLD.shopPoleSign(scene, wallPoint(a, b, length, s - span / 2, 0, 0), wallPoint(a, b, length, s + span / 2, 0, 0),
           span, rings, ground, segmentBins)
+      end
       end
     end
   end
@@ -8898,6 +8913,144 @@ function SIGNS.drawLight(mesh, lit, x, y, z, yaw, group, width)
     SOLID.box(mesh, 'yard', c.metal, T, -H.pole, -H.pole, 3.5, H.pole, H.pole, H.armAt + .9)
     SOLID.beam(mesh, 'yard', c.metal, T, {0, 0, H.armAt + .9}, {-reach, 0, H.armAt + .9}, .1)
     SIGNS.lamp(mesh, lit, T, -reach + .3, H.armAt, group)
+  end
+end
+
+-- Points of interest in the world (docs/POI.md, wave 1): a 'pin' point (fast_style.PIN_RULES,
+-- OSM tags of any country) of these categories gets a small object where it stands, off the
+-- carriageway and outside buildings (an ATM or toilets inside a mall stay on the map only).
+-- Every object is a pictogram in the 'yard' palette, no words, so it reads in any country; a
+-- money point of a known bank wears its sign (SOLID.BRANDS). The frame's -y faces the nearest
+-- road within `face` m. The other categories are drawn on the map alone (pins.lua).
+BLD.PIN = {face = 25, far = {peak = true, pass = true, viewpoint = true},
+  objects = {cross = true, shrine = true, atm = true, payment_terminal = true, water_vending = true,
+    coffee_vending = true, drinking_water = true, kiosk = true, well = true, spring = true, picnic = true,
+    toilets = true, viewpoint = true},
+  -- a sign on its building (BLD.shopSites): the plain cell lending its fascia's colour (bank
+  -- navy, charging green, car charcoal); only with an OSM name, and no shop front under it
+  signs = {hotel = 69, motel = 69, exchange = 67, car_parts = 64, car_dealer = 64},
+  names = {'name', 'name:en', 'brand'}}
+
+-- The name a pin's sign can be set in: its own, else its English one (a script the glyphs lack),
+-- else its brand; nil when none of them fits the glyph atlas
+function BLD.pinName(tags)
+  for _, key in ipairs(BLD.PIN.names) do
+    local name = tags[key]
+    if name and BLD.signFit(name, 100, 1) then return name end
+  end
+  return nil
+end
+
+-- true when x, y lies inside a building of the tile; cache: a table kept for the tile
+function BLD.pinIndoors(cache, buildings, x, y)
+  if not cache.homes then
+    cache.homes = {}
+    for _, building in ipairs(buildings) do
+      cache.homes[#cache.homes + 1] = {bounds = ringBounds(building.rings), rings = building.rings}
+    end
+  end
+  for _, home in ipairs(cache.homes) do
+    local b = home.bounds
+    if x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] and inside(home.rings, x, y) then return true end
+  end
+  return false
+end
+
+-- A gable profile in x-z (eaves at z0 out to half w, ridge at z1), extruded across y0..y1
+function BLD.pinGable(mesh, cell, T, w, z0, z1, y0, y1)
+  SOLID.extrude(mesh, 'yard', T, {{-w, z0}, {w, z0}, {0, z1}}, y0, y1, cell)
+end
+
+-- the object of category `cat` at x, y, z, frame angle a; seed varies colours; cell: a bank's sign
+function BLD.pin(mesh, cat, x, y, z, a, seed, cell)
+  local c, T = YARD.cell, SOLID.frame(x, y, z, a)
+  local box = function(colour, x0, y0, z0, x1, y1, z1) SOLID.box(mesh, 'yard', colour, T, x0, y0, z0, x1, y1, z1) end
+  if cat == 'cross' then
+    -- a wayside cross on a concrete foot, a little roof over its head
+    local wood = seed % 3 ~= 0 and c.wood or c.white
+    box(c.concrete, -.3, -.3, 0, .3, .3, .35)
+    box(wood, -.07, -.07, .35, .07, .07, 3.0)
+    box(wood, -.55, -.06, 2.2, .55, .06, 2.32)
+    BLD.pinGable(mesh, seed % 2 == 0 and c.dark or c.metal, T, .32, 2.92, 3.18, -.22, .22)
+  elseif cat == 'shrine' then
+    -- a pillar shrine: whitewashed body, a dark niche to the road, a tin roof and its cross
+    box(c.concrete, -.42, -.38, 0, .42, .38, .3)
+    box(c.white, -.34, -.3, .3, .34, .3, 1.9)
+    box(c.dark, -.18, -.32, 1.1, .18, -.3, 1.6)
+    BLD.pinGable(mesh, seed % 2 == 0 and c.green or c.paint, T, .48, 1.88, 2.32, -.4, .4)
+    box(c.bollard, -.025, -.025, 2.25, .025, .025, 2.75)
+    box(c.bollard, -.13, -.025, 2.56, .13, .025, 2.61)
+  elseif cat == 'atm' or cat == 'payment_terminal' then
+    local atm = cat == 'atm'
+    local w, d, h = atm and .38 or .28, atm and .33 or .22, atm and 1.75 or 1.65
+    box(atm and c.concrete or c.orange, -w, -d, 0, w, d, h)
+    -- the screen and, on an ATM, the shelf of its keypad
+    box(c.dark, -w * .6, -d - .02, 1.05, w * .6, -d, 1.42)
+    if atm then box(c.metal, -w * .7, -d - .16, .92, w * .7, -d, .98) end
+    -- the header: a bank's own sign on its colour, else the plain money colour
+    if cell then
+      BLD.shopBox(mesh, T, -w, -d - .01, h, w, d, h + .32, BLD.shopFlat(cell), {front = BLD.shopUV(cell)})
+    else
+      box(atm and c.green or c.dark, -w, -d - .01, h, w, d, h + .32)
+    end
+  elseif cat == 'water_vending' then
+    -- a drinking water booth: blue body, white band, a dark niche with its tap
+    box(c.blue, -.55, -.45, 0, .55, .45, 2.2)
+    box(c.white, -.56, -.46, 1.75, .56, .46, 2.05)
+    box(c.dark, -.22, -.47, .75, .22, -.45, 1.25)
+    box(c.metal, -.7, -.65, 2.2, .7, .55, 2.28)
+  elseif cat == 'coffee_vending' then
+    box(seed % 2 == 0 and c.red or c.dark, -.4, -.35, 0, .4, .35, 1.85)
+    box(c.light, -.3, -.37, 1.05, .3, -.35, 1.6)
+    box(c.dark, -.12, -.37, .55, .12, -.35, .8)
+  elseif cat == 'drinking_water' then
+    -- a tap on a post over a small basin
+    box(c.concrete, -.3, -.3, 0, .3, .3, .25)
+    box(c.metal, -.1, -.1, .25, .1, .1, 1.05)
+    box(c.metal, -.04, -.22, .9, .04, -.1, .96)
+  elseif cat == 'kiosk' then
+    -- a street kiosk: painted body, a dark window to the street, an awning over it
+    local paint = ({c.white, c.yellow, c.blue, c.green})[seed % 4 + 1]
+    box(paint, -1.3, -1, 0, 1.3, 1, 2.5)
+    box(c.dark, -1.1, -1.02, .95, 1.1, -1, 2.0)
+    box(c.metal, -1.38, -1.08, 2.5, 1.38, 1.08, 2.6)
+    local awning = ({c.red, c.orange, c.blue})[seed % 3 + 1]
+    SOLID.face(mesh, 'yard', awning, T, {{-1.3, -1, 2.42}, {-1.3, -1.7, 2.12}, {1.3, -1.7, 2.12}, {1.3, -1, 2.42}})
+    SOLID.face(mesh, 'yard', awning, T, {{1.3, -1, 2.42}, {1.3, -1.7, 2.12}, {-1.3, -1.7, 2.12}, {-1.3, -1, 2.42}})
+  elseif cat == 'well' then
+    -- a village well: the round shaft, two posts with the windlass, a gable roof along it
+    SOLID.prism(mesh, 'yard', c.concrete, T, 10, 0, .8, .62, .62)
+    SOLID.prism(mesh, 'yard', c.dark, T, 10, .8, .81, .5, .5)
+    box(c.wood, -.72, -.07, 0, -.6, .07, 1.95)
+    box(c.wood, .6, -.07, 0, .72, .07, 1.95)
+    box(c.wood, -.6, -.05, 1.38, .6, .05, 1.48)
+    local R = SOLID.frame(x, y, z, a + math.pi / 2)
+    SOLID.extrude(mesh, 'yard', R, {{-.7, 1.9}, {.7, 1.9}, {0, 2.32}}, -.88, .88, seed % 2 == 0 and c.wood or c.green)
+  elseif cat == 'spring' then
+    -- a spring: a stone wall with its pipe, a basin under it
+    box(c.concrete, -.6, -.15, 0, .6, .25, .7)
+    box(c.metal, -.03, -.35, .45, .03, -.15, .5)
+    box(c.paint, -.35, -.75, 0, .35, -.25, .12)
+  elseif cat == 'picnic' then
+    -- a picnic table and its two benches, A-frame legs
+    box(c.wood, -.9, -.38, .72, .9, .38, .77)
+    box(c.wood, -.9, -.78, .42, .9, -.52, .46)
+    box(c.wood, -.9, .52, .42, .9, .78, .46)
+    for _, lx in ipairs({-.7, .7}) do
+      box(c.brown, lx - .04, -.7, 0, lx + .04, .7, .08)
+      box(c.brown, lx - .04, -.05, 0, lx + .04, .05, .72)
+    end
+  elseif cat == 'toilets' then
+    -- a portable toilet: plastic booth, light roof, the door's frame
+    box(seed % 2 == 0 and c.blue or c.green, -.6, -.6, 0, .6, .6, 2.25)
+    box(c.white, -.64, -.64, 2.25, .64, .64, 2.35)
+    box(c.light, -.45, -.62, .05, .45, -.6, 2.05)
+  elseif cat == 'viewpoint' then
+    -- coin-operated binoculars on a post, the sign of a view in any country
+    box(c.metal, -.06, -.06, 0, .06, .06, 1.15)
+    box(c.blue, -.24, -.22, 1.15, .24, .12, 1.42)
+    box(c.dark, -.2, -.3, 1.2, -.04, -.22, 1.36)
+    box(c.dark, .04, -.3, 1.2, .2, -.22, 1.36)
   end
 end
 
@@ -12973,6 +13126,19 @@ local function build(cells, i, j, options)
     local p = point.pos
     if p and point.kind == 'stop' and wantStops then
       shelter(point, p)
+    elseif p and point.kind == 'pin' then
+      local cat = (point.tags or NONE).e2r_cat
+      if BLD.PIN.objects[cat] and not point.tags.e2r_in and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
+        local x, y, z = OFFROAD.offCarriageway(point, p)
+        if x and not BLD.pinIndoors(OFFROAD, lists.buildings, x, y) then
+          -- its front (-y) to the nearest road, else a turn of its own
+          local seed = hash(tostring(point.id))
+          local hit = OFFROAD.nearestOn(x, y, z, false, nil, BLD.PIN.face)
+          local a = hit and math.atan2(hit.x - x, -(hit.y - y)) or (seed % 360) * math.pi / 180
+          local brand = SOLID.BRANDS[point.tags.e2r_brand or '']
+          BLD.pin(sceneDecor, cat, x, y, z, a, seed, brand and brand[1])
+        end
+      end
     elseif p and point.kind == 'lift_gate' and
         p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
       BLD.liftGate(scene, p, lists.roads, ground)
@@ -13230,8 +13396,19 @@ local function build(cells, i, j, options)
     local out = manifest(scene, 'scene')
     out.parking = parking
     out.lights = OFFROAD.lights
+    local pins = {}
+    for _, poi in ipairs(lists.points) do
+      local p, tags = poi.pos, poi.tags or NONE
+      -- a pin: on the map by its category (pins.lua); a far tile hands over those seen from afar
+      if p and poi.kind == 'pin' and tags.e2r_cat and (not distant or BLD.PIN.far[tags.e2r_cat])
+          and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
+        pins[#pins + 1] = {id = poi.id, kind = 'pin', cat = tags.e2r_cat, x = p[1], y = p[2],
+          label = tags.name, brand = tags.e2r_brand, ele = tags.ele}
+      end
+    end
+    if distant and #pins > 0 then out.brandPOIs = pins end
     if not distant then
-      out.brandPOIs = {}
+      out.brandPOIs = pins
       for _, poi in ipairs(lists.points) do
         local p, tags = poi.pos, poi.tags or NONE
         if p and BLD.SHOP.kinds[poi.kind] and SOLID.BRANDS[tags.e2r_brand]
@@ -14207,6 +14384,7 @@ M.build = build
 M.keepsLeft = ROADS.keepsLeft
 M.YARD = YARD
 M.BRANDS = SOLID.BRANDS
+M.PIN = BLD.PIN
 M.shopFlat = BLD.shopFlat
 M.VENUE = BLD.VENUE
 M.shopUV = BLD.shopUV
