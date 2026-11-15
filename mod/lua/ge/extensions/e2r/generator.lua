@@ -4332,6 +4332,33 @@ function BLD.height(building, tags, area, h)
   return height
 end
 
+-- Words on the plain signs and shop windows (fast_art.SHOP_GENERIC, SERVICE_SIGNS,
+-- fast_storefront.POSTERS) are Ukrainian; outside Ukraine the same signs carry pictograms
+-- (BLD.SHOP.neutral, BLD.FRONT.neutral). A pack of Ukraine says so by its country; any other tile by
+-- its streets: Ukrainian names (a letter or a street word of `uk`, none of `not`) at least as many
+-- as the other names. True when the tile's signs go without words.
+BLD.SIGNLANG = {countries = {ukraine = true}, uk = {'і', 'ї', 'є', 'ґ', 'І', 'Ї', 'Є', 'Ґ', 'вулиця', 'Вулиця',
+  'провулок', 'площа', 'узвіз', 'набережна', 'шосе'}, ['not'] = {'ы', 'э', 'ъ', 'ё', 'ў', 'Ы', 'Э', 'Ъ', 'Ё', 'Ў'}}
+function BLD.neutralSigns(lists, country)
+  local L = BLD.SIGNLANG
+  local id = tostring(country or '')
+  if L.countries[id] or L.countries[id:match('^[^-]+') or ''] then return false end
+  local uk, other, seen = 0, 0, {}
+  for _, road in ipairs(lists.roads) do
+    local name = (road.tags or NONE).name
+    if type(name) == 'string' and name ~= '' and not seen[name] then
+      seen[name] = true
+      local mine = false
+      for _, ch in ipairs(L.uk) do if name:find(ch, 1, true) then mine = true; break end end
+      if mine then
+        for _, ch in ipairs(L['not']) do if name:find(ch, 1, true) then mine = false; break end end
+      end
+      if mine then uk = uk + 1 else other = other + 1 end
+    end
+  end
+  return not (uk > 0 and uk >= other)
+end
+
 -- Post-Soviet roofs: asbestos-cement slate and painted metal tile, some profiled sheet and clay.
 -- By the look's block, or for a pack built before looks by its country (looks.py 'postsoviet').
 BLD.postsoviet = {ukraine = true, belarus = true, moldova = true, russia = true, georgia = true,
@@ -6906,6 +6933,11 @@ end
 -- columns, and over a fuel station a canopy in the network's colours with pump islands. A mapped
 -- fuel site gets a price pylon (grades, no prices) by its street.
 BLD.SHOP = {cols = 4, rows = 32, fuel = 32, grocery = 33, swatch = {34, 36, 38}, price = {0, 10, 1, 4},
+  -- the plain signs and the price board outside Ukraine (fast_art.NEUTRAL_SIGNS): pictograms and
+  -- Latin grades in place of words (BLD.neutralSigns)
+  neutral = {[32] = 100, [33] = 101, [64] = 102, [65] = 104, [66] = 105, [67] = 106, [68] = 108, [69] = 109,
+    [70] = 110},
+  neutralPrice = {3, 24, 1, 4},
   square = {x = 512, y = 1280, side = 256, per = 6, atlas = 2048, tall = 4096},
   white = 56, lit = 57, dark = 58, metal = 59, concrete = 60, gold = 63,
   kinds = {fuel = true, grocery = true, fast_food = true, post = true, service = true},
@@ -6956,6 +6988,7 @@ for key, brand in pairs(SOLID.BRANDS) do BLD.SHOP.keys[brand[1]] = key end
 -- uv box {u0, v0, u1, v1} of a cell (an index) or a block {column, row, columns, rows}, a texel in
 function BLD.shopUV(cell)
   local S = BLD.SHOP
+  if BLD.neutral then cell = S.neutral[cell] or (cell == S.price and S.neutralPrice) or cell end
   local c, r, w, h
   if type(cell) == 'table' then c, r, w, h = cell[1], cell[2], cell[3], cell[4]
   else c, r, w, h = cell % S.cols, math.floor(cell / S.cols), 1, 1 end
@@ -6977,7 +7010,8 @@ end
 
 -- Shop fronts (fast_storefront.py): a bay of `bay` m in the atlas, a class's window and door side
 -- by side, `per` cells a row. Under `least` m of room (a hillside's raised ground) there is none.
-BLD.FRONT = {bay = 3, per = 4, least = 2, classes = {pharmacy = 1, bank = 2, cafe = 3, restaurant = 3, fast_food = 3, ice_cream = 3,
+-- The atlas's rows 4-7 are the same fronts without words (fast_storefront.NEUTRAL_POSTERS).
+BLD.FRONT = {bay = 3, per = 4, rows = 8, neutral = 16, least = 2, classes = {pharmacy = 1, bank = 2, cafe = 3, restaurant = 3, fast_food = 3, ice_cream = 3,
   bar = 4, pub = 4, car_repair = 5, tyres = 6, car_wash = 7}}
 
 function BLD.shopClass(tags)
@@ -7085,10 +7119,10 @@ function BLD.shopFront(scene, a, b, length, s0, s1, z0, z1, base, class)
   local width, door, top = (s1 - s0) / bays, math.ceil(bays / 2), math.min(z1, base + F.bay)
   if top - base < F.least then return end
   for n = 1, bays do
-    local cell = (class or 0) * 2 + (n == door and 1 or 0)
+    local cell = (class or 0) * 2 + (n == door and 1 or 0) + (BLD.neutral and F.neutral or 0)
     local col, row = cell % F.per, math.floor(cell / F.per)
     local u0, u1 = (col + .004) / F.per, (col + .996) / F.per
-    local function v(z) return (row + 1 - math.max(.004, math.min(.996, (z - base) / F.bay))) / F.per end
+    local function v(z) return (row + 1 - math.max(.004, math.min(.996, (z - base) / F.bay))) / F.rows end
     local x0, x1 = s0 + (n - 1) * width, s0 + n * width
     scene.polygon('storefront', {wallPoint(a, b, length, x0, .06, z0, u0, v(z0)), wallPoint(a, b, length, x1, .06, z0, u1, v(z0)),
       wallPoint(a, b, length, x1, .06, top, u1, v(top)), wallPoint(a, b, length, x0, .06, top, u0, v(top))}, false)
@@ -10650,6 +10684,7 @@ local function build(cells, i, j, options)
   local mark = options.mark or function() end
   local look = type(options.look) == 'table' and options.look or NONE
   BLD.packBlock = BLD.blockOf(options.country)
+  BLD.neutral = BLD.neutralSigns(lists, options.country)
   local postsoviet = look.block == 'postsoviet' or BLD.postsoviet[tostring(options.country or '')] or false
   local function lookOf(slot)
     local value = look[slot]
@@ -14810,6 +14845,8 @@ M.shopUV = BLD.shopUV
 M.frontFloor = BLD.frontFloor
 M.shopFront_ = BLD.shopFront
 M.FRONT = BLD.FRONT
+M.SHOP = BLD.SHOP
+M.neutralSigns = BLD.neutralSigns
 M.shopCell = BLD.shopCell
 M.shopMark = BLD.shopMark
 M.shopHeight = BLD.height

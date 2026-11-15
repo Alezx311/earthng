@@ -10,8 +10,9 @@ import fast_art
 import retail
 
 ROOT = Path(__file__).resolve().parents[1]
-STREET = {'id': 'street', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
-          'points': [[0, 90, 0], [400, 90, 0]]}       # along y = 90, under the shops below
+# along y = 90, under the shops below; named in Ukrainian, so plain signs keep their words
+STREET = {'id': 'street', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential', 'name': 'вулиця Велика Васильківська'},
+          'points': [[0, 90, 0], [400, 90, 0]]}
 
 
 class BrandGeneratorTests(unittest.TestCase):

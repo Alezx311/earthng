@@ -13,7 +13,8 @@ from PIL import Image, ImageDraw, ImageFilter
 
 CELL = 512                  # px of a bay
 METRE = CELL / 3.0
-COLS = 4                    # atlas 4 x 4 cells, a class's window then its door
+COLS = 4                    # atlas 4 x 8 cells, a class's window then its door; rows 4-7 the same
+ROWS = 8                    # fronts without words (NEUTRAL_POSTERS), for places outside Ukraine
 CLASSES = ('shop', 'pharmacy', 'bank', 'cafe', 'bar', 'car_repair', 'tyres', 'car_wash')
 SHUTTERED = ('car_repair', 'tyres', 'car_wash')
 ANTHRACITE, SILVER = (56, 59, 64), (176, 180, 184)
@@ -32,6 +33,16 @@ POSTERS = {'shop': (('АКЦІЯ', (214, 38, 40), (255, 255, 255)), ('-20%', (25
            'tyres': (('ШИНИ', (250, 208, 40), (30, 30, 30)),),
            'car_repair': (('ТО', (214, 38, 40), (255, 255, 255)),),
            'car_wash': (('МИЙКА', (20, 110, 180), (255, 255, 255)),)}
+# The fronts outside Ukraine (generator.lua BLD.FRONT.neutral): numbers, signs and pictograms
+# ('@' + fast_picto name) in place of words; the door's sticker a clock (opening hours)
+NEUTRAL_POSTERS = {'shop': (('-20%', (214, 38, 40), (255, 255, 255)), ('%', (250, 208, 40), (190, 20, 24))),
+                   'pharmacy': (('24/7', (0, 128, 92), (255, 255, 255)),),
+                   'bank': (('@card', (240, 240, 236), (30, 50, 100)), ('$ €', (30, 50, 100), (255, 255, 255))),
+                   'cafe': (('@cup', (34, 36, 34), (236, 230, 214)), ('@cutlery', (34, 36, 34), (236, 230, 214))),
+                   'bar': (('@beer', (30, 26, 24), (244, 170, 50)),),
+                   'tyres': (('@tyre', (250, 208, 40), (30, 30, 30)),),
+                   'car_repair': (('@wrench', (214, 38, 40), (255, 255, 255)),),
+                   'car_wash': (('@wash', (20, 110, 180), (255, 255, 255)),)}
 
 
 def y_of(z):
@@ -157,6 +168,12 @@ def sticker(im, box, word, fill, ink, font):
     d = ImageDraw.Draw(im)
     x0, y0, x1, y1 = box
     d.rectangle(box, fill=fill)
+    if word.startswith('@'):
+        import fast_picto
+        side = int(min(x1 - x0, y1 - y0) * .86)
+        mark = fast_picto.mark(word[1:], side, ink)
+        im.paste(mark, (int(x0 + (x1 - x0 - side) / 2), int(y0 + (y1 - y0 - side) / 2)), mark)
+        return
     size = max(10, int((y1 - y0) * .62))
     type_face = font(size)
     while type_face.getlength(word) > (x1 - x0) * .86 and size > 8:
@@ -167,8 +184,8 @@ def sticker(im, box, word, fill, ink, font):
     d.text((x0 + ((x1 - x0) - width) / 2, y0 + ((y1 - y0) - (top[3] - top[1])) / 2 - top[1]), word, fill=ink, font=type_face)
 
 
-def bay(kind, door, font):
-    """(colour, glow) of one bay, PIL RGB images of CELL x CELL."""
+def bay(kind, door, font, neutral=False):
+    """(colour, glow) of one bay, PIL RGB images of CELL x CELL; neutral: no word on it."""
     rng = np.random.default_rng(seed(kind, door))
     glow = Image.new('RGB', (CELL, CELL), (0, 0, 0))
     frame = FRAMES[kind]
@@ -196,7 +213,10 @@ def bay(kind, door, font):
                 a = int(x * METRE)
                 d.rectangle((a - 4, y_of(1.45), a + 4, y_of(.7)), fill=(216, 218, 220))
             d.rectangle((int(.28 * METRE), y_of(.03), int(2.72 * METRE), CELL), fill=(70, 72, 74))
-            sticker(im, (int(.5 * METRE), y_of(1.72), int(1.28 * METRE), y_of(1.5)), 'ВІДЧИНЕНО', (250, 250, 246), (20, 120, 70), font)
+            if neutral:
+                sticker(im, (int(.74 * METRE), y_of(1.86), int(1.04 * METRE), y_of(1.56)), '@clock', (250, 250, 246), (20, 120, 70), font)
+            else:
+                sticker(im, (int(.5 * METRE), y_of(1.72), int(1.28 * METRE), y_of(1.5)), 'ВІДЧИНЕНО', (250, 250, 246), (20, 120, 70), font)
         else:
             d.rectangle((CELL // 2 - rail // 2, y_of(2.3), CELL // 2 + rail // 2, y_of(.32)), fill=frame)
             d.rectangle((0, y_of(.38), CELL, y_of(.3)), fill=frame)
@@ -209,7 +229,7 @@ def bay(kind, door, font):
             mask = Image.new('L', (CELL, CELL), 255)
             ImageDraw.Draw(mask).rectangle((0, y_of(.3), CELL, CELL), fill=0)
             glow = Image.composite(glow, Image.new('RGB', (CELL, CELL)), mask)
-    posters = POSTERS.get(kind, ())
+    posters = (NEUTRAL_POSTERS if neutral else POSTERS).get(kind, ())
     if posters and not door:
         word, fill, ink = posters[int(rng.integers(len(posters)))]
         if kind == 'pharmacy':
@@ -231,14 +251,15 @@ def bay(kind, door, font):
 
 def art(r, font):
     """storefront.color.png and storefront.glow.png into r."""
-    size = CELL * COLS
-    colour, glow = Image.new('RGB', (size, size)), Image.new('RGB', (size, size))
-    for n, kind in enumerate(CLASSES):
-        for door in (0, 1):
-            k = n * 2 + door
-            at = (k % COLS * CELL, k // COLS * CELL)
-            a, b = bay(kind, door, font)
-            colour.paste(a, at)
-            glow.paste(b, at)
+    size = (CELL * COLS, CELL * ROWS)
+    colour, glow = Image.new('RGB', size), Image.new('RGB', size)
+    for neutral in (False, True):
+        for n, kind in enumerate(CLASSES):
+            for door in (0, 1):
+                k = n * 2 + door + (len(CLASSES) * 2 if neutral else 0)
+                at = (k % COLS * CELL, k // COLS * CELL)
+                a, b = bay(kind, door, font, neutral)
+                colour.paste(a, at)
+                glow.paste(b, at)
     colour.save(r / 'storefront.color.png')
     glow.save(r / 'storefront.glow.png')

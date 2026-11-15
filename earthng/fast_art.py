@@ -778,7 +778,7 @@ YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (2
 # network's real logo where
 # earthng/brand_logos.py fetched one into data/brands/<key>.png (Wikimedia Commons): on a white
 # panel when the logo is see-through, else on its own background; otherwise its name in type.
-BRAND_ART_VERSION = '12'  # change whenever an existing atlas cell changes
+BRAND_ART_VERSION = '13'  # change whenever an existing atlas cell changes; 13: neutral signs, fronts
 # (label, sign colour, key in generator.lua SOLID.BRANDS[, letters when not white])
 BRAND_SIGNS = [
     ('OKKO', (0,90,50), 'okko', (255,205,0)), ('WOG', (0,150,60), 'wog'), ('УКРНАФТА', (0,72,150), 'ukrnafta'),
@@ -863,6 +863,14 @@ SERVICE_CELL, SERVICE_SWATCH = 64, (112, 115, 118)                         # gen
 SHOP_COLS, SHOP_ROWS, SHOP_CELL = 4, 32, (512, 128)
 SHOP_GENERIC = [('АЗС', (46,72,104)), ('ПРОДУКТИ', (38,92,62))]          # cells 32, 33
 SHOP_PRICE = (0, 10, 1, 4)                                                # column, row, columns, rows
+# The same plain signs outside Ukraine (generator.lua BLD.SHOP.neutral): a pictogram for each word,
+# the colours kept: fuel, groceries, then the service classes of SERVICE_SIGNS[:7] in order
+NEUTRAL_SIGNS = {100: ('fuel', SHOP_GENERIC[0][1]), 101: ('cart', SHOP_GENERIC[1][1]),
+                 102: ('wrench', SERVICE_CLASS['car']), 104: ('tyre', SERVICE_CLASS['car']),
+                 105: ('wash', SERVICE_CLASS['wash']), 106: ('charge', SERVICE_CLASS['charge']),
+                 108: ('cross', SERVICE_CLASS['pharmacy']), 109: ('bank', SERVICE_CLASS['bank']),
+                 110: ('cup', SERVICE_CLASS['food'])}
+NEUTRAL_PRICE = (3, 24, 1, 4)                                             # the price board's grades in Latin
 SHOP_SWATCH = (34, 36, 38)                                                # sign, facade, accent: 16 colours a cell
 SHOP_SQUARE = (512, 1280, 256, 6)                                         # x, y, size, per row: 12 slots
 # logos drawn on the network's colour rather than a white panel
@@ -968,7 +976,7 @@ def _atb_roundel(size):
     return face
 
 
-def _price_board(lit):
+def _price_board(lit, grades=('А-95+', 'А-95', 'ДП', 'ГАЗ')):
     """A pylon's board: the grades on the left, amber digits on the right showing no price."""
     w, h = SHOP_CELL[0] * SHOP_PRICE[2], SHOP_CELL[1] * SHOP_PRICE[3]
     board = Image.new('RGB', (w, h), (0, 0, 0) if lit else (30, 32, 35))
@@ -976,9 +984,14 @@ def _price_board(lit):
     if not lit:
         d.rectangle((0, 0, w - 1, h - 1), outline=(170, 174, 178), width=10)
     font = _shop_font(64)
-    for n, grade in enumerate(('А-95+', 'А-95', 'ДП', 'ГАЗ')):
+    for n, grade in enumerate(grades):
         y = 34 + n * 116
-        d.text((36, y), grade, font=font, fill=(236, 236, 230))
+        size = 64
+        while font.getlength(grade) > 250 and size > 30:
+            size -= 4
+            font = _shop_font(size)
+        d.text((36, y + (64 - size) // 2), grade, font=font, fill=(236, 236, 230))
+        font = _shop_font(64)
         d.rounded_rectangle((300, y - 4, 476, y + 74), 8, fill=(0, 0, 0) if lit else (12, 12, 12))
         d.text((312, y), '--.--', font=font, fill=(255, 150, 20) if lit else (120, 70, 12))
     return board
@@ -1030,6 +1043,13 @@ def brand_art(r, logos=None):
     at = (SHOP_PRICE[0] * w, SHOP_PRICE[1] * h)
     atlas.paste(_price_board(False), at)
     glow.paste(_price_board(True), at)
+    import fast_picto
+    for index, (name, colour) in NEUTRAL_SIGNS.items():
+        put(index, _face(SHOP_CELL, colour, fast_picto.mark(name), (.8, .72)), True)
+    at = (NEUTRAL_PRICE[0] * w, NEUTRAL_PRICE[1] * h)
+    latin = ('95', '98', 'DIESEL', 'LPG')
+    atlas.paste(_price_board(False, latin), at)
+    glow.paste(_price_board(True, latin), at)
     for index, (colour, lit) in SHOP_FLATS.items():
         put(index, Image.new('RGB', SHOP_CELL, colour), lit)
     for index, (word, panel, letters) in SHOP_WORDMARKS.items():

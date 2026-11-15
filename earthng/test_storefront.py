@@ -10,7 +10,8 @@ import fast_art
 import fast_storefront as front
 
 ROOT = Path(__file__).resolve().parents[1]
-STREET = {'id': 'street', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+# a street in Ukrainian letters: the fronts keep their words (generator.lua BLD.neutralSigns)
+STREET = {'id': 'street', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential', 'name': 'вулиця Січових Стрільців'},
           'points': [[0, 90, 0], [400, 90, 0]]}
 BLOCK = [[100, 40], [160, 40], [160, 70], [100, 70]]
 SMALL = [[100, 60], [116, 60], [116, 72], [100, 72]]
@@ -33,11 +34,24 @@ class ArtTests(unittest.TestCase):
         return image[y:y + front.CELL, x:x + front.CELL]
 
     def test_every_class_has_its_window_and_door(self):
-        self.assertEqual(self.colour.shape, (2048, 2048, 3))
-        self.assertLessEqual(len(front.CLASSES) * 2, front.COLS ** 2)
+        self.assertEqual(self.colour.shape, (4096, 2048, 3))
+        self.assertLessEqual(len(front.CLASSES) * 4, front.COLS * front.ROWS)
         for n, kind in enumerate(front.CLASSES):
             with self.subTest(kind=kind):
                 self.assertGreater(np.abs(self.cell(self.colour, n * 2) - self.cell(self.colour, n * 2 + 1)).mean(), 3)
+
+    def test_the_fronts_abroad_are_the_same_rooms_without_words(self):
+        n = len(front.CLASSES) * 2
+        for k, kind in enumerate(front.CLASSES):
+            with self.subTest(kind=kind):
+                ua, abroad = self.cell(self.colour, k * 2), self.cell(self.colour, n + k * 2)
+                self.assertLess(np.abs(ua - abroad).mean(), 12)                # the same room
+                if front.POSTERS.get(kind) != front.NEUTRAL_POSTERS.get(kind):
+                    self.assertGreater(np.abs(ua - abroad).max(), 100)        # another poster
+        self.assertEqual(set(front.NEUTRAL_POSTERS), set(front.POSTERS))
+        for kind, posters in front.NEUTRAL_POSTERS.items():
+            for word, _, _ in posters:
+                self.assertFalse(any('А' <= ch <= 'я' or ch in 'ІЇЄҐіїєґ' for ch in word), (kind, word))
 
     def test_classes_look_apart(self):
         means = [self.cell(self.colour, n * 2).mean(axis=(0, 1)) for n in range(len(front.CLASSES))]
@@ -59,7 +73,16 @@ class ArtTests(unittest.TestCase):
         g = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/generator.lua').read_text(encoding='utf8'))
         self.g = g
         self.assertEqual(g.FRONT.per, front.COLS)
+        self.assertEqual(g.FRONT.rows, front.ROWS)
+        self.assertEqual(g.FRONT.neutral, len(front.CLASSES) * 2)
         self.assertEqual(g.FRONT.bay, front.CELL / front.METRE)
+        # the plain signs abroad: the same cells in the art and the generator
+        self.assertEqual(sorted(g.SHOP.neutral.values()), sorted(fast_art.NEUTRAL_SIGNS))
+        self.assertEqual(list(g.SHOP.neutralPrice.values()), list(fast_art.NEUTRAL_PRICE))
+        cells = set(fast_art.NEUTRAL_SIGNS) | {(fast_art.NEUTRAL_PRICE[1] + r) * fast_art.SHOP_COLS + fast_art.NEUTRAL_PRICE[0]
+                                               for r in range(fast_art.NEUTRAL_PRICE[3])}
+        used = set(range(len(fast_art.BRAND_SIGNS))) | {32, 33} | set(fast_art.SHOP_FLATS) | set(fast_art.SHOP_WORDMARKS)             | set(range(fast_art.SERVICE_CELL, fast_art.SERVICE_CELL + len(fast_art.SERVICE_SIGNS)))             | {b + k for b in fast_art.SERVICE_SWATCH for k in range(3)} | {b + k for b in fast_art.SHOP_SWATCH for k in range(2)}
+        self.assertFalse(cells & used, 'neutral cells over cells in use')
         for name, kind in (('pharmacy', 'pharmacy'), ('bank', 'bank'), ('cafe', 'cafe'), ('bar', 'bar'),
                            ('car_repair', 'car_repair'), ('tyres', 'tyres'), ('car_wash', 'car_wash')):
             self.assertEqual(front.CLASSES[g.FRONT.classes[name]], kind)
@@ -125,7 +148,7 @@ class SignTests(unittest.TestCase):
         glass = self.verts(scene, 'e2rf_storefront')
         self.assertEqual(round(max(p[0] for p in glass) - min(p[0] for p in glass)), 6)     # two bays round the sign
         us = sorted({round(p[3] * 4 - .004 if p[3] * 4 % 1 < .5 else p[3] * 4 + .004) for p in glass})
-        self.assertEqual({int(p[4] * 4) for p in glass if p[4] < 1}, {1})     # bank: the atlas's second row
+        self.assertEqual({int(p[4] * 8) for p in glass if p[4] < 1}, {1})     # bank: the atlas's second row
         self.assertEqual(us, [0, 1, 2])                                       # door and window side by side
 
     def test_a_towers_fascia_hangs_under_its_visor(self):
@@ -139,6 +162,34 @@ class SignTests(unittest.TestCase):
         long_ = self.verts(self.build([self.poi({'amenity': 'cafe', 'name': 'Кав\'ярня на розі старої вулиці'})]), 'e2rf_storefront')
         self.assertEqual(round(max(p[0] for p in short) - min(p[0] for p in short)), 6)
         self.assertGreater(max(p[0] for p in long_) - min(p[0] for p in long_), 8)
+
+    def test_abroad_the_fronts_and_plain_signs_go_without_words(self):
+        global STREET
+        home = STREET
+        try:
+            STREET = dict(home, tags={'highway': 'residential', 'name': 'Maria-Theresien-Straße'})
+            scene = self.build([self.poi({'amenity': 'bank'})])
+            glass = self.verts(scene, 'e2rf_storefront')
+            self.assertEqual({int(p[4] * 8) for p in glass if p[4] < 1}, {5})     # the bank's row without words
+            box = self.g.shopUV(68)
+            self.assertEqual(list(box.values()), list(self.g.shopUV(108).values()))   # a pharmacy's cross
+            fuel = self.g.shopUV(self.g.SHOP.price)
+            self.assertAlmostEqual(fuel[1], (3 + .002) / 4)                         # the Latin grades
+        finally:
+            STREET = home
+
+    def test_which_tiles_keep_the_words(self):
+        def neutral(names, country=None):
+            roads = [{'tags': {'name': n}} for n in names]
+            return self.g.neutralSigns(self.table({'roads': roads}), country)
+        self.assertFalse(neutral(['вулиця Хрещатик', 'Main Street']))
+        self.assertFalse(neutral(['Січових Стрільців', 'проспект Перемоги']))
+        self.assertTrue(neutral(['Bahnhofstraße', 'Museumstraße']))
+        self.assertTrue(neutral(['улица Ленина']), 'Russian is not Ukrainian')
+        self.assertTrue(neutral(['вуліца Янкі Купалы']), 'nor Belarusian')
+        self.assertTrue(neutral([]), 'no streets, no words')
+        self.assertFalse(neutral([], 'ukraine'), 'a pack of Ukraine keeps them')
+        self.assertFalse(neutral(['Main Street'], 'ukraine-west'))
 
     def test_on_a_hillside_the_door_stands_on_the_pavement(self):
         scene = self.build([self.poi({'amenity': 'bank'})])
