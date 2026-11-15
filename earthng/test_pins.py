@@ -153,13 +153,52 @@ class PinRuntimeTests(PinScene):
         self.assertFalse(self.near(yard, 200, 90), 'nothing on the carriageway')
         self.assertFalse(self.near(yard, 120, 70), 'an ATM under ground stays on the map')
         self.assertFalse(self.near(yard, 330, 40), 'an indoor kiosk stays on the map')
-        self.assertFalse(self.near(yard, 250, 300), 'a peak has no object')
+        # a named peak without a summit cross: a cairn, its name and height on a plate beside it
+        self.assertTrue(self.near(yard, 250, 300, 1.2), 'the cairn')
+        self.assertLess(max(p[2] for p in self.near(yard, 250, 300, 1.2)), 1.6)
+        plate = self.near(self.corners(scene, 'e2rf_glyphs_dark'), 250, 300, 4)
+        self.assertGreaterEqual(len(plate), 4 * (len('Hoverla') + len('2061 m') - 1))
         # the cross faces the street (its front, -y of its frame, toward y = 90)
         base = min(p[2] for p in self.near(yard, 100, 70))
         bar = [p for p in self.near(yard, 100, 70, 1) if abs(p[2] - base - 2.32) < 1e-6]
         self.assertTrue(bar and max(abs(p[0] - 100) for p in bar) > .5, 'the crossbar runs along the street')
         far = self.build([cell], far=True)
         self.assertEqual([r.id for r in far.brandPOIs.values()], ['peak'])
+
+    def test_a_summit_cross_where_osm_says_so_and_nothing_on_a_nameless_peak(self):
+        points = [{'id': 'cross', 'kind': 'pin', 'pos': [250, 300, 0],
+                   'tags': {'e2r_cat': 'peak', 'name': 'Patscherkofel', 'ele': '2246', 'summit:cross': 'yes'}},
+                  {'id': 'bare', 'kind': 'pin', 'pos': [400, 300, 0], 'tags': {'e2r_cat': 'peak'}}]
+        scene = self.build([{'roads': [STREET], 'points': points}])
+        yard = self.corners(scene, 'e2rf_yard')
+        base = min(p[2] for p in self.near(yard, 250, 300, 1))
+        self.assertGreater(max(p[2] for p in self.near(yard, 250, 300, 1)) - base, 3.5, 'a summit cross')
+        self.assertFalse(self.near(yard, 400, 300, 5), 'a nameless hill keeps no mark')
+
+    def test_an_atm_inside_hangs_on_its_buildings_open_wall(self):
+        shop = {'id': 'shop', 'height': 6, 'tags': {'building': 'retail'}, 'rings': [[[100, 60], [130, 60], [130, 80], [100, 80]]]}
+        neighbour = {'id': 'next', 'height': 6, 'tags': {'building': 'yes'}, 'rings': [[[130, 60], [150, 60], [150, 80], [130, 80]]]}
+        atm = {'id': 'atm', 'kind': 'pin', 'pos': [128, 75, 0], 'tags': {'e2r_cat': 'atm', 'e2r_brand': 'privatbank'}}
+        deep = {'id': 'deep', 'kind': 'pin', 'pos': [330, 40, 0], 'tags': {'e2r_cat': 'atm'}}
+        mall = {'id': 'mall', 'height': 8, 'tags': {'building': 'retail'}, 'rings': [[[300, 10], [360, 10], [360, 70], [300, 70]]]}
+        scene = self.build([{'roads': [STREET], 'buildings': [shop, neighbour, mall], 'points': [atm, deep]}])
+        yard = self.corners(scene, 'e2rf_yard')
+        # the party wall to the east (2 m) is shut by the next house: on the street wall (5 m) instead
+        panel = [p for p in yard if 126.5 < p[0] < 129.5 and 79.5 < p[1] < 80.6]
+        self.assertTrue(panel, 'on the street wall')
+        self.assertGreater(max(p[1] for p in panel), 80.2, 'before the wall, toward the street')
+        self.assertFalse([p for p in yard if 129.5 < p[0] < 130.6 and 72 < p[1] < 78], 'not on the party wall')
+        self.assertTrue([p for p in self.corners(scene, 'e2rf_brand_sign') if 126.5 < p[0] < 129.5 and p[1] > 79.9 and p[2] > 1.7],
+                        "the bank's sign over it")
+        self.assertFalse(self.near(yard, 330, 40, 25), 'deep inside a mall: the map alone')
+
+    def test_a_tram_stop_has_a_shelter_by_its_street(self):
+        stop = {'id': 'tram', 'kind': 'pin', 'pos': [200, 90, 0], 'tags': {'e2r_cat': 'tram_stop', 'name': 'Lavra'}}
+        scene = self.build([{'roads': [STREET], 'points': [stop]}])
+        shelters = [it for it in scene['items'].values() if 'point_tram' in str(it.name)]
+        self.assertEqual(len(shelters), 1)
+        self.assertTrue(str(shelters[0].shape).endswith('s_busstop_jri.dae'))
+        self.assertGreater(abs(shelters[0].pos[2] - 90), 4, 'beyond the kerb, off the carriageway')
 
     def test_a_named_hotel_exchange_or_parts_shop_signs_its_building_in_its_own_name(self):
         def house(ident, x0, use):

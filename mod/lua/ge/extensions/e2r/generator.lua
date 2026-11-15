@@ -8964,7 +8964,13 @@ end
 BLD.PIN = {face = 25, far = {peak = true, pass = true, viewpoint = true},
   objects = {cross = true, shrine = true, atm = true, payment_terminal = true, water_vending = true,
     coffee_vending = true, drinking_water = true, kiosk = true, well = true, spring = true, picnic = true,
-    toilets = true, viewpoint = true},
+    toilets = true, viewpoint = true, peak = true},
+  -- an ATM mapped inside its building hangs on the outside of its nearest open wall (one with no
+  -- other building `clear` m before it), within `reach` m of the point, at least `edge` m from a corner
+  wall = {reach = 12, clear = 1.5, edge = .7},
+  -- a named peak: a summit cross where OSM says summit:cross=yes, else a cairn; its name and height
+  -- on a plate `plate` m off it (letters `letter` m, at least `least`)
+  peak = {plate = 2.6, letter = .16, least = .09, width = 1.3},
   -- a sign on its building (BLD.shopSites): the plain cell lending its fascia's colour (bank
   -- navy, charging green, car charcoal); only with an OSM name, and no shop front under it
   signs = {hotel = 69, motel = 69, exchange = 67, car_parts = 64, car_dealer = 64},
@@ -8978,6 +8984,85 @@ function BLD.pinName(tags)
     if name and BLD.signFit(name, 100, 1) then return name end
   end
   return nil
+end
+
+-- A peak's mark in frame T: an iron summit cross on a stone foot (summit:cross=yes), else a cairn;
+-- with its name, a plate on a post beside it with the name and the height (OSM ele) in metres
+function BLD.pinPeak(mesh, T, seed, tags)
+  local c, Q = YARD.cell, BLD.PIN.peak
+  local box = function(colour, x0, y0, z0, x1, y1, z1) SOLID.box(mesh, 'yard', colour, T, x0, y0, z0, x1, y1, z1) end
+  local name = BLD.pinName(tags)
+  if tags['summit:cross'] == 'yes' then
+    box(c.concrete, -.45, -.45, -.3, .45, .45, .4)
+    local iron = seed % 3 == 0 and c.wood or c.dark
+    box(iron, -.08, -.08, .4, .08, .08, 3.8)
+    box(iron, -.75, -.07, 2.7, .75, .07, 2.86)
+  elseif name then
+    -- stones piled smaller to the top (a nameless hill keeps no mark)
+    SOLID.prism(mesh, 'yard', c.concrete, T, 9, -.2, .55, 1.0, .75)
+    SOLID.prism(mesh, 'yard', c.concrete, T, 7, .55, 1.05, .62, .4)
+    SOLID.prism(mesh, 'yard', c.concrete, T, 6, 1.05, 1.45, .32, .12)
+  end
+  if not name then return end
+  local ele = tonumber(tostring(tags.ele or ''):match('^%s*(%-?[%d%.]+)'))
+  local chars, size = SIGNS.fit(name, Q.letter, Q.least, Q.width - .16)
+  local w = math.max(Q.width, #chars * size * BLD.PLATE.aspect + .16) / 2
+  local x0, top = Q.plate, 1.75
+  box(c.metal, x0 - .03, -.03, -.2, x0 + .03, .03, top)
+  local h = ele and size * 2 + .2 or size + .14
+  SOLID.box(mesh, 'sign_white', 0, T, x0 - w, -.05, top - h, x0 + w, -.03, top)
+  SIGNS.word(mesh, 'glyphs_dark', T, chars, size, x0 - #chars * size * BLD.PLATE.aspect / 2, -.055, top - .07 - size, 1)
+  if ele then
+    local label = BLD.glyphs(string.format('%d m', math.floor(ele + .5)))
+    SIGNS.word(mesh, 'glyphs_dark', T, label, size * .9, x0 - #label * size * .9 * BLD.PLATE.aspect / 2, -.055,
+      top - h + .07, 1)
+  end
+end
+
+-- An ATM mapped inside its building on the outside of the building's nearest open wall (BLD.PIN.wall):
+-- a steel panel with its screen and keypad, the bank's sign over it. homes: BLD.pinIndoors' cache.
+-- Returns true when drawn.
+function BLD.pinOnWall(mesh, cache, buildings, x, y, ground, cell, seed)
+  local W, c = BLD.PIN.wall, YARD.cell
+  BLD.pinIndoors(cache, buildings, x, y)
+  local best
+  for _, home in ipairs(cache.homes) do
+    local b = home.bounds
+    if x >= b[1] - W.reach and x <= b[3] + W.reach and y >= b[2] - W.reach and y <= b[4] + W.reach
+        and inside(home.rings, x, y) then
+      local ring = BLD.orient(home.rings[1], home.rings)
+      for k, a in ipairs(ring) do
+        local q = ring[k % #ring + 1]
+        local dx, dy = q[1] - a[1], q[2] - a[2]
+        local len = math.sqrt(dx * dx + dy * dy)
+        if len >= 2 * W.edge + .9 then
+          local t = math.max(W.edge, math.min(len - W.edge, ((x - a[1]) * dx + (y - a[2]) * dy) / len))
+          local px, py = a[1] + dx * t / len, a[2] + dy * t / len
+          local d = math.sqrt((x - px) ^ 2 + (y - py) ^ 2)
+          local nx, ny = dy / len, -dx / len
+          if d <= W.reach and (not best or d < best.d)
+              and not BLD.pinIndoors(cache, buildings, px + nx * W.clear, py + ny * W.clear) then
+            best = {d = d, x = px, y = py, nx = nx, ny = ny}
+          end
+        end
+      end
+      break
+    end
+  end
+  if not best then return false end
+  local z = ground(best.x + best.nx, best.y + best.ny)
+  local T = SOLID.frame(best.x, best.y, z, math.atan2(best.nx, -best.ny))
+  local box = function(colour, x0, y0, z0, x1, y1, z1) SOLID.box(mesh, 'yard', colour, T, x0, y0, z0, x1, y1, z1) end
+  box(c.metal, -.42, -.1, .55, .42, .02, 1.75)                   -- the panel, a little into the wall
+  box(c.dark, -.25, -.12, 1.22, .25, -.1, 1.55)                  -- the screen
+  box(c.metal, -.3, -.3, 1.0, .3, -.1, 1.06)                     -- the keypad's shelf
+  box(c.dark, -.08, -.12, 1.1, .08, -.1, 1.14)                   -- the card slot
+  if cell then
+    BLD.shopBox(mesh, T, -.42, -.12, 1.8, .42, .02, 2.1, BLD.shopFlat(cell), {front = BLD.shopUV(cell)})
+  else
+    box(seed % 2 == 0 and c.green or c.blue, -.42, -.12, 1.8, .42, .02, 2.1)
+  end
+  return true
 end
 
 -- true when x, y lies inside a building of the tile; cache: a table kept for the tile
@@ -9000,11 +9085,14 @@ function BLD.pinGable(mesh, cell, T, w, z0, z1, y0, y1)
   SOLID.extrude(mesh, 'yard', T, {{-w, z0}, {w, z0}, {0, z1}}, y0, y1, cell)
 end
 
--- the object of category `cat` at x, y, z, frame angle a; seed varies colours; cell: a bank's sign
-function BLD.pin(mesh, cat, x, y, z, a, seed, cell)
+-- the object of category `cat` at x, y, z, frame angle a; seed varies colours; cell: a bank's sign;
+-- tags: the point's (a peak's name, height and cross)
+function BLD.pin(mesh, cat, x, y, z, a, seed, cell, tags)
   local c, T = YARD.cell, SOLID.frame(x, y, z, a)
   local box = function(colour, x0, y0, z0, x1, y1, z1) SOLID.box(mesh, 'yard', colour, T, x0, y0, z0, x1, y1, z1) end
-  if cat == 'cross' then
+  if cat == 'peak' then
+    BLD.pinPeak(mesh, T, seed, tags or NONE)
+  elseif cat == 'cross' then
     -- a wayside cross on a concrete foot, a little roof over its head
     local wood = seed % 3 ~= 0 and c.wood or c.white
     box(c.concrete, -.3, -.3, 0, .3, .3, .35)
@@ -13580,7 +13668,10 @@ local function build(cells, i, j, options)
       shelter(point, p)
     elseif p and point.kind == 'pin' then
       local cat = (point.tags or NONE).e2r_cat
-      if BLD.PIN.objects[cat] and not point.tags.e2r_in and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
+      if cat == 'tram_stop' and wantStops and not point.tags.e2r_in then
+        -- a tram stop as a bus stop: the shelter beyond the kerb of the street its track runs in
+        shelter(point, p)
+      elseif BLD.PIN.objects[cat] and not point.tags.e2r_in and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
         local x, y, z = OFFROAD.offCarriageway(point, p)
         if x and not BLD.pinIndoors(OFFROAD, lists.buildings, x, y) then
           -- its front (-y) to the nearest road, else a turn of its own
@@ -13588,7 +13679,10 @@ local function build(cells, i, j, options)
           local hit = OFFROAD.nearestOn(x, y, z, false, nil, BLD.PIN.face)
           local a = hit and math.atan2(hit.x - x, -(hit.y - y)) or (seed % 360) * math.pi / 180
           local brand = SOLID.BRANDS[point.tags.e2r_brand or '']
-          BLD.pin(sceneDecor, cat, x, y, z, a, seed, brand and brand[1])
+          BLD.pin(sceneDecor, cat, x, y, z, a, seed, brand and brand[1], point.tags)
+        elseif x and cat == 'atm' then
+          local brand = SOLID.BRANDS[point.tags.e2r_brand or '']
+          BLD.pinOnWall(sceneDecor, OFFROAD, lists.buildings, x, y, ground, brand and brand[1], hash(tostring(point.id)))
         end
       end
     elseif p and point.kind == 'lift_gate' and

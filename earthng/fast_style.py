@@ -670,7 +670,7 @@ PIN_RULES = (
     ('shop', '*', 'shop_map'),
 )
 # The tags a pin keeps, in this order, then e2r_cat and (money points of a known bank) e2r_brand
-PIN_TAGS = ('name', 'name:uk', 'name:en', 'brand', 'operator', 'ele', 'access', 'fee')
+PIN_TAGS = ('name', 'name:uk', 'name:en', 'brand', 'operator', 'ele', 'access', 'fee', 'summit:cross')
 PIN_MONEY = ('atm', 'payment_terminal', 'exchange')
 
 
