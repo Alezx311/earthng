@@ -571,7 +571,7 @@ UNMARKED = ('no', 'none', 'unmarked')
 
 
 # Every key point_kind reads: the exporter hands Python only nodes with one of them.
-POINT_KEYS = ('highway', 'traffic_sign', 'railway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'tourism', 'historic', 'mountain_pass', 'brand', 'operator', 'name',
+POINT_KEYS = ('highway', 'traffic_sign', 'railway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'tourism', 'historic', 'mountain_pass', 'advertising', 'emergency', 'brand', 'operator', 'name',
               'brand:uk', 'brand:en', 'name:uk', 'name:en', 'name:ru', 'operator:uk',
               'operator:en', 'operator:ru', 'brand:wikidata', 'operator:wikidata')
 
@@ -658,6 +658,17 @@ PIN_RULES = (
     ('mountain_pass', 'yes', 'pass'), ('natural', 'saddle', 'pass'),
     ('natural', 'spring', 'spring'), ('man_made', 'water_well', 'well'),
     ('railway', 'tram_stop', 'tram_stop'),
+    # the street (wave 5): objects in the world, not on the map (generator.lua BLD.PIN.street);
+    # nothing a car drives over or into: no speed bumps, no bollards or blocks on the carriageway
+    ('advertising', 'billboard', 'billboard'), ('advertising', 'column', 'ad_column'),
+    ('amenity', 'waste_disposal', 'waste_disposal'), ('amenity', 'recycling', 'recycling'),
+    *((('shelter_type', v, 'gazebo') for v in ('gazebo', 'pavilion', 'picnic_shelter', 'weather_shelter'))),
+    ('emergency', 'fire_hydrant', 'hydrant'), ('man_made', 'flagpole', 'flagpole'),
+    ('amenity', 'telephone', 'telephone'), ('amenity', 'hunting_stand', 'hunting_stand'),
+    ('man_made', 'street_cabinet', 'street_cabinet'), ('amenity', 'post_box', 'post_box'),
+    ('amenity', 'clock', 'clock'), ('amenity', 'taxi', 'taxi'),
+    ('amenity', 'bicycle_parking', 'bicycle_parking'), ('amenity', 'bicycle_rental', 'bicycle_rental'),
+    ('leisure', 'fitness_station', 'fitness_station'),
     *((('amenity', v, 'food') for v in ('cafe', 'restaurant', 'fast_food', 'bar', 'pub', 'ice_cream', 'food_court'))),
     *((('amenity', v, 'service_map') for v in ('bank', 'pharmacy', 'dentist', 'doctors', 'veterinary', 'post_office', 'car_wash', 'charging_station', 'fuel'))),
     *((('shop', v, 'service_map') for v in ('car_repair', 'tyres'))),
@@ -670,7 +681,8 @@ PIN_RULES = (
     ('shop', '*', 'shop_map'),
 )
 # The tags a pin keeps, in this order, then e2r_cat and (money points of a known bank) e2r_brand
-PIN_TAGS = ('name', 'name:uk', 'name:en', 'brand', 'operator', 'ele', 'access', 'fee', 'summit:cross')
+PIN_TAGS = ('name', 'name:uk', 'name:en', 'brand', 'operator', 'ele', 'access', 'fee', 'summit:cross',
+            'support', 'fire_hydrant:type', 'recycling_type', 'country', 'height')
 PIN_MONEY = ('atm', 'payment_terminal', 'exchange')
 
 

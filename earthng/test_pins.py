@@ -34,6 +34,32 @@ class PinRulesTests(unittest.TestCase):
         self.assertIsNone(fast_style.pin_category({'shop': 'vacant'}))
         self.assertIsNone(fast_style.pin_category({'disused:amenity': 'atm'}))
 
+    def test_the_street_from_osm_tags_and_nothing_in_a_cars_way(self):
+        cases = {
+            (('advertising', 'billboard'),): 'billboard',
+            (('advertising', 'column'),): 'ad_column',
+            (('amenity', 'waste_disposal'),): 'waste_disposal',
+            (('amenity', 'recycling'), ('recycling_type', 'container')): 'recycling',
+            (('amenity', 'shelter'), ('shelter_type', 'gazebo')): 'gazebo',
+            (('amenity', 'shelter'), ('shelter_type', 'picnic_shelter')): 'gazebo',
+            (('emergency', 'fire_hydrant'), ('fire_hydrant:type', 'underground')): 'hydrant',
+            (('man_made', 'flagpole'), ('country', 'UA')): 'flagpole',
+            (('amenity', 'post_box'),): 'post_box',
+            (('amenity', 'taxi'),): 'taxi',
+            (('leisure', 'fitness_station'),): 'fitness_station',
+        }
+        for pairs, category in cases.items():
+            self.assertEqual(fast_style.pin_category(dict(pairs)), category, pairs)
+            self.assertEqual(fast_style.point_kind(dict(pairs)), 'pin', pairs)
+        # a stop's shelter belongs to the stop; bumps and bollards are not taken at all
+        self.assertIsNone(fast_style.pin_category({'amenity': 'shelter', 'shelter_type': 'public_transport'}))
+        for tags in ({'traffic_calming': 'bump'}, {'barrier': 'bollard'}, {'barrier': 'block'}):
+            self.assertIsNone(fast_style.point_kind(tags), tags)
+        for key in ('advertising', 'emergency'):
+            self.assertIn(key, fast_style.point_keys())
+        tags = fast_style.pin_tags({'emergency': 'fire_hydrant', 'fire_hydrant:type': 'pillar', 'colour': 'red'})
+        self.assertEqual(tags, {'fire_hydrant:type': 'pillar', 'e2r_cat': 'hydrant'})
+
     def test_point_kind_keeps_the_older_kinds_first(self):
         self.assertEqual(fast_style.point_kind({'amenity': 'atm'}), 'pin')
         self.assertEqual(fast_style.point_kind({'amenity': 'bench', 'tourism': 'viewpoint'}), 'bench')
@@ -120,9 +146,13 @@ class PinRuntimeTests(PinScene):
 
     def test_every_category_has_a_map_style_and_the_far_lists_agree(self):
         styles = set(self.pins.STYLE.keys())
-        self.assertEqual({rule[2] for rule in fast_style.PIN_RULES}, styles)
+        street = set(self.g.PIN.street.keys())
+        # the street is drawn in the world and on no map
+        self.assertEqual({rule[2] for rule in fast_style.PIN_RULES} - street, styles)
+        self.assertFalse(street & styles)
+        self.assertTrue(street <= set(self.g.PIN.objects.keys()))
         self.assertEqual(set(self.pins.FAR.keys()), set(self.g.PIN.far.keys()))
-        self.assertTrue(set(self.g.PIN.objects.keys()) <= styles)
+        self.assertTrue(set(self.g.PIN.objects.keys()) - street <= styles)
         # the icons read without a language: pictograms or Latin letters
         for name, style in self.pins.STYLE.items():
             self.assertTrue(style.shape or all(ord(ch) < 128 for ch in style.text), name)
@@ -191,6 +221,40 @@ class PinRuntimeTests(PinScene):
         self.assertTrue([p for p in self.corners(scene, 'e2rf_brand_sign') if 126.5 < p[0] < 129.5 and p[1] > 79.9 and p[2] > 1.7],
                         "the bank's sign over it")
         self.assertFalse(self.near(yard, 330, 40, 25), 'deep inside a mall: the map alone')
+
+    def test_the_street_stands_off_the_road_and_off_the_map(self):
+        def pin(ident, x, cat, **tags):
+            return {'id': ident, 'kind': 'pin', 'pos': [x, 70, 0], 'tags': {'e2r_cat': cat, **tags}}
+        points = [pin('board', 60, 'billboard'), pin('bins', 120, 'waste_disposal'), pin('hydrant', 160, 'hydrant'),
+                  pin('plate', 180, 'hydrant', **{'fire_hydrant:type': 'underground'}),
+                  pin('flag', 220, 'flagpole', country='FR'), pin('gazebo', 270, 'gazebo'),
+                  pin('wall_board', 330, 'billboard', support='wall_mounted'), pin('road_bins', 90, 'waste_disposal')]
+        points[-1]['pos'] = [90, 90, 0]
+        scene = self.build([{'roads': [STREET], 'points': points}])
+        self.assertFalse(scene.brandPOIs and list(scene.brandPOIs.values()), 'none of them on the map')
+        yard = self.corners(scene, 'e2rf_yard')
+        # the board high on its pole, the request on both faces, nothing on a wall-mounted one here
+        board = self.near(yard, 60, 70, 4)
+        self.assertGreater(max(p[2] for p in board), 6)
+        letters = self.near(self.corners(scene, 'e2rf_glyphs_dark'), 60, 70, 4)
+        words = sum(len(line.replace(' ', '')) for line in self.g.PIN.billboard.lines.values())
+        # six corners per letter in the index lists, as many on the face to the street as on the back
+        self.assertEqual(len([p for p in letters if p[1] > 70]), 6 * words)
+        self.assertEqual(len([p for p in letters if p[1] < 70]), 6 * words)
+        self.assertGreater(min(p[2] for p in letters), 3.5, 'over the heads of passers-by')
+        self.assertFalse(self.near(yard, 330, 70, 4))
+        # the game's own shapes: three containers, a pillar hydrant abroad; a plate where it lies buried
+        shapes = [str(it.shape) for it in scene['items'].values() if '_pin_' in str(it.name)]
+        self.assertEqual(sum(s.endswith('italy_clutter_dumpster.DAE') for s in shapes), 3, 'none on the carriageway')
+        self.assertEqual(sum(s.endswith('hydrant1.dae') for s in shapes), 1)
+        self.assertTrue(self.near(self.corners(scene, 'e2rf_sign_white'), 180, 70, 1), 'the H plate')
+        # a French flag: three stripes across; the gazebo's roof over 3 m above the ground (-0.25)
+        flag = [p for p in self.near(yard, 220, 70, 3) if p[2] > 5]
+        self.assertGreater(max(p[0] for p in flag) - min(p[0] for p in flag) + max(p[1] for p in flag) - min(p[1] for p in flag), 1.4)
+        self.assertGreater(max(p[2] for p in self.near(yard, 270, 70, 3)), 3.0)
+        # in a Ukrainian pack a buried hydrant's plate says ПГ in white
+        ua = self.build([{'roads': [STREET], 'points': points}], country='ukraine')
+        self.assertEqual(len(self.near(self.corners(ua, 'e2rf_glyphs'), 160, 70, 1)), 2 * 6 * 2)
 
     def test_a_tram_stop_has_a_shelter_by_its_street(self):
         stop = {'id': 'tram', 'kind': 'pin', 'pos': [200, 90, 0], 'tags': {'e2r_cat': 'tram_stop', 'name': 'Lavra'}}

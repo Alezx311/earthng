@@ -8964,7 +8964,10 @@ end
 BLD.PIN = {face = 25, far = {peak = true, pass = true, viewpoint = true},
   objects = {cross = true, shrine = true, atm = true, payment_terminal = true, water_vending = true,
     coffee_vending = true, drinking_water = true, kiosk = true, well = true, spring = true, picnic = true,
-    toilets = true, viewpoint = true, peak = true},
+    toilets = true, viewpoint = true, peak = true, billboard = true, ad_column = true, waste_disposal = true,
+    recycling = true, gazebo = true, hydrant = true, flagpole = true, telephone = true, hunting_stand = true,
+    street_cabinet = true, post_box = true, clock = true, taxi = true, bicycle_parking = true,
+    bicycle_rental = true, fitness_station = true},
   -- an ATM mapped inside its building hangs on the outside of its nearest open wall (one with no
   -- other building `clear` m before it), within `reach` m of the point, at least `edge` m from a corner
   wall = {reach = 12, clear = 1.5, edge = .7},
@@ -8975,6 +8978,27 @@ BLD.PIN = {face = 25, far = {peak = true, pass = true, viewpoint = true},
   -- navy, charging green, car charcoal); only with an OSM name, and no shop front under it
   signs = {hotel = 69, motel = 69, exchange = 67, car_parts = 64, car_dealer = 64},
   names = {'name', 'name:en', 'brand'}}
+-- The street (docs/POI.md, wave 5): drawn where OSM maps it, off the carriageway, and on no map
+-- (SPLIT.out leaves them out). Nothing that stands in a car's way: no bumps, bollards or blocks.
+BLD.PIN.street = {billboard = true, ad_column = true, waste_disposal = true, recycling = true, gazebo = true,
+  hydrant = true, flagpole = true, telephone = true, hunting_stand = true, street_cabinet = true, post_box = true,
+  clock = true, taxi = true, bicycle_parking = true, bicycle_rental = true, fitness_station = true}
+-- A billboard carries no real brand: it asks the player to support the mod. `url`, when set, is a
+-- third, smaller line (letters of BLD.GLYPHS only: no ':' or '!'). A 6 x 3 m board on its pole.
+BLD.PIN.billboard = {lines = {'SUPPORT EARTHNG', 'ON PATREON'}, url = nil,
+  width = 6, height = 3, foot = 3.2, low = .6, letter = .62, least = .3, band = .42}
+-- the game's own shapes for some of them (solid Forest props, like a mapped bench)
+BLD.PIN.stock = {hydrant = WCO .. 'hydrant1.dae', post_box = WCO .. 'postbox_blue.dae',
+  bike = ECA_CLUTTER .. 'clutter_city_bike_stand.dae', bin = GDC .. 'italy_clutter_dumpster.DAE'}
+-- A flag by the OSM country code of its pole: stripes top to bottom (left to right when across),
+-- YARD.cell names. A pole with none flies the Ukrainian flag on a Ukrainian tile, else a plain one.
+BLD.FLAGS = {UA = {'blue', 'yellow'}, PL = {'white', 'red'}, DE = {'dark', 'red', 'yellow'},
+  AT = {'red', 'white', 'red'}, NL = {'red', 'white', 'blue'}, HU = {'red', 'white', 'green'},
+  LT = {'yellow', 'green', 'red'}, EE = {'blue', 'dark', 'white'}, LV = {'red', 'white', 'red'},
+  BG = {'white', 'green', 'red'}, FR = {'blue', 'white', 'red', across = true},
+  IT = {'green', 'white', 'red', across = true}, RO = {'blue', 'yellow', 'red', across = true},
+  IE = {'green', 'white', 'orange', across = true}, BE = {'dark', 'yellow', 'red', across = true},
+  MD = {'blue', 'yellow', 'red', across = true}, EU = {'blue'}}
 
 -- The name a pin's sign can be set in: its own, else its English one (a script the glyphs lack),
 -- else its brand; nil when none of them fits the glyph atlas
@@ -8984,6 +9008,221 @@ function BLD.pinName(tags)
     if name and BLD.signFit(name, 100, 1) then return name end
   end
   return nil
+end
+
+-- Words centred at x on both faces of a board in frame T: the front at y = -depth (read from -y),
+-- the back at +depth; z the foot of the letters
+function BLD.pinWords(mesh, material, T, chars, size, x, depth, z)
+  local half = #chars * size * BLD.PLATE.aspect / 2
+  SIGNS.word(mesh, material, T, chars, size, x - half, -depth, z, 1)
+  SIGNS.word(mesh, material, T, chars, size, x + half, depth, z, -1)
+end
+
+-- A street thing (BLD.PIN.street) in frame T, its front (-y) to the road; x, y, a: the frame's
+-- origin and turn, for the stock shapes put(shape, x, y, yaw) sets with their +Y to the road
+function BLD.pinStreet(mesh, cat, T, seed, tags, x, y, a, put)
+  local c, S = YARD.cell, BLD.PIN.stock
+  local box = function(colour, x0, y0, z0, x1, y1, z1) SOLID.box(mesh, 'yard', colour, T, x0, y0, z0, x1, y1, z1) end
+  local cs, sn = math.cos(a), math.sin(a)
+  local function stock(shape, lx, ly)
+    if not put then return false end
+    put(shape, x + lx * cs - ly * sn, y + lx * sn + ly * cs, math.pi - a)
+    return true
+  end
+  local wall = tags.support == 'wall_mounted' or tags.support == 'wall'
+  if cat == 'billboard' then
+    if wall then return end
+    local B = BLD.PIN.billboard
+    local foot = tags.support == 'ground' and B.low or B.foot
+    local w, top = B.width / 2, foot + B.height
+    box(c.metal, -.18, -.18, 0, .18, .18, foot + .3)
+    box(c.dark, -w - .08, -.2, foot - .08, w + .08, .2, top + .08)
+    for _, side in ipairs({-1, 1}) do
+      SOLID.box(mesh, 'sign_white', 0, T, -w, side > 0 and .2 or -.22, foot, w, side > 0 and .22 or -.2, top)
+      box(c.red, -w, side > 0 and .21 or -.23, foot, w, side > 0 and .23 or -.21, foot + B.band)
+    end
+    -- the request: its lines at one size, the address smaller under them
+    local rows, size = {}, B.letter
+    for _, line in ipairs(B.lines) do
+      local chars, fit = SIGNS.fit(line, B.letter, B.least, B.width - .6)
+      rows[#rows + 1], size = chars, math.min(size, fit)
+    end
+    local url, small
+    if B.url then url, small = SIGNS.fit(B.url, size * .6, B.least * .6, B.width - .6) end
+    local gap = size * .3
+    local tall = #rows * size + (#rows - 1) * gap + (url and gap + small or 0)
+    local z0 = foot + B.band + (B.height - B.band - tall) / 2 + tall - size
+    for _, chars in ipairs(rows) do
+      BLD.pinWords(mesh, 'glyphs_dark', T, chars, size, 0, .235, z0)
+      z0 = z0 - size - gap
+    end
+    if url then BLD.pinWords(mesh, 'glyphs_dark', T, url, small, 0, .235, z0 + size - small) end
+  elseif cat == 'ad_column' then
+    -- a round column under its cap, the posters as bands of colour round it
+    SOLID.prism(mesh, 'yard', c.dark, T, 16, 0, .3, .64, .64)
+    SOLID.prism(mesh, 'yard', c.paint, T, 16, .3, 2.9, .56, .56)
+    local posters = {c.red, c.yellow, c.blue, c.white, c.orange, c.green}
+    SOLID.prism(mesh, 'yard', posters[seed % 6 + 1], T, 16, .7, 1.6, .575, .575)
+    SOLID.prism(mesh, 'yard', posters[(seed + 3) % 6 + 1], T, 16, 1.75, 2.65, .575, .575)
+    SOLID.prism(mesh, 'yard', c.dark, T, 16, 2.9, 3.08, .66, .66)
+    SOLID.prism(mesh, 'yard', c.dark, T, 16, 3.08, 3.4, .5, .06)
+  elseif cat == 'waste_disposal' then
+    -- three 1100 l containers side by side, as in the yards
+    for k = -1, 1 do
+      if not stock(S.bin, k * 1.85, 0) then
+        box(c.green, k * 1.85 - .78, -.42, .15, k * 1.85 + .78, .42, 1.3)
+        box(c.dark, k * 1.85 - .8, -.44, 1.3, k * 1.85 + .8, .44, 1.38)
+      end
+    end
+  elseif cat == 'recycling' then
+    if tags.recycling_type == 'centre' then return end
+    -- bell bins for glass, paper and plastic, each with its slot and lifting hook
+    for k, colour in ipairs({c.green, c.blue, c.yellow}) do
+      local cx = (k - 2) * 1.6
+      box(colour, cx - .65, -.65, 0, cx + .65, .65, 1.45)
+      box(c.dark, cx - .28, -.67, 1.1, cx + .28, -.65, 1.2)
+      box(c.dark, cx - .12, -.12, 1.45, cx + .12, .12, 1.65)
+    end
+  elseif cat == 'gazebo' then
+    -- six posts on a floor under a tent roof, a table and its benches inside
+    local wood = seed % 2 == 0 and c.wood or c.brown
+    SOLID.prism(mesh, 'yard', c.concrete, T, 6, -.2, .12, 2.05, 2.05)
+    for k = 0, 5 do
+      local px, py = math.cos(k * math.pi / 3) * 1.8, math.sin(k * math.pi / 3) * 1.8
+      box(wood, px - .07, py - .07, .12, px + .07, py + .07, 2.35)
+    end
+    SOLID.prism(mesh, 'yard', wood, T, 6, 2.35, 2.5, 2.15, 2.15)
+    SOLID.prism(mesh, 'yard', seed % 3 == 0 and c.green or c.dark, T, 6, 2.5, 3.45, 2.35, .08)
+    box(wood, -.8, -.35, .82, .8, .35, .88)
+    box(wood, -.08, -.08, .12, .08, .08, .82)
+    box(wood, -.8, -.85, .5, .8, -.6, .55)
+    box(wood, -.8, .6, .5, .8, .85, .55)
+  elseif cat == 'hydrant' then
+    local kind = tags['fire_hydrant:type']
+    local plate = kind == 'underground' or kind == 'wall' or kind == 'pipe' or (kind ~= 'pillar' and not BLD.neutral)
+    if not plate then
+      if not stock(S.hydrant, 0, 0) then
+        SOLID.prism(mesh, 'yard', c.red, T, 10, 0, .7, .14, .14)
+        SOLID.prism(mesh, 'yard', c.red, T, 10, .7, .82, .17, .06)
+      end
+    else
+      -- the plate over a buried hydrant: white letters ПГ on red in Ukraine, a red-framed H abroad
+      box(c.metal, -.03, -.03, 0, .03, .03, 1.75)
+      box(c.red, -.2, -.05, 1.38, .2, -.03, 1.75)
+      if BLD.neutral then
+        SOLID.box(mesh, 'sign_white', 0, T, -.16, -.06, 1.42, .16, -.05, 1.71)
+        BLD.pinWords(mesh, 'glyphs_dark', T, BLD.glyphs('H'), .22, 0, .065, 1.455)
+      else
+        BLD.pinWords(mesh, 'glyphs', T, BLD.glyphs('ПГ'), .2, 0, .06, 1.465)
+      end
+    end
+  elseif cat == 'flagpole' then
+    local h = math.max(5, math.min(20, tonumber(tostring(tags.height or ''):match('^%s*([%d%.]+)')) or 8))
+    SOLID.prism(mesh, 'yard', c.concrete, T, 8, 0, .2, .3, .3)
+    SOLID.prism(mesh, 'yard', c.metal, T, 8, .2, h, .065, .04)
+    SOLID.prism(mesh, 'yard', c.metal, T, 8, h, h + .1, .07, .07)
+    -- the flag off the top of the pole along +x, two thirds as tall as it is long
+    local code = tostring(tags.country or ''):upper():match('^%a%a') or (not BLD.neutral and 'UA') or ''
+    local plain = {'white', 'blue', 'red', 'green'}
+    local flag = BLD.FLAGS[code] or {plain[seed % 4 + 1]}
+    local fw = math.min(2.4, h * .2)
+    local fh, top = fw * 2 / 3, h - .15
+    for k, name in ipairs(flag) do
+      local u0, u1 = (k - 1) / #flag, k / #flag
+      if flag.across then
+        box(c[name], .05 + fw * u0, -.012, top - fh, .05 + fw * u1, .012, top)
+      else
+        box(c[name], .05, -.012, top - fh * u1, .05 + fw, .012, top - fh * u0)
+      end
+    end
+  elseif cat == 'telephone' then
+    if BLD.packBlock == 'british' then
+      -- a red kiosk: dark glass on three sides, the door to the street
+      box(c.red, -.5, -.5, 0, .5, .5, 2.45)
+      box(c.dark, -.38, -.51, .9, .38, .51, 2.1)
+      box(c.dark, -.51, -.38, .9, .51, .38, 2.1)
+      box(c.red, -.55, -.55, 2.45, .55, .55, 2.6)
+    else
+      -- a hood on a post, the phone in it
+      local hood = seed % 2 == 0 and c.blue or c.metal
+      box(c.metal, -.05, -.05, 0, .05, .05, 1.1)
+      box(hood, -.4, 0, 1.0, .4, .06, 2.2)
+      box(hood, -.42, -.5, 1.0, -.38, .06, 2.2)
+      box(hood, .38, -.5, 1.0, .42, .06, 2.2)
+      box(hood, -.42, -.55, 2.15, .42, .06, 2.22)
+      box(c.dark, -.14, -.16, 1.3, .14, 0, 1.72)
+    end
+  elseif cat == 'hunting_stand' then
+    -- a high seat: four legs, a cabin with a window to the field, its ladder
+    local wood = c.wood
+    for _, lx in ipairs({-.75, .75}) do
+      for _, ly in ipairs({-.75, .75}) do box(wood, lx - .07, ly - .07, 0, lx + .07, ly + .07, 3.1) end
+    end
+    box(wood, -.95, -.95, 3.0, .95, .95, 3.1)
+    box(wood, -.95, .85, 3.1, .95, .95, 4.6)
+    box(wood, -.95, -.95, 3.1, -.85, .85, 4.6)
+    box(wood, .85, -.95, 3.1, .95, .85, 4.6)
+    box(wood, -.85, -.95, 3.1, .85, -.85, 3.85)
+    box(c.dark, -1.1, -1.15, 4.6, 1.1, 1.1, 4.7)
+    for _, lx in ipairs({-.3, .3}) do SOLID.beam(mesh, 'yard', wood, T, {lx, -2.0, 0}, {lx, -.95, 3.05}, .07) end
+    for k = 1, 7 do
+      local t = k / 8
+      box(wood, -.3, -2.0 + 1.05 * t - .03, 3.05 * t - .02, .3, -2.0 + 1.05 * t + .03, 3.05 * t + .02)
+    end
+  elseif cat == 'street_cabinet' then
+    box(c.metal, -.45, -.2, 0, .45, .2, 1.25)
+    box(c.dark, -.01, -.21, .08, .01, -.2, 1.17)
+    box(c.concrete, -.5, -.25, -.1, .5, .25, .05)
+  elseif cat == 'post_box' then
+    local block = BLD.packBlock
+    if block == 'north-america' and stock(S.post_box, 0, 0) then return end
+    if block == 'british' then
+      -- a pillar box
+      SOLID.prism(mesh, 'yard', c.red, T, 12, 0, 1.45, .27, .27)
+      SOLID.prism(mesh, 'yard', c.red, T, 12, 1.45, 1.62, .31, .18)
+      box(c.dark, -.12, -.29, 1.15, .12, -.25, 1.2)
+    else
+      -- a box on its post in the post's colour (yellow from Ukraine to France and Spain)
+      box(c.metal, -.04, -.04, 0, .04, .04, 1.0)
+      box(c.yellow, -.22, -.16, 1.0, .22, .16, 1.55)
+      box(c.dark, -.12, -.17, 1.38, .12, -.16, 1.42)
+      box(c.dark, -.24, -.18, 1.55, .24, .18, 1.6)
+    end
+  elseif cat == 'clock' then
+    if wall then return end
+    -- a street clock: two white faces on a post, the hands at ten past ten
+    box(c.dark, -.07, -.07, 0, .07, .07, 3.0)
+    box(c.dark, -.4, -.12, 3.0, .4, .12, 3.8)
+    for _, side in ipairs({-1, 1}) do
+      local face, hand = side * .13, side * .145
+      SOLID.box(mesh, 'sign_white', 0, T, -.33, math.min(side * .12, face), 3.07, .33, math.max(side * .12, face), 3.73)
+      box(c.dark, -.015, math.min(face, hand), 3.4, .015, math.max(face, hand), 3.66)
+      box(c.dark, -.19, math.min(face, hand), 3.385, 0, math.max(face, hand), 3.415)
+    end
+  elseif cat == 'taxi' then
+    box(c.metal, -.04, -.04, 0, .04, .04, 2.6)
+    box(c.yellow, -.42, -.05, 2.1, .42, .05, 2.55)
+    BLD.pinWords(mesh, 'glyphs_dark', T, BLD.glyphs('TAXI'), .26, 0, .055, 2.195)
+  elseif cat == 'bicycle_parking' or cat == 'bicycle_rental' then
+    if not stock(S.bike, 0, 0) then
+      for k = -2, 2 do box(c.metal, k * .8 - .02, -.35, 0, k * .8 + .02, .35, .8) end
+    end
+    if cat == 'bicycle_rental' then
+      box(c.metal, 2.4, -.04, 0, 2.48, .04, 2.2)
+      box(seed % 2 == 0 and c.blue or c.green, 2.1, -.05, 1.6, 2.78, .05, 2.2)
+    end
+  elseif cat == 'fitness_station' then
+    -- a pull-up bar and parallel bars
+    local paint = seed % 2 == 0 and c.blue or c.green
+    box(paint, -1.25, -.05, 0, -1.15, .05, 2.4)
+    box(paint, -.15, -.05, 0, -.05, .05, 2.4)
+    box(c.metal, -1.15, -.025, 2.25, -.15, .025, 2.3)
+    for _, ly in ipairs({-.3, .3}) do
+      box(paint, .5, ly - .04, 0, .58, ly + .04, 1.3)
+      box(paint, 1.9, ly - .04, 0, 1.98, ly + .04, 1.3)
+      box(c.metal, .5, ly - .025, 1.25, 1.98, ly + .025, 1.3)
+    end
+  end
 end
 
 -- A peak's mark in frame T: an iron summit cross on a stone foot (summit:cross=yes), else a cairn;
@@ -9086,11 +9325,14 @@ function BLD.pinGable(mesh, cell, T, w, z0, z1, y0, y1)
 end
 
 -- the object of category `cat` at x, y, z, frame angle a; seed varies colours; cell: a bank's sign;
--- tags: the point's (a peak's name, height and cross)
-function BLD.pin(mesh, cat, x, y, z, a, seed, cell, tags)
+-- tags: the point's (a peak's name, height and cross); put(shape, x, y, yaw): a stock shape (none
+-- offline: then the street things are drawn of boxes)
+function BLD.pin(mesh, cat, x, y, z, a, seed, cell, tags, put)
   local c, T = YARD.cell, SOLID.frame(x, y, z, a)
   local box = function(colour, x0, y0, z0, x1, y1, z1) SOLID.box(mesh, 'yard', colour, T, x0, y0, z0, x1, y1, z1) end
-  if cat == 'peak' then
+  if BLD.PIN.street[cat] then
+    BLD.pinStreet(mesh, cat, T, seed, tags or NONE, x, y, a, put)
+  elseif cat == 'peak' then
     BLD.pinPeak(mesh, T, seed, tags or NONE)
   elseif cat == 'cross' then
     -- a wayside cross on a concrete foot, a little roof over its head
@@ -13662,6 +13904,14 @@ local function build(cells, i, j, options)
     BLD.pinSites({lists = lists, rect = rect, scene = scene, decor = sceneDecor, ground = ground, bins = segmentBins,
       off = OFFROAD, parking = parking, pause = pause})
   end
+  -- the stock shapes of the pins' objects (BLD.pinStreet): solid Forest props, like a mapped bench
+  OFFROAD.stockN = 0
+  OFFROAD.stock = function(shape, x, y, yaw)
+    OFFROAD.stockN = OFFROAD.stockN + 1
+    static('pin_' .. OFFROAD.stockN, shape, x, y, ground(x, y), yaw)
+    local it = scene.items[#scene.items]
+    it.prop, it.streetKind, it.collision = true, 'pin', 'Collision Mesh'
+  end
   for _, point in ipairs(distant and NONE or lists.points) do
     local p = point.pos
     if p and point.kind == 'stop' and wantStops then
@@ -13679,7 +13929,7 @@ local function build(cells, i, j, options)
           local hit = OFFROAD.nearestOn(x, y, z, false, nil, BLD.PIN.face)
           local a = hit and math.atan2(hit.x - x, -(hit.y - y)) or (seed % 360) * math.pi / 180
           local brand = SOLID.BRANDS[point.tags.e2r_brand or '']
-          BLD.pin(sceneDecor, cat, x, y, z, a, seed, brand and brand[1], point.tags)
+          BLD.pin(sceneDecor, cat, x, y, z, a, seed, brand and brand[1], point.tags, OFFROAD.stock)
         elseif x and cat == 'atm' then
           local brand = SOLID.BRANDS[point.tags.e2r_brand or '']
           BLD.pinOnWall(sceneDecor, OFFROAD, lists.buildings, x, y, ground, brand and brand[1], hash(tostring(point.id)))
@@ -13946,7 +14196,7 @@ local function build(cells, i, j, options)
     for _, poi in ipairs(lists.points) do
       local p, tags = poi.pos, poi.tags or NONE
       -- a pin: on the map by its category (pins.lua); a far tile hands over those seen from afar
-      if p and poi.kind == 'pin' and tags.e2r_cat and (not distant or BLD.PIN.far[tags.e2r_cat])
+      if p and poi.kind == 'pin' and tags.e2r_cat and not BLD.PIN.street[tags.e2r_cat] and (not distant or BLD.PIN.far[tags.e2r_cat])
           and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
         pins[#pins + 1] = {id = poi.id, kind = 'pin', cat = tags.e2r_cat, x = p[1], y = p[2],
           label = tags.name or tags['name:uk'] or tags['name:en'] or tags.brand or tags.operator,
