@@ -187,13 +187,29 @@ end
 local function pickNext(F, link)
   local n = F.nodes[link.to]
   if not n then return end
-  local total, options = 0, {}
+  local total, options, reverse, reverseTotal = 0, {}, {}, 0
+  local p = link.pts
+  local j = #p - 5
+  local dx, dy = p[j + 3] - p[j], p[j + 4] - p[j + 1]
+  local length = math.sqrt(dx * dx + dy * dy)
   for _, out in ipairs(n.out) do
     if out.sid ~= link.sid then
-      options[#options + 1] = out
-      total = total + out.weight
+      local q = out.pts
+      local ox, oy = q[4] - q[1], q[5] - q[2]
+      local olen = math.sqrt(ox * ox + oy * oy)
+      -- Separate OSM ways can describe the two sides of the same road. Taking the opposite
+      -- way at their shared node is a U-turn even though its segment id is different.
+      if length > 0 and olen > 0 and (dx * ox + dy * oy) / (length * olen) < -0.8660254 then
+        reverse[#reverse + 1] = out
+        reverseTotal = reverseTotal + out.weight
+      else
+        options[#options + 1] = out
+        total = total + out.weight
+      end
     end
   end
+  -- Keep sharp hairpins and unusual one-way layouts connected when they are the only way out.
+  if #options == 0 and #reverse > 0 then options, total = reverse, reverseTotal end
   if #options == 0 then
     -- a dead end turns round on its own road; the end of the graph has no way on
     for _, out in ipairs(n.out) do if out.sid == link.sid and n.segs == 1 and #n.inn == 1 then return out end end

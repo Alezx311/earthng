@@ -10,7 +10,7 @@ local M = {}
 
 local SPOT = {2.6, 5.4, 3}
 local SITES = '/lua/ge/extensions/gameplay/sites/sites'
--- the widget's choices (world.lua drawTraffic): 0 draws the box cars instead
+-- the widget's choices (world.lua drawTraffic): 0 disables parked cars
 M.AMOUNTS = {{0, 'Вимк', 'Off'}, {8, 'Мало', 'Few'}, {16, 'Багато', 'Many'}}
 M.EVERY = 2   -- s between syncs of the spots
 

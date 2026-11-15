@@ -42,6 +42,9 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(w({'highway': 'trunk', 'junction': 'roundabout', 'lanes': '2'}), 8.0)
         self.assertEqual(w({'highway': 'service', 'service': 'driveway'}), 3.0)
         self.assertEqual(w({'highway': 'residential', 'width': '9'}), 9.0)  # a width tag wins
+        self.assertEqual(w({'highway': 'primary', 'lanes:forward': '3', 'lanes:backward': '2'}), 18.5)
+        self.assertEqual(w({'highway': 'primary', 'lanes:forward': '3', 'lanes:backward': '2', 'width': '14'}), 14.0)
+        self.assertEqual(w({'highway': 'primary', 'lanes:forward': '3'}), w({'highway': 'primary'}))
         self.assertTrue(sources.oneway({'highway': 'motorway'}))
         self.assertFalse(sources.oneway({'highway': 'motorway', 'oneway': 'no'}))
         self.assertFalse(sources.oneway({'highway': 'primary'}))

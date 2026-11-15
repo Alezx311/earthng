@@ -126,6 +126,32 @@ class GeneratorTests(unittest.TestCase):
                 p, uv = mesh.verts[face.v + 1], mesh.uvs[face.u + 1]
                 yield p.x + item.pos[1], p.y + item.pos[2], p.z + item.pos[3], uv.u, uv.v
 
+    def test_large_mixed_mesh_corner_keys_do_not_alias(self):
+        result = self.lua.execute('''
+          local make
+          for i = 1, 200 do
+            local name, value = debug.getupvalue(..., i)
+            if not name then break end
+            if name == 'collector' then make = value; break end
+          end
+          assert(make, 'collector not found')
+          local c = make({-10, -10, 10, 10}, 'large', 'scene', function() end, 4000)
+          local function p(x, y, z, uv) return {x, y, z, uv / 1024, 0} end
+          local function tri(tilted, a, b, d)
+            c.triangle('ground', p(0, 0, 0, a), p(1, 0, 0, b), p(0, 1, tilted and 1 or 0, d))
+          end
+          tri(true, 0, 1, 2)
+          tri(false, 0, 1, 2)  -- vertex 0, normal 1, UV 0
+          for i = 0, 2728 do tri(false, 3+i*3, 4+i*3, 5+i*3) end
+          tri(false, 8190, 8191, 0)
+          tri(true, 8192, 0, 1) -- vertex 0, normal 0, UV 8192
+          c.finish()
+          local m = c.items[1].meshes[1]
+          local corner = m.faces[#m.faces - 2]
+          return {corner.v, corner.n, corner.u}
+        ''', self.generator.build)
+        self.assertEqual(tuple(result[i] for i in (1, 2, 3)), (0, 0, 8192))
+
     def test_concave_polygon_and_courtyard_hole_keep_exact_area(self):
         shapes = [
             ([[[0, 0], [4, 0], [4, 1], [1, 1], [1, 4], [0, 4]]], 7),
@@ -224,6 +250,23 @@ class GeneratorTests(unittest.TestCase):
             for y in (246.5, 250, 253.5):
                 self.assertIsNone(self.surface_at(walks, x + .25, y), (x, y))
                 self.assertIsNone(self.surface_at(walks, y, x + .25), (y, x))
+
+    def test_bridge_sidewalk_stays_off_an_intersecting_bridge_road(self):
+        roads = [{'id': 'ns', 'nodes': ['a', 'b'], 'width': 8,
+                  'tags': {'highway': 'residential', 'bridge': 'yes', 'sidewalk': 'both'},
+                  'points': [[250, 0, 10], [250, 500, 10]]},
+                 {'id': 'ew', 'nodes': ['c', 'd'], 'width': 8,
+                  'tags': {'highway': 'residential', 'bridge': 'yes', 'sidewalk': 'no'},
+                  'points': [[0, 250, 10], [500, 250, 10]]}]
+        road = self.build([{'roads': roads}], land=False)[0]
+        walks = list(self.triangles(road, 'e2rf_sidewalk')) + list(self.triangles(road, 'e2rf_curb'))
+        self.assertTrue(walks)
+        for x in (244.5, 245.5, 254.5, 255.5):
+            self.assertIsNone(self.surface_at(walks, x, 250), (x, 250))
+        roads[1]['points'] = [[0, 250, 0], [500, 250, 0]]
+        road = self.build([{'roads': roads}], land=False)[0]
+        walks = list(self.triangles(road, 'e2rf_sidewalk')) + list(self.triangles(road, 'e2rf_curb'))
+        self.assertIsNotNone(self.surface_at(walks, 244.5, 250), 'the lower road must not cut the bridge sidewalk')
 
     def detail_marks(self, roads, points):
         road = self.build([{'roads': roads, 'points': points}])[0]
@@ -386,7 +429,8 @@ class GeneratorTests(unittest.TestCase):
             return {'id': name, 'nodes': [name + 'a', name + 'b'], 'width': 8,
                     'tags': {'highway': 'trunk', 'oneway': 'yes', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'},
                     'points': line(x0, y, x1, y, 20)}
-        for south, north in (((0, 300), (120, 420)), ((0, 300), (120, 400)), ((0, 320), (120, 400))):
+        for south, north in (((0, 300), (120, 420)), ((0, 300), (120, 400)), ((0, 320), (120, 400)),
+                             ((0, 300), (7, 305))):
             road, walls = self.build([{'roads': [bridge('s', *south, 250), bridge('n', *north, 262)]}])[:2]
             asphalt = list(self.triangles(road, 'e2rf_road_major'))
             walls = list(self.triangles(walls, 'e2rf_fence_wall'))
@@ -394,6 +438,8 @@ class GeneratorTests(unittest.TestCase):
                 for x in (x0 + 10, (x0 + x1) // 2, x1 - 10):
                     self.assertAlmostEqual(self.surface_at(asphalt, x, y), 20.1, places=2, msg=(south, north, x, y))
                     self.assertIsNotNone(self.surface_at(walls, x, y), (south, north, x, y))   # and a soffit
+            if north[1] > south[1]:
+                self.assertIsNotNone(self.surface_at(asphalt, north[1] - 1, 262), (south, north))
         # beside each other along the whole length they are still one deck
         road, walls = self.build([{'roads': [bridge('s', 0, 300, 250), bridge('n', 20, 280, 262)]}])[:2]
         self.assertIsNotNone(self.surface_at(list(self.triangles(walls, 'e2rf_fence_wall')), 150, 256))
@@ -1218,6 +1264,23 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(all(math.dist(a[:2], b[:2]) <= 80 for a, b in zip(coordinates, coordinates[1:])))
         self.assertTrue(manifest.drivable)
 
+    def test_directional_lane_counts_draw_and_route_all_lanes(self):
+        road = {'id': 'way', 'nodes': ['a', 'b'], 'width': 15,
+                'points': [[0, 250, 5], [500, 250, 5]],
+                'tags': {'highway': 'residential', 'width': '15', 'lanes:forward': '3',
+                         'lanes:backward': '2', 'sidewalk': 'no'}}
+        manifest, _, _, nav = self.build([{'roads': [road]}])
+        self.assertEqual(nav.segments[1][4], '--+++')
+        marks = list(self.triangles(manifest, 'e2rf_mark'))
+        lines = {round((min(p[1] for p in t) + max(p[1] for p in t)) / 2, 1) for t in marks}
+        # Five equal lanes, with the double centre line after the three forward lanes.
+        self.assertEqual(lines, {245.5, 248.5, 251.4, 251.6, 254.5})
+        left, _, _, nav = self.build([{'roads': [road]}], leftHand=True)
+        self.assertEqual(nav.segments[1][4], '+++--')
+        marks = list(self.triangles(left, 'e2rf_mark'))
+        lines = {round((min(p[1] for p in t) + max(p[1] for p in t)) / 2, 1) for t in marks}
+        self.assertEqual(lines, {245.5, 248.4, 248.6, 251.5, 254.5})
+
     def test_navigation_has_no_zero_length_edges(self):
         # repeated source points made zero-length navgraph edges; the game's random route walk
         # (traffic respawns) never got its length on them and froze the game
@@ -1327,6 +1390,21 @@ class GeneratorTests(unittest.TestCase):
         item = next(item for item in scene['items'].values() if item.kind == 'static' and '_point_' in item.name)
         self.assertAlmostEqual(item.pos[2], 254 - .15, places=3)     # in the parapet, 0.3 m thick
         self.assertAlmostEqual(item.pos[3], 20 + .1 + .45, places=2) # its kerb wall's top, the railing round the pole
+
+    def test_lamps_on_a_lower_road_do_not_pierce_an_overpass(self):
+        street = {'id': 'street', 'width': 7, 'points': line(0, 250, 500, 250, 10),
+                  'tags': {'highway': 'residential', 'lit': 'yes', 'sidewalk': 'both'}}
+        bridge = {'id': 'bridge', 'width': 30, 'points': line(250, 0, 250, 500, 16),
+                  'tags': {'highway': 'primary', 'bridge': 'yes', 'sidewalk': 'no'}}
+        lamps = [{'id': 'under', 'kind': 'lamp', 'tags': {}, 'pos': [250, 249, 10]},
+                 {'id': 'clear', 'kind': 'lamp', 'tags': {}, 'pos': [100, 245, 10]}]
+        grid = {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [10] * 4}
+        scene = self.build([{'roads': [street, bridge], 'points': lamps, 'terrain': grid}], terrainStep=100)[1]
+        items = [it for it in scene['items'].values() if it.kind == 'static' and str(it.shape).endswith('lamp1.dae')]
+        self.assertTrue(any('_point_clear' in it.name for it in items))
+        self.assertFalse(any('_point_under' in it.name for it in items))
+        self.assertTrue(any(it.pos[1] < 200 for it in items))
+        self.assertFalse([it.name for it in items if 234 < it.pos[1] < 266 and it.pos[3] < 15])
 
     def test_a_foot_bridge_is_a_deck_for_people(self):
         deck = {'id': 'deck', 'nodes': ['fa', 'fb'], 'width': 16, 'points': line(0, 250, 500, 250, 20),
@@ -1673,6 +1751,9 @@ class GeneratorTests(unittest.TestCase):
             self.assertAlmostEqual(abs(math.sin(yaw)), 1, 3)
             self.assertGreater(min(abs(x - 200), abs(x - 215)) if 200 - 3 < y < 280 + 3 else 9, 1.5)
         self.assertTrue(list(self.triangles(scene, 'e2rf_car')))
+        off_scene, off_yard = self.yard([{'buildings': [block], 'roads': [drive, lane]}], maxTrees=0, parkedCars=0)
+        self.assertFalse(off_yard['cars'])
+        self.assertFalse(list(self.triangles(off_scene, 'e2rf_car')))
 
     def test_a_playground_has_sand_and_kit_inside_it_and_no_trees(self):
         block = {'id': 'flats', 'height': 27, 'tags': {'building': 'apartments'},
@@ -2197,6 +2278,34 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(any(0 <= cell <= 7 for cell in atlas_cells))
         self.assertTrue(all(10 <= x <= 70 and 10 <= y <= 50
                             for triangle in self.triangles(scene, 'e2rf_car') for x, y, z in triangle))
+        off = self.build(source, terrainStep=100, parkedCars=0)[1]
+        self.assertFalse(list(self.meshes(off, 'e2rf_car')))
+        self.assertTrue(off['parking'], 'parking spots remain available when the setting changes')
+
+    def test_a_parking_lot_keeps_its_bays_off_a_road_through_it(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8,
+                'points': [[0, 30, 10], [500, 30, 10]],
+                'tags': {'highway': 'residential', 'sidewalk': 'no'}}
+        lot = {'id': 'parking', 'kind': 'paved', 'tags': {'amenity': 'parking'},
+               'rings': [[[10, 10], [80, 10], [80, 50], [10, 50]]]}
+        scene = self.build([{'roads': [road], 'areas': [lot]}], terrainStep=100,
+                            maxTrees=0, maxGrass=0, parkedCars=0)[1]
+        spots = list(scene['parking'].values())
+        self.assertTrue(spots)
+        for spot in spots:
+            self.assertTrue(spot[2] <= 25.1 or spot[2] >= 34.9, spot[2])
+
+    def test_a_bridge_names_the_edge_a_person_can_stand_on(self):
+        def way(sidewalk):
+            return {'id': 'b', 'nodes': ['a', 'b'], 'width': 8,
+                    'points': [[0, 250, 20], [500, 250, 20]],
+                    'tags': {'highway': 'residential', 'bridge': 'yes', 'sidewalk': sidewalk}}
+        self.assertAlmostEqual(self.build([{'roads': [way('both')]}])[3].segments[1].deck, 6)
+        self.assertAlmostEqual(self.build([{'roads': [way('no')]}])[3].segments[1].deck, 4)
+        ground = {'id': 'g', 'nodes': ['a', 'b'], 'width': 8,
+                  'points': [[0, 250, 10], [500, 250, 10]],
+                  'tags': {'highway': 'residential', 'sidewalk': 'both'}}
+        self.assertIsNone(self.build([{'roads': [ground]}])[3].segments[1].deck)
 
     def test_gabled_and_hipped_roofs_cover_footprint_and_rise_above_eaves(self):
         for shape in ['gabled', 'hipped']:
@@ -2634,6 +2743,29 @@ class GeneratorTests(unittest.TestCase):
 
     def water_items(self, manifest):
         return [it for it in manifest['items'].values() if it.kind in ('water', 'river', 'ocean')]
+
+    def test_water_grid_does_not_exceed_small_block_dimensions(self):
+        water = {'id': 'pond', 'kind': 'water', 'tags': {'water': 'pond'},
+                 'rings': [[[100, 100], [102.3, 100], [102.3, 102.3], [100, 102.3]]]}
+        scene = self.build([{'areas': [water]}], maxTrees=0, maxGrass=0)[1]
+        blocks = [it for it in self.water_items(scene) if it.kind == 'water']
+        self.assertTrue(blocks)
+        for block in blocks:
+            self.assertLessEqual(block.grid, min(block.scale[1], block.scale[2]))
+
+    def test_water_surface_is_not_raised_by_the_bed_excavation(self):
+        grid = {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [10] * 4}
+        for kind, rings in [('lake', [[[100, 100], [300, 100], [300, 300], [100, 300]]]),
+                            ('river', [[[0, 100], [500, 100], [500, 150], [0, 150]]])]:
+            with self.subTest(kind=kind):
+                water = {'id': kind, 'kind': 'water', 'tags': {'water': kind}, 'rings': rings}
+                scene = self.build([{'terrain': grid, 'areas': [water]}], maxTrees=0, maxGrass=0)[1]
+                items = self.water_items(scene)
+                self.assertTrue(items)
+                for item in items:
+                    heights = [node[3] for node in item.nodes.values()] if item.kind == 'river' else [item.pos[3]]
+                    for height in heights:
+                        self.assertAlmostEqual(height, 10.3)
 
     def test_quays_do_not_lift_the_river_between_them(self):
         """The ground of a 75 m arm of a river, under quays 5 m over it, stays on the DEM."""

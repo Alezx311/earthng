@@ -70,6 +70,54 @@ class FarCurveTests(unittest.TestCase):
             step = rim * (2 * math.sqrt(2) * s) / float(far.R_EFF)
             self.assertGreater(float(self.far.skirt(level)), step)
 
+    def test_staged_meshes_are_released_after_each_successful_spawn(self):
+        self.lua.execute('''
+          local function up(name, value, set)
+            for i=1,200 do
+              local n, old = debug.getupvalue(far.update, i)
+              if not n then break end
+              if n == name then
+                if set then debug.setupvalue(far.update, i, value) end
+                return old
+              end
+            end
+            error('missing upvalue: '..name)
+          end
+          local region, source = {}, {}
+          source.region = region
+          up('RS', {source=source}, true)
+          up('active', true, true)
+          local bands = {{meshes={{id=1}},faces=1},{meshes={{id=2}},faces=1}}
+          local parts = {{meshes={{id=3}},faces=1}}
+          local done = {co=coroutine.create(function() end), p={x=0,y=0},
+            plan={[0]={circle={0,0,1}}},
+            out={[0]={bands=bands,pos={0,0,0},faces=2}, marks={parts=parts,pos={0,0,0},faces=1,count=1}}}
+          up('job', done, true)
+          hptimer = function() return {stop=function() return 0 end} end
+          local spawned, fail = {}, true
+          up('spawnHidden', function(name, meshes)
+            if fail then error('simulated spawn failure') end
+            assert(meshes and meshes[1]); spawned[#spawned+1] = meshes[1].id
+          end, true)
+          scenetree = {findObject=function() return {setHidden=function() end} end}
+          far.applied = true
+          local p = {x=0,y=0,z=0}
+          far.update(p, source, 1, nil, true)
+          local staged = up('staged')
+          assert(staged and not bands[1].meshes and not bands[2].meshes and not parts[1].meshes)
+          assert(staged.items[1].meshes and staged.items[2].meshes and staged.items[3].meshes)
+          assert(not pcall(far.update, p, source, 1, nil, true))
+          assert(staged.items[1].meshes, 'failed spawn must retain its mesh for retry')
+          fail = false
+          for i=1,3 do
+            far.update(p, source, 1, nil, true)
+            assert(staged.items[i].meshes == nil, 'spawned mesh remains held')
+            if i < 3 then assert(staged.items[i+1].meshes, 'future mesh released early') end
+          end
+          far.update(p, source, 1, nil, true) -- reveal the complete batch
+          assert(up('staged') == nil and #spawned == 3)
+        ''')
+
 
 class FarLevelTests(unittest.TestCase):
     def setUp(self):

@@ -27,6 +27,7 @@ function M.simplify(s)
   for k=8,last,3 do
     if keep[k] then out[#out+1],out[#out+2],out[#out+3] = s[k],s[k+1],s[k+2] end
   end
+  out.deck = s.deck
   return out
 end
 return M

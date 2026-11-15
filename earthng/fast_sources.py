@@ -21,7 +21,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point
 from shapely.ops import transform
 
-VERSION = 'fast-23'         # source index cache: combined railway tracks, level crossings, speed cameras and foot-bridge decks
+VERSION = 'fast-24'         # source index cache: directional lane counts affect road width
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -99,13 +99,17 @@ def road_width(tags):
     if klass in FOOT_WIDTH:
         return min(35., max(1.5, number(tags.get('width'), FOOT_WIDTH[klass])))
     one = oneway(tags)
+    forward = number(tags.get('lanes:forward'), None)
+    backward = number(tags.get('lanes:backward'), None)
+    directional = forward + backward if not one and forward is not None and backward is not None and forward >= 0 and backward >= 0 else None
+    tagged_lanes = number(tags.get('lanes'), directional)
     if klass == 'raceway':
         fallback = RACEWAY.get(tags.get('sport'), RACEWAY_WIDTH)
-    elif klass in NARROW and tags.get('lanes') is None:
+    elif klass in NARROW and tagged_lanes is None:
         fallback = DRIVEWAY if tags.get('service') in ('driveway', 'alley') else NARROW[klass]
     else:
         motorway = tags.get('highway') == 'motorway'
-        lanes = max(1., number(tags.get('lanes'), 2 if motorway or not one else 1))
+        lanes = max(1., tagged_lanes if tagged_lanes is not None else 2 if motorway or not one else 1)
         lane = LANE_WIDTH.get(klass, 3.3)
         fallback = lanes * lane
         if one:

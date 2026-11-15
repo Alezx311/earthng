@@ -86,8 +86,10 @@ function M.noise(x, y, size, seed)
   local gx, gy = math.floor(fx), math.floor(fy)
   local tx, ty = fx - gx, fy - gy
   tx, ty = tx * tx * (3 - 2 * tx), ty * ty * (3 - 2 * ty)
-  local a = knot(seed, gx, gy) + (knot(seed, gx + 1, gy) - knot(seed, gx, gy)) * tx
-  local b = knot(seed, gx, gy + 1) + (knot(seed, gx + 1, gy + 1) - knot(seed, gx, gy + 1)) * tx
+  local k00, k10 = knot(seed, gx, gy), knot(seed, gx + 1, gy)
+  local k01, k11 = knot(seed, gx, gy + 1), knot(seed, gx + 1, gy + 1)
+  local a = k00 + (k10 - k00) * tx
+  local b = k01 + (k11 - k01) * tx
   return a + (b - a) * ty
 end
 -- a square's height factor, the share of its tufts kept and whether weeds stand there
@@ -144,7 +146,11 @@ function M.expand(part, pause)
       local x = patch.x + sx * 2 + 1
       local y = patch.y + sy * 2 + 1
       local kept = 0
-      local wildHeight, wildKeep, weeds = M.wild(x, y)
+      local wildHeight, wildKeep, weeds = 1, 1, false
+      -- Crops with their own models never use wild grass; odd squares have no far-ring tuft.
+      if crop ~= 'wheat' and not (crop and long) and not (level == 3 and not even) then
+        wildHeight, wildKeep, weeds = M.wild(x, y)
+      end
       for iy = -1, 1 do for ix = -1, 1 do
         -- which ring owns this tuft (OWN): the square's middle is the far ring's in every other
         -- square and the middle ring's in the rest
@@ -159,9 +165,12 @@ function M.expand(part, pause)
           show = show and kept <= T.thin
         end
         -- Lua 5.1 leaves a negative remainder; a cell west or south of the origin is negative.
-        local h = math.floor(x) * 73856093 + math.floor(y) * 19349663 + (ix + 2) * 83492791 + (iy + 2) * 2654435761
-        h = h % 2147483647
-        if h < 0 then h = h + 2147483647 end
+        local h = 0
+        if show then
+          h = math.floor(x) * 73856093 + math.floor(y) * 19349663 + (ix + 2) * 83492791 + (iy + 2) * 2654435761
+          h = h % 2147483647
+          if h < 0 then h = h + 2147483647 end
+        end
         -- thinned to bare ground (M.WILD.gap): the same tufts go in every ring; a field is not
         if show and wildKeep < 1 and not crop then show = (math.floor(h / 1030301) % 997) / 997 < wildKeep end
         if show then

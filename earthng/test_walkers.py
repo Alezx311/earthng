@@ -187,6 +187,28 @@ class WalkerTests(unittest.TestCase):
         self.assertEqual(turned, 0)
         self.assertEqual(count, 10)
 
+    def test_a_bridge_without_room_beside_the_lanes_is_not_walked(self):
+        out = self.lua().execute('''
+          local function road(deck)
+            local s = {'bridge', 'a', 'b', '-+', 13.9, 3.5, 1}
+            s.deck = deck
+            for k = 0, 4 do
+              local f = k / 4
+              s[#s + 1], s[#s + 2], s[#s + 3] = f * 100, 0, 10
+            end
+            return {s = s, x = 50, y = 0}
+          end
+          local bare = walkers.new{seed = 1}
+          walkers.sync(bare, {bridge = road(3.5)}, 50, 0)
+          local paved = walkers.new{seed = 1}
+          walkers.sync(paved, {bridge = road(5.5)}, 50, 0)
+          local rec = paved.segs.bridge
+          return {#bare.segs.bridge.pieces, #rec.pieces, math.abs(rec.pieces[1].line[2])}
+        ''')
+        self.assertEqual(out[1], 0)
+        self.assertEqual(out[2], 2)
+        self.assertAlmostEqual(out[3], 5.2, places=5)
+
     def test_a_side_street_joining_in_the_middle_of_a_road_cuts_its_sidewalk(self):
         out = self.lua().execute('''
           -- a main road along y = 0 and a side street from its middle (100, 0) north; the graph has

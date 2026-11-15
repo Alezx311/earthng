@@ -23,6 +23,11 @@ class MapDataTests(unittest.TestCase):
         self.assertEqual(reduced[:7], prefix)
         self.assertIn((100, 0, 5), list(zip(reduced[7::3], reduced[8::3], reduced[9::3])))
         self.assertEqual(reduced[-3:], [100, 100, 5])
+        marked = lua.table_from(straight)
+        marked.deck = 6.5
+        kept = nav.simplify(marked)
+        self.assertEqual(kept.deck, 6.5)
+        self.assertEqual([v for v in kept.values() if v != 6.5], prefix + [0, 0, 10, 200, 0, 10])
 
     def runtime(self, files):
         lua = LuaRuntime(unpack_returned_tuples=True)

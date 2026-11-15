@@ -16,7 +16,7 @@ end
 M.number = number
 function M.preset(detail, distance)
   detail, distance = number(detail, 50, 0, 100), number(distance, detail, 0, 100)
-  -- parkedCars: the game's parked cars kept round the player (parking.lua); 0 draws the box cars
+  -- parkedCars: the game's parked cars kept round the player (parking.lua); 0 disables parked cars
   local out = {quality=detail, detail=detail, distance=distance, groundTrees=true, parkedCars=8}
   for key in pairs(anchors[1]) do
     local q = (key == 'nearM' or key == 'farM' or key == 'grassM' or key == 'rockM') and distance or detail

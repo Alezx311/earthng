@@ -1248,6 +1248,8 @@ function M.update(p, source, holeR, track, enabled, dropR)
           for k, band in ipairs(built.bands) do
             local name = string.format('e2rfar_L%d_%d_g%d', L, k, gen)
             batch.items[#batch.items + 1] = {name = name, meshes = band.meshes, pos = built.pos, faces = band.faces}
+            -- The queued item now owns the arrays; done.out only needs counts for reveal.
+            band.meshes = nil
             table.insert(batch.names[L], name)
           end
         end
@@ -1257,6 +1259,7 @@ function M.update(p, source, holeR, track, enabled, dropR)
         for k, part in ipairs(done.out.marks.parts) do
           local name = string.format('e2rfar_marks_%d_g%d', k, gen)
           batch.items[#batch.items + 1] = {name = name, meshes = part.meshes, pos = done.out.marks.pos, faces = part.faces}
+          part.meshes = nil
           batch.names.marks[k] = name
         end
       end
@@ -1270,6 +1273,8 @@ function M.update(p, source, holeR, track, enabled, dropR)
     local item = staged.items[staged.next]
     if item then
       spawnHidden(item.name, item.meshes, item.pos, item.faces)
+      -- createMesh has copied the arrays; keep only the objects and names for reveal.
+      item.meshes = nil
       staged.next = staged.next + 1
       M.changed = true
       return

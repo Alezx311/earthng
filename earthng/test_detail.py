@@ -199,6 +199,25 @@ class DetailTests(unittest.TestCase):
           end
         ''')
 
+    def test_far_ring_and_crops_skip_unused_wild_noise(self):
+        lua = self.make()
+        lua.execute(r'''
+          local calls, original = 0, detail.wild
+          detail.wild = function(x, y) calls = calls + 1; return original(x, y) end
+          local patch = {x=0, y=0, shapes={'a','b','c'}, spans={1,1,1}, bottoms={0,0,0},
+            tall={shapes={'long'}, spans={1}, bottoms={0}},
+            dry={shapes={'dry'}, spans={1}, bottoms={0}}, samples={1,0,0,0}}
+          local part = {tile={}, n=0, staticN=0, level=3, patches={patch}}
+          assert(detail.expand(part).n == 0 and calls == 0) -- odd square, far ring
+          patch.samples = {64,0,0,0} -- wheat
+          assert(detail.expand(part).n == 1 and calls == 0)
+          patch.samples = {128,0,0,0} -- rows with their own long model
+          assert(detail.expand(part).n == 1 and calls == 0)
+          patch.tall = nil -- rows fall back to wild grass when no crop model is available
+          detail.expand(part)
+          assert(calls == 1)
+        ''')
+
     def test_lawn_rings_share_the_grass_budget(self):
         lua = self.make()
         lua.execute(r'''

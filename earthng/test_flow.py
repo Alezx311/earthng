@@ -53,6 +53,33 @@ class FlowTests(unittest.TestCase):
         lua.execute(GRID)
         return lua
 
+    def test_separate_reverse_way_is_not_chosen_over_a_continuation(self):
+        lua = self.lua()
+        result = lua.execute('''
+          local function road(id, a, b, x0, y0, x1, y1)
+            local s = {id, a, b, '+', 13, 3.5, 1, x0, y0, 0,
+                       (x0+x1)/2, (y0+y1)/2, 0, x1, y1, 0}
+            return {s=s, x=(x0+x1)/2, y=(y0+y1)/2}
+          end
+          local incoming = road('in', 'A', 'B', -100, 0, 0, 0)
+          local back = road('back', 'B', 'C', 0, 0, -100, 2)
+          local ahead = road('ahead', 'B', 'D', 0, 0, 100, 0)
+          local F = flow.new{seed=9}
+          flow.sync(F, {incoming=incoming, back=back, ahead=ahead})
+          local wrong = 0
+          for i=1, 50 do
+            local car = flow.spawn(F, F.links['incoming+'], 0, 1, 0)
+            if car.next.id ~= 'ahead+' then wrong = wrong + 1 end
+            flow.take(F, car)
+          end
+          local G = flow.new{seed=9}
+          flow.sync(G, {incoming=incoming, back=back})
+          local car = flow.spawn(G, G.links['incoming+'], 0, 1, 0)
+          return {wrong, car.next.id}
+        ''')
+        self.assertEqual(result[1], 0)
+        self.assertEqual(result[2], 'back+')  # a hairpin with no alternative remains connected
+
     def test_cars_drive_without_overlap_and_keep_the_target(self):
         lua = self.lua()
         out = lua.execute('''

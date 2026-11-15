@@ -90,7 +90,9 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
     scene.items[#scene.items + 1] = {
       kind = 'water', name = string.format('e2rl_%s_water_%d', key, n),
       pos = {(x0 + x1) * .5, (y0 + y1) * .5, z}, scale = {w, l, depth},
-      look = look or 'lake', grid = distant and WATER.gridFar or WATER.gridNear,
+      -- Small clipped slivers can be narrower than the normal grid; passing a larger
+      -- cell makes the engine clamp it after the WaterBlock has been registered.
+      look = look or 'lake', grid = math.min(distant and WATER.gridFar or WATER.gridNear, w, l),
       decor = true, layer = 'scene'}
   end
   -- Sea / ocean: one infinite WaterPlane for the session (world.lua singleton). Per-tile
@@ -128,7 +130,7 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
         end
         if zN > 0 then
           table.sort(zs)
-          local surface = zs[math.ceil(zN * .5)] + WATER.carve + WATER.above
+          local surface = zs[math.ceil(zN * .5)] + WATER.above
           -- a River for a narrow channel; a wide river (its centre line would span the islands
           -- and both arms, the Dnipro) and a lake are blocks over their wet rows
           local nodes = class == 'river' and WATER.riverNodes(area.rings, rect, x0, y0, x1, y1, surface, demAt, level, inside)
@@ -240,7 +242,7 @@ function WATER.riverNodes(rings, rect, x0, y0, x1, y1, surface, demAt, level, in
     local width = math.max(4, math.min(400, (hi - lo) + 4))
     local z = surface
     local bed = level(cx, cy, demAt(cx, cy) or surface, demAt)
-    if bed then z = math.max(surface - 0.5, bed + WATER.carve + WATER.above) end
+    if bed then z = math.max(surface - 0.5, bed + WATER.above) end
     return {cx, cy, z, width, WATER.riverDepth}
   end
   for s = 0, len, step do
@@ -1254,6 +1256,9 @@ local TRACK_WIDTH = {4.0, 3.8, 3.5, 3.2, 2.8, 2.5}
 -- distant tile packs MIXED_MATS materials per object (a far city tile: 28 -> 7 objects).
 -- Not all of them in one: its first frame would draw ~25 new pairs (~57 ms) at once.
 local PIECE_TRIS, MIXED_TRIS, MIXED_MATS = 2500, 4000, 4
+-- A mixed piece may have 4000 * 3 unique corners: 8192 aliases a normal with the next UV.
+-- All three indices remain below 16384 and the packed key remains exact in a Lua double.
+local CORNER_BASE = 16384
 local function collector(rect, key, layer, pause, mixed)
   local origin = {(rect[1] + rect[3]) * 0.5, (rect[2] + rect[4]) * 0.5, 0}
   local items, groups, used, operations, total = {}, {}, {}, 0, 0
@@ -1362,7 +1367,7 @@ local function collector(rect, key, layer, pause, mixed)
     if axis == 'x' then pu, pv = p[2], p[3] or 0
     elseif axis == 'y' then pu, pv = p[1], p[3] or 0 end
     local u = uvIndex(mesh, p[4] or pu / scale, p[5] or pv / scale)
-    local key = (v * 8192 + n) * 8192 + u
+    local key = (v * CORNER_BASE + n) * CORNER_BASE + u
     local face = mesh.fmap[key]
     if not face then face = CORNER(v, n, u); mesh.fmap[key] = face end
     local faces = mesh.faces
@@ -1474,6 +1479,23 @@ function ROADS.bridge(tags)
 end
 function ROADS.tunnel(tags)
   return tags.tunnel ~= nil and tags.tunnel ~= 'no' and tags.tunnel ~= 'building_passage'
+end
+-- lamp1.dae from the installed game's art_shapes.zip: visible Z reaches 7.89 m and its
+-- horizontal extent is 0.61 m from the anchor. Reject lamps intersecting an overhead deck.
+function ROADS.lampUnderDeck(bins, x, y, z, lift, sidewalk)
+  local key = (floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768
+  for _, s in ipairs(bins[key] or NONE) do
+    if ROADS.bridge(s.tags or NONE) then
+      local a, b = s.a, s.b
+      local t = math.max(0, math.min(1, ((x - a[1]) * s.dx + (y - a[2]) * s.dy) / s.len2))
+      local dx, dy = x - a[1] - t * s.dx, y - a[2] - t * s.dy
+      local reach = s.width / 2 + (sidewalk or 2) + .61
+      local top = (a[3] or 0) + t * ((b[3] or 0) - (a[3] or 0)) + (lift or 0)
+      if dx * dx + dy * dy <= reach * reach and top > z + .1
+          and top - ROADS.deckDepth(s.tags) <= z + 7.89 then return true end
+    end
+  end
+  return false
 end
 -- A vertical lip between two road pieces punctures a tyre: the hit is the edge, not the
 -- material. True when the step is steeper than 45 degrees inside 20 cm, or a pure step.
@@ -2634,13 +2656,16 @@ function ROADS.marks(tags, width, grade)
   local left, right = ROADS.shoulder(tags)
   if width - left - right < 3 then left, right = 0, 0 end
   local carriage = width - left - right
+  local forward, backward = number(tags['lanes:forward'], nil), number(tags['lanes:backward'], nil)
+  local directional = not oneway and forward and backward and forward >= 0 and backward >= 0 and forward + backward or nil
   local lanes = math.max(1, math.min(math.floor(carriage / 2.5),
-    math.floor(number(tags.lanes, ROADS.ring(tags) and math.floor(carriage / 4 + .1)
-      or oneway and math.floor(carriage / 3.3 + .5) or 2))))
-  local painted = ROADS.centred[class] or tags.lanes ~= nil or paint == 'yes'
+    math.floor(number(tags.lanes, directional or (ROADS.ring(tags) and math.floor(carriage / 4 + .1)
+      or oneway and math.floor(carriage / 3.3 + .5) or 2)))))
+  local painted = ROADS.centred[class] or tags.lanes ~= nil or directional ~= nil or paint == 'yes'
   if painted and lanes >= 2 then
     for lane = 1, lanes - 1 do
-      local centre = not oneway and math.abs(lane - lanes / 2) < .01
+      local split = directional == lanes and (ROADS.leftHand and backward or forward) or lanes / 2
+      local centre = not oneway and math.abs(lane - split) < .01
       local at = -width / 2 + right + lane * carriage / lanes
       -- a four-lane two-way road: a solid double centre line
       if centre and lanes >= 4 then
@@ -2757,8 +2782,10 @@ local function navSegment(road)
   local tags, points = road.tags or {}, road.points or {}
   local highway = (tags.highway or 'residential'):gsub('_link$', '')
   if not SPEED[highway] or tags.access == 'private' or tags.access == 'no' or tags.area == 'yes' or #points < 2 then return nil end
-  local total = math.max(1, math.min(8, math.floor(number(tags.lanes, math.floor((road.width or 7) / 3.5 + .5)))))
   local oneway, flip = ROADS.oneway(tags)
+  local f, b = number(tags['lanes:forward'], nil), number(tags['lanes:backward'], nil)
+  local directional = not oneway and f and b and f >= 0 and b >= 0 and f + b or nil
+  local total = math.max(1, math.min(8, math.floor(number(tags.lanes, directional or math.floor((road.width or 7) / 3.5 + .5)))))
   local lanes
   if oneway then
     lanes = string.rep('+', math.min(4, total))
@@ -2799,6 +2826,16 @@ local function navSegment(road)
       end
     end
     result[#result + 1], result[#result + 2], result[#result + 3] = p[1], p[2], (p[3] or 0) + ROAD_LIFT
+  end
+  -- How far from the middle a person can stand and still be on this deck. Walkers add their
+  -- own gap past the lanes; without this they step off a bridge that has no sidewalk.
+  if ROADS.bridge(tags) or ROADS.tunnel(tags) then
+    local v = tags.sidewalk
+    local highway = (tags.highway or 'residential'):gsub('_link$', '')
+    local city = highway == 'primary' or highway == 'secondary' or highway == 'tertiary'
+      or highway == 'residential' or highway == 'living_street' or highway == 'unclassified'
+    local bare = v == 'no' or v == 'none' or roadGrade(tags) >= 2 or not (v ~= nil or city)
+    result.deck = (road.width or 7) / 2 + (bare and 0 or TUNE.sidewalk)
   end
   return result
 end
@@ -3687,7 +3724,7 @@ end
 -- Street parking (options.experimentalDetail): where a road's own parking tags say cars stand,
 -- bays along that side (OSM's parking:left/right/both and the older parking:lane:*). A fact
 -- that a side is for parking, not an inventory of cars: the bays are spots for the game's
--- parked cars (parking.lua), or box cars with those off. Placement: 'lane' on the carriageway
+-- parked cars (parking.lua). Placement: 'lane' on the carriageway
 -- at its edge where the width leaves the moving lanes their 3 m each (else astride the curb);
 -- 'street_side' and 'shoulder' beside it; 'on_kerb' on the sidewalk; 'half_on_kerb' astride
 -- the curb. Bays keep
@@ -8370,7 +8407,9 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
       if segment.surface and capsuleNear(ax, ay, bx, by, mx, my, hl, sa[1], sa[2], sa[1] + segment.dx, sa[2] + segment.dy,
           segment.width / 2 + .3 + r) then return end
     end
-    candidates[#candidates + 1] = {name = name, shape = shape, x = x, y = y, z = onGround and ground(x, y) or z(x, y), yaw = yaw,
+    local height = onGround and ground(x, y) or z(x, y)
+    if prop.kind == 'lamp' and ROADS.lampUnderDeck(segmentBins, x, y, height, lift, walkWidth) then return end
+    candidates[#candidates + 1] = {name = name, shape = shape, x = x, y = y, z = height, yaw = yaw,
       ax = ax, ay = ay, bx = bx, by = by, mx = mx, my = my, hl = hl, r = r,
       priority = prop.priority or 3, rank = h, kind = prop.kind or 'furniture', scale = prop.scale or 1, group = group}
     -- a group (a bench and its bin, a row of containers) does not thin itself
@@ -9291,6 +9330,7 @@ function YARD.build(ctx)
                 local off = strip.hw + .5
                 local lx, ly = cx - uy * off * side, cy + ux * off * side
                 if yard(lx, ly) and not inBuilding(lx, ly, .8) and free(lx, ly) and not onRoad(lx, ly, .2)
+                    and not ROADS.lampUnderDeck(ctx.segmentBins, lx, ly, ctx.ground(lx, ly), ctx.lift, 2)
                     and not VEG.streetBlocked(surveyedLamps, lx, ly) then
                   YARD.reserve(reserved, {lx - .001, ly}, {lx + .001, ly}, 1.2)
                   -- the lamp's arm over the driveway (lamp1: its +Y)
@@ -9301,7 +9341,7 @@ function YARD.build(ctx)
               local done = false
               for _, side in ipairs({oneSide, -oneSide}) do
                 local h = ihash(seed, math.floor(d * 10 + .5), side + 2, 31)
-                if (both or not done) and h % 100 < 74 * math.min(1, dense) and cars < YARD.carsMax then
+                if ctx.parkedCars ~= 0 and (both or not done) and h % 100 < 74 * math.min(1, dense) and cars < YARD.carsMax then
                   local off = strip.hw + YARD.carGap + .88
                   local x, y = cx - uy * off * side, cy + ux * off * side
                   local yaw = math.atan2(uy, ux) + (h % 7 < 2 and math.pi or 0)
@@ -9840,12 +9880,13 @@ local function liftDecks(roads, pause)
       local loose = false
       for _, i in ipairs(list) do
         if i ~= host then
-          local m, out = meta[i], 0
-          for s = 0, m.dist[#m.dist], 4 do
-            local x, y = pointAt(m, s)
-            if not project(meta[host], x, y) then out = out + 4 end
+          local m = meta[i]
+          local length = m.dist[#m.dist]
+          local samples = math.max(1, math.ceil(length / 4))
+          for k = 0, samples do
+            local x, y = pointAt(m, length * k / samples)
+            if not project(meta[host], x, y) then loose = true; break end
           end
-          if out > 8 then loose = true end
         end
       end
       if loose then
@@ -10513,9 +10554,9 @@ local function build(cells, i, j, options)
     for k = 1, #poly do local p, q = poly[k], poly[k % #poly + 1]; s = s + p[1] * q[2] - q[1] * p[2] end
     return s
   end
-  local function addAsphalt(poly, road, index)
+  local function addAsphalt(poly, road, index, deck)
     local box = ringBounds({poly})
-    local entry = {poly = poly, bounds = box, road = road, index = index, ccw = area2(poly) > 0}
+    local entry = {poly = poly, bounds = box, road = road, index = index, deck = deck, ccw = area2(poly) > 0}
     asphalt[#asphalt + 1] = entry
     for by = math.floor(box[2] / ABIN), math.floor(box[4] / ABIN) do
       for bx = math.floor(box[1] / ABIN), math.floor(box[3] / ABIN) do
@@ -10847,7 +10888,7 @@ local function build(cells, i, j, options)
         local quad = {edge(k, hw), edge(k, -hw), edge(k + 1, -hw), edge(k + 1, hw)}
         local bx0, by0, bx1, by1 = BOX.of(quad)
         if BOX.hit(rect, bx0, by0, bx1, by1, stripReach) then
-          if surfaceRoad then addAsphalt(quad, strip, k) end
+          if surfaceRoad or ROADS.bridge(tags) then addAsphalt(quad, strip, k, not surfaceRoad) end
           if drawn(strip) and BOX.hit(rect, bx0, by0, bx1, by1, 0) and (farRoads or not road.deckGroup) then
             emitSurface(strip.material, quad)
           end
@@ -11241,15 +11282,24 @@ local function build(cells, i, j, options)
     return false
   end
   local cutOps = 0
-  local function subtract(poly, skip)
+  local function subtract(poly, skip, sidewalks)
     local pieces = {poly}
     local box = ringBounds({poly})
     local pccw = area2(poly) > 0
+    local low, high = math.huge, -math.huge
+    if sidewalks then for _, p in ipairs(poly) do low, high = math.min(low, p[3]), math.max(high, p[3]) end end
     local seen = {}
     for by = math.floor(box[2] / ABIN), math.floor(box[4] / ABIN) do
       for bx = math.floor(box[1] / ABIN), math.floor(box[3] / ABIN) do
         for _, entry in ipairs(asphaltBins[(bx + 32768) * 65536 + by + 32768] or NONE) do
-          if not seen[entry] and boundsTouch(box, entry.bounds) and not (skip and skip(entry)) then
+          local sameHeight = true
+          if sidewalks then
+            local lo, hi = math.huge, -math.huge
+            for _, p in ipairs(entry.poly) do lo, hi = math.min(lo, p[3]), math.max(hi, p[3]) end
+            sameHeight = lo <= high + 1 and hi >= low - 1
+          end
+          if not seen[entry] and (sidewalks and sameHeight or not sidewalks and not entry.deck)
+              and boundsTouch(box, entry.bounds) and not (skip and skip(entry)) then
             seen[entry] = true
             local c, ccw = entry.poly, entry.ccw
             local out, cut = {}, false
@@ -11283,7 +11333,7 @@ local function build(cells, i, j, options)
   -- LuaJIT's 200 locals
   lists.onAsphalt = function(x, y)
     for _, entry in ipairs(asphaltBins[(floor(x / ABIN) + 32768) * 65536 + floor(y / ABIN) + 32768] or NONE) do
-      local c, ccw, inside = entry.poly, entry.ccw, true
+      local c, ccw, inside = entry.poly, entry.ccw, not entry.deck
       for k = 1, #c do
         local a, b = c[k], c[k % #c + 1]
         local sd = (b[1] - a[1]) * (y - a[2]) - (b[2] - a[2]) * (x - a[1]) -- side() without a {x, y}
@@ -11346,10 +11396,10 @@ local function build(cells, i, j, options)
                 band[3][4], band[3][5], band[4][4], band[4][5] = u1, DECAL.curbRow[2], u1, DECAL.curbRow[1]
                 -- the quads run k, k+1 on the left and the other way round on the right: the
                 -- carriageway's edge is side 4 on both (band[4] -> band[1])
-                if visualRoads then ROADS.curbSlab(roads.polygon, 'curb', subtract(band, near), band, {[4] = true}, nil, lists.onAsphalt) end
+                if visualRoads then ROADS.curbSlab(roads.polygon, 'curb', subtract(band, near, true), band, {[4] = true}, nil, lists.onAsphalt) end
               end
               if visualRoads and walk > curb then
-                ROADS.curbSlab(roads.polygon, 'sidewalk', subtract(paved, near), paved, {[4] = curb <= 0}, nil, lists.onAsphalt)
+                ROADS.curbSlab(roads.polygon, 'sidewalk', subtract(paved, near, true), paved, {[4] = curb <= 0}, nil, lists.onAsphalt)
               end
             end
           end
@@ -11376,7 +11426,7 @@ local function build(cells, i, j, options)
     for _, quad in ipairs(plate.walks or NONE) do
       -- the ring's inner side (corner to corner) is the kerb round the corner
       if visualRoads and BOX.touch(rect, quad, 0) then
-        ROADS.curbSlab(roads.polygon, 'sidewalk', subtract(quad, nil), quad, {[1] = true}, nil, lists.onAsphalt)
+        ROADS.curbSlab(roads.polygon, 'sidewalk', subtract(quad, nil, true), quad, {[1] = true}, nil, lists.onAsphalt)
       end
     end
   end
@@ -12656,10 +12706,18 @@ local function build(cells, i, j, options)
                     if not inside(area.rings, cx, cy) then fits = false end
                   end
                   if fits then
-                    -- every free bay is a spot for the game's parked cars (parking.lua); with
-                    -- those off, two of three bays get a box car
+                    local cyaw, syaw = math.cos(yaw), math.sin(yaw)
+                    for _, corner in ipairs({{0, 0}, {-2.2, -.9}, {2.2, -.9}, {2.2, .9}, {-2.2, .9}}) do
+                      local cx = x + corner[1] * cyaw - corner[2] * syaw
+                      local cy = y + corner[1] * syaw + corner[2] * cyaw
+                      if lists.onAsphalt(cx, cy) then fits = false; break end
+                    end
+                  end
+                  if fits then
+                    -- every free bay is a spot for the game's parked cars (parking.lua).
+                    -- A missing option retains legacy box cars for offline callers only.
                     parking[#parking + 1] = {x, y, ground(x, y), yaw}
-                    if not realCars and h % 100 < 66 then
+                    if options.parkedCars == nil and not realCars and h % 100 < 66 then
                       parkedCar(sceneDecor, x, y, ground(x, y) + .02, yaw, math.floor(h / 100) % 8)
                     end
                     cars = cars + 1
@@ -12816,7 +12874,7 @@ local function build(cells, i, j, options)
   function OFFROAD.onAsphalt(x, y)
     for _, entry in ipairs(asphaltBins[(floor(x / ABIN) + 32768) * 65536 + floor(y / ABIN) + 32768] or NONE) do
       local b = entry.bounds
-      if x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] then
+      if not entry.deck and x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] then
         local poly, inside = entry.poly, true
         for k = 1, #poly do
           local p, q = poly[k], poly[k % #poly + 1]
@@ -12906,7 +12964,7 @@ local function build(cells, i, j, options)
       if #parking >= maxCars then break end
       parking[#parking + 1] = {b[1], b[2], b.z, b[3]}
       local h = hash(b[4])
-      if not realCars and h % 100 < 66 then parkedCar(sceneDecor, b[1], b[2], b.z + .02, b[3], math.floor(h / 100) % 8) end
+      if options.parkedCars == nil and not realCars and h % 100 < 66 then parkedCar(sceneDecor, b[1], b[2], b.z + .02, b[3], math.floor(h / 100) % 8) end
       if report then report[#report + 1] = {kind = 'bay_' .. b.where, x = b[1], y = b[2], z = 0,
         nx = math.cos(b[3]), ny = math.sin(b[3])} end
     end
@@ -12923,6 +12981,7 @@ local function build(cells, i, j, options)
         point.kind == 'bench' and BENCH[1] or point.kind == 'waste_basket' and ROUND_BIN[1]
       local x, y, z
       if shape then x, y, z = OFFROAD.offCarriageway(point, p) end
+      if x and point.kind == 'lamp' and ROADS.lampUnderDeck(segmentBins, x, y, z, lift, tune.sidewalk) then x = nil end
       if x then
         -- a mapped bench faces the nearest path or road within 8 m (its front is local +y)
         local yaw = 0
@@ -13135,7 +13194,7 @@ local function build(cells, i, j, options)
         shopLinks = shops.links})
     local yardCtx = {rect = rect, scene = scene, decor = sceneDecor, ground = ground, drapeRings = drapeRings,
       put = put, lists = lists, strips = strips, segmentBins = segmentBins, reserved = reserved,
-      spacing = options.propSpacing or 0, pause = pause, have = VEG.have, lamp = LAMP, containers = containers}
+      spacing = options.propSpacing or 0, parkedCars = options.parkedCars, lift = lift, pause = pause, have = VEG.have, lamp = LAMP, containers = containers}
     local before = #sceneDecor.items
     -- options.yard == false leaves the yards as the street furniture left them (A/B benches)
     if options.yard ~= false then reserved = YARD.build(yardCtx) end

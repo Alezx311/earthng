@@ -487,6 +487,32 @@ class NativeTests(unittest.TestCase):
                     mod.manifest(key, 'far')
         self.assertEqual(mod.status().stream.queued, 0)
 
+    def test_full_far_geometry_does_not_block_separate_horizon_cache(self):
+        lua, mod, cv = self.make(fixture(24))
+        lua.globals().fakeFarTriangles = 15000
+        lat, lon = geographic(5000, 5000)
+        mod.land(cv(dict(seq=81, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        mod.pose(cv(dict(x=5000, y=5000, vx=0, vy=0, state='driving')))
+        for _ in range(2500):
+            mod.update(.016, 8)
+            stream = mod.status().stream
+            for layer, keys in (('road', stream.ready), ('scene', stream.scenes)):
+                for key in list(keys.keys()):
+                    if mod.manifest(key, layer) is not None:
+                        mod.release(key, layer)
+        stream = mod.status().stream
+        self.assertGreaterEqual(stream.cachedTriangles, 40000, 'untaken far geometry fills its buffer')
+        self.assertGreater(len(list(stream.horizon.keys())), 0, 'the separate horizon cache still makes progress')
+        far_keys = list(stream.far.keys())
+        self.assertTrue(far_keys)
+        mod.manifest(far_keys[0], 'far')
+        mod.release(far_keys[0], 'far')
+        for _ in range(500):
+            mod.update(.016, 8)
+        self.assertGreater(len(list(mod.status().stream.far.keys())), len(far_keys),
+                           'normal far tiles resume when their buffer has room')
+
     def test_geometry_budget_keeps_delivered_far_layers(self):
         # the far ring is built, taken and released; then near tiles are rebuilt with geometry
         # nobody takes yet, over the budget. Evicting the delivered far layers freed nothing and

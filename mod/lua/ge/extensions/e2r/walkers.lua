@@ -275,6 +275,9 @@ local function sidewalks(rec, s, grid)
   for k = 8, #s - 2, 3 do pts[#pts + 1], pts[#pts + 2], pts[#pts + 3] = s[k], s[k + 1], s[k + 2] end
   local off = roadEdge(s) + SIDE_GAP
   rec.pieces = {}
+  -- A bridge or tunnel names the outer edge of its deck (navSegment.deck). The usual gap past
+  -- the lanes would put the sidewalk in the air beside a deck that has no pavement there.
+  if s.deck and off > s.deck - .2 then return end
   for _, side in ipairs({1, -1}) do
     local line, cum = offsetLine(pts, off * side)
     local len = cum[#cum]

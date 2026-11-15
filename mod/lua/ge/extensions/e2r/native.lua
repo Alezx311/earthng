@@ -1592,7 +1592,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
           queued = queued + 1
           -- one far build at a time: a parked one is finished before another starts
           local farWaits = (entry.far or entry.horizon) and next(active.parkedFar) ~= nil
-          if not (full and entry.far) and not farWaits and (not best or priority < bestPriority or (priority == bestPriority and key < bestKey)) then
+          if not (full and entry.far and not entry.horizon) and not farWaits and (not best or priority < bestPriority or (priority == bestPriority and key < bestKey)) then
             best, bestKey, bestPriority = entry, key, priority
           end
         end
@@ -2087,7 +2087,7 @@ local function setTune(tune)
   for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees','propSpacing'}) do
     if out[key] ~= pendingTune[key] then changed = true end
   end
-  -- the game's parked cars on or off: box cars come or go
+  -- the parked-car setting also controls the generated yard cars
   if (out.parkedCars > 0) ~= ((pendingTune.parkedCars or 0) > 0) then changed = true end
   pendingTune = out
   if active then

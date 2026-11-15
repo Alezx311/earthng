@@ -250,11 +250,11 @@ def main():
         test['clean'] = True
     if a.fog is not None:
         test['fog'] = a.fog
-    if a.gen_budget:
+    if a.gen_budget is not None:
         test['genBudget'] = a.gen_budget
     if a.no_pace:
         test['pace'] = False
-    if a.lights:
+    if a.lights is not None:
         test['lights'] = a.lights
     if a.flight:
         plan = json.loads(a.flight.read_text(encoding='utf8'))
@@ -264,7 +264,7 @@ def main():
                           'clip': plan.get('clip', a.flight.stem)}
     if a.record_drive:
         test['recordDrive'] = True
-    if a.flow:
+    if a.flow is not None:
         test['flow'] = a.flow
     if a.flow_real is not None:
         test['flowReal'] = a.flow_real
@@ -274,14 +274,14 @@ def main():
         test['lateArrival'] = True
     if a.gc_cycle:
         test['gcCycle'] = [int(v) for v in a.gc_cycle.split(',')]
-    if a.walkers:
+    if a.walkers is not None:
         test['walkers'] = a.walkers
     if a.walk_bodies is not None:
         test['walkBodies'] = a.walk_bodies
-    if a.traffic:
+    if a.traffic is not None:
         test['traffic'] = a.traffic
         test['trafficKind'] = a.traffic_kind
-    if a.rain:
+    if a.rain is not None:
         test['rain'] = a.rain
     if a.knock:
         # the row test drives its own cars through the probe; the player's car stands
