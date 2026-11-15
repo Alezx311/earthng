@@ -658,6 +658,16 @@ PIN_RULES = (
     ('mountain_pass', 'yes', 'pass'), ('natural', 'saddle', 'pass'),
     ('natural', 'spring', 'spring'), ('man_made', 'water_well', 'well'),
     ('railway', 'tram_stop', 'tram_stop'),
+    *((('amenity', v, 'food') for v in ('cafe', 'restaurant', 'fast_food', 'bar', 'pub', 'ice_cream', 'food_court'))),
+    *((('amenity', v, 'service_map') for v in ('bank', 'pharmacy', 'dentist', 'doctors', 'veterinary', 'post_office', 'car_wash', 'charging_station', 'fuel'))),
+    *((('shop', v, 'service_map') for v in ('car_repair', 'tyres'))),
+    *((('tourism', v, 'sight') for v in ('museum', 'attraction', 'artwork', 'gallery', 'zoo', 'theme_park', 'aquarium', 'information'))),
+    *((('historic', v, 'sight') for v in ('monument', 'memorial', 'castle', 'ruins', 'archaeological_site', 'building'))),
+    *((('leisure', v, 'leisure_map') for v in ('park', 'garden', 'playground', 'stadium', 'sports_centre', 'swimming_pool', 'fitness_centre', 'pitch'))),
+    *((('amenity', v, 'leisure_map') for v in ('cinema', 'theatre', 'arts_centre', 'nightclub'))),
+    *((('railway', v, 'station_map') for v in ('station', 'halt', 'subway_entrance'))),
+    ('highway', 'bus_stop', 'station_map'), ('amenity', 'bus_station', 'station_map'),
+    ('shop', '*', 'shop_map'),
 )
 # The tags a pin keeps, in this order, then e2r_cat and (money points of a known bank) e2r_brand
 PIN_TAGS = ('name', 'name:uk', 'name:en', 'brand', 'operator', 'ele', 'access', 'fee')
@@ -667,7 +677,7 @@ PIN_MONEY = ('atm', 'payment_terminal', 'exchange')
 def pin_category(tags):
     """The PIN_RULES category of an OSM object, else None."""
     for key, value, category in PIN_RULES:
-        if tags.get(key) == value:
+        if tags.get(key) == value or (value == '*' and tags.get(key) not in (None, '', 'no', 'vacant', 'closed', 'disused', 'abandoned')):
             return category
     return None
 

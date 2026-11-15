@@ -44,14 +44,20 @@ local STYLE = {
   peak = {group = 'nature', shape = 'peak', zoom = 12, priority = 2, labelZoom = 13},
   pass = {group = 'nature', shape = 'pass', zoom = 13, priority = 3, labelZoom = 14},
   tram_stop = {group = 'transport', shape = 'tram', zoom = 17, priority = 8},
+  food = {group = 'shop', text = 'F', zoom = 16, priority = 6},
+  service_map = {group = 'car', text = 'S', zoom = 16, priority = 6},
+  shop_map = {group = 'shop', shape = 'kiosk', zoom = 17, priority = 8},
+  sight = {group = 'sight', shape = 'eye', zoom = 15, priority = 4},
+  leisure_map = {group = 'nature', text = 'L', zoom = 16, priority = 6},
+  station_map = {group = 'transport', shape = 'tram', zoom = 16, priority = 5},
 }
 M.STYLE, M.GROUP = STYLE, GROUP
 -- a far tile hands over only the pins seen from afar (generator.lua SPLIT.out)
 M.FAR = {peak = true, pass = true, viewpoint = true}
 
 local LEVELS = 8
-local MAX = 120          -- markers drawn at most
-local CELL = 20          -- px: one marker per CELL x CELL square
+local MAX = 240          -- markers drawn at most
+local CELL = 18          -- px: one marker per CELL x CELL square
 local buckets, counts = {}, {}
 for k = 1, LEVELS do buckets[k], counts[k] = {}, 0 end
 local occupied = {}
@@ -137,7 +143,7 @@ function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands)
             local s = STYLE[poi.cat]
             level = s and z >= s.zoom and s.priority or nil
           elseif z >= 15 then
-            level = 1
+            level = poi.brand and 1 or 7
           end
           if level then
             local n = counts[level] + 1

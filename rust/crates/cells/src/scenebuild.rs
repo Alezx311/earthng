@@ -324,6 +324,11 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
                         tags: TagsOf::Shared(arena.len() - 1),
                         geo: Geo::Point([degrees(x), degrees(y)]),
                     });
+                    if kind != "pin" && rules.pin_category(&tags).is_some() {
+                        arena.push(rules.pin_tags(&tags));
+                        marks.push(Rec { fid: -(7_000_000_000_000 + id), kind: "pin".into(),
+                            tags: TagsOf::Shared(arena.len() - 1), geo: Geo::Point([degrees(x), degrees(y)]) });
+                    }
                 }
             }
         };

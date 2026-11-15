@@ -767,6 +767,8 @@ def _scene_fixture(path):
     ring(51, [(1400, 0), (1500, 0), (1500, 100), (1400, 100)], {'amenity': 'parking', 'access': 'customers', 'fee': 'no'})
     ring(52, [(1600, 0), (1700, 0), (1700, 100), (1600, 100)], {'tourism': 'picnic_site', 'name': 'Галявина'})
     node(1650, 50, {'tourism': 'viewpoint'})
+    node(1650, 80, {'shop': 'clothes', 'name': 'Clothes'})
+    node(1650, 90, {'amenity': 'cafe', 'name': 'Cafe'})
     # L3 sites: a dealer's lot with its node inside, a rest area, a motel that is a building
     ring(53, [(1800, 0), (1900, 0), (1900, 100), (1800, 100)], {'shop': 'car', 'name': 'Auto Plaza', 'brand': 'Škoda'})
     node(1850, 50, {'shop': 'car', 'name': 'Auto Plaza'})
@@ -811,8 +813,9 @@ class NativeScenesTests(unittest.TestCase):
             self.assertIn(41, fids)                                        # the relation's water
             pins = {fid: tags for fid, (kind, tags) in by.items() if kind == 'pin'}
             self.assertEqual(sorted(tags['e2r_cat'] for tags in pins.values()),
-                             ['atm', 'atm', 'atm', 'car_dealer', 'cross', 'hotel', 'kiosk', 'motel', 'parking', 'peak',
-                              'picnic', 'rest_area', 'viewpoint', 'water_vending'])
+                             ['atm', 'atm', 'atm', 'car_dealer', 'cross', 'food', 'hotel', 'kiosk', 'motel', 'parking', 'peak',
+                              'picnic', 'rest_area', 'service_map', 'shop_map', 'shop_map', 'shop_map', 'station_map',
+                              'viewpoint', 'water_vending'])
             atm = next(t for t in pins.values() if t.get('operator'))
             self.assertEqual(atm, {'operator': 'ПриватБанк', 'e2r_cat': 'atm', 'e2r_brand': 'privatbank'})
             self.assertEqual(sorted(t['e2r_cat'] for t in pins.values() if t.get('e2r_in') == 'yes'),

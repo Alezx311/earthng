@@ -21,7 +21,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point
 from shapely.ops import transform
 
-VERSION = 'fast-27'         # source index cache: pin_site outlines of dealers, rest areas, motels (docs/POI.md)
+VERSION = 'fast-28'         # source index cache: expanded map pins
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -1158,6 +1158,8 @@ class Store:
                 if kind and n.location.valid():
                     marks.append((-(10**12+n.id),kind,fast_style.pin_tags(tags) if kind=='pin' else retail.enriched(tags),
                                   n.location.lon,n.location.lat))
+                    if kind != 'pin' and fast_style.pin_category(tags):
+                        marks.append((-(7*10**12+n.id),'pin',fast_style.pin_tags(tags), n.location.lon,n.location.lat))
             def way(self,w):
                 # footpaths, fences, tree rows: lines, not areas (an area id is 2 x way id,
                 # so a line keys as -way id to stay apart)

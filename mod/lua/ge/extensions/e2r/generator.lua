@@ -13820,7 +13820,8 @@ local function build(cells, i, j, options)
       if p and poi.kind == 'pin' and tags.e2r_cat and (not distant or BLD.PIN.far[tags.e2r_cat])
           and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
         pins[#pins + 1] = {id = poi.id, kind = 'pin', cat = tags.e2r_cat, x = p[1], y = p[2],
-          label = tags.name, brand = tags.e2r_brand, ele = tags.ele}
+          label = tags.name or tags['name:uk'] or tags['name:en'] or tags.brand or tags.operator,
+          brand = tags.e2r_brand, ele = tags.ele}
       end
     end
     if distant and #pins > 0 then out.brandPOIs = pins end

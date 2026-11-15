@@ -28,7 +28,10 @@ class PinRulesTests(unittest.TestCase):
         }
         for pairs, category in cases.items():
             self.assertEqual(fast_style.pin_category(dict(pairs)), category, pairs)
-        self.assertIsNone(fast_style.pin_category({'shop': 'clothes'}))
+        self.assertEqual(fast_style.pin_category({'shop': 'clothes'}), 'shop_map')
+        self.assertEqual(fast_style.pin_category({'amenity': 'cafe'}), 'food')
+        self.assertEqual(fast_style.pin_category({'tourism': 'museum'}), 'sight')
+        self.assertIsNone(fast_style.pin_category({'shop': 'vacant'}))
         self.assertIsNone(fast_style.pin_category({'disused:amenity': 'atm'}))
 
     def test_point_kind_keeps_the_older_kinds_first(self):
@@ -108,6 +111,12 @@ class PinScene(unittest.TestCase):
 
 
 class PinRuntimeTests(PinScene):
+
+    def test_map_label_falls_back_to_localized_name(self):
+        point = {'id': 'museum', 'kind': 'pin', 'pos': [100, 70, 0],
+                 'tags': {'e2r_cat': 'sight', 'name:en': 'Museum'}}
+        scene = self.build([{'roads': [STREET], 'points': [point]}])
+        self.assertEqual(scene.brandPOIs[1].label, 'Museum')
 
     def test_every_category_has_a_map_style_and_the_far_lists_agree(self):
         styles = set(self.pins.STYLE.keys())

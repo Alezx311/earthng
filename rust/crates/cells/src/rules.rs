@@ -329,7 +329,11 @@ impl Rules {
 
     /// fast_style.pin_category: the first PIN_RULES (key, value) the tags have
     pub fn pin_category(&self, t: &impl Get) -> Option<&str> {
-        self.pin_rules.iter().find(|(k, v, _)| t.get(k) == Some(v.as_str())).map(|(_, _, c)| c.as_str())
+        self.pin_rules.iter().find(|(k, v, _)| {
+            let value = t.get(k);
+            value == Some(v.as_str()) || (v == "*" && value.is_some_and(|s|
+                !matches!(s, "" | "no" | "vacant" | "closed" | "disused" | "abandoned")))
+        }).map(|(_, _, c)| c.as_str())
     }
 
     /// fast_style.pin_tags: PIN_TAGS it has (non-empty), e2r_cat, the bank of a money point
