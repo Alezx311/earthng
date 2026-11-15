@@ -22,6 +22,16 @@ def cache_path(root):
     return Path(root) / 'data' / 'geofabrik' / 'index-v1-nogeom.json'
 
 
+def readable(place_id, name):
+    """Geofabrik names the US states by their ids ('us/new-york'); a pack's title and the list
+    want 'New York'."""
+    if name != place_id and '/' not in name:
+        return name
+    words = place_id.rsplit('/', 1)[-1].replace('_', '-').split('-')
+    return ' '.join('US' if w == 'us' else w if k and w in ('of', 'and', 'the') else w.capitalize()
+                    for k, w in enumerate(words) if w)
+
+
 def parse_index(payload):
     """[{id, name, parent, pbf}] for every extract that publishes a PBF."""
     features = payload.get('features') if isinstance(payload, dict) else None
@@ -38,7 +48,7 @@ def parse_index(payload):
             continue
         if not pbf.startswith('https://download.geofabrik.de/'):
             continue
-        places.append({'id': place_id, 'name': name, 'parent': prop.get('parent') or '', 'pbf': pbf})
+        places.append({'id': place_id, 'name': readable(place_id, name), 'parent': prop.get('parent') or '', 'pbf': pbf})
     if not places:
         raise ValueError('Geofabrik index has no PBF extracts')
     return places

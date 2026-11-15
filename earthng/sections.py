@@ -10,7 +10,7 @@ import re
 import unicodedata
 from pathlib import Path
 
-VERSION = 'sections-1'
+VERSION = 'sections-2'
 LEVELS = ('4', '5', '6', '7')     # states/provinces, counties, cities; not villages
 SIMPLIFY = 0.001                  # degrees (~100 m) of the stored outline
 MARGIN = 0.02                     # degrees round the outline: neighbours share a little edge
@@ -21,6 +21,13 @@ def slug(name):
     """'Lääne-Viru maakond' -> 'laane-viru-maakond'."""
     text = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode().lower()
     return re.sub(r'[^a-z0-9]+', '-', text).strip('-')
+
+
+def section_id(name, english=None, osm=None):
+    """The slug of the name. A name in another script (Cyrillic, Greek, ...) folds to nothing, so
+    then the English name's, else the OSM id: every Russian section was '' once and all but one
+    of each level were dropped as duplicates."""
+    return slug(name or '') or slug(english or '') or (f'osm-{osm}' if osm is not None else '')
 
 
 def scan(pbf, levels=LEVELS):
@@ -46,7 +53,8 @@ def scan(pbf, levels=LEVELS):
                 return
             shape = shapely.simplify(shape, SIMPLIFY, preserve_topology=True)
             name = tags.get('name:en') or tags.get('name')
-            found.append({'id': slug(tags.get('name')), 'name': name, 'level': int(tags.get('admin_level')),
+            found.append({'id': section_id(tags.get('name'), tags.get('name:en'), a.orig_id()), 'name': name,
+                          'level': int(tags.get('admin_level')),
                           'osm': a.orig_id(), 'box': [round(v, 5) for v in shape.bounds],
                           'geometry': shapely.geometry.mapping(shape)})
 

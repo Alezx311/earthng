@@ -15,6 +15,11 @@ class SectionTests(unittest.TestCase):
         self.assertEqual(sections.slug('Lääne-Viru maakond'), 'laane-viru-maakond')
         self.assertEqual(sections.slug('Võru'), 'voru')
 
+    def test_a_name_in_another_script_takes_its_english_name_or_osm_id(self):
+        self.assertEqual(sections.section_id('Võru', 'Voru County', 1), 'voru')
+        self.assertEqual(sections.section_id('Москва', 'Moscow', 102269), 'moscow')
+        self.assertEqual(sections.section_id('Московская область', None, 51490), 'osm-51490')
+
     def test_find_by_id_or_unique_prefix(self):
         found = [HARJU, TALLINN, TARTU, TARTU_CITY]
         self.assertIs(sections.find(found, 'Harju'), HARJU)

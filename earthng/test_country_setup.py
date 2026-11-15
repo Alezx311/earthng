@@ -80,6 +80,16 @@ class LookTests(unittest.TestCase):
     def test_slug_flattens_a_state_id(self):
         self.assertEqual(places.slug('us/california'), 'us-california')
 
+    def test_a_state_named_by_its_id_gets_a_readable_name(self):
+        # Geofabrik's index names every US state by its id: the pack was titled 'us/new-york'
+        self.assertEqual(places.readable('us/new-york', 'us/new-york'), 'New York')
+        self.assertEqual(places.readable('us/district-of-columbia', 'us/district-of-columbia'), 'District of Columbia')
+        self.assertEqual(places.readable('us/us-virgin-islands', 'us/us-virgin-islands'), 'US Virgin Islands')
+        self.assertEqual(places.readable('us/georgia', 'Georgia'), 'Georgia')
+        state = {'properties': {'id': 'us/new-york', 'parent': 'north-america', 'name': 'us/new-york',
+                                'urls': {'pbf': 'https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf'}}}
+        self.assertEqual(places.parse_index({'features': [state]})[0]['name'], 'New York')
+
     def test_index_ignores_a_pbf_outside_geofabrik(self):
         ids = {place['id'] for place in places.parse_index(INDEX)}
         self.assertNotIn('secret', ids)
