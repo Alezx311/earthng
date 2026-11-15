@@ -121,6 +121,9 @@ class MapDataTests(unittest.TestCase):
             ['ocean plaza', '50.410000', '30.520000', 'mall', 'Ocean Plaza', ''],
             ['plaza', '50.000000', '30.000000', 'shop_map', 'Plaza', ''],
             ['kyiv food | plaza st', '50.1', '30.1', 'food', 'Kyiv Food', ''],
+            ['хрещатик', '48.166780', '23.441110', 'spring', 'Хрещатик', ''],
+            ['хрещатик | khreshchatyk', '50.447000', '30.522000', 'metro', 'Хрещатик', 'Khreshchatyk'],
+            ['хрещатик парк', '50.451000', '30.528000', 'leisure_map', 'Хрещатик парк', ''],
         ]))
         files = {root + 'index.json': {'version': 1, 'tiles': {}}, root + 'places.json': [], root + 'pois.tsv': pois}
         lua = self.runtime(files)
@@ -134,6 +137,14 @@ class MapDataTests(unittest.TestCase):
         self.assertEqual([(p.name, p.en) for p in hit], [('Київ-Пасажирський', 'Kyiv-Pasazhyrskyi')])
         self.assertEqual(len(lua.eval("planet.searchPois('pl', 10)")), 0, 'three letters or more')
         self.assertEqual(len(lua.eval("planet.searchPois('50.4', 10)")), 0, 'only the names are searched')
+        # the same name in two places: the one nearer the map's centre first, exact still before prefix
+        cats = lambda code: [p.cat for p in lua.eval(code).values()]
+        self.assertEqual(cats("planet.searchPois('Хрещатик', 10, {lat = 50.45, lon = 30.52})"),
+                         ['metro', 'spring', 'leisure_map'])
+        self.assertEqual(cats("planet.searchPois('Хрещатик', 10, {lat = 48.2, lon = 23.5})"),
+                         ['spring', 'metro', 'leisure_map'])
+        self.assertEqual(cats("planet.searchPois('Хрещатик', 10)"), ['spring', 'metro', 'leisure_map'],
+                         'no centre: by name, then south to north')
 
     def test_native_reader_writes_what_osmium_wrote(self):
         import os

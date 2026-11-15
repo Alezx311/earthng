@@ -4569,7 +4569,7 @@ local function drawSidebar(mapW, mapH)
         places[#places + 1] = p
       end
       -- the packs' named points (pins.lua categories): a click flies there and sets the landing mark
-      places.pois = planetMap and planetMap.searchPois and planetMap.searchPois(query, 25) or {}
+      places.pois = planetMap and planetMap.searchPois and planetMap.searchPois(query, 25, S.center) or {}
       foundPlaces = places
     end
     local places = foundPlaces

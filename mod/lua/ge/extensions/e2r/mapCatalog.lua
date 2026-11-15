@@ -41,9 +41,11 @@ end
 -- The named points whose names hold `needle` (planetMap's normal form, 3 letters or more): the
 -- sidecar's pois.tsv (build_map.py: key, lat, lon, category, name, English name, one line each)
 -- read on a country's first search and kept as one string, so the collector has one object to
--- walk, not a table per point. Exact names first, then names that start with it, then the rest.
-M.POI_SCAN = 400
-function M.searchPois(needle, limit)
+-- walk, not a table per point. Exact names first, then names that start with it, then the rest;
+-- within each, the nearest to `near` ({lat, lon}: the map's centre) first, so "Хрещатик" seen
+-- over Kyiv is the station there, not a spring of the same name across the country.
+M.POI_SCAN = 4000
+function M.searchPois(needle, limit, near)
   local hits = {}
   if #needle < 3 then return hits end
   for _, c in ipairs(catalogs) do
@@ -62,15 +64,24 @@ function M.searchPois(needle, limit)
       while start > 1 and text:byte(start - 1) ~= 10 do start = start - 1 end
       local stop = text:find('\n', i, true) or #text + 1
       local key, lat, lon, cat, name, en = text:sub(start, stop - 1):match('^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t?([^\t]*)$')
-      if key and i + #needle - 1 <= start + #key - 1 then
+      local last = i + #needle - 1
+      if key and last <= start + #key - 1 then
+        -- the key holds every name of the point (' | ' between): exact or prefix of any one of them
+        local head = i == start or text:sub(i - 3, i - 1) == ' | '
+        local whole = head and (last == start + #key - 1 or text:sub(last + 1, last + 3) == ' | ')
         hits[#hits + 1] = {name = name, en = en ~= '' and en or nil, lat = tonumber(lat), lon = tonumber(lon), cat = cat,
-          context = c.title, score = key == needle and 0 or i == start and 1 or 2}
+          context = c.title, score = whole and 0 or head and 1 or 2}
       end
       at = stop + 1
     end
   end
+  if near and near.lat and near.lon then
+    local k = math.cos(math.rad(near.lat)) ^ 2
+    for _, h in ipairs(hits) do h.far = (h.lat - near.lat) ^ 2 + k * (h.lon - near.lon) ^ 2 end
+  end
   table.sort(hits, function(a, b)
     if a.score ~= b.score then return a.score < b.score end
+    if a.far and a.far ~= b.far then return a.far < b.far end
     if a.name ~= b.name then return a.name < b.name end
     if a.lat ~= b.lat then return a.lat < b.lat end
     return a.lon < b.lon

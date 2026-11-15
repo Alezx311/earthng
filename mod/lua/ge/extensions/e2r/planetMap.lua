@@ -203,8 +203,9 @@ local function normalize(text)
   return M.lower(text or ''):gsub('’', "'"):gsub('ʼ', "'"):gsub('`', "'"):gsub('%s+', ' '):gsub('^%s+', ''):gsub('%s+$', '')
 end
 
--- the named points of the packs (pois.tsv) whose name contains the text, any case
-function M.searchPois(text, limit) return catalog.searchPois(normalize(text), limit) end
+-- the named points of the packs (pois.tsv) whose name contains the text, any case; the nearest
+-- to `near` ({lat, lon}) first among equally good names
+function M.searchPois(text, limit, near) return catalog.searchPois(normalize(text), limit, near) end
 
 -- places whose name contains the text (any case), the biggest first
 local lastQuery, lastFound
