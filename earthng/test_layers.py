@@ -40,6 +40,11 @@ class PackTests(unittest.TestCase):
         self.assertFalse(looks.keep_scenery('bench', {'pois': False}))
         self.assertFalse(looks.keep_scenery('power', {'barriers': False}))
         self.assertTrue(looks.keep_scenery('power', {'cover': False}))
+        # points of interest follow 'pois', the outlines of L3 sites 'buildings' (compile.rs too)
+        self.assertFalse(looks.keep_scenery('pin', {'pois': False}))
+        self.assertTrue(looks.keep_scenery('pin', {'cover': False}))
+        self.assertFalse(looks.keep_scenery('pin_site', {'buildings': False}))
+        self.assertTrue(looks.keep_scenery('pin_site', {'cover': False}))
 
 
 class PartTests(unittest.TestCase):

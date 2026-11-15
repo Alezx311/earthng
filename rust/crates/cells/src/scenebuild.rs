@@ -380,7 +380,8 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
             AreaFrom::Wkb(t, _) => t.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(),
         };
         let raw_tags = Tags::dict(&pairs);
-        let pin = rules.pin_category(&raw_tags).is_some();
+        let pin_cat = rules.pin_category(&raw_tags);
+        let pin = pin_cat.is_some();
         let mut tags = rules.enriched(&raw_tags);
         let point_kind = rules.retail_kind(&tags);
         let mut kind: Option<&str> = if !matches!(tags.get("building"), None | Some("no")) {
@@ -421,7 +422,16 @@ pub fn build(task: &SceneTask, areas: Vec<Area>) -> Result<Outcome> {
         if pin {
             // a hotel's building, a car park, a picnic site: its pin at a point inside
             arena.push(rules.pin_tags(&raw_tags));
-            pin_areas.push((-(5_000_000_000_000 + area.id), arena.len() - 1, geo));
+            let site = pin_cat.is_some_and(|c| rules.pin_sites.contains(c));
+            if site {
+                // a dealer's lot, a rest area, a motel's grounds: the outline itself
+                found.push(Rec { fid: -(6_000_000_000_000 + area.id), kind: "pin_site".into(),
+                                 tags: TagsOf::Shared(arena.len()), geo: geo.clone() });
+                arena.push(rules.pin_site_tags(&raw_tags));
+                pin_areas.push((-(5_000_000_000_000 + area.id), arena.len() - 2, geo));
+            } else {
+                pin_areas.push((-(5_000_000_000_000 + area.id), arena.len() - 1, geo));
+            }
         }
     }
     lines.extend(marks);

@@ -56,9 +56,17 @@ class PinRulesTests(unittest.TestCase):
         rules = native_tool.scene_rules()
         self.assertEqual([tuple(r) for r in rules['pin_rules']], list(fast_style.PIN_RULES))
         self.assertEqual(rules['pin_tags'], list(fast_style.PIN_TAGS))
+        self.assertEqual(rules['pin_sites'], list(fast_style.PIN_SITES))
+
+    def test_a_site_outline_says_when_it_is_a_building(self):
+        self.assertEqual(fast_style.pin_site_tags({'shop': 'car', 'name': 'Auto Plaza', 'building': 'retail'}),
+                         {'name': 'Auto Plaza', 'e2r_cat': 'car_dealer', 'e2r_bld': 'yes'})
+        self.assertEqual(fast_style.pin_site_tags({'highway': 'rest_area', 'building': 'no'}), {'e2r_cat': 'rest_area'})
+        self.assertTrue(set(fast_style.PIN_SITES) <= {rule[2] for rule in fast_style.PIN_RULES})
 
 
-class PinRuntimeTests(unittest.TestCase):
+class PinScene(unittest.TestCase):
+    """generator.lua and pins.lua in LuaJIT, and what a built scene draws."""
     def setUp(self):
         self.lua = LuaRuntime(unpack_returned_tuples=True)
         self.g = self.lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/generator.lua').read_text(encoding='utf8'))
@@ -71,8 +79,8 @@ class PinRuntimeTests(unittest.TestCase):
             return self.lua.table_from([self.table(v) for v in value])
         return value
 
-    def build(self, cells, far=False):
-        options = {'terrainStep': 100, 'far': far, 'maxTrees': 0, 'relief': False}
+    def build(self, cells, far=False, **extra):
+        options = {'terrainStep': 100, 'far': far, 'maxTrees': 0, 'relief': False, **extra}
         return self.g.build(self.table(cells), 0, 0, self.table(options))[2 if far else 1]
 
     def corners(self, scene, material):
@@ -88,6 +96,18 @@ class PinRuntimeTests(unittest.TestCase):
     @staticmethod
     def near(points, x, y, r=3):
         return [p for p in points if (p[0] - x) ** 2 + (p[1] - y) ** 2 < r * r]
+
+    @staticmethod
+    def groups(values, gap):
+        """How many runs of sorted values lie more than `gap` apart."""
+        values = sorted(values)
+        return sum(1 for a, b in zip([None] + values, values) if a is None or b - a > gap)
+
+    def bays(self, scene):
+        return [tuple(b.values()) for b in (scene['parking'] or self.lua.table()).values()]
+
+
+class PinRuntimeTests(PinScene):
 
     def test_every_category_has_a_map_style_and_the_far_lists_agree(self):
         styles = set(self.pins.STYLE.keys())
@@ -155,6 +175,90 @@ class PinRuntimeTests(unittest.TestCase):
         self.assertEqual(self.g.PIN.signs.hotel, 69)
         self.assertFalse(self.corners(scene, 'e2rf_storefront'), 'no shop front, its posters have words')
         self.assertTrue(set(self.g.PIN.signs.keys()) <= set(self.pins.STYLE.keys()))
+
+
+class PinSiteTests(PinScene):
+    """L3 sites (docs/POI.md): 'pin_site' outlines and the pins of their categories without one.
+    The street runs along y = 90 (carriageway 86..94); the ground lies at -0.25."""
+    GROUND = -.25
+
+    def test_a_dealer_lot_parks_cars_flies_flags_and_names_itself_on_a_pylon(self):
+        site = {'id': 'dealer', 'kind': 'pin_site', 'tags': {'e2r_cat': 'car_dealer', 'name': 'Auto Plaza'},
+                'rings': [[[100, 30], [180, 30], [180, 82], [100, 82]]]}
+        showroom = {'id': 'showroom', 'height': 6, 'tags': {'building': 'retail'},
+                    'rings': [[[110, 35], [140, 35], [140, 55], [110, 55]]]}
+        scene = self.build([{'roads': [STREET], 'buildings': [showroom], 'areas': [site]}], parkedCars=0)
+        bays = self.bays(scene)
+        self.assertGreater(len(bays), 50, "the lot is a car park: its bays take the game's cars")
+        self.assertTrue(all(100 < b[0] < 180 and 30 < b[1] < 82 for b in bays))
+        self.assertFalse([b for b in bays if 110 <= b[0] <= 140 and 35 <= b[1] <= 55], 'none in the showroom')
+        glyphs = [p for p in self.corners(scene, 'e2rf_glyphs') if 100 < p[0] < 180 and 70 < p[1] < 82]
+        self.assertTrue(glyphs and min(p[2] for p in glyphs) > self.GROUND + 4, 'its name high on a pylon')
+        # across the street's line: each face reads to one direction of the street
+        xs, ys = [p[0] for p in glyphs], [p[1] for p in glyphs]
+        self.assertGreater(max(ys) - min(ys), 2 * (max(xs) - min(xs)))
+        tops = [p for p in self.corners(scene, 'e2rf_yard') if p[2] > self.GROUND + 5.1 and 79 < p[1] < 82]
+        self.assertGreaterEqual(self.groups([p[0] for p in tops], 3), 4, 'feather flags along the street edge')
+        cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+        self.assertFalse([b for b in bays if abs(b[0] - cx) < 1.5 and abs(b[1] - cy) < 3], 'no car under the pylon')
+        # a dealer in a building's outline has no lot of its own
+        site['tags']['e2r_bld'] = 'yes'
+        showroom['rings'] = site['rings']
+        scene = self.build([{'roads': [STREET], 'buildings': [showroom], 'areas': [site]}], parkedCars=0)
+        self.assertFalse(self.bays(scene))
+
+    def test_a_motel_has_its_name_on_a_pylon_by_the_road(self):
+        motel = {'id': 'motel', 'height': 7, 'tags': {'building': 'yes'},
+                 'rings': [[[40, 50], [80, 50], [80, 70], [40, 70]]]}
+        site = {'id': 'motel_site', 'kind': 'pin_site', 'rings': motel['rings'],
+                'tags': {'e2r_cat': 'motel', 'name': 'Motel 7', 'e2r_bld': 'yes'}}
+        points = [{'id': 'm', 'kind': 'pin', 'pos': [300, 60, 0], 'tags': {'e2r_cat': 'motel', 'name': 'Motel Ranch'}},
+                  {'id': 'long', 'kind': 'pin', 'pos': [200, 60, 0], 'tags': {'e2r_cat': 'motel', 'name': 'Gasthof Zur Alten Post'}},
+                  {'id': 'n', 'kind': 'pin', 'pos': [360, 60, 0], 'tags': {'e2r_cat': 'motel'}},
+                  {'id': 'in', 'kind': 'pin', 'pos': [60, 60, 0], 'tags': {'e2r_cat': 'motel', 'name': 'Motel 7'}}]
+        scene = self.build([{'roads': [STREET], 'buildings': [motel], 'areas': [site], 'points': points}], parkedCars=0)
+        high = [p for p in self.corners(scene, 'e2rf_glyphs') if p[2] > self.GROUND + 4]
+
+        def pylon(x0, x1):
+            return [p for p in high if x0 < p[0] < x1 and 71 < p[1] < 86]
+        # set back 16 m behind the street: its pylon stands between it and the street, off the kerb
+        self.assertTrue(pylon(40, 80), 'the motel behind its yard')
+        self.assertEqual(self.groups([p[0] for p in pylon(40, 80)], 1), 1, 'one pylon: its own point inside adds none')
+        self.assertTrue(pylon(290, 310), 'a motel mapped as a point')
+        self.assertLess(max(p[1] for p in pylon(290, 310)), 86 - 1.4, 'clear of the carriageway')
+        self.assertFalse(pylon(340, 380), 'no name, no pylon')
+        # a long name on two lines of letters over 0.55 m, not one line of small ones
+        rows = sorted({round(p[2], 2) for p in pylon(190, 210)})     # the letters' feet and heads
+        self.assertEqual(len(rows), 4, rows)
+        self.assertGreater(rows[1] - rows[0], .55)
+        short = sorted({round(p[2], 2) for p in pylon(290, 310)})
+        self.assertEqual(len(short), 2, 'a short name on one line')
+        self.assertGreater(short[1] - short[0], .55, 'read from the road')
+
+    def test_a_rest_area_has_tables_a_bin_and_a_toilet_unless_osm_maps_them(self):
+        rest = {'id': 'rest', 'kind': 'pin_site', 'tags': {'e2r_cat': 'rest_area'},
+                'rings': [[[200, 40], [300, 40], [300, 84], [200, 84]]]}
+        node = {'id': 'r', 'kind': 'pin', 'pos': [100, 90, 0], 'tags': {'e2r_cat': 'rest_area'}}   # on the street
+        scene = self.build([{'roads': [STREET], 'areas': [rest], 'points': [node]}], parkedCars=0)
+        yard = self.corners(scene, 'e2rf_yard')
+
+        def at(z, x0, x1, y0, y1):
+            return [p for p in yard if abs(p[2] - (self.GROUND + z)) < 1e-3 and x0 < p[0] < x1 and y0 < p[1] < y1]
+        tables, toilets, bins = at(.77, 200, 300, 40, 84), at(2.35, 200, 300, 40, 84), at(.9, 200, 300, 40, 84)
+        self.assertEqual(self.groups([p[0] for p in tables], 2.5), 3, 'three picnic tables in the site')
+        self.assertTrue(toilets and bins)
+        self.assertTrue(all(201 < p[0] < 299 and 41 < p[1] < 83 for p in tables + toilets + bins), 'inside, off its edge')
+        # the node on the carriageway: its pocket beside the street, not on it
+        pocket = at(.77, 80, 120, 60, 120)
+        self.assertTrue(pocket and all(p[1] > 94.5 for p in pocket), 'tables pushed off the asphalt')
+        self.assertTrue(at(2.35, 80, 120, 60, 120), 'its toilet booth')
+        # OSM maps a table and toilets in it: those stand, ours do not double them
+        mapped = [{'id': 't', 'kind': 'pin', 'pos': [250, 60, 0], 'tags': {'e2r_cat': 'picnic'}},
+                  {'id': 'w', 'kind': 'pin', 'pos': [270, 60, 0], 'tags': {'e2r_cat': 'toilets'}}]
+        scene = self.build([{'roads': [STREET], 'areas': [rest], 'points': mapped}], parkedCars=0)
+        yard = self.corners(scene, 'e2rf_yard')
+        self.assertEqual(self.groups([p[0] for p in at(.77, 200, 300, 40, 84)], 2.5), 1)
+        self.assertEqual(self.groups([p[0] for p in at(2.35, 200, 300, 40, 84)], 2.5), 1)
 
 
 if __name__ == '__main__':

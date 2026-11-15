@@ -230,7 +230,7 @@ def keep_scenery(kind, include):
     if kind == 'tree_row':
         return bool(include.get('treeRows', True))
     if kind in ('fuel', 'grocery', 'fast_food', 'post', 'service', 'fuel_site', 'grocery_site', 'fast_food_site', 'post_site',
-                'service_site', 'venue'):
+                'service_site', 'venue', 'pin_site'):
         return bool(include.get('buildings', True))
     if kind == 'stop':
         return bool(include.get('stops', True))

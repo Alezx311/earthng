@@ -197,6 +197,9 @@ class FacadeDetailTests(unittest.TestCase):
         self.assertEqual(len(glyphs), 32)
         self.assertEqual(len(back), 2)
         self.assertEqual({round(p[1], 3) for t in glyphs for p in t}, {99.965})
+        # letters read from the road: the number 0.36 m, the street 0.18 m
+        heights = sorted({round(max(p[2] for p in t) - min(p[2] for p in t), 3) for t in glyphs})
+        self.assertEqual(heights, [.18, .36])
         # the street it names is behind the block: the plate goes on that side
         moved = dict(named, points=[[50, 127, 0], [250, 127, 0]])
         glyphs, _ = plate([moved], experimentalDetail=True)

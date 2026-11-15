@@ -635,8 +635,9 @@ def prebuild(distributable=False):
         if not (shared / 'real' / 'brand_photo.glow.dds').exists() or not stamp.exists() or stamp.read_text() != BRAND_ART_VERSION:
             brand_art(shared / 'real')
             to_dds(shared / 'real')
-        # and the address plates' letters
-        if not (shared / 'real' / 'glyphs_o.data.dds').exists() and glyph_art(shared / 'real'):
+        # and the signs' letters
+        stamp = shared / 'real' / 'glyphs.version'
+        if (not stamp.exists() or stamp.read_text() != GLYPH_ART_VERSION) and glyph_art(shared / 'real'):
             to_dds(shared / 'real')
         # and the drawn facades and plain sheets
         stamp = shared / 'real' / 'facade.version'
@@ -756,7 +757,9 @@ def facade_art(r):
 # alphaRef per opacity map whose mips keep its coverage (fast_dds.keep_coverage)
 MIP_REFS = {'chainlink_o.data.png': style.CHAINLINK_MIP_REF, 'line_o.data.png': style.EXTRA['mark']['alphaRef'],
             'railing_o.data.png': style.RAILING_MIP_REF, 'fence_boards_o.data.png': style.FENCE_BOARDS_MIP_REF,
-            'track_o.data.png': style.TRACK_MIP_REF, 'land_blend_o.data.png': 'uniform', 'land_blend_inv_o.data.png': 'uniform'}
+            'track_o.data.png': style.TRACK_MIP_REF, 'land_blend_o.data.png': 'uniform', 'land_blend_inv_o.data.png': 'uniform',
+            # the signs' letters: a box filter thins their strokes away from the 16 px level on
+            'glyphs_o.data.png': style.EXTRA['glyphs']['alphaRef']}
 # The yard atlas (generator.lua YARD.cell keeps the same order): playground paint, wood, metal,
 # sand, container screens and the yellow of the hemisphere bollards.
 YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (228, 118, 40), (146, 104, 62),
@@ -1065,6 +1068,7 @@ def logo_credits(logos=None):
 
 GLYPH_FONT = 'ui/common/Noto_Sans_Mono/static/NotoSansMono-Bold.ttf'   # in the game: OFL
 GLYPH_CELL = 64
+GLYPH_ART_VERSION = '2'  # 2: mips keep the strokes (MIP_REFS), letters read from farther off
 
 
 def glyph_art(r):
@@ -1086,6 +1090,7 @@ def glyph_art(r):
         d.text((x + (GLYPH_CELL - width) / 2, y + GLYPH_CELL * .06 - top), ch, fill=255, font=font)
     Image.new('RGB', (size, size), (255, 255, 255)).save(r / 'glyphs.color.png')
     alpha.convert('RGB').transpose(Image.FLIP_TOP_BOTTOM).save(r / 'glyphs_o.data.png')
+    (r / 'glyphs.version').write_text(GLYPH_ART_VERSION)
     return True
 
 

@@ -5113,7 +5113,7 @@ end
 -- of that name near, no plate: a guess of the wall would put the number on the yard.
 -- Letters are cells of the glyph atlas (fast_style.GLYPHS, the same string), a monospace font.
 BLD.GLYPHS = '0123456789/-.,\'’№ ()АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгґдеєжзиіїйклмнопрстуфхцчшщьюяЁЭЪЫёэъыABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-BLD.PLATE = {reach = 45, number = .26, street = .11, aspect = .6, pad = .07, z = 2.7, perRow = 16,
+BLD.PLATE = {reach = 45, number = .36, street = .18, least = .12, aspect = .6, pad = .07, z = 2.7, perRow = 16,
   short = {{'вулиця ', 'вул. '}, {'проспект ', 'просп. '}, {'провулок ', 'пров. '}, {'бульвар ', 'бульв. '},
     {'площа ', 'пл. '}, {'узвіз ', 'узв. '}, {'набережна ', 'наб. '}, {' вулиця', ''}, {' провулок', ' пров.'}}}
 local glyphIndex
@@ -5173,11 +5173,15 @@ function BLD.addressPlate(scene, rings, tags, base, height, roads)
   if not best then return false end
   local label = BLD.glyphs(BLD.streetLabel(street))
   local digits = BLD.glyphs(number)
-  local w1, w2 = #digits * P.number * P.aspect, #label * P.street * P.aspect
+  -- a long street name on a short wall sets its letters smaller, down to `least`
+  local room = best.len - .6 - 2 * P.pad
+  local small = math.min(P.street, room / math.max(1, #label) / P.aspect)
+  if small < P.least then return false end
+  local w1, w2 = #digits * P.number * P.aspect, #label * small * P.aspect
   local width = math.max(w1, w2) + 2 * P.pad
   if width > best.len - .6 then return false end
   local z0 = base + math.min(P.z, math.max(1.6, height - 1.2))
-  local hgt = P.number + P.street + 3 * P.pad
+  local hgt = P.number + small + 3 * P.pad
   local a, b, len = best.a, best.b, best.len
   local s0 = .4
   scene.polygon('plate', {wallPoint(a, b, len, s0, .025, z0, 0, 0), wallPoint(a, b, len, s0 + width, .025, z0, 1, 0),
@@ -5201,7 +5205,7 @@ function BLD.addressPlate(scene, rings, tags, base, height, roads)
     end
   end
   line(digits, P.number, z0 + P.pad, w1)
-  line(label, P.street, z0 + 2 * P.pad + P.number, w2)
+  line(label, small, z0 + 2 * P.pad + P.number, w2)
   BLD.note('plate', a, b, len, s0 + width / 2, z0 - base)
   return true
 end
@@ -5516,7 +5520,7 @@ end
 -- A stop's name on its own pole beside the shelter (options.experimentalDetail): the real
 -- `name` of the stop node, white on the plate's blue, over the line a -> b (the plate faces
 -- the right of it); letters shrink to keep the plate within `maxWidth`. Returns true when drawn.
-BLD.STOPSIGN = {size = .13, minSize = .07, maxWidth = 2.2, z = 2.1, pole = 2.75}
+BLD.STOPSIGN = {size = .2, minSize = .12, maxWidth = 3.0, z = 2.1, pole = 2.75}
 function BLD.stopSign(scene, x, y, z, ux, uy, name)
   local S, P = BLD.STOPSIGN, BLD.PLATE
   if not name or name == '' then return false end
@@ -5604,7 +5608,7 @@ end
 -- lacks, and there is no board (never a made-up name or a logo). The awning is synthetic: a
 -- sloped sheet over the span, only where the street's carriageway is at least `clear` m from
 -- the wall and its valance stays at least 2.4 m over the pavement. Colours by the POI's id.
-BLD.SHOPSIGN = {letter = .34, minLetter = .16, pad = .08, out0 = .03, out1 = .10, strip = .05, wide = .6, longest = 30,
+BLD.SHOPSIGN = {letter = .48, minLetter = .2, pad = .08, out0 = .03, out1 = .10, strip = .05, wide = .6, longest = 30,
   awning = {reach = 1.1, drop = .45, valance = .22, height = 3.2, least = 2.4, clear = 2.0, inset = .2},
   colours = {'paint_red', 'plate', 'pipe'}}
 -- A name set in the glyphs: its characters and the letter height that fits `room` m, at most
@@ -6922,7 +6926,7 @@ BLD.SHOP = {cols = 4, rows = 32, fuel = 32, grocery = 33, swatch = {34, 36, 38},
   -- (3.5 m, from `tall` m up) and the fascia hangs `under` it. Its stretch is whole bays round
   -- the sign and `margin`, at least two, a name given at most `most` m.
   part = {low = 3.25, high = 3.93, tall = 22, under = {2.42, 3.06}, margin = 1.6, most = 18, accent = .1},
-  letters = .62,        -- a name's height over the fascia's
+  letters = .72,        -- a name's height over the fascia's
   homes = {apartments = true, residential = true, house = true, dormitory = true, hotel = true},
   depth = .22, out = .08, street = 8,
   canopy = {height = 5.6, levels = 4.8, deep = .9, plain = .35, band = .32, column = .45, reach = 12,
@@ -7853,6 +7857,7 @@ local function collect(cells, pause)
     end
   end
   lists.lines = lines
+  BLD.pinLots(lists)
   for _, list in pairs(lists) do
     local ids = {}
     for _, feature in ipairs(list) do ids[feature] = tostring(feature.id or '') end
@@ -8838,7 +8843,7 @@ function SIGNS.drawLimit(mesh, x, y, z, yaw, limit, mph)
   SIGNS.word(mesh, 'glyphs_dark', T, chars, D.size, -width / 2, -.04, D.z - D.size / 2, 1)
 end
 -- The name of a place on a white board where the road enters it
-SIGNS.town = {z = 2.3, height = .5, size = .24, least = .13, width = 2.6, pad = .12}
+SIGNS.town = {z = 2.3, height = .62, size = .34, least = .2, width = 3.6, pad = .14}
 function SIGNS.drawTown(mesh, x, y, z, yaw, name)
   local B, T = SIGNS.town, SOLID.frame(x, y, z, -yaw)
   local chars, size = SIGNS.fit(name, B.size, B.least, B.width)
@@ -8850,7 +8855,7 @@ function SIGNS.drawTown(mesh, x, y, z, yaw, name)
 end
 -- The two streets of a crossing on one pole: the blade across the approach names the street
 -- ahead, the one along it this street; each reads from both sides.
-SIGNS.blades = {z = 3.1, height = .3, size = .22, least = .12, width = 2.6, pad = .1, gap = .32}
+SIGNS.blades = {z = 3.1, height = .38, size = .28, least = .16, width = 3.2, pad = .1, gap = .44}
 function SIGNS.blade(mesh, T, name, z)
   local B = SIGNS.blades
   local chars, size = SIGNS.fit(BLD.streetLabel(name), B.size, B.least, B.width)
@@ -9051,6 +9056,413 @@ function BLD.pin(mesh, cat, x, y, z, a, seed, cell)
     box(c.blue, -.24, -.22, 1.15, .24, .12, 1.42)
     box(c.dark, -.2, -.3, 1.2, -.04, -.22, 1.36)
     box(c.dark, .04, -.3, 1.2, .2, -.22, 1.36)
+  end
+end
+
+-- L3 sites (docs/POI.md): the pack's 'pin_site' outlines (fast_style.PIN_SITES) and the pins of
+-- those categories with no outline round them. A car dealer's open site is its lot (BLD.pinLots):
+-- a paved car park whose bays take the game's parked cars, feather flags along its street edge.
+-- A dealer and a motel get a pylon with their OSM name (never a word of ours, none without a
+-- name), standing across the street's line so both directions read it. A rest area gets a pocket
+-- of picnic tables, a bin and a toilet booth on open ground by its asphalt, unless OSM maps its
+-- tables or toilets itself. Laid out from the outline alone, drawn only inside the tile.
+BLD.PINSITE = {lot = 300, cover = .5, cells = {car_dealer = 64, motel = 69},
+  pylon = {height = 6.2, board = 1.7, room = 4.4, least = 2.0, letter = .72, post = .08, deep = .12,
+    probe = 8, reach = 40, clear = .8, kerb = 1.5, out = {4, 12, 20, 30}, wrap = .56, two = .6, gap = .14, pad = .3},
+  flag = {step = 7, most = 6, setback = 1.2, pole = 5.2, low = 1.6, wide = .6, apart = 3.5,
+    colours = {'red', 'blue', 'yellow', 'orange', 'green'}},
+  pocket = {tables = 3, apart = 5, clear = 2, reach = 30, grid = 3, most = 400, toilet = 7, near = 25,
+    mapped = 30, push = 20, edge = 1.2, along = {6, -8, 12, -15}},
+  log = nil}   -- a table: each object drawn as {what, x, y, yaw} (the offline benches)
+
+-- note one drawn object in BLD.PINSITE.log when a bench asked for it
+function BLD.pinLog(what, x, y, yaw)
+  local log = BLD.PINSITE.log
+  if log then log[#log + 1] = {what, x, y, yaw or 0} end
+end
+
+-- A car dealer's open site (not a building's outline) becomes a car park the size of the site
+-- (the bays loop in build(), its ground claimed paved). Mapped car parks in it keep their own bays
+-- (the lot's holes); where they cover `cover` of the site, they are its lot and none is added.
+-- Runs once per source cell (collect).
+function BLD.pinLots(lists)
+  local Q, lots, parks = BLD.PINSITE, {}, {}
+  for _, area in ipairs(lists.areas) do
+    local tags = area.tags or NONE
+    if area.kind == 'pin_site' and tags.e2r_cat == 'car_dealer' and tags.e2r_bld ~= 'yes' and not tags.e2r_in
+        and area.rings and area.rings[1] then
+      lots[#lots + 1] = area
+    elseif (tags.amenity == 'parking' or area.kind == 'parking') and area.rings and area.rings[1] then
+      parks[#parks + 1] = area
+    end
+  end
+  for _, site in ipairs(lots) do
+    local b, holes = ringBounds(site.rings), {}
+    for _, park in ipairs(parks) do
+      if boundsTouch(b, ringBounds(park.rings), 0) then holes[#holes + 1] = park.rings end
+    end
+    local area = footprintFrame(cleanRing(site.rings[1])).area
+    -- the share of the site under mapped car parks, on a grid of at most ~200 samples
+    local step, all, under = math.max(2, math.sqrt(area / 200)), 0, 0
+    for x = b[1] + step / 2, b[3], step do
+      for y = b[2] + step / 2, b[4], step do
+        if inside(site.rings, x, y) then
+          all = all + 1
+          if #holes > 0 and BLD.inRings(holes, x, y) then under = under + 1 end
+        end
+      end
+    end
+    if area >= Q.lot and all > 0 and under < Q.cover * all then
+      lists.areas[#lists.areas + 1] = {id = 'lot:' .. tostring(site.id), kind = 'paved',
+        tags = {amenity = 'parking', e2r_lot = 'car_dealer'}, rings = site.rings, holes = #holes > 0 and holes or nil}
+    end
+  end
+end
+
+-- whether x, y lies inside any of a list of rings
+function BLD.inRings(list, x, y)
+  for _, rings in ipairs(list) do
+    if inside(rings, x, y) then return true end
+  end
+  return false
+end
+
+-- The half width of a name pylon, the lines of `name` (glyphs) and their letter height, or nil
+-- when it does not fit. A long name goes on two lines, split at the space nearest its middle,
+-- where one line would set it under `wrap` m.
+function BLD.pinPylonFit(name)
+  local P = BLD.PINSITE.pylon
+  local chars, size = BLD.signFit(name, P.room - 2 * P.pad, P.letter)
+  local lines = chars and {chars} or nil
+  if (not chars or size < P.wrap) and name:find(' ', 1, true) then
+    local cut
+    for at in name:gmatch('() ') do
+      if not cut or math.abs(at - #name / 2) < math.abs(cut - #name / 2) then cut = at end
+    end
+    local a, s1 = BLD.signFit(name:sub(1, cut - 1), P.room - 2 * P.pad, P.two)
+    local b, s2 = BLD.signFit(name:sub(cut + 1), P.room - 2 * P.pad, P.two)
+    if a and b and math.min(s1, s2) > (size or 0) then lines, size = {a, b}, math.min(s1, s2) end
+  end
+  if not lines then return nil end
+  local most = 0
+  for _, line in ipairs(lines) do most = math.max(most, #line) end
+  return math.max(P.least, most * size * BLD.PLATE.aspect + 2 * P.pad) / 2, lines, size
+end
+
+-- A name pylon at x, y, z: two posts, a board 2w wide in the cell's colour with the name's lines
+-- on both faces; the frame's x (yaw) runs across the street's line
+function BLD.pinPylon(scene, x, y, z, yaw, cell, w, lines, size)
+  local P = BLD.PINSITE.pylon
+  local T, h, d = SOLID.frame(x, y, z, yaw), P.height, P.deep
+  local metal = BLD.shopFlat(BLD.SHOP.metal)
+  for _, px in ipairs({-w + .3, w - .3}) do
+    BLD.shopBox(scene, T, px - P.post, -P.post, -.3, px + P.post, P.post, h - P.board, metal)
+  end
+  BLD.shopBox(scene, T, -w, -d, h - P.board, w, d, h, BLD.shopFlat(cell), {under = true})
+  local mid, step = z + h - P.board / 2, size + P.gap
+  for k, chars in ipairs(lines) do
+    local zl = mid + (#lines - 1) * step / 2 - (k - 1) * step - size / 2
+    BLD.signLetters(scene, T(-w, -d, 0), T(w, -d, 0), 2 * w, w, chars, size, zl, .01)
+    BLD.signLetters(scene, T(w, d, 0), T(-w, d, 0), 2 * w, w, chars, size, zl, .01)
+  end
+end
+
+-- A feather flag: a pole and its banner along the frame's x
+function BLD.pinFlag(mesh, x, y, z, yaw, colour)
+  local F, c = BLD.PINSITE.flag, YARD.cell
+  local T = SOLID.frame(x, y, z, yaw)
+  SOLID.box(mesh, 'yard', c.metal, T, -.025, -.025, 0, .025, .025, F.pole)
+  SOLID.extrude(mesh, 'yard', T, {{.03, F.low}, {.03 + F.wide, F.low}, {.03 + F.wide, F.pole - .7},
+    {.03 + F.wide * .6, F.pole - .15}, {.03, F.pole}}, -.01, .01, colour)
+end
+
+-- A litter bin by a picnic table
+function BLD.pinBin(mesh, x, y, z)
+  local c, T = YARD.cell, SOLID.frame(x, y, z, 0)
+  SOLID.prism(mesh, 'yard', c.green, T, 8, 0, .85, .26, .28)
+  SOLID.prism(mesh, 'yard', c.dark, T, 8, .85, .9, .3, .3)
+end
+
+-- spots {x, y, d2, hit}, nearest the road first: up to `tables` picnic tables `apart` m apart, a
+-- bin by the first, a toilet booth (toilet true) `toilet` m from every table, `near` the first
+function BLD.pinPocketAt(ctx, spots, seed, tables, toilet, open)
+  local K, chosen = BLD.PINSITE.pocket, {}
+  for _, spot in ipairs(spots) do
+    if #chosen >= tables then break end
+    -- one pocket: the other tables within `near` of the first
+    local first = chosen[1]
+    local free = not first or (spot[1] - first[1]) ^ 2 + (spot[2] - first[2]) ^ 2 <= K.near ^ 2
+    for _, t in ipairs(chosen) do
+      if (spot[1] - t[1]) ^ 2 + (spot[2] - t[2]) ^ 2 < K.apart ^ 2 then free = false; break end
+    end
+    if free then chosen[#chosen + 1] = spot end
+  end
+  local function draw(cat, x, y, hit, n)
+    if ctx.within(x, y) then
+      local a = hit and math.atan2(hit.x - x, -(hit.y - y)) or 0
+      if cat == 'bin' then BLD.pinBin(ctx.decor, x, y, ctx.ground(x, y))
+      else BLD.pin(ctx.decor, cat, x, y, ctx.ground(x, y), a, seed + n) end
+      BLD.pinLog(cat, x, y)
+    end
+  end
+  for n, t in ipairs(chosen) do draw('picnic', t[1], t[2], t[4], n) end
+  local first = chosen[1]
+  if first then
+    local a = first[4] and math.atan2(first[4].x - first[1], -(first[4].y - first[2])) or 0
+    for _, along in ipairs({1.9, -1.9}) do
+      local x, y = first[1] + math.cos(a) * along, first[2] + math.sin(a) * along
+      if open(x, y, 1) then draw('bin', x, y, nil, 0); break end
+    end
+  end
+  if toilet then
+    for _, spot in ipairs(spots) do
+      local free = not first or (spot[1] - first[1]) ^ 2 + (spot[2] - first[2]) ^ 2 <= K.near ^ 2
+      for _, t in ipairs(chosen) do
+        if free and (spot[1] - t[1]) ^ 2 + (spot[2] - t[2]) ^ 2 < K.toilet ^ 2 then free = false end
+      end
+      if free then draw('toilets', spot[1], spot[2], spot[4], 9); break end
+    end
+  end
+end
+
+-- ctx: lists, rect, scene, decor (yard props), ground, bins (segmentBins), off (OFFROAD),
+-- parking (the tile's bays: those under a pylon or a flag go), pause
+function BLD.pinSites(ctx)
+  local Q, lists, rect, off, bins = BLD.PINSITE, ctx.lists, ctx.rect, ctx.off, ctx.bins
+  local sites, parks, mapped = {}, {}, {}
+  for _, area in ipairs(lists.areas) do
+    local tags = area.tags or NONE
+    if area.kind == 'pin_site' and not tags.e2r_in and area.rings and area.rings[1]
+        and boundsTouch(ringBounds(area.rings), rect, Q.pylon.reach) then
+      sites[#sites + 1] = area
+    elseif (tags.amenity == 'parking' or area.kind == 'parking') and area.rings and area.rings[1] then
+      parks[#parks + 1] = {rings = area.rings, bounds = ringBounds(area.rings)}
+    end
+  end
+  local nodes = {}
+  for _, point in ipairs(lists.points) do
+    local cat = point.kind == 'pin' and point.pos and (point.tags or NONE).e2r_cat
+    if cat == 'picnic' or cat == 'toilets' then mapped[#mapped + 1] = point
+    elseif (cat == 'car_dealer' or cat == 'motel' or cat == 'rest_area') and not point.tags.e2r_in
+        and boundsTouch({point.pos[1], point.pos[2], point.pos[1], point.pos[2]}, rect, Q.pylon.reach) then
+      nodes[#nodes + 1] = point
+    end
+  end
+  if #sites == 0 and #nodes == 0 then return end
+  local function inPark(x, y)
+    for _, park in ipairs(parks) do
+      local b = park.bounds
+      if x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] and inside(park.rings, x, y) then return true end
+    end
+    return false
+  end
+  local function open(x, y, pad)
+    return not off.nearAsphalt(x, y, pad) and not BLD.street(bins, x, y, pad)
+      and not BLD.pinIndoors(off, lists.buildings, x, y)
+  end
+  ctx.within = function(x, y) return x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] end
+  local function dropBays(x, y, r)
+    local parking = ctx.parking or NONE
+    for k = #parking, 1, -1 do
+      local bay = parking[k]
+      local dx, dy, c, s = x - bay[1], y - bay[2], math.cos(bay[4]), math.sin(bay[4])
+      if math.abs(dx * c + dy * s) < 2.3 + r and math.abs(-dx * s + dy * c) < 1 + r then table.remove(parking, k) end
+    end
+  end
+  local function pylon(x, y, yaw, cat, w, chars, size)
+    dropBays(x, y, w)
+    if ctx.within(x, y) then
+      BLD.pinPylon(ctx.scene, x, y, ctx.ground(x, y), yaw, Q.cells[cat], w, chars, size)
+      BLD.pinLog('pylon', x, y, yaw)
+    end
+  end
+  local function flag(x, y, yaw, colour)
+    dropBays(x, y, .4)
+    if ctx.within(x, y) then
+      BLD.pinFlag(ctx.decor, x, y, ctx.ground(x, y), yaw, colour)
+      BLD.pinLog('flag', x, y)
+    end
+  end
+  -- a pylon's board across the line: its centre and both ends clear (and inside rings if given)
+  local function standing(x, y, yaw, w, rings)
+    local cx, cy = math.cos(yaw) * w, math.sin(yaw) * w
+    if rings and not (inside(rings, x - cx, y - cy) and inside(rings, x + cx, y + cy)) then return false end
+    return open(x, y, Q.pylon.clear) and open(x - cx, y - cy, .3) and open(x + cx, y + cy, .3)
+  end
+  -- whether OSM maps tables, toilets inside rings (or within r of x, y)
+  local function mappedNear(rings, x, y, r)
+    local tables, toilet = false, false
+    for _, point in ipairs(mapped) do
+      local p = point.pos
+      if rings and inside(rings, p[1], p[2]) or not rings and (p[1] - x) ^ 2 + (p[2] - y) ^ 2 < r * r then
+        if point.tags.e2r_cat == 'picnic' then tables = true else toilet = true end
+      end
+    end
+    return tables, toilet
+  end
+  -- a pylon by the road nearest x, y on that side: out past its sidewalk to the first clear
+  -- place; a dealer's with a flag either side (flags)
+  local function roadside(x, y, cat, w, chars, size, seed, flags)
+    local hit = off.nearestOn(x, y, nil, false, nil, Q.pylon.reach)
+    if not hit then return false end
+    local side = (x - hit.x) * hit.nx + (y - hit.y) * hit.ny >= 0 and 1 or -1
+    local nx, ny = hit.nx * side, hit.ny * side
+    local d = hit.hw + off.walkAt(hit.road, hit.x, hit.y, side) + w + Q.pylon.kerb
+    local last, yaw = math.max(math.sqrt((x - hit.x) ^ 2 + (y - hit.y) ^ 2), d) + 6, math.atan2(ny, nx)
+    while d <= last do
+      local px, py = hit.x + nx * d, hit.y + ny * d
+      if standing(px, py, yaw, w) then
+        pylon(px, py, yaw, cat, w, chars, size)
+        if flags then
+          local colour = YARD.cell[Q.flag.colours[seed % #Q.flag.colours + 1]]
+          for _, along in ipairs({Q.flag.apart, -Q.flag.apart}) do
+            local fx, fy = px + ny * along, py - nx * along
+            if open(fx, fy, .5) then flag(fx, fy, math.atan2(-nx, ny), colour) end
+          end
+        end
+        return true
+      end
+      d = d + .5
+    end
+    return false
+  end
+  for _, site in ipairs(sites) do
+    local tags, seed = site.tags or NONE, hash(tostring(site.id))
+    local cat, building = tags.e2r_cat, tags.e2r_bld == 'yes'
+    -- its front: the longest edge with a road outside, a street's over a service road's
+    local edge
+    if cat == 'car_dealer' or cat == 'motel' then
+      local ring, score = BLD.orient(site.rings[1], site.rings), 0
+      for k, a in ipairs(ring) do
+        local b = ring[k % #ring + 1]
+        local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+        if length >= 6 then
+          local probe = wallPoint(a, b, length, length / 2, Q.pylon.probe, 0)
+          local value = BLD.street(bins, probe[1], probe[2], 6) and 2 * length
+            or off.nearestOn(probe[1], probe[2], nil, false, nil, 6) and length or 0
+          if value > score then edge, score = {a, b, length}, value end
+        end
+      end
+    end
+    local taken = {}
+    local name = (cat == 'car_dealer' or cat == 'motel') and BLD.pinName(tags)
+    local w, chars, size
+    if name then w, chars, size = BLD.pinPylonFit(name) end
+    local edgeFlags = cat == 'car_dealer' and edge and not building
+    if chars then
+      local placed = false
+      if edge then
+        local a, b, length = edge[1], edge[2], edge[3]
+        local yaw = math.atan2(b[2] - a[2], b[1] - a[1]) + math.pi / 2
+        for _, t in ipairs({.5, .3, .7, .15, .85}) do
+          local p = wallPoint(a, b, length, length * t, building and w + 2 or -(w + .8), 0)
+          if standing(p[1], p[2], yaw, w, not building and site.rings) then
+            taken[#taken + 1] = {p[1], p[2], w + 1}
+            pylon(p[1], p[2], yaw, cat, w, chars, size)
+            placed = true
+            break
+          end
+        end
+      end
+      -- set back from its street (a motel behind its car park): the pylon at the road found out
+      -- from the middle of an edge, the longest edges first (nearestOn reads one 50 m bin)
+      if not placed then
+        local ring, edges = BLD.orient(site.rings[1], site.rings), {}
+        for k, a in ipairs(ring) do
+          local b = ring[k % #ring + 1]
+          local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+          if length >= 6 then edges[#edges + 1] = {a, b, length} end
+        end
+        table.sort(edges, function(p, q) return p[3] > q[3] end)
+        for _, e in ipairs(edges) do
+          for _, out in ipairs(Q.pylon.out) do
+            local p = wallPoint(e[1], e[2], e[3], e[3] / 2, out, 0)
+            if off.nearestOn(p[1], p[2], nil, false, nil, 6) then
+              placed = roadside(p[1], p[2], cat, w, chars, size, seed, not edgeFlags)
+              break
+            end
+          end
+          if placed then break end
+        end
+      end
+    end
+    if edgeFlags then
+      local F, a, b, length = Q.flag, edge[1], edge[2], edge[3]
+      local colour = YARD.cell[F.colours[seed % #F.colours + 1]]
+      local n = math.min(F.most, math.floor(length / F.step))
+      for k = 0, n - 1 do
+        local p = wallPoint(a, b, length, length / 2 + (k - (n - 1) / 2) * F.step, -F.setback, 0)
+        local free = inside(site.rings, p[1], p[2]) and open(p[1], p[2], .5)
+        for _, t in ipairs(taken) do
+          if free and (p[1] - t[1]) ^ 2 + (p[2] - t[2]) ^ 2 < t[3] ^ 2 then free = false end
+        end
+        if free then flag(p[1], p[2], math.atan2(b[2] - a[2], b[1] - a[1]), k % 2 == 0 and colour or YARD.cell.white) end
+      end
+    end
+    if cat == 'rest_area' then
+      local K = Q.pocket
+      local tables, toilet = mappedNear(site.rings)
+      if not (tables and toilet) then
+        local b = ringBounds(site.rings)
+        local step = math.max(K.grid, math.sqrt((b[3] - b[1]) * (b[4] - b[2]) / K.most))
+        local spots = {}
+        for x = math.floor(b[1] / step) * step + step / 2, b[3], step do
+          for y = math.floor(b[2] / step) * step + step / 2, b[4], step do
+            if inside(site.rings, x, y) and not nearEdge(site.rings, x, y, K.edge) and not inPark(x, y)
+                and open(x, y, K.clear) then
+              local hit = off.nearestOn(x, y, nil, false, nil, K.reach)
+              if hit then spots[#spots + 1] = {x, y, (x - hit.x) ^ 2 + (y - hit.y) ^ 2, hit} end
+            end
+          end
+          if ctx.pause then ctx.pause() end
+        end
+        table.sort(spots, function(p, q)
+          if p[3] ~= q[3] then return p[3] < q[3] end
+          if p[1] ~= q[1] then return p[1] < q[1] end
+          return p[2] < q[2]
+        end)
+        BLD.pinPocketAt(ctx, spots, seed, tables and 0 or K.tables, not toilet, function(x, y, pad)
+          return inside(site.rings, x, y) and not nearEdge(site.rings, x, y, K.edge) and open(x, y, pad)
+        end)
+      end
+    end
+  end
+  -- the pins of these categories with no outline of theirs round them
+  for _, point in ipairs(nodes) do
+    local tags, x, y = point.tags, point.pos[1], point.pos[2]
+    local cat, seed, held = tags.e2r_cat, hash(tostring(point.id)), false
+    for _, site in ipairs(sites) do
+      if (site.tags or NONE).e2r_cat == cat and inside(site.rings, x, y) then held = true; break end
+    end
+    if not held and cat ~= 'rest_area' then
+      local name = BLD.pinName(tags)
+      local w, chars, size
+      if name then w, chars, size = BLD.pinPylonFit(name) end
+      if chars then roadside(x, y, cat, w, chars, size, seed, cat == 'car_dealer') end
+    elseif not held then
+      -- a rest area's node: its pocket where it is, else pushed off the asphalt on its side
+      local K = Q.pocket
+      local hit = off.nearestOn(x, y, nil, false, nil, Q.pylon.reach)
+      local tables, toilet = mappedNear(nil, x, y, K.mapped)
+      local px, py = x, y
+      if hit and (not open(px, py, K.clear) or inPark(px, py)) then
+        local side = (x - hit.x) * hit.nx + (y - hit.y) * hit.ny >= 0 and 1 or -1
+        px = nil
+        for d = hit.hw + 2, hit.hw + K.push, .5 do
+          local qx, qy = hit.x + hit.nx * side * d, hit.y + hit.ny * side * d
+          if open(qx, qy, K.clear) and not inPark(qx, qy) then px, py = qx, qy; break end
+        end
+      end
+      if hit and px and not (tables and toilet) then
+        -- two tables along the road, the booth past the first
+        local ax, ay, spots = hit.ny, -hit.nx, {{px, py, 0, hit}}
+        for _, along in ipairs(K.along) do
+          local qx, qy = px + ax * along, py + ay * along
+          if open(qx, qy, K.clear) and not inPark(qx, qy) then spots[#spots + 1] = {qx, qy, along * along, hit} end
+        end
+        BLD.pinPocketAt(ctx, spots, seed, tables and 0 or 2, not toilet, open)
+      end
+    end
   end
 end
 
@@ -12863,7 +13275,8 @@ local function build(cells, i, j, options)
                     for _, corner in ipairs({{0, 0}, {-2.2, -.9}, {2.2, -.9}, {2.2, .9}, {-2.2, .9}}) do
                       local cx = x + corner[1] * cyaw - corner[2] * syaw
                       local cy = y + corner[1] * syaw + corner[2] * cyaw
-                      if lists.onAsphalt(cx, cy) then fits = false; break end
+                      -- a dealer's lot leaves the mapped car parks in it their own bays
+                      if lists.onAsphalt(cx, cy) or area.holes and BLD.inRings(area.holes, cx, cy) then fits = false; break end
                     end
                   end
                   if fits then
@@ -13121,6 +13534,10 @@ local function build(cells, i, j, options)
       if report then report[#report + 1] = {kind = 'bay_' .. b.where, x = b[1], y = b[2], z = 0,
         nx = math.cos(b[3]), ny = math.sin(b[3])} end
     end
+  end
+  if not distant then
+    BLD.pinSites({lists = lists, rect = rect, scene = scene, decor = sceneDecor, ground = ground, bins = segmentBins,
+      off = OFFROAD, parking = parking, pause = pause})
   end
   for _, point in ipairs(distant and NONE or lists.points) do
     local p = point.pos
@@ -14385,6 +14802,7 @@ M.keepsLeft = ROADS.keepsLeft
 M.YARD = YARD
 M.BRANDS = SOLID.BRANDS
 M.PIN = BLD.PIN
+M.PINSITE = BLD.PINSITE
 M.shopFlat = BLD.shopFlat
 M.VENUE = BLD.VENUE
 M.shopUV = BLD.shopUV

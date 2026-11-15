@@ -695,6 +695,20 @@ def pin_tags(tags):
     return out
 
 
+# Pins whose OSM area is kept as a 'pin_site' outline (docs/POI.md, L3): generator.lua lays a car
+# dealer's lot, a rest area's pocket and a motel's or dealer's name pylon out on it
+PIN_SITES = ('car_dealer', 'rest_area', 'motel')
+
+
+def pin_site_tags(tags):
+    """A pin site's tags: its pin_tags, e2r_bld = yes when the outline is a building (no lot)."""
+    tags = tags if isinstance(tags, dict) else dict(tags)
+    out = pin_tags(tags)
+    if tags.get('building') not in (None, 'no'):
+        out['e2r_bld'] = 'yes'
+    return out
+
+
 ENTRANCES = ('staircase', 'main', 'home')
 
 # Commercial OSM nodes kept as facts (kind 'poi') for the storefront experiment: a shop, office

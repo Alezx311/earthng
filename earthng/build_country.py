@@ -269,7 +269,7 @@ def compile_cell(store, rect, include=None):
         # carry no sampled Z: runtime drapes them on the shared final surface.
         overrides = [shapely.Polygon(f['rings'][0], f['rings'][1:])
                      for f in cell['areas'] + cell['buildings']
-                     if f.get('rings') and f.get('kind') not in ('fuel_site', 'grocery_site', 'fast_food_site', 'post_site', 'service_site')]
+                     if f.get('rings') and f.get('kind') not in ('fuel_site', 'grocery_site', 'fast_food_site', 'post_site', 'service_site', 'pin_site')]
         for n, (kind, geometry, tags) in enumerate(cover.areas(rect, overrides)):
             if not looks.keep_scenery(kind, include):
                 continue

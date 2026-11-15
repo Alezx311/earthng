@@ -767,6 +767,11 @@ def _scene_fixture(path):
     ring(51, [(1400, 0), (1500, 0), (1500, 100), (1400, 100)], {'amenity': 'parking', 'access': 'customers', 'fee': 'no'})
     ring(52, [(1600, 0), (1700, 0), (1700, 100), (1600, 100)], {'tourism': 'picnic_site', 'name': 'Галявина'})
     node(1650, 50, {'tourism': 'viewpoint'})
+    # L3 sites: a dealer's lot with its node inside, a rest area, a motel that is a building
+    ring(53, [(1800, 0), (1900, 0), (1900, 100), (1800, 100)], {'shop': 'car', 'name': 'Auto Plaza', 'brand': 'Škoda'})
+    node(1850, 50, {'shop': 'car', 'name': 'Auto Plaza'})
+    ring(54, [(2000, 0), (2100, 0), (2100, 100), (2000, 100)], {'highway': 'rest_area'})
+    ring(55, [(2200, 0), (2300, 0), (2300, 100), (2200, 100)], {'building': 'yes', 'tourism': 'motel', 'name': 'Motel 7'})
     with osmium.SimpleWriter(str(path)) as writer:
         for o in nodes:
             writer.add_node(o)
@@ -806,8 +811,8 @@ class NativeScenesTests(unittest.TestCase):
             self.assertIn(41, fids)                                        # the relation's water
             pins = {fid: tags for fid, (kind, tags) in by.items() if kind == 'pin'}
             self.assertEqual(sorted(tags['e2r_cat'] for tags in pins.values()),
-                             ['atm', 'atm', 'atm', 'cross', 'hotel', 'kiosk', 'parking', 'peak', 'picnic', 'viewpoint',
-                              'water_vending'])
+                             ['atm', 'atm', 'atm', 'car_dealer', 'cross', 'hotel', 'kiosk', 'motel', 'parking', 'peak',
+                              'picnic', 'rest_area', 'viewpoint', 'water_vending'])
             atm = next(t for t in pins.values() if t.get('operator'))
             self.assertEqual(atm, {'operator': 'ПриватБанк', 'e2r_cat': 'atm', 'e2r_brand': 'privatbank'})
             self.assertEqual(sorted(t['e2r_cat'] for t in pins.values() if t.get('e2r_in') == 'yes'),
@@ -816,5 +821,11 @@ class NativeScenesTests(unittest.TestCase):
             self.assertIn(-(5 * 10**12 + 102), fids)                       # the car park's pin
             self.assertIn(-(5 * 10**12 + 104), fids)                       # the picnic site (the viewpoint is another category)
             self.assertNotIn(42, fids)                                     # the bow tie
+            # the outlines of L3 sites (fast_style.PIN_SITES), whatever became of their pins
+            sites = {fid: tags for fid, (kind, tags) in by.items() if kind == 'pin_site'}
+            self.assertEqual(sorted(sites), [-(6 * 10**12 + 110), -(6 * 10**12 + 108), -(6 * 10**12 + 106)])
+            self.assertEqual(sites[-(6 * 10**12 + 106)], {'name': 'Auto Plaza', 'brand': 'Škoda', 'e2r_cat': 'car_dealer'})
+            self.assertEqual(sites[-(6 * 10**12 + 110)], {'name': 'Motel 7', 'e2r_cat': 'motel', 'e2r_bld': 'yes'})
+            self.assertNotIn(-(5 * 10**12 + 106), fids)                    # the dealer's node stays
             with patch.dict(os.environ, {'EARTHNG_NATIVE': '0'}):
                 self.assertIsNotNone(native_tool.build_scene(store, entry, tmp / 'off.scene'))

@@ -460,7 +460,7 @@ def proj_library():
 # The Python sources rust/crates/cells (rules.rs, scenebuild.rs) mirrors: when one of them
 # changes, rules_fingerprint() no longer equals RULES and every scene is read in Python again
 # until the Rust side follows (test_native_tool says so).
-RULES = 'd83695c600988114'
+RULES = 'db23de2859ef4649'
 
 
 def rules_fingerprint():
@@ -474,7 +474,7 @@ def rules_fingerprint():
     import venues
     functions = (retail._key, retail._recognized, retail._named.__wrapped__, retail.post_type, retail.kind,
                  retail.brand, retail.enriched, fast_style.ground_kind, fast_style.rail_tags, fast_style.line_kind,
-                 fast_style.point_kind, fast_style.pin_category, fast_style.pin_tags, fast_style.pin_inside, fast_style.poi, fast_style.point_keys, nature.ground_kind,
+                 fast_style.point_kind, fast_style.pin_category, fast_style.pin_tags, fast_style.pin_inside, fast_style.pin_site_tags, fast_style.poi, fast_style.point_keys, nature.ground_kind,
                  fast_sources.number, fast_sources.lifted, fast_sources.link_parts, fast_sources.Store.build_scene,
                  fast_sources.write_scene, venues.point_tags)
     digest = hashlib.sha256()
@@ -502,6 +502,7 @@ def scene_rules():
         'rail_tags': list(fs.RAIL_TAGS), 'unmarked': list(fs.UNMARKED), 'entrances': list(fs.ENTRANCES),
         'pois': fs.POIS, 'poi_amenity': sorted(fs.POI_AMENITY), 'poi_not': list(fs.POI_NOT), 'doors': list(fs.DOORS),
         'pin_rules': [list(rule) for rule in fs.PIN_RULES], 'pin_tags': list(fs.PIN_TAGS), 'pin_money': list(fs.PIN_MONEY),
+        'pin_sites': list(fs.PIN_SITES),
         'part_tags': list(fast_sources.PART_TAGS),
     }
 

@@ -21,7 +21,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point
 from shapely.ops import transform
 
-VERSION = 'fast-26'         # source index cache: points of interest as 'pin' points (docs/POI.md)
+VERSION = 'fast-27'         # source index cache: pin_site outlines of dealers, rest areas, motels (docs/POI.md)
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -1147,6 +1147,9 @@ class Store:
                     # a hotel's building, a car park, a picnic site: its pin at a point inside
                     if pin and not geometry.is_empty:
                         pin_areas[-(5*10**12+a.id)]=(fast_style.pin_tags(a.tags),geometry)
+                        # a dealer's lot, a rest area, a motel's grounds: the outline itself
+                        if pin in fast_style.PIN_SITES:
+                            found[-(6*10**12+a.id)]=('pin_site',fast_style.pin_site_tags(a.tags),geometry)
             def node(self,n):
                 # bus stops and traffic signals where OSM has them (way nodes keep their tags
                 # in the source tiles); keyed apart from areas and ways

@@ -46,10 +46,14 @@ class ShopSignTests(unittest.TestCase):
         self.assertFalse(self.tris(off, 'fascia') or self.awning(off))
 
     def test_a_long_name_shrinks_and_a_too_long_one_is_left(self):
-        long = self.tris(self.scene(name='Продукти Біля Дому'), 'glyphs')
-        self.assertEqual(len(long), 2 * 16)
+        short = self.tris(self.scene(name='Продукти Біля Дому'), 'glyphs')
+        self.assertEqual(len(short), 2 * 16)
+        heights = [max(p[2] for p in t) - min(p[2] for p in t) for t in short]
+        self.assertAlmostEqual(max(heights), .48, places=6)    # fits at the full letter
+        long = self.tris(self.scene(name='Продукти Біля Дому Цілодобово'), 'glyphs')
+        self.assertEqual(len(long), 2 * 26)
         heights = [max(p[2] for p in t) - min(p[2] for p in t) for t in long]
-        self.assertLess(max(heights), .34)
+        self.assertTrue(.4 < max(heights) < .48, max(heights))  # smaller, still read from the road
         self.assertFalse(self.tris(self.scene(name='Дуже довга назва магазину без кінця і краю'), 'fascia'))
 
     def test_the_awning_keeps_off_a_carriageway_at_the_wall(self):

@@ -101,9 +101,9 @@ pub fn keep_scenery(kind: &str, include: Option<&Value>) -> bool {
         "fence" | "wall" | "guard_rail" | "hedge" => get("barriers"),
         "tree_row" => get("treeRows"),
         "fuel" | "grocery" | "fast_food" | "post" | "service" | "fuel_site" | "grocery_site" | "fast_food_site"
-        | "post_site" | "service_site" | "venue" => get("buildings"),
+        | "post_site" | "service_site" | "venue" | "pin_site" => get("buildings"),
         "stop" => get("stops"),
-        "poi" | "bench" | "waste_basket" | "gate" | "lift_gate" => get("pois"),
+        "poi" | "pin" | "bench" | "waste_basket" | "gate" | "lift_gate" => get("pois"),
         "power" => get("barriers"),
         "path" | "signal" | "traffic_sign" | "road" | "junction" | "crossing" | "give_way" | "stop_sign"
         | "mini_roundabout" | "turning_circle" | "island" | "gantry" | "rail" => true,
@@ -635,4 +635,19 @@ pub fn run(config: Config, cells: &[CellTask]) -> Result<Vec<Outcome>> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keep_scenery;
+    use serde_json::json;
+
+    /// test_layers.PackTests.test_filters_follow_their_groups
+    #[test]
+    fn points_of_interest_follow_their_groups() {
+        assert!(!keep_scenery("pin", Some(&json!({"pois": false}))));
+        assert!(keep_scenery("pin", Some(&json!({"cover": false}))));
+        assert!(!keep_scenery("pin_site", Some(&json!({"buildings": false}))));
+        assert!(keep_scenery("pin_site", Some(&json!({"cover": false}))));
+    }
 }

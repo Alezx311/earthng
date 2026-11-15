@@ -146,6 +146,11 @@ class RoadSignTests(unittest.TestCase):
                 'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
         node = {'id': 's', 'kind': 'traffic_sign', 'tags': {'traffic_sign': 'city_limit', 'direction': 'forward', 'name': 'Bucha'}, 'pos': [250, 250, 10]}
         self.assertEqual(self.drawn([road], [node], 'e2rf_sign_white')[0].signs.town, 1)
+        # its letters 0.34 m tall, read from the car
+        scene = self.h.build([{'roads': [road], 'points': [node]}], 0, 0, terrainStep=100, maxTrees=0, maxGrass=0,
+                             propSpacing=0, experimentalDetail=True)[1]
+        letters = list(self.h.triangles(scene, 'e2rf_glyphs_dark'))
+        self.assertEqual({round(max(p[2] for p in t) - min(p[2] for p in t), 3) for t in letters}, {.34})
 
     def test_a_bend_out_of_town_is_warned_of_on_its_own_side(self):
         # east, then round to the north: a left-hander for who drives it east

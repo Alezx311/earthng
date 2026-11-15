@@ -108,6 +108,7 @@ pub struct Rules {
     pub pin_rules: Vec<(String, String, String)>,
     pub pin_tags: Vec<String>,
     pub pin_money: HashSet<String>,
+    pub pin_sites: HashSet<String>,
     // fast_sources.py
     pub part_tags: Vec<String>,
     #[serde(skip)]
@@ -352,6 +353,15 @@ impl Rules {
             || matches!(t.get("location"), Some("underground") | Some("indoor"));
         if inside {
             out.set("e2r_in", "yes");
+        }
+        out
+    }
+
+    /// fast_style.pin_site_tags: its pin_tags, e2r_bld = yes when the outline is a building
+    pub fn pin_site_tags(&self, t: &Tags) -> Tags {
+        let mut out = self.pin_tags(t);
+        if !matches!(t.get("building"), None | Some("no")) {
+            out.set("e2r_bld", "yes");
         }
         out
     }
