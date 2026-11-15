@@ -457,7 +457,7 @@ def _write_map(archive, directory, prefix):
     """build_map.write_archive with the PNGs deflated side by side (zlib lets go of the GIL):
     a city's 64 MB of map tiles took 3 s on one thread. Same members, same compression level."""
     from concurrent.futures import ThreadPoolExecutor
-    paths = [p for p in sorted(Path(directory).iterdir()) if p.suffix in ('.json', '.png')]
+    paths = [p for p in sorted(Path(directory).iterdir()) if p.suffix in ('.json', '.png', '.tsv')]
 
     def deflate(path):
         return _deflate(path.read_bytes(), zlib.Z_DEFAULT_COMPRESSION)

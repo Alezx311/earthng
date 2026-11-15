@@ -417,7 +417,7 @@ def map_cache_dir(root, slug_id, pbf):
     import build_map
     pbf = Path(pbf)
     stat = pbf.stat()
-    stamp = [build_map.VERSION, pbf.name, stat.st_size, stat.st_mtime_ns]
+    stamp = [build_map.GENERATION, pbf.name, stat.st_size, stat.st_mtime_ns]
     digest = hashlib.sha256(json.dumps(stamp).encode()).hexdigest()[:16]
     return Path(root) / 'out' / 'map-data' / slug_id / digest
 

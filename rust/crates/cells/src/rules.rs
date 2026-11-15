@@ -333,7 +333,7 @@ impl Rules {
             let value = t.get(k);
             value == Some(v.as_str()) || (v == "*" && value.is_some_and(|s|
                 !matches!(s, "" | "no" | "vacant" | "closed" | "disused" | "abandoned")))
-        }).map(|(_, _, c)| c.as_str())
+        }).map(|(_, _, c)| c.as_str()).filter(|c| !c.is_empty())   // a rule of no category: none
     }
 
     /// fast_style.pin_tags: PIN_TAGS it has (non-empty), e2r_cat, the bank of a money point

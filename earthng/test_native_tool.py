@@ -827,7 +827,7 @@ class NativeScenesTests(unittest.TestCase):
             # the outlines of L3 sites (fast_style.PIN_SITES), whatever became of their pins
             sites = {fid: tags for fid, (kind, tags) in by.items() if kind == 'pin_site'}
             self.assertEqual(sorted(sites), [-(6 * 10**12 + 110), -(6 * 10**12 + 108), -(6 * 10**12 + 106)])
-            self.assertEqual(sites[-(6 * 10**12 + 106)], {'name': 'Auto Plaza', 'brand': 'Škoda', 'e2r_cat': 'car_dealer'})
+            self.assertEqual(sites[-(6 * 10**12 + 106)], {'name': 'Auto Plaza', 'brand': 'Škoda', 'shop': 'car', 'e2r_cat': 'car_dealer'})
             self.assertEqual(sites[-(6 * 10**12 + 110)], {'name': 'Motel 7', 'e2r_cat': 'motel', 'e2r_bld': 'yes'})
             self.assertNotIn(-(5 * 10**12 + 106), fids)                    # the dealer's node stays
             with patch.dict(os.environ, {'EARTHNG_NATIVE': '0'}):

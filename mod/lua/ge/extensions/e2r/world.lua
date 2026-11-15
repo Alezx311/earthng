@@ -4568,6 +4568,8 @@ local function drawSidebar(mapW, mapH)
         p.covered = not NATIVE or native.at(p.lat, p.lon) ~= nil
         places[#places + 1] = p
       end
+      -- the packs' named points (pins.lua categories): a click flies there and sets the landing mark
+      places.pois = planetMap and planetMap.searchPois and planetMap.searchPois(query, 25) or {}
       foundPlaces = places
     end
     local places = foundPlaces
@@ -4595,7 +4597,18 @@ local function drawSidebar(mapW, mapH)
           im.TextColored(theme.muted, kind .. ' · ' .. p.context)
         end
       end
-    elseif not any then
+    end
+    if #places.pois > 0 then
+      im.Spacing()
+      im.TextColored(theme.muted, L('Точки', 'Points'))
+      for k, p in ipairs(places.pois) do
+        local names = M.pins and M.pins.NAMES[p.cat]
+        local label = lang == 'en' and p.en or p.name
+        if im.Selectable1(label .. '##poi' .. k, false) then goTo(p.lat, p.lon, 17) end
+        im.TextColored(theme.muted, (names and L(names[1], names[2]) or p.cat) .. ' · ' .. tostring(p.context))
+      end
+    end
+    if #places == 0 and #places.pois == 0 and not any then
       im.TextColored(theme.muted, L('Нічого не знайдено', 'Nothing found'))
       im.TextWrapped(L('Спробуйте місцеву або англійську назву. Села доступні з оновленими даними мапи.',
         'Try a local or English name. Villages require updated map data.'))

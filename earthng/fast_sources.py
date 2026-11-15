@@ -21,7 +21,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point
 from shapely.ops import transform
 
-VERSION = 'fast-30'         # source index cache: street things as pins (advertising, emergency)
+VERSION = 'fast-31'         # source index cache: networks, sights, grey zone pins (aeroway, healthcare, waterway)
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)

@@ -1,4 +1,4 @@
-"""Offline settlement search and road overviews from an OSM PBF.
+"""Offline settlement and point search and road overviews from an OSM PBF.
 
 python earthng/build_map.py --pbf data/pbf/albania.osm.pbf --out out/map-data/albania
 The directory can ship in a country at map/, or in the planet at maps/<country id>/.
@@ -16,7 +16,8 @@ import osmium
 from shapely.geometry import LineString
 from PIL import Image, ImageDraw
 
-VERSION = 1
+VERSION = 1          # the index format the runtime reads (mapCatalog: version 1)
+GENERATION = 2       # what a sidecar holds, in its cache stamp: 2 added pois.tsv
 PLACE_ZOOM = {'city': 7, 'town': 9, 'village': 11, 'hamlet': 13, 'suburb': 13, 'neighbourhood': 15}
 ROAD_RANK = {'motorway': 1, 'trunk': 1, 'primary': 1, 'secondary': 2, 'tertiary': 3}
 LEVELS = ((6, 4, 1, .002), (9, 1, 2, .0004), (11, 1, 3, .0001))
@@ -40,6 +41,69 @@ def settlement(lat, lon, tags):
     context = tags.get('addr:district') or tags.get('is_in') or ''
     return [round(lat, 6), round(lon, 6), PLACE_ZOOM[kind], tags.get('name:en') or name,
             tags.get('name:uk') or name, int(tags.get('capital') == 'yes'), population, kind, ';'.join(aliases), context]
+
+
+def search_key(text):
+    """planetMap.lua normalize: lower case for ASCII and Cyrillic only (as the runtime does), its
+    apostrophes as ', spaces collapsed."""
+    out = []
+    for ch in text:
+        o = ord(ch)
+        if 'A' <= ch <= 'Z' or 0x410 <= o <= 0x42F:
+            ch = chr(o + 32)
+        elif 0x400 <= o <= 0x40F:
+            ch = chr(o + 80)
+        elif o == 0x490:
+            ch = chr(0x491)
+        elif ch in '’ʼ`':
+            ch = "'"
+        out.append(ch)
+    return ' '.join(''.join(out).split())
+
+
+POI_NAMES = ('name', 'name:en', 'name:uk', 'brand', 'alt_name', 'official_name', 'old_name', 'int_name')
+
+
+def poi_line(lat, lon, tags):
+    """A pois.tsv line of a named point on the map, else None: its search key (every name, lower
+    case), lat, lon, its pin category and its name and English name."""
+    import fast_style
+    category = fast_style.pin_category(tags)
+    if not category or category in fast_style.PIN_OFF_MAP:
+        return None
+    name = tags.get('name') or tags.get('name:en') or tags.get('name:uk') or tags.get('brand')
+    if not name:
+        return None
+    names = [tags[k] for k in POI_NAMES if tags.get(k)]
+    fields = [search_key(' | '.join(dict.fromkeys(names))), f'{lat:.6f}', f'{lon:.6f}', category, name,
+              tags.get('name:en', '') if tags.get('name:en') != name else '']
+    return '\t'.join(' '.join(str(v).split()) for v in fields)
+
+
+def _poi_source(pbf):
+    """Every named point of a map category in the PBF: nodes where they are, ways at the mean of
+    their nodes. One osmium pass (relations are left out)."""
+    import fast_style
+    keys = sorted({key for key, _, _ in fast_style.PIN_RULES})
+    processor = osmium.FileProcessor(str(pbf)).with_locations().with_filter(osmium.filter.KeyFilter(*keys))
+    for obj in processor:
+        if obj.is_node():
+            if obj.location.valid():
+                line = poi_line(obj.location.lat, obj.location.lon, dict(obj.tags))
+                if line:
+                    yield line
+        elif obj.is_way():
+            tags = dict(obj.tags)
+            if not tags.get('name') and not tags.get('name:en') and not tags.get('brand'):
+                continue
+            nodes = list(obj.nodes)
+            if len(nodes) > 1 and nodes[0].ref == nodes[-1].ref:
+                nodes = nodes[:-1]
+            if not nodes or not all(nd.location.valid() for nd in nodes):
+                continue
+            line = poi_line(sum(nd.lat for nd in nodes) / len(nodes), sum(nd.lon for nd in nodes) / len(nodes), tags)
+            if line:
+                yield line
 
 
 def road_tiles(coords, rank):
@@ -199,7 +263,7 @@ def _batches(items, size):
 
 def build(pbf, out, emit=print):
     pbf, out = Path(pbf), Path(out)
-    stamp = [VERSION, pbf.name, pbf.stat().st_size, pbf.stat().st_mtime_ns]
+    stamp = [GENERATION, pbf.name, pbf.stat().st_size, pbf.stat().st_mtime_ns]
     marker = out / 'index.json'
     if marker.exists() and json.loads(marker.read_text(encoding='utf8')).get('sourceStamp') == stamp:
         index = json.loads(marker.read_text(encoding='utf8'))
@@ -247,18 +311,23 @@ def build(pbf, out, emit=print):
                 dest.write(']')
         places.sort(key=lambda p: (p[2], -p[6], p[3], p[0], p[1]))
         encode(root / 'places.json', places)
+        # the points the map search finds (mapCatalog.searchPois): one line each, sorted, so the
+        # runtime holds the whole list as one string
+        emit(f'Map: reading named points from {pbf.name}')
+        pois = sorted(set(_poi_source(pbf)))
+        (root / 'pois.tsv').write_text(''.join(line + '\n' for line in pois), encoding='utf8', newline='\n')
         index = {'version': VERSION, 'sourceStamp': stamp, 'source': 'OpenStreetMap contributors',
-                 'license': 'ODbL-1.0', 'places': len(places), 'roads': road_count, 'tiles': tiles}
+                 'license': 'ODbL-1.0', 'places': len(places), 'pois': len(pois), 'roads': road_count, 'tiles': tiles}
         encode(root / 'index.json', raster_overviews(root, index))
         root.replace(out)
-    emit(f'Map: {len(places)} settlements, {road_count} roads, {len(tiles)} overview tiles')
+    emit(f'Map: {len(places)} settlements, {len(pois)} points, {road_count} roads, {len(tiles)} overview tiles')
     return out
 
 
 def write_archive(archive, directory, prefix):
     import zipfile
     for path in sorted(Path(directory).iterdir()):
-        if path.suffix in ('.json', '.png'):
+        if path.suffix in ('.json', '.png', '.tsv'):
             archive.write(path, prefix.rstrip('/') + '/' + path.name, compress_type=zipfile.ZIP_DEFLATED)
 
 

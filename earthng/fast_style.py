@@ -571,7 +571,7 @@ UNMARKED = ('no', 'none', 'unmarked')
 
 
 # Every key point_kind reads: the exporter hands Python only nodes with one of them.
-POINT_KEYS = ('highway', 'traffic_sign', 'railway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'tourism', 'historic', 'mountain_pass', 'advertising', 'emergency', 'brand', 'operator', 'name',
+POINT_KEYS = ('highway', 'traffic_sign', 'railway', 'natural', 'public_transport', 'entrance', 'leisure', 'amenity', 'barrier', 'shop', 'man_made', 'vending', 'tourism', 'historic', 'mountain_pass', 'advertising', 'emergency', 'aeroway', 'healthcare', 'waterway', 'brand', 'operator', 'name',
               'brand:uk', 'brand:en', 'name:uk', 'name:en', 'name:ru', 'operator:uk',
               'operator:en', 'operator:ru', 'brand:wikidata', 'operator:wikidata')
 
@@ -640,6 +640,8 @@ def point_kind(tags):
 # for some, an object in the world (generator.lua PIN); a category it does not know it skips.
 # Mirrored by rust/crates/cells (rules.rs pin_category) through native_tool.scene_rules.
 PIN_RULES = (
+    # nothing military, ever (docs/POI.md): a rule of no category stops the search
+    ('military', '*', ''), ('aerodrome:type', 'military', ''), ('landuse', 'military', ''),
     ('amenity', 'atm', 'atm'), ('amenity', 'payment_terminal', 'payment_terminal'),
     ('amenity', 'bureau_de_change', 'exchange'),
     ('vending', 'water', 'water_vending'), ('vending', 'drinking_water', 'water_vending'),
@@ -669,28 +671,51 @@ PIN_RULES = (
     ('amenity', 'clock', 'clock'), ('amenity', 'taxi', 'taxi'),
     ('amenity', 'bicycle_parking', 'bicycle_parking'), ('amenity', 'bicycle_rental', 'bicycle_rental'),
     ('leisure', 'fitness_station', 'fitness_station'),
+    # networks and big formats (wave 2): on the map now, their look later
+    *((('shop', v, 'mall') for v in ('mall', 'department_store'))),
+    *((('shop', v, 'diy') for v in ('doityourself', 'hardware', 'furniture', 'garden_centre', 'agrarian'))),
+    *((('amenity', v, 'clinic') for v in ('clinic', 'doctors', 'dentist'))), ('healthcare', 'laboratory', 'clinic'),
+    ('amenity', 'parcel_locker', 'parcel_locker'),
+    # sights (wave 4): on the map now, their look later
+    ('historic', 'monument', 'monument'), ('historic', 'memorial', 'monument'), ('man_made', 'obelisk', 'monument'),
+    *((('historic', v, 'castle') for v in ('castle', 'fort', 'city_gate', 'manor'))),
+    ('man_made', 'windmill', 'windmill'), ('natural', 'cave_entrance', 'cave'),
+    ('natural', 'rock', 'rock'), ('natural', 'stone', 'rock'), ('waterway', 'waterfall', 'waterfall'),
+    # the grey zone (the user's decision of 15.11.2026): civil places a driver finds the way by
+    ('railway', 'subway_entrance', 'metro'), ('railway', 'station', 'station'), ('railway', 'halt', 'station'),
+    ('aeroway', 'aerodrome', 'airfield'), ('aeroway', 'airstrip', 'airfield'),
+    ('man_made', 'lighthouse', 'lighthouse'), ('amenity', 'ferry_terminal', 'ferry'),
+    ('man_made', 'water_tower', 'water_tower'), ('amenity', 'library', 'library'),
+    ('amenity', 'community_centre', 'culture'), ('amenity', 'hospital', 'hospital'),
+    *((('amenity', v, 'school') for v in ('school', 'kindergarten', 'college', 'university'))),
+    ('man_made', 'chimney', 'chimney'), ('man_made', 'silo', 'silo'), ('man_made', 'storage_tank', 'storage_tank'),
     *((('amenity', v, 'food') for v in ('cafe', 'restaurant', 'fast_food', 'bar', 'pub', 'ice_cream', 'food_court'))),
-    *((('amenity', v, 'service_map') for v in ('bank', 'pharmacy', 'dentist', 'doctors', 'veterinary', 'post_office', 'car_wash', 'charging_station', 'fuel'))),
+    *((('amenity', v, 'service_map') for v in ('bank', 'pharmacy', 'veterinary', 'post_office', 'car_wash', 'charging_station', 'fuel'))),
     *((('shop', v, 'service_map') for v in ('car_repair', 'tyres'))),
     *((('tourism', v, 'sight') for v in ('museum', 'attraction', 'artwork', 'gallery', 'zoo', 'theme_park', 'aquarium', 'information'))),
-    *((('historic', v, 'sight') for v in ('monument', 'memorial', 'castle', 'ruins', 'archaeological_site', 'building'))),
+    *((('historic', v, 'sight') for v in ('ruins', 'archaeological_site', 'building'))),
     *((('leisure', v, 'leisure_map') for v in ('park', 'garden', 'playground', 'stadium', 'sports_centre', 'swimming_pool', 'fitness_centre', 'pitch'))),
     *((('amenity', v, 'leisure_map') for v in ('cinema', 'theatre', 'arts_centre', 'nightclub'))),
-    *((('railway', v, 'station_map') for v in ('station', 'halt', 'subway_entrance'))),
     ('highway', 'bus_stop', 'station_map'), ('amenity', 'bus_station', 'station_map'),
     ('shop', '*', 'shop_map'),
 )
 # The tags a pin keeps, in this order, then e2r_cat and (money points of a known bank) e2r_brand
 PIN_TAGS = ('name', 'name:uk', 'name:en', 'brand', 'operator', 'ele', 'access', 'fee', 'summit:cross',
-            'support', 'fire_hydrant:type', 'recycling_type', 'country', 'height')
+            'support', 'fire_hydrant:type', 'recycling_type', 'country', 'height',
+            # what the coming looks read (docs/POI.md: a tag only when it shows something)
+            'shop', 'cuisine', 'historic', 'memorial', 'artwork_type', 'tower:type', 'brand:wikidata')
 PIN_MONEY = ('atm', 'payment_terminal', 'exchange')
+# categories drawn in the world and on no map or search (generator.lua BLD.PIN.offMap)
+PIN_OFF_MAP = frozenset(('billboard', 'ad_column', 'waste_disposal', 'recycling', 'gazebo', 'hydrant', 'flagpole',
+                         'telephone', 'hunting_stand', 'street_cabinet', 'post_box', 'clock', 'taxi',
+                         'bicycle_parking', 'bicycle_rental', 'fitness_station', 'chimney', 'silo', 'storage_tank'))
 
 
 def pin_category(tags):
     """The PIN_RULES category of an OSM object, else None."""
     for key, value, category in PIN_RULES:
         if tags.get(key) == value or (value == '*' and tags.get(key) not in (None, '', 'no', 'vacant', 'closed', 'disused', 'abandoned')):
-            return category
+            return category or None
     return None
 
 

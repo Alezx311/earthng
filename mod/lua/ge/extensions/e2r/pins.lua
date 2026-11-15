@@ -16,6 +16,7 @@ local GROUP = {
   car = {0.16, 0.38, 0.78}, stay = {0.52, 0.24, 0.56}, money = {0.08, 0.50, 0.30},
   shop = {0.86, 0.44, 0.10}, water = {0.12, 0.56, 0.86}, sight = {0.55, 0.34, 0.18},
   nature = {0.34, 0.44, 0.22}, transport = {0.80, 0.16, 0.22},
+  health = {0.06, 0.52, 0.56}, civic = {0.33, 0.38, 0.50},
 }
 
 -- category: group, glyph (text) or shape, zoom it shows from, priority (1 first when crowded),
@@ -26,8 +27,8 @@ local STYLE = {
   car_parts = {group = 'car', shape = 'wrench', zoom = 16, priority = 6},
   rest_area = {group = 'car', shape = 'table', zoom = 14, priority = 3, labelZoom = 15},
   toilets = {group = 'car', text = 'WC', zoom = 16, priority = 6},
-  hotel = {group = 'stay', text = 'H', zoom = 15, priority = 3},
-  motel = {group = 'stay', text = 'H', zoom = 14, priority = 3, labelZoom = 15},
+  hotel = {group = 'stay', shape = 'bed', zoom = 15, priority = 3},
+  motel = {group = 'stay', shape = 'bed', zoom = 14, priority = 3, labelZoom = 15},
   atm = {group = 'money', text = 'ATM', zoom = 16, priority = 5},
   payment_terminal = {group = 'money', shape = 'terminal', zoom = 17, priority = 8},
   exchange = {group = 'money', text = '$', zoom = 16, priority = 6},
@@ -50,10 +51,52 @@ local STYLE = {
   sight = {group = 'sight', shape = 'eye', zoom = 15, priority = 4},
   leisure_map = {group = 'nature', text = 'L', zoom = 16, priority = 6},
   station_map = {group = 'transport', shape = 'tram', zoom = 16, priority = 5},
+  -- networks and big formats (wave 2)
+  mall = {group = 'shop', shape = 'bag', zoom = 13, priority = 3, labelZoom = 14},
+  diy = {group = 'shop', shape = 'house', zoom = 15, priority = 5, labelZoom = 16},
+  clinic = {group = 'health', shape = 'plus', zoom = 16, priority = 6},
+  parcel_locker = {group = 'shop', shape = 'locker', zoom = 17, priority = 8},
+  -- sights (wave 4)
+  monument = {group = 'sight', shape = 'obelisk', zoom = 15, priority = 4, labelZoom = 16},
+  castle = {group = 'sight', shape = 'castle', zoom = 11, priority = 2, labelZoom = 13},
+  windmill = {group = 'sight', shape = 'windmill', zoom = 13, priority = 3, labelZoom = 15},
+  cave = {group = 'nature', shape = 'cave', zoom = 14, priority = 4, labelZoom = 15},
+  rock = {group = 'nature', shape = 'rock', zoom = 15, priority = 6, labelZoom = 16},
+  waterfall = {group = 'water', shape = 'drop', zoom = 13, priority = 3, labelZoom = 14},
+  -- the grey zone (decided 15.11.2026); military places are never in a pack
+  metro = {group = 'transport', text = 'M', zoom = 14, priority = 3, labelZoom = 16},
+  station = {group = 'transport', shape = 'train', zoom = 12, priority = 2, labelZoom = 13},
+  airfield = {group = 'transport', shape = 'plane', zoom = 11, priority = 2, labelZoom = 12},
+  ferry = {group = 'transport', shape = 'boat', zoom = 13, priority = 3, labelZoom = 14},
+  lighthouse = {group = 'sight', shape = 'lighthouse', zoom = 12, priority = 2, labelZoom = 14},
+  water_tower = {group = 'sight', shape = 'tower', zoom = 15, priority = 6},
+  library = {group = 'civic', shape = 'book', zoom = 16, priority = 6},
+  culture = {group = 'civic', shape = 'columns', zoom = 15, priority = 5, labelZoom = 16},
+  hospital = {group = 'health', text = 'H', zoom = 13, priority = 3, labelZoom = 15},
+  school = {group = 'civic', shape = 'cap', zoom = 15, priority = 6, labelZoom = 17},
 }
 M.STYLE, M.GROUP = STYLE, GROUP
+-- the categories' names in the map search: {Ukrainian, English}
+M.NAMES = {
+  parking = {'парковка', 'parking'}, car_dealer = {'автосалон', 'car dealer'}, car_parts = {'автозапчастини', 'car parts'},
+  rest_area = {'місце відпочинку', 'rest area'}, toilets = {'туалет', 'toilets'}, hotel = {'готель', 'hotel'},
+  motel = {'мотель', 'motel'}, atm = {'банкомат', 'ATM'}, payment_terminal = {'термінал', 'payment terminal'},
+  exchange = {'обмін валют', 'exchange'}, kiosk = {'кіоск', 'kiosk'}, coffee_vending = {'кавовий автомат', 'coffee machine'},
+  water_vending = {'автомат з водою', 'water machine'}, drinking_water = {'питна вода', 'drinking water'},
+  spring = {'джерело', 'spring'}, well = {'криниця', 'well'}, picnic = {'пікнік', 'picnic'}, viewpoint = {'оглядовий майданчик', 'viewpoint'},
+  cross = {'хрест', 'wayside cross'}, shrine = {'капличка', 'shrine'}, peak = {'вершина', 'peak'}, pass = {'перевал', 'pass'},
+  tram_stop = {'трамвайна зупинка', 'tram stop'}, food = {'їжа', 'food'}, service_map = {'сервіс', 'service'},
+  shop_map = {'магазин', 'shop'}, sight = {'пам\'ятка', 'sight'}, leisure_map = {'відпочинок', 'leisure'},
+  station_map = {'зупинка', 'stop'}, mall = {'ТРЦ', 'mall'}, diy = {'гіпермаркет', 'home and garden'},
+  clinic = {'клініка', 'clinic'}, parcel_locker = {'поштомат', 'parcel locker'}, monument = {'пам\'ятник', 'monument'},
+  castle = {'замок', 'castle'}, windmill = {'вітряк', 'windmill'}, cave = {'печера', 'cave'}, rock = {'скеля', 'rock'},
+  waterfall = {'водоспад', 'waterfall'}, metro = {'метро', 'metro'}, station = {'вокзал', 'station'},
+  airfield = {'аеродром', 'airfield'}, ferry = {'пором', 'ferry'}, lighthouse = {'маяк', 'lighthouse'},
+  water_tower = {'водонапірна вежа', 'water tower'}, library = {'бібліотека', 'library'},
+  culture = {'будинок культури', 'community centre'}, hospital = {'лікарня', 'hospital'}, school = {'школа', 'school'},
+}
 -- a far tile hands over only the pins seen from afar (generator.lua SPLIT.out)
-M.FAR = {peak = true, pass = true, viewpoint = true}
+M.FAR = {peak = true, pass = true, viewpoint = true, castle = true, airfield = true, lighthouse = true}
 
 local LEVELS = 8
 local MAX = 240          -- markers drawn at most
@@ -70,7 +113,7 @@ function M.style(poi)
 end
 
 -- draw the shape `name` centred at x, y, r px across, in ink
-local function shape(im, dl, name, x, y, ink)
+local function shape(im, dl, name, x, y, ink, fill)
   local V = im.ImVec2
   if name == 'cross' or name == 'shrine' then
     im.ImDrawList_AddLine(dl, V(x, y - 5), V(x, y + 5), ink, 2)
@@ -110,6 +153,73 @@ local function shape(im, dl, name, x, y, ink)
     im.ImDrawList_AddRectFilled(dl, V(x - 4, y - 3), V(x + 4, y + 4), ink, 1.5)
     im.ImDrawList_AddLine(dl, V(x, y - 3), V(x, y - 6), ink, 1.5)
     im.ImDrawList_AddLine(dl, V(x - 2.5, y - 6), V(x + 2.5, y - 6), ink, 1.5)
+  elseif name == 'train' then
+    im.ImDrawList_AddRectFilled(dl, V(x - 4, y - 5.5), V(x + 4, y + 3), ink, 2)
+    im.ImDrawList_AddLine(dl, V(x - 3, y + 3), V(x - 5, y + 6), ink, 1.5)
+    im.ImDrawList_AddLine(dl, V(x + 3, y + 3), V(x + 5, y + 6), ink, 1.5)
+  elseif name == 'bed' then
+    im.ImDrawList_AddRectFilled(dl, V(x - 5.5, y), V(x + 5.5, y + 2.5), ink)
+    im.ImDrawList_AddRectFilled(dl, V(x - 5.5, y - 4), V(x - 4, y + 4.5), ink)
+    im.ImDrawList_AddCircleFilled(dl, V(x - 1.8, y - 1.8), 1.8, ink)
+    im.ImDrawList_AddRectFilled(dl, V(x + .5, y - 2.5), V(x + 5.5, y), ink, 1)
+  elseif name == 'bag' then
+    im.ImDrawList_AddRectFilled(dl, V(x - 4.5, y - 2), V(x + 4.5, y + 5), ink, 1)
+    im.ImDrawList_AddCircle(dl, V(x, y - 2.5), 2.5, ink, 10, 1.5)
+  elseif name == 'house' then
+    im.ImDrawList_AddRectFilled(dl, V(x - 4, y - 1), V(x + 4, y + 5), ink)
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 6, y - 1), V(x + 6, y - 1), V(x, y - 6), ink)
+  elseif name == 'plus' then
+    im.ImDrawList_AddRectFilled(dl, V(x - 1.6, y - 5), V(x + 1.6, y + 5), ink)
+    im.ImDrawList_AddRectFilled(dl, V(x - 5, y - 1.6), V(x + 5, y + 1.6), ink)
+  elseif name == 'locker' then
+    for i = -1, 1 do
+      for j = -1, 0 do
+        im.ImDrawList_AddRectFilled(dl, V(x + i * 3.6 - 1.4, y + j * 4.4 - .4), V(x + i * 3.6 + 1.4, y + j * 4.4 + 3.6), ink)
+      end
+    end
+  elseif name == 'obelisk' then
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 2, y + 3), V(x + 2, y + 3), V(x, y - 6), ink)
+    im.ImDrawList_AddRectFilled(dl, V(x - 4.5, y + 3), V(x + 4.5, y + 5.5), ink)
+  elseif name == 'castle' then
+    im.ImDrawList_AddRectFilled(dl, V(x - 5, y - 2), V(x + 5, y + 5), ink)
+    for i = -1, 1 do im.ImDrawList_AddRectFilled(dl, V(x + i * 4 - 1.2, y - 5), V(x + i * 4 + 1.2, y - 2), ink) end
+  elseif name == 'windmill' then
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 3, y + 5), V(x + 3, y + 5), V(x, y - 1), ink)
+    im.ImDrawList_AddLine(dl, V(x - 5, y - 6), V(x + 5, y + 2), ink, 1.5)
+    im.ImDrawList_AddLine(dl, V(x + 5, y - 6), V(x - 5, y + 2), ink, 1.5)
+  elseif name == 'cave' then
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 6, y + 5), V(x + 6, y + 5), V(x, y - 5), ink)
+    im.ImDrawList_AddCircleFilled(dl, V(x, y + 3.5), 2.4, fill)
+  elseif name == 'rock' then
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 5.5, y + 4), V(x + 4, y + 4), V(x - 1.5, y - 4), ink)
+    im.ImDrawList_AddTriangleFilled(dl, V(x, y + 4), V(x + 5.5, y + 4), V(x + 3, y - 1), ink)
+  elseif name == 'plane' then
+    im.ImDrawList_AddLine(dl, V(x, y - 6), V(x, y + 6), ink, 2)
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 6, y + 1), V(x + 6, y + 1), V(x, y - 3), ink)
+    im.ImDrawList_AddLine(dl, V(x - 2.5, y + 5.5), V(x + 2.5, y + 5.5), ink, 1.5)
+  elseif name == 'boat' then
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 6, y + 1), V(x + 6, y + 1), V(x + 3.5, y + 5), ink)
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 6, y + 1), V(x + 3.5, y + 5), V(x - 3.5, y + 5), ink)
+    im.ImDrawList_AddTriangleFilled(dl, V(x - .5, y), V(x - .5, y - 6), V(x + 4, y), ink)
+  elseif name == 'lighthouse' then
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 3.5, y + 5.5), V(x + 3.5, y + 5.5), V(x, y - 3), ink)
+    im.ImDrawList_AddRectFilled(dl, V(x - 2, y - 6), V(x + 2, y - 3), ink)
+    im.ImDrawList_AddLine(dl, V(x - 6, y - 5), V(x - 3, y - 4.5), ink, 1)
+    im.ImDrawList_AddLine(dl, V(x + 6, y - 5), V(x + 3, y - 4.5), ink, 1)
+  elseif name == 'tower' then
+    im.ImDrawList_AddRectFilled(dl, V(x - 1.5, y - 1), V(x + 1.5, y + 6), ink)
+    im.ImDrawList_AddRectFilled(dl, V(x - 4.5, y - 5), V(x + 4.5, y - 1), ink, 1)
+  elseif name == 'book' then
+    im.ImDrawList_AddRectFilled(dl, V(x - 5.5, y - 4), V(x - .5, y + 4), ink)
+    im.ImDrawList_AddRectFilled(dl, V(x + .5, y - 4), V(x + 5.5, y + 4), ink)
+  elseif name == 'columns' then
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 6, y - 3), V(x + 6, y - 3), V(x, y - 6.5), ink)
+    for i = -1, 1 do im.ImDrawList_AddRectFilled(dl, V(x + i * 3.5 - 1, y - 2), V(x + i * 3.5 + 1, y + 4), ink) end
+    im.ImDrawList_AddRectFilled(dl, V(x - 6, y + 4.5), V(x + 6, y + 6), ink)
+  elseif name == 'cap' then
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 6.5, y - 1.5), V(x + 6.5, y - 1.5), V(x, y - 5), ink)
+    im.ImDrawList_AddTriangleFilled(dl, V(x - 6.5, y - 1.5), V(x + 6.5, y - 1.5), V(x, y + 2), ink)
+    im.ImDrawList_AddRectFilled(dl, V(x - 3.5, y), V(x + 3.5, y + 4), ink, 1)
   end
 end
 
@@ -176,7 +286,7 @@ function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands)
           if s.text then
             im.ImDrawList_AddText1(dl, im.ImVec2(x - textWidth(im, s.text) / 2, y - 7), white, s.text)
           else
-            shape(im, dl, s.shape, x, y, white)
+            shape(im, dl, s.shape, x, y, white, fill)
           end
           local label = poi.label
           if s.group == 'nature' and poi.ele then label = label and (label .. ' ' .. poi.ele) or poi.ele end

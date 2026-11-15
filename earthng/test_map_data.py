@@ -91,6 +91,50 @@ class MapDataTests(unittest.TestCase):
                 self.assertIsNotNone(image.getbbox())
             self.assertEqual(build_map.build(source, output), output)
 
+    def test_named_points_for_the_search_and_never_a_military_one(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'sample.osm'
+            source.write_text('''<osm version="0.6">
+              <node id="1" lat="50.45" lon="30.52"><tag k="railway" v="station"/><tag k="name" v="Київ-Пасажирський"/>
+                <tag k="name:en" v="Kyiv-Pasazhyrskyi"/></node>
+              <node id="2" lat="50.4" lon="30.5"><tag k="aeroway" v="aerodrome"/><tag k="military" v="airfield"/><tag k="name" v="Base"/></node>
+              <node id="3" lat="50.41" lon="30.51"><tag k="advertising" v="billboard"/><tag k="name" v="Board"/></node>
+              <node id="4" lat="50.42" lon="30.53"><tag k="shop" v="mall"/></node>
+              <node id="5" lat="50.0" lon="30.0"/><node id="6" lat="50.0" lon="30.002"/><node id="7" lat="50.002" lon="30.002"/>
+              <node id="8" lat="50.002" lon="30.0"/>
+              <way id="10"><nd ref="5"/><nd ref="6"/><nd ref="7"/><nd ref="8"/><nd ref="5"/>
+                <tag k="shop" v="mall"/><tag k="building" v="retail"/><tag k="name" v="Ocean Plaza"/></way></osm>''', encoding='utf8')
+            output = build_map.build(source, root / 'map', emit=lambda _: None)
+            lines = [line.split('\t') for line in (output / 'pois.tsv').read_text(encoding='utf8').splitlines()]
+            self.assertEqual([(l[3], l[4]) for l in lines], [('mall', 'Ocean Plaza'), ('station', 'Київ-Пасажирський')])
+            self.assertEqual(lines[1][0], 'київ-пасажирський | kyiv-pasazhyrskyi')
+            self.assertEqual(lines[1][5], 'Kyiv-Pasazhyrskyi')
+            self.assertEqual((lines[0][1], lines[0][2]), ('50.001000', '30.001000'), 'a way at the mean of its nodes')
+            self.assertEqual(json.loads((output / 'index.json').read_text())['pois'], 2)
+        self.assertEqual(build_map.search_key('  ҐАНОК  Їжак’s  ÉCOLE'), "ґанок їжак's École".replace('É', 'É'))
+
+    def test_the_search_finds_points_by_any_name_exact_first(self):
+        root = '/earthng/countries/ua/map/'
+        pois = ''.join('\t'.join(row) + '\n' for row in sorted([
+            ['київ-пасажирський | kyiv-pasazhyrskyi', '50.440000', '30.490000', 'station', 'Київ-Пасажирський', 'Kyiv-Pasazhyrskyi'],
+            ['ocean plaza', '50.410000', '30.520000', 'mall', 'Ocean Plaza', ''],
+            ['plaza', '50.000000', '30.000000', 'shop_map', 'Plaza', ''],
+            ['kyiv food | plaza st', '50.1', '30.1', 'food', 'Kyiv Food', ''],
+        ]))
+        files = {root + 'index.json': {'version': 1, 'tiles': {}}, root + 'places.json': [], root + 'pois.tsv': pois}
+        lua = self.runtime(files)
+        lua.globals().readText = lambda path: files[path]
+        lua.execute('readFile=function(p) return readText(p) end')
+        lua.execute("catalog.step({{id='ua', title='Україна', available=true}})")
+        found = list(lua.eval("planet.searchPois('PLAZA', 10)").values())
+        self.assertEqual([p.name for p in found], ['Plaza', 'Kyiv Food', 'Ocean Plaza'], 'exact, then the rest by name')
+        self.assertEqual((found[2].cat, found[2].lat, found[2].context), ('mall', 50.41, 'Україна'))
+        hit = list(lua.eval("planet.searchPois('Київ-Пас', 10)").values())
+        self.assertEqual([(p.name, p.en) for p in hit], [('Київ-Пасажирський', 'Kyiv-Pasazhyrskyi')])
+        self.assertEqual(len(lua.eval("planet.searchPois('pl', 10)")), 0, 'three letters or more')
+        self.assertEqual(len(lua.eval("planet.searchPois('50.4', 10)")), 0, 'only the names are searched')
+
     def test_native_reader_writes_what_osmium_wrote(self):
         import os
         from unittest.mock import patch

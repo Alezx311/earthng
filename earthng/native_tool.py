@@ -460,7 +460,7 @@ def proj_library():
 # The Python sources rust/crates/cells (rules.rs, scenebuild.rs) mirrors: when one of them
 # changes, rules_fingerprint() no longer equals RULES and every scene is read in Python again
 # until the Rust side follows (test_native_tool says so).
-RULES = '37a89592db5512df'
+RULES = '4beecef18a3321bb'
 
 
 def rules_fingerprint():

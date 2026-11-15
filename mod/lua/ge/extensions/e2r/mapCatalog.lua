@@ -34,8 +34,50 @@ function M.step(countries)
   if not index or index.version ~= 1 or type(index.tiles) ~= 'table' then return end
   local places = read(root .. 'places.json') or {}
   for _, p in ipairs(places) do p.context = c.title .. (p[10] and p[10] ~= '' and (' · ' .. p[10]) or '') end
-  catalogs[#catalogs + 1] = {root = root, index = index, places = places}
+  catalogs[#catalogs + 1] = {root = root, index = index, places = places, title = c.title}
   M.revision = M.revision + 1
+end
+
+-- The named points whose names hold `needle` (planetMap's normal form, 3 letters or more): the
+-- sidecar's pois.tsv (build_map.py: key, lat, lon, category, name, English name, one line each)
+-- read on a country's first search and kept as one string, so the collector has one object to
+-- walk, not a table per point. Exact names first, then names that start with it, then the rest.
+M.POI_SCAN = 400
+function M.searchPois(needle, limit)
+  local hits = {}
+  if #needle < 3 then return hits end
+  for _, c in ipairs(catalogs) do
+    if c.pois == nil then
+      c.pois = false
+      if FS:fileExists(c.root .. 'pois.tsv') then
+        local ok, text = pcall(readFile, c.root .. 'pois.tsv')
+        c.pois = ok and type(text) == 'string' and text or false
+      end
+    end
+    local text, at = c.pois, 1
+    while text and #hits < M.POI_SCAN do
+      local i = text:find(needle, at, true)
+      if not i then break end
+      local start = i
+      while start > 1 and text:byte(start - 1) ~= 10 do start = start - 1 end
+      local stop = text:find('\n', i, true) or #text + 1
+      local key, lat, lon, cat, name, en = text:sub(start, stop - 1):match('^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t?([^\t]*)$')
+      if key and i + #needle - 1 <= start + #key - 1 then
+        hits[#hits + 1] = {name = name, en = en ~= '' and en or nil, lat = tonumber(lat), lon = tonumber(lon), cat = cat,
+          context = c.title, score = key == needle and 0 or i == start and 1 or 2}
+      end
+      at = stop + 1
+    end
+  end
+  table.sort(hits, function(a, b)
+    if a.score ~= b.score then return a.score < b.score end
+    if a.name ~= b.name then return a.name < b.name end
+    if a.lat ~= b.lat then return a.lat < b.lat end
+    return a.lon < b.lon
+  end)
+  local out = {}
+  for k = 1, math.min(limit or 20, #hits) do out[k] = hits[k] end
+  return out
 end
 
 function M.places()

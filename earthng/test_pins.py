@@ -60,6 +60,36 @@ class PinRulesTests(unittest.TestCase):
         tags = fast_style.pin_tags({'emergency': 'fire_hydrant', 'fire_hydrant:type': 'pillar', 'colour': 'red'})
         self.assertEqual(tags, {'fire_hydrant:type': 'pillar', 'e2r_cat': 'hydrant'})
 
+    def test_networks_sights_and_the_grey_zone_but_nothing_military(self):
+        cases = {
+            (('shop', 'mall'), ('name', 'Ocean Plaza')): 'mall',
+            (('shop', 'doityourself'), ('brand', 'Епіцентр К')): 'diy',
+            (('amenity', 'doctors'),): 'clinic',
+            (('healthcare', 'laboratory'), ('brand', 'Synevo')): 'clinic',
+            (('amenity', 'parcel_locker'),): 'parcel_locker',
+            (('historic', 'memorial'), ('memorial', 'war_memorial')): 'monument',
+            (('historic', 'castle'),): 'castle',
+            (('man_made', 'windmill'),): 'windmill',
+            (('natural', 'cave_entrance'),): 'cave',
+            (('railway', 'subway_entrance'),): 'metro',
+            (('railway', 'station'), ('name', 'Київ-Пасажирський')): 'station',
+            (('aeroway', 'aerodrome'), ('aerodrome:type', 'private')): 'airfield',
+            (('man_made', 'lighthouse'),): 'lighthouse',
+            (('man_made', 'water_tower'),): 'water_tower',
+            (('amenity', 'community_centre'),): 'culture',
+            (('amenity', 'kindergarten'),): 'school',
+            (('amenity', 'hospital'),): 'hospital',
+            (('man_made', 'chimney'), ('height', '120')): 'chimney',
+        }
+        for pairs, category in cases.items():
+            self.assertEqual(fast_style.pin_category(dict(pairs)), category, pairs)
+        for tags in ({'aeroway': 'aerodrome', 'military': 'airfield'}, {'aeroway': 'aerodrome', 'aerodrome:type': 'military'},
+                     {'amenity': 'hospital', 'landuse': 'military'}, {'military': 'bunker', 'historic': 'memorial'}):
+            self.assertIsNone(fast_style.pin_category(tags), tags)
+            self.assertIsNone(fast_style.point_kind(tags), tags)
+        self.assertEqual(fast_style.pin_tags({'shop': 'mall', 'name': 'Gulliver', 'opening_hours': 'Mo-Su'}),
+                         {'name': 'Gulliver', 'shop': 'mall', 'e2r_cat': 'mall'})
+
     def test_point_kind_keeps_the_older_kinds_first(self):
         self.assertEqual(fast_style.point_kind({'amenity': 'atm'}), 'pin')
         self.assertEqual(fast_style.point_kind({'amenity': 'bench', 'tourism': 'viewpoint'}), 'bench')
@@ -89,7 +119,7 @@ class PinRulesTests(unittest.TestCase):
 
     def test_a_site_outline_says_when_it_is_a_building(self):
         self.assertEqual(fast_style.pin_site_tags({'shop': 'car', 'name': 'Auto Plaza', 'building': 'retail'}),
-                         {'name': 'Auto Plaza', 'e2r_cat': 'car_dealer', 'e2r_bld': 'yes'})
+                         {'name': 'Auto Plaza', 'shop': 'car', 'e2r_cat': 'car_dealer', 'e2r_bld': 'yes'})
         self.assertEqual(fast_style.pin_site_tags({'highway': 'rest_area', 'building': 'no'}), {'e2r_cat': 'rest_area'})
         self.assertTrue(set(fast_style.PIN_SITES) <= {rule[2] for rule in fast_style.PIN_RULES})
 
@@ -146,13 +176,16 @@ class PinRuntimeTests(PinScene):
 
     def test_every_category_has_a_map_style_and_the_far_lists_agree(self):
         styles = set(self.pins.STYLE.keys())
-        street = set(self.g.PIN.street.keys())
-        # the street is drawn in the world and on no map
-        self.assertEqual({rule[2] for rule in fast_style.PIN_RULES} - street, styles)
-        self.assertFalse(street & styles)
-        self.assertTrue(street <= set(self.g.PIN.objects.keys()))
+        street, off = set(self.g.PIN.street.keys()), set(self.g.PIN.offMap.keys())
+        # the street and the industry are drawn in the world and on no map; '' stops the search
+        self.assertEqual({rule[2] for rule in fast_style.PIN_RULES} - off - {''}, styles)
+        self.assertFalse(off & styles)
+        self.assertTrue(street <= off)
+        self.assertTrue(off <= set(self.g.PIN.objects.keys()))
+        self.assertEqual(off, set(fast_style.PIN_OFF_MAP), 'the map search leaves out what the map does')
+        self.assertEqual(set(self.pins.NAMES.keys()), styles, 'every category named in the search')
         self.assertEqual(set(self.pins.FAR.keys()), set(self.g.PIN.far.keys()))
-        self.assertTrue(set(self.g.PIN.objects.keys()) - street <= styles)
+        self.assertTrue(set(self.g.PIN.objects.keys()) - off <= styles)
         # the icons read without a language: pictograms or Latin letters
         for name, style in self.pins.STYLE.items():
             self.assertTrue(style.shape or all(ord(ch) < 128 for ch in style.text), name)
@@ -255,6 +288,28 @@ class PinRuntimeTests(PinScene):
         # in a Ukrainian pack a buried hydrant's plate says ПГ in white
         ua = self.build([{'roads': [STREET], 'points': points}], country='ukraine')
         self.assertEqual(len(self.near(self.corners(ua, 'e2rf_glyphs'), 160, 70, 1)), 2 * 6 * 2)
+
+    def test_grey_zone_objects_and_which_reach_the_map(self):
+        rail = {'id': 'rail', 'kind': 'rail', 'tags': {'railway': 'rail'}, 'points': [[0, 30, 0], [400, 30, 0]]}
+
+        def pin(ident, x, y, cat, **tags):
+            return {'id': ident, 'kind': 'pin', 'pos': [x, y, 0], 'tags': {'e2r_cat': cat, **tags}}
+        points = [pin('metro', 60, 70, 'metro', name='Lukianivska'), pin('station', 150, 30, 'station', name='Boyarka'),
+                  pin('tower', 220, 70, 'water_tower'), pin('chimney', 300, 60, 'chimney', height='90'),
+                  pin('nameless_station', 350, 30, 'station')]
+        scene = self.build([{'roads': [STREET], 'lines': [rail], 'points': points}])
+        self.assertEqual({r.id for r in scene.brandPOIs.values()}, {'metro', 'station', 'tower', 'nameless_station'},
+                         'a chimney is on no map')
+        self.assertEqual(len(self.near(self.corners(scene, 'e2rf_glyphs'), 60, 70, 1)), 2 * 6, 'M on both faces')
+        # the station's name 5 m off its track, along it, never on the rails
+        board = self.near(self.corners(scene, 'e2rf_glyphs_dark'), 150, 30, 8)
+        self.assertGreaterEqual(len(board), 2 * 6 * len('Boyarka'))
+        self.assertTrue(all(abs(abs(p[1] - 30) - 5) < .2 for p in board))
+        self.assertGreater(max(p[0] for p in board) - min(p[0] for p in board), 1.5, 'along the track')
+        self.assertFalse(self.near(self.corners(scene, 'e2rf_glyphs_dark'), 350, 30, 8), 'no name, no board')
+        yard = self.corners(scene, 'e2rf_yard')
+        self.assertGreater(max(p[2] for p in self.near(yard, 220, 70, 4)), 15, 'the tank high on its column')
+        self.assertGreater(max(p[2] for p in self.near(yard, 300, 60, 5)), 85, 'the chimney as tall as OSM says')
 
     def test_a_tram_stop_has_a_shelter_by_its_street(self):
         stop = {'id': 'tram', 'kind': 'pin', 'pos': [200, 90, 0], 'tags': {'e2r_cat': 'tram_stop', 'name': 'Lavra'}}
