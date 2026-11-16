@@ -137,16 +137,21 @@ def stretches(bad):
     return [(r[0][0], len(r) * STEP, float(np.mean([b[1] for b in r])), float(np.mean([b[2] for b in r]))) for r in runs]
 
 
+def interior(asphalt):
+    """The pixels with asphalt on them and on all four sides (NaN: none): not the carriageway's edge pixels."""
+    inner = np.isfinite(asphalt)
+    inner[1:-1, 1:-1] &= inner[:-2, 1:-1] & inner[2:, 1:-1] & inner[1:-1, :-2] & inner[1:-1, 2:]
+    inner[0, :] = inner[-1, :] = inner[:, 0] = inner[:, -1] = False
+    return inner
+
+
 def barrier_pixels(asphalt, top, low):
     """Pixels where a barrier stands on the asphalt: its base is at (or sunk in) the carriageway and
     it rises over it. asphalt, top, low: the tile's rasters of the asphalt's top, the barrier's top
     and the barrier's lowest surface (NaN: none). A rail along a carriageway's edge, its posts a few cm over the
     asphalt's last pixel, is not on it: the pixel must have asphalt on all four sides."""
-    inner = np.isfinite(asphalt)
-    inner[1:-1, 1:-1] &= inner[:-2, 1:-1] & inner[2:, 1:-1] & inner[1:-1, :-2] & inner[1:-1, 2:]
-    inner[0, :] = inner[-1, :] = inner[:, 0] = inner[:, -1] = False
     with np.errstate(invalid='ignore'):
-        return inner & np.isfinite(top) & (low <= asphalt + .25) & (top >= asphalt + .3) & (top <= asphalt + 3.)
+        return interior(asphalt) & np.isfinite(top) & (low <= asphalt + .25) & (top >= asphalt + .3) & (top <= asphalt + 3.)
 
 
 def barrier_cells(pixels, rect):
@@ -193,9 +198,11 @@ def spikes(text, limit=SPIKE, rings=()):
 def rails_under(texts, asphalt, rect):
     """[(x, y, triangles)] per CELL of rail and fence triangles (texts: 'x y z' vertices, three to a triangle) with a
     carriageway passing over them (its asphalt more than UNDER over their tops): a rail standing under a bridge deck.
+    The deck's edge pixels do not count: a rail at the foot of a ramp's embankment is beside the road, not under it.
     Wider triangles are buildings' walls (clad_metal too), not rails."""
     found = defaultdict(int)
     rows, cols = asphalt.shape
+    asphalt = np.where(interior(asphalt), asphalt, np.nan)
     for text in texts:
         xyz = np.asarray(text.split(), dtype=float).reshape(-1, 3, 3)
         wide = np.maximum(np.ptp(xyz[:, :, 0], axis=1), np.ptp(xyz[:, :, 1], axis=1))
