@@ -2,6 +2,37 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-16: flow cars and walkers as DynamicShapeBatch copies; how much the game can hold
+
+On the branch `codex/native-bridge-benchmark`, not merged into `master`.
+
+Capacity study ([research/native-bridge/CAPACITY.md](research/native-bridge/CAPACITY.md), stand in
+`research/native-bridge/capacity/`):
+- The limit is the game thread, not generation. Four Rust workers make ~4 tiles/s; the game
+  takes ~0.57 tile/s at a 4 ms budget a frame.
+- Moving or hiding a TSStatic costs more the more scene objects the level holds (+0.6-0.8 us per
+  thousand). A Forest commit costs 0.46 us per item of the touched kind. `createMesh` with FFI
+  arrays makes an empty mesh.
+- `DynamicShapeBatch` works from plain Lua: 0.55 us a copy, whatever the scene holds.
+  `setInstance(i, pos, dir, scale, ColorF)` takes the direction of the shape's +y axis, not a
+  quaternion. The colour paints only palette slot 0; other colours come from `setMaterialRemap`
+  to baked materials. `finalizeShape` costs 6-25 ms a batch.
+
+Flow and walkers (`e2r/shapebatch.lua`):
+- A flow car is a copy in one of four batches, one per body (`car_<body>_paint.dae`, the paint
+  as the copy's colour). A walker is a copy in the batch of its pose and skin (45 at most); the
+  shirt is the colour, trousers and skin are remapped materials, the trousers following the skin.
+- At most one new batch a frame. Copies stand level (no pitch on a slope).
+- BeamNG 0.39 (no class) keeps a TSStatic each; `test_world.py --no-batches` forces that for A/B.
+- Kyiv (50.4475, 30.5225), quality 50, 400 cars and 500 walkers, one run each: mean frame 56.2 vs
+  61.2 ms, p95 85 vs 128.5, frames over 100 ms 33 vs 121, p50 the same. Scene objects 37 instead
+  of ~700. A frame that makes a walker batch takes up to 11 ms.
+- Not checked: whether a flow copy's paint matches the real hand-off car it turns into; the
+  TSStatic path in 0.39 itself.
+
+Also on this branch: near tiles built in a pool of Rust threads, each with its own LuaJIT
+(experimental, [research/native-bridge/TILE_POOL.md](research/native-bridge/TILE_POOL.md)).
+
 ## 2026-11-14: ground from eye level, fields and the distance
 
 Seen from beside the car at Vytachiv (50.1128, 30.8790), quality 50. Full notes are in

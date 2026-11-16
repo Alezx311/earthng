@@ -5,8 +5,10 @@ A walker is a TSStatic without collision moved by Lua; the walk is a flipbook of
 One mesh per pose, ~450 triangles: tapered limbs posed by forward kinematics from a gait table, a
 waisted torso with collar and hem, a head with jaw and hair, mitts and box shoes. Clothes and skin
 take their colour per instance (TSStatic instanceColor*) through the vehicle palette masks, so
-8 poses + 1 standing pose serve every outfit. Two flat blood quads on one atlas (blood_splat,
-blood_spray) are the stains of pedhit hits (world.lua BLOOD).
+8 poses + 1 standing pose serve every outfit. A DynamicShapeBatch copy takes one colour only (the
+shirt's), so trousers and skin also come as materials with the walkers.lua palettes baked
+(e2r_ped_pants_<k>, e2r_ped_skin_<k>), remapped per batch (shapebatch.lua). Two flat blood quads on
+one atlas (blood_splat, blood_spray) are the stains of pedhit hits (world.lua BLOOD).
 
 Forward is +x, up +z, the origin on the ground between the feet. In the planet as
 levels/<level>/art/people/ (level_files); the physical body that takes a walker's place when a car
@@ -39,6 +41,13 @@ MATERIALS = {
     'blood': {'baseColorMap': 'blood.color.png', 'opacityMap': 'blood_o.data.png', 'roughnessFactor': .38,
               'metallicFactor': 0, 'vertColor': False},
 }
+# walkers.lua M.PANTS and M.SKIN (sRGB, as baseColorFactor takes them; test_walkers checks they match)
+PANTS = [(.08, .1, .2), (.12, .12, .13), (.35, .3, .22), (.25, .27, .3), (.05, .05, .06), (.4, .38, .35)]
+SKIN = [(.86, .68, .55), (.72, .53, .4), (.55, .38, .27), (.93, .78, .66), (.4, .27, .18)]
+for _k, _rgb in enumerate(PANTS, 1):
+    MATERIALS[f'pants_{_k}'] = {'baseColorFactor': [*_rgb, 1], 'roughnessFactor': .85}
+for _k, _rgb in enumerate(SKIN, 1):
+    MATERIALS[f'skin_{_k}'] = {'baseColorFactor': [*_rgb, 1], 'roughnessFactor': .7}
 # fields of the material itself, not of its stage (as fast_style EXTRA). Blood is cut out by its own
 # opacity map, not blended: drawn into the gbuffer and lit like the road under it. The game reads
 # these only here and no alpha from baseColorMap: set in the stage, a translucent blend drew the

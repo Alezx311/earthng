@@ -100,6 +100,69 @@ class FlowTests(unittest.TestCase):
         self.assertGreater(moving, 30)
         self.assertGreaterEqual(spawned, 120)
 
+    def test_in_batches_every_car_is_one_copy_of_its_shape_and_only_moved_cars_are_placed(self):
+        lua = self.lua()
+        out = lua.execute('''
+          -- a shapebatch.lua pool as a table: copies by shape, places and drops counted
+          local P = {live = 0, adds = 0, moves = 0, drops = 0, warmed = {}, ticks = 0, level = true}
+          function P:kind(shape) return {shape = shape} end
+          function P:warm(K) self.warmed[K.shape] = true end
+          function P:tick() self.ticks = self.ticks + 1 end
+          function P:add(K, x, y, z, dx, dy, dz, colour)
+            self.live, self.adds = self.live + 1, self.adds + 1
+            if dz ~= 0 or math.abs(dx * dx + dy * dy - 1) > 1e-9 then self.level = false end
+            return {shape = K.shape, colour = colour}, self.adds
+          end
+          function P:move(B, i, x, y, z, dx, dy, dz)
+            self.moves = self.moves + 1
+            if dz ~= 0 or math.abs(dx * dx + dy * dy - 1) > 1e-9 then self.level = false end
+          end
+          function P:drop(B, i) self.live, self.drops = self.live - 1, self.drops + 1 end
+          function ColorF(r, g, b, a) return {r, g, b, a} end
+          local shapes = {paintable = {}}
+          for b = 1, 4 do
+            shapes[b] = {}
+            for k = 1, 8 do shapes[b][k] = 'car_' .. b .. '_' .. k end
+            shapes.paintable[b] = 'car_' .. b .. '_paint'
+          end
+          local F = flow.new{seed = 7, paints = {1, 1, 1, 1, 1, 1, 1, 1}, bodies = {1, 1, 1, 1}}
+          flow.sync(F, grid(6, 120))
+          local V = flow.view(F, shapes, nil, P)
+          local warmed = 0
+          for _ in pairs(P.warmed) do warmed = warmed + 1 end
+          F.target = 120
+          local placed, frames = 0, 0
+          for t = 1, 900 do
+            flow.step(F, 1 / 30, 300, 300)
+            placed = placed + flow.draw(F, V, 300, 300)
+            frames = frames + 1
+          end
+          local cars, wrongShape = 0, 0
+          for _, car in pairs(F.cars) do
+            cars = cars + 1
+            -- one batch a body, the paint as the copy's colour
+            local c = car.batch and car.batch.colour
+            if not car.batch or car.batch.shape ~= shapes.paintable[car.body] or not c
+              or c[1] ~= flow.PAINT_RGB[car.paint][1] or c[3] ~= flow.PAINT_RGB[car.paint][3] then
+              wrongShape = wrongShape + 1
+            end
+          end
+          local yaw, nose, seen = flow.poseCheck(F, V, 40)
+          local live = P.live
+          flow.setTarget(F, 0)
+          return {warmed, cars, live, wrongShape, P.moves == placed, placed < cars * frames, seen, P.live, P.adds - P.drops,
+            P.ticks == frames, P.level}
+        ''')
+        warmed, cars, live, wrong, moves_match, fewer, seen, live_after, net, ticked, level = list(out.values())
+        self.assertEqual(warmed, 4)
+        self.assertEqual((cars, live, wrong), (120, 120, 0))
+        self.assertTrue(moves_match)
+        self.assertTrue(fewer)                 # standing and far cars skip frames
+        self.assertEqual(seen, 0)              # copies cannot be read back
+        self.assertEqual((live_after, net), (0, 0))
+        self.assertTrue(ticked)                # each frame finalizes due batches
+        self.assertTrue(level)                 # a unit +y axis, upright
+
     def test_a_busy_junction_queues_and_lets_cars_through_one_by_one(self):
         lua = self.lua()
         out = lua.execute('''
