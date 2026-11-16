@@ -152,6 +152,49 @@ class GeneratorTests(unittest.TestCase):
         ''', self.generator.build)
         self.assertEqual(tuple(result[i] for i in (1, 2, 3)), (0, 0, 8192))
 
+    def test_precomputed_roofs_are_consumed_and_missing_entries_fall_back(self):
+        source = [{'buildings': [
+            {'id': 'a', 'height': 10, 'tags': {'building': 'commercial', 'roof:shape': 'flat'},
+             'rings': [[[100, 100, 10], [120, 100, 10], [120, 110, 10], [100, 110, 10]]]},
+            {'id': 'b', 'height': 10, 'tags': {'building': 'commercial', 'roof:shape': 'flat'},
+             'rings': [[[150, 100, 10], [170, 100, 10], [170, 110, 10], [150, 110, 10]]]},
+        ]}]
+        baseline = self.build(copy.deepcopy(source), terrainStep=100, maxTrees=0, maxGrass=0)[1]
+        cells = self.table(source)
+        building = cells[1].buildings[1]
+        triangles = self.generator.triangulate(building.rings, None, self.table([0, 0, 500, 500]))
+        cache = self.lua.table()
+        cache[building] = triangles
+        options = self.table({'terrainStep': 100, 'maxTrees': 0, 'maxGrass': 0, 'relief': False})
+        options.roofTriangles = cache
+        scene = self.generator.build(cells, 0, 0, options)[1]
+        self.assertEqual(list(self.triangles(baseline, 'e2rf_roof')),
+                         list(self.triangles(scene, 'e2rf_roof')))
+        self.assertGreater(len(list(self.triangles(scene, 'e2rf_roof'))), 0)
+        # Far buildings use a generated 2D bounding box, so an XYZ roof cache
+        # for the original polygon must never be consulted.
+        options.far = True
+        options.roofTriangles = self.lua.eval("setmetatable({}, {__index=function() error('far roof cache used') end})")
+        far_baseline = self.generator.build(self.table(source), 0, 0, options)[2]
+        far_cells = self.table(source)
+        far_building = far_cells[1].buildings[1]
+        far_cache = self.lua.table()
+        far_cache[far_building] = self.generator.triangulate(
+            self.table([[[100, 100, 0], [120, 100, 0], [120, 110, 0], [100, 110, 0]]]),
+            None, self.table([0, 0, 500, 500]))
+        counter = self.lua.table_from({'hits': 0})
+        options.farRoofTriangles = self.lua.eval('''function(cache, counter)
+          return setmetatable({}, {__index = function(_, key)
+            if cache[key] then counter.hits = counter.hits + 1 end
+            return cache[key]
+          end})
+        end''')(far_cache, counter)
+        far_scene = self.generator.build(far_cells, 0, 0, options)[2]
+        self.assertEqual(counter.hits, 1)
+        self.assertEqual(list(self.triangles(far_baseline, 'e2rf_roof')),
+                         list(self.triangles(far_scene, 'e2rf_roof')))
+        self.assertGreater(len(list(self.triangles(far_scene, 'e2rf_roof'))), 0)
+
     def test_concave_polygon_and_courtyard_hole_keep_exact_area(self):
         shapes = [
             ([[[0, 0], [4, 0], [4, 1], [1, 1], [1, 4], [0, 4]]], 7),

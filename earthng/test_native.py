@@ -39,6 +39,89 @@ def geographic(x, y):
 
 
 class NativeTests(unittest.TestCase):
+    def test_unavailable_experimental_bridge_does_not_block_landing(self):
+        files = fixture()
+        files['settings/earthng-rust-roofs.json'] = {'enabled': True, 'port': 1}
+        lua, mod, cv = self.make(files)
+        # The test harness has no rust_tile_runtime: require resolves to the
+        # unrelated generator stub, so begin fails and Lua must continue.
+        lat, lon = geographic(1750, 1750)
+        mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        self.assertGreater(lua.globals().buildCalls, 0)
+
+    def test_unreachable_tile_pool_leaves_every_tile_to_lua(self):
+        files = fixture()
+        files['settings/earthng-rust-bridge.json'] = {'enabled': True, 'port': 1, 'token': 'x', 'workers': 2}
+        lua, mod, cv = self.make(files, bridge=True)
+        lat, lon = geographic(1750, 1750)
+        mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        self.assertGreater(lua.globals().buildCalls, 0)
+        rust = mod.status().stream.rust
+        self.assertIn('refused', rust.connect)
+        self.assertEqual(rust.submitted, 0)
+        # one attempt per two seconds, five at most: a dead port never costs a frame more
+        self.assertLessEqual(lua.globals().connectAttempts, 5)
+
+    def test_tile_pool_without_config_is_never_contacted(self):
+        lua, mod, cv = self.make(fixture(), bridge=True)
+        lat, lon = geographic(1750, 1750)
+        mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        self.assertIsNone(lua.globals().connectAttempts)
+        self.assertIsNone(mod.status().stream.rust)
+
+    def test_experimental_roof_bridge_is_opt_in_and_pumped_without_waiting(self):
+        files = fixture()
+        files['settings/earthng-rust-roofs.json'] = {'enabled': True, 'port': 12345}
+        lua, mod, cv = self.make(files)
+        lua.execute('''
+          bridgeStarted, bridgePumps, bridgeFinished, bridgeNear = 0, 0, 0, 0
+          bridgeRoadStarted, bridgeRoadResults = 0, 0
+          local bridge = {
+            begin=function(cells, rect, far, config, epoch)
+              bridgeStarted=bridgeStarted+1
+              return {provider={}}
+            end,
+            pump=function(job) bridgePumps=bridgePumps+1 end,
+            finish=function(job) bridgeFinished=bridgeFinished+1 end,
+            beginRoad=function(parent,prepared,list,mitre)
+              bridgeRoadStarted=bridgeRoadStarted+1
+              return {provider={}}
+            end,
+            roadResult=function(job,road)
+              if job then bridgeRoadResults=bridgeRoadResults+1 end
+            end,
+          }
+          local oldRequire = require
+          require = function(name)
+            if name == 'ge/extensions/e2r/rust_tile_runtime' then return bridge end
+            return oldRequire(name)
+          end
+          local original=stubGenerator.build
+          stubGenerator.build=function(cells,i,j,options)
+            if options.roofTriangles then bridgeNear=bridgeNear+1 end
+            if options.roadStart then
+              local road={}
+              options.roadStart({}, {road}, 2)
+              options.roadResult(road)
+            end
+            return original(cells,i,j,options)
+          end
+        ''')
+        lat, lon = geographic(1750, 1750)
+        mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
+        self.pump(mod)
+        self.assertGreater(lua.globals().bridgeStarted, 0)
+        self.assertGreater(lua.globals().bridgePumps, 0)
+        self.assertGreater(lua.globals().bridgeNear, 0)
+        self.assertGreater(lua.globals().bridgeRoadStarted, 0)
+        self.assertGreater(lua.globals().bridgeRoadResults, 0)
+        self.assertGreater(lua.globals().bridgeFinished, 0)
+        self.assertLessEqual(lua.globals().bridgeFinished,
+                             lua.globals().bridgeStarted + lua.globals().bridgeRoadStarted)
+
     def test_quality_invalidates_prepared_density_but_distance_keeps_ready_tiles(self):
         _, mod, cv = self.make()
         lat, lon = geographic(1750, 1750)
@@ -59,8 +142,9 @@ class NativeTests(unittest.TestCase):
             mod.update(.016, 2)
         self.assertTrue(set(mod.status().stream.ready.keys()))
 
-    def make(self, files=None, real_generator=False):
+    def make(self, files=None, real_generator=False, bridge=False):
         lua = LuaRuntime()
+        lua.execute('realRequire = require')
 
         def convert(value):
             if isinstance(value, dict):
@@ -135,6 +219,20 @@ class NativeTests(unittest.TestCase):
         lua.execute("require=function(name) if name=='ge/extensions/e2r/countries' then return countries elseif name=='ge/extensions/e2r/coordinates' then return coordinates elseif name=='ge/extensions/e2r/cellformat' then return cellformat elseif name=='ge/extensions/e2r/manual' then return manual elseif name=='ge/extensions/e2r/manual_editor' then return manualEditor else return stubGenerator end end")
         lua.globals().quality = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/quality.lua').read_text(encoding='utf8'))
         lua.execute("local old=require; require=function(n) if n=='ge/extensions/e2r/quality' then return quality else return old(n) end end")
+        if bridge:
+            # the real tile-pool client and codec; the socket refuses (no bridge listening)
+            lua.execute('''
+              socketStub = {tcp = function() return {settimeout = function() end, close = function() end,
+                connect = function() connectAttempts = (connectAttempts or 0) + 1; return nil, 'connection refused' end} end}
+              local old = require
+              require = function(n)
+                if n == 'ffi' then return realRequire('ffi') elseif n == 'socket' then return socketStub
+                elseif n == 'ge/extensions/e2r/bridge_codec' then return bridgeCodec
+                elseif n == 'ge/extensions/e2r/rust_bridge' then return rustBridge end
+                return old(n)
+              end''')
+            lua.globals().bridgeCodec = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/bridge_codec.lua').read_text(encoding='utf8'))
+            lua.globals().rustBridge = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/rust_bridge.lua').read_text(encoding='utf8'))
         mod = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/native.lua').read_text(encoding='utf8'))
         return lua, mod, convert
 

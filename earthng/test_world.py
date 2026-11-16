@@ -122,6 +122,8 @@ def main():
     p.add_argument('--picker-zoom', type=int, help='--picker-only: centre the map on --lat/--lon at this zoom')
     p.add_argument('--picker-hold', type=float, default=4, help='--picker-only: seconds the picker stays open')
     p.add_argument('--replay', action='store_true', help='camera/pose replay at constant speed; not a physics test')
+    p.add_argument('--dump-layers', action='store_true',
+                   help="after landing: the landing tiles' layers, canonically encoded, to user/current/e2r-dump-*.emc (bridge parity)")
     p.add_argument('--no-pace', action='store_true', help='no frame gate while driving (pace.lua; A/B)')
     p.add_argument('--traffic', type=int, help="after landing: the game's AI traffic, this many cars")
     p.add_argument('--flow', type=int, help='after landing: this many flow cars without physics (flow.lua)')
@@ -217,6 +219,8 @@ def main():
         if not native_route:
             p.error('--replay requires a native geo route')
         test['replay'] = True
+    if a.dump_layers:
+        test['dumpLayers'] = True
     if a.packs:
         test['packs'] = True
     if a.pack:

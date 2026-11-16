@@ -1118,6 +1118,12 @@ local function accStats(acc)
     seen = seen + (acc.bins[b] or 0)
     if seen >= half then p50 = (b + 1) / 2; break end
   end
+  local need95, p95 = math.ceil(acc.n * .95), 0
+  seen = 0
+  for b = 0, 2000 do
+    seen = seen + (acc.bins[b] or 0)
+    if seen >= need95 then p95 = (b + 1) / 2; break end
+  end
   local pairs15, pairs2, list = 0, 0, acc.ms or {}
   for k = 3, #list do
     local a, b = list[k], math.max(list[k - 1], list[k - 2])
@@ -1126,7 +1132,7 @@ local function accStats(acc)
   end
   return {frames = acc.n, meanFrameMs = acc.n > 0 and acc.total / acc.n or 0, p99FrameMs = p99,
           worstFrameMs = acc.worst, worstAt = acc.worstAt, over33 = acc.over33, over100 = acc.over100,
-          p50FrameMs = p50, slowPairs15 = pairs15, slowPairs2 = pairs2}
+          p50FrameMs = p50, p95FrameMs = p95, slowPairs15 = pairs15, slowPairs2 = pairs2}
 end
 
 -- --- tile streaming ------------------------------------------------------------------------------
@@ -2735,7 +2741,11 @@ local function stepQueue(burst)
   local head, wanted = S.queue[1], S.status and S.status.stream and S.status.stream.wanted
   local urgent = NATIVE and head and not (head.scene or head.grass or head.far or head.horizon) and wanted
     and (wanted[head.key] or 1e6) < LIMIT.roadUrgent
-  local budget = test and test.genBudget or (S.state == 'spawning' and (S.landOwed == false and LIMIT.loadQueueLastMs or LIMIT.loadQueueMs))
+  -- while the landing set is still owed the queue takes what the generator left of its share:
+  -- with the Rust worker pool building the tiles the frame's Lua is mostly free, and a fixed
+  -- 14 ms in the landing's long frames left the whole spawn until after the last tile (+9 s)
+  local budget = test and test.genBudget or (S.state == 'spawning' and (S.landOwed == false and LIMIT.loadQueueLastMs
+    or math.max(LIMIT.loadQueueMs, math.min(LIMIT.loadQueueLastMs, LIMIT.loadNativeMs + LIMIT.loadQueueMs - (S.nativeMs or 0)))))
     or burst or math.max(urgent and LIMIT.roadFloorMs or .5, BUDGET_MS - (S.nativeMs or 0))
   local function over() return frame:stop() >= budget end
   local function pause() if over() then coroutine.yield() end end
@@ -5339,7 +5349,7 @@ local function runTest()
       built = stream.built, ready = stream.readyCount, error = S.lastError,
       cachedTiles = stream.cachedTiles, cachedCells = stream.cachedCells, rebuilds = stream.rebuilds,
       slowResumes = stream.slowResumes, spentMs = stream.spentMs, stageMs = stream.stageMs,
-      ioStats = stream.ioStats, lost = stream.lost}
+      ioStats = stream.ioStats, lost = stream.lost, rust = stream.rust}
     if M.live and M.live.status then
       local liveState = M.live.status()
       if liveState then result.live = {message_en = liveState.message_en, message_uk = liveState.message_uk} end
@@ -5868,6 +5878,10 @@ local function replayStep(dt)
   local key = i .. '_' .. j
   -- delivered = loaded with collision; a replay crosses tiles without roads (not drivable)
   local here = S.tiles[key]
+  -- frames the car's tile had no spawned road (A/B of the road ahead, research/native-bridge)
+  if not (here and not here.failed and here.roadComplete) then
+    result.roadMissFrames = (result.roadMissFrames or 0) + 1
+  end
   if not (here and not here.failed and here.roadComplete and here.collided) and S.lastMiss ~= key then
     local t, st = here, S.status and S.status.stream or {}
     table.insert(result.deadlineMisses,{seconds=S.now-S.testDriving,tile=key,distance=r.distance,
@@ -5983,6 +5997,16 @@ function M.onUpdate(dtReal, dtSim)
     if FS:fileExists('/e2r-world-test.json') then
       test = jsonReadFile('/e2r-world-test.json')
       if test and test.pack then S.pack = test.pack end     -- drive in a pack (applied at the landing)
+      if test and test.dumpLayers and native then
+        -- the landing tiles' layers as delivered, canonically encoded (the bridge's parity in the game)
+        local okC, codec = pcall(require, 'ge/extensions/e2r/bridge_codec')
+        result.dumpedLayers = 0
+        native.onDeliver = okC and function(key, layer, value, landing)
+          if not landing or S.state == 'driving' then return end
+          local f = io.open('/e2r-dump-' .. key .. '-' .. layer .. '.emc', 'wb')
+          if f then f:write(codec.encode(value, true)); f:close(); result.dumpedLayers = result.dumpedLayers + 1 end
+        end or nil
+      end
       pcall(function() local tod = scenetree.tod; if tod then tod.play = false end end)
       result.status = 'picker_open'
       S.phaseAt = S.now

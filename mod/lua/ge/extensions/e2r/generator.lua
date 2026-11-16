@@ -1613,6 +1613,26 @@ ROADS.feet = {footway = true, path = true, pedestrian = true, cycleway = true, s
 function ROADS.foot(tags)
   return ROADS.feet[tags.highway or ''] == true
 end
+-- Preserve the exact prepared centreline and junction cuts for a batched
+-- optional road-strip worker. The ordinary Lua path uses the same result.
+function ROADS.prepareStrip(road, cuts, tune, rect, reach, joints)
+  local tags, raw = road.tags or {}, road.points or {}
+  local width = math.max(.5, math.min(80, road.width or 7))
+  local points = {}
+  for _, p in ipairs(raw) do
+    local q = points[#points]
+    if not q or math.abs(q[1] - p[1]) + math.abs(q[2] - p[2]) > 1e-4 then
+      points[#points + 1] = {p[1], p[2], p[3] or 0}
+    end
+  end
+  local full = points
+  if cuts and #points >= 2 and (cuts[1] > 0 or cuts[2] > 0) then points = trimLine(points, cuts[1], cuts[2]) end
+  if tune.simplifyXY > 0 then points = simplify(points, tune.simplifyXY, tune.simplifyZ) end
+  if #points < 2 or not BOX.touch(rect, points, width / 2 + reach) then return nil end
+  local grade = roadGrade(tags)
+  points = densifyWear(points, grade)
+  return {tags=tags, width=width, points=points, full=full, cuts=cuts, grade=grade, joints=joints}
+end
 -- Is (x, y) under the water of this tile's cells (ROADS.waters, set at the top of a build)?
 function ROADS.wet(x, y)
   for _, water in ipairs(ROADS.waters) do
@@ -11792,23 +11812,23 @@ local function build(cells, i, j, options)
     lists.signMouths, lists.signOrder = mouths, order   -- SIGNS.plan, in the scene
   end
   local trimmed = {}
-  for _, road in ipairs(lists.roads) do
-    local tags, raw, width = road.tags or {}, road.points or {}, math.max(.5, math.min(80, road.width or 7))
-    local points = {}
-    for _, p in ipairs(raw) do
-      local q = points[#points]
-      if not q or math.abs(q[1] - p[1]) + math.abs(q[2] - p[2]) > 1e-4 then
-        points[#points + 1] = {p[1], p[2], p[3] or 0}
-      end
+  if options.roadStart then
+    for n, road in ipairs(lists.roads) do
+      trimmed[road] = ROADS.prepareStrip(road, cutsOf[road], tune, rect, stripReach, jointsOf[road]) or false
+      if n % 32 == 0 then pause() end
     end
-    -- the road stops at its junction mouths; the junction's own surface is between
-    local cuts, full = cutsOf[road], points
-    if cuts and #points >= 2 and (cuts[1] > 0 or cuts[2] > 0) then points = ROADS.trimLine(points, cuts[1], cuts[2]) end
-    if tune.simplifyXY > 0 then points = ROADS.simplify(points, tune.simplifyXY, tune.simplifyZ) end
-    if #points >= 2 and BOX.touch(rect, points, width / 2 + stripReach) then
-      local grade = roadGrade(tags)
-      points = ROADS.densifyWear(points, grade)
-      local normals, hw = {}, width / 2
+    options.roadStart(trimmed, lists.roads, tune.mitre)
+  end
+  for _, road in ipairs(lists.roads) do
+    local prep = trimmed[road]
+    if prep == nil then prep = ROADS.prepareStrip(road, cutsOf[road], tune, rect, stripReach, jointsOf[road]) end
+    if prep then
+      local tags, width, points, full, cuts, grade = prep.tags, prep.width, prep.points, prep.full, prep.cuts, prep.grade
+      local normals, dist
+      if options.roadResult then normals, dist = options.roadResult(road) end
+      local hw = width / 2
+      if not normals or not dist then
+      normals = {}
       for k = 1, #points do
         local tx, ty = 0, 0
         for _, pair in ipairs({{k - 1, k}, {k, k + 1}}) do
@@ -11827,23 +11847,25 @@ local function build(cells, i, j, options)
         normals[k] = {-ty / l * mitre, tx / l * mitre}
       end
       -- a joined end: the two strips share the bisecting edge, no wedge between them
-      local joints = jointsOf[road]
+      local joints = prep.joints
       if joints and #points >= 2 then
         for e, k in ipairs({1, #points}) do
           local j = joints[e]
           if j then normals[k] = {-j[2] * j[3], j[1] * j[3]} end
         end
       end
+      dist = {0}
+      for k = 2, #points do
+        dist[k] = dist[k - 1] + math.sqrt((points[k][1] - points[k - 1][1]) ^ 2 + (points[k][2] - points[k - 1][2]) ^ 2)
+      end
+      end
+      local joints = prep.joints
       local surfaceRoad = not ROADS.bridge(tags) and not ROADS.tunnel(tags)
       local material = roadMaterial(tags)
       -- a grass track where the open ground is desert, dry grass, turf or snow is a dirt track
       -- (a green ribbon ran across the Owens Valley)
       if material == 'road_track' and bio.on and points[1] and surfaceKind(points[1][1], points[1][2], 'ground') ~= 'ground' then
         material = 'road_dirt'
-      end
-      local dist = {0}   -- along the strip, for the UVs of its curbs and edges
-      for k = 2, #points do
-        dist[k] = dist[k - 1] + math.sqrt((points[k][1] - points[k - 1][1]) ^ 2 + (points[k][2] - points[k - 1][2]) ^ 2)
       end
       -- The sides a segment has sidewalks on: the tags', or for an untagged street only where
       -- it is built up (walkAt).
@@ -13527,7 +13549,12 @@ local function build(cells, i, j, options)
       end
       if dress then dress.hidden = span.hiddenWalls end
       if options.far or open or not BLD.pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet, BLD.region(look)), dress) then
-        for _, tri in ipairs(triangulate(rings, pause, rect)) do
+        -- Results are owned by this tile and consumed once: their vertices below
+        -- are changed to the roof height. Far tiles use a separate cache for the
+        -- bounding box, not the original building footprint.
+        for _, tri in ipairs((options.far and options.farRoofTriangles and options.farRoofTriangles[building])
+          or (not options.far and options.roofTriangles and options.roofTriangles[building])
+          or triangulate(rings, pause, rect)) do
           for _, p in ipairs(tri) do p[3] = BLD.plane and BLD.plane(p[1], p[2]) or top end
           scene.polygon('roof', tri, true)
         end
@@ -14191,7 +14218,12 @@ local function build(cells, i, j, options)
       scene.items[#scene.items + 1] = item
     end
     for material in pairs(sceneDecor.used) do scene.used[material] = true end
-    for _, mesh in pairs(OFFROAD.lenses) do
+    -- by name: pairs order differs between Lua states (the bridge's worker VMs build the same tile)
+    local lensNames = {}
+    for name in pairs(OFFROAD.lenses) do lensNames[#lensNames + 1] = name end
+    table.sort(lensNames)
+    for _, lensName in ipairs(lensNames) do
+      local mesh = OFFROAD.lenses[lensName]
       mesh.finish()
       for _, item in ipairs(mesh.items) do
         item.decor, item.lens, item.colour = true, mesh.lens[1], mesh.lens[2]
@@ -15046,7 +15078,9 @@ local function build(cells, i, j, options)
           scale = lo + (keyHash(seed + 200, candidate.key) % 1000) / 1000 * (hi - lo)
           if prefix == 'rock' and h % 5 == 0 then shape = here[#here]; scale = scale * .8 end
         end
-        static(prefix .. '_' .. candidate.key, shape, x, y, z, h % 6283 / 1000, scale)
+        -- %d: tostring gives 14 digits (lattice keys have 16), so two stones shared a name, and
+        -- the rounding of the last digit differs between LuaJIT builds (the bridge's worker VMs)
+        static(string.format('%s_%d', prefix, candidate.key), shape, x, y, z, h % 6283 / 1000, scale)
         return true
       end)
     end
@@ -15220,7 +15254,7 @@ local function build(cells, i, j, options)
         end
         local shape = set[h % #set + 1]
         if h % 5 == 0 then shape = set[#set]; scale = scale * .8 end
-        static('srock_' .. candidate.key, shape, x, y, z, h % 6283 / 1000, scale)
+        static(string.format('srock_%d', candidate.key), shape, x, y, z, h % 6283 / 1000, scale)
         return true
       end)
     end

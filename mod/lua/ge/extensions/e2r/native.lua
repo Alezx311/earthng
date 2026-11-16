@@ -15,6 +15,14 @@ local FARMAP = okFarModule and type(farModule) == 'table' and farModule.mapAt
   and {at = farModule.mapAt, uv = farModule.mapUV, lift = farModule.liftAt} or nil
 local liveOk, liveMod = pcall(require, 'ge/extensions/e2r/live')
 local live = liveOk and type(liveMod) == 'table' and type(liveMod.sync) == 'function' and liveMod or nil
+-- The experimental Rust tile worker pool (rust_bridge.lua, research/native-bridge): off unless a
+-- test profile enables it. REMOTE submits eligible near tiles to it and delivers their results;
+-- DELIVER is the stream bookkeeping a built tile goes through, from Lua or from a worker alike.
+local okRustBridge, rustBridgeModule = pcall(require, 'ge/extensions/e2r/rust_bridge')
+local RUST = okRustBridge and type(rustBridgeModule) == 'table' and type(rustBridgeModule.connect) == 'function'
+  and rustBridgeModule or nil
+-- HOLD: decoded scenes of near tiles the renderer has not taken yet, past which the next waits (REMOTE.step)
+local REMOTE, DELIVER = {queue = {}, lanes = {}, fs = {}, elig = {}, HOLD = 3}, {}
 -- TILE_LIMIT holds the whole wanted set (1 km near plus the 3 km far ring, ~130 tiles): a
 -- delivered tile keeps only flags, while undelivered geometry is bounded by triangles/vertices.
 -- At 32 the far ring evicted itself and was rebuilt after every 250 m.
@@ -840,6 +848,7 @@ local function land(req)
     lows = {},   -- cell key -> its lowest ground (world z), for the vista's relief
     foreign = {}, foreignNew = 0,   -- cells from neighbour regions (foreignOf)
     epochPoint = {x, y}, prioritiesDirty = true, startupPinned = true,
+    remote = {}, remoteFailed = {},   -- tile key -> a job in the Rust worker pool / built in Lua instead
     manifests = setmetatable({}, {__mode = 'v'}),
     landing = {x = x, y = y, required = needSquare(r, x, y)}, pose = {x = x, y = y, vx = 0, vy = 0}}
   -- Generation hands the frame back only when update()'s budget is spent. A yield at every
@@ -852,6 +861,8 @@ local function land(req)
   active.pause = function()
     if a.timer and a.timer:stop() >= a.budget then coroutine.yield() end
   end
+  -- jobs of the previous landing are dropped (their results would be stale)
+  if REMOTE.reset then REMOTE.reset() end
   state.stream = {region = descriptor.id, country = country.id, live = country.id == 'live' or nil,
     tile = r.data.tileSize, generator = 'earthng-lua-v1',
     geo = affineAt(r, x, y), bounds = r.data.bounds, ready = {}, scenes = {}, grass = {}, far = {}, horizon = {}, wanted = {}, readyCount = 0,
@@ -1093,7 +1104,7 @@ local function trimTiles()
   local count, triangles, vertices, cellCount = 0, 0, 0, 0
   for _ in pairs(a.cells) do cellCount = cellCount + 1 end
   for _, entry in pairs(a.tiles) do
-    count, triangles, vertices = count + 1, triangles + entry.triangles, vertices + entry.vertices
+    count, triangles, vertices = count + 1, triangles + (entry.triangles or 0), vertices + (entry.vertices or 0)
   end
   local limit = a.tileLimit or TILE_LIMIT
   while count > limit or triangles > TRIANGLE_LIMIT or vertices > VERTEX_LIMIT do
@@ -1107,7 +1118,7 @@ local function trimTiles()
       local selected = a.startupPinned and a.landing and a.landing.selected == key
       local want = a.desired[key]
       local priority = want and want.priority or 1e20
-      local helps = anyEntry or entry.triangles > 0 or entry.vertices > 0
+      local helps = anyEntry or (entry.triangles or 0) > 0 or (entry.vertices or 0) > 0
       -- A near tile the renderer has yet to take stays: a tile of central Kyiv alone is over
       -- TRIANGLE_LIMIT (140k), so each one was evicted unseen and built again at the next epoch,
       -- and at 9 m/s the car drove through a city of bare roads (rebuilds 17 of 37 builds).
@@ -1121,7 +1132,7 @@ local function trimTiles()
     end
     if not worst then break end -- The startup neighbourhood is the minimum working set.
     local removed = a.tiles[worst]
-    count, triangles, vertices = count - 1, triangles - removed.triangles, vertices - removed.vertices
+    count, triangles, vertices = count - 1, triangles - (removed.triangles or 0), vertices - (removed.vertices or 0)
     a.tiles[worst] = nil
     if removed.road then a.evicted[worst .. ':road'] = a.epoch end
     if removed.far then
@@ -1197,6 +1208,173 @@ local function loadTerrain(key, i, j, memo)
   return cell
 end
 
+-- The data part of generator.build's options for one tile: the Lua build adds its callbacks,
+-- the Rust worker pool gets this table as it is (same values, so the same tile).
+function DELIVER.options(r, wanted, size, center, tune, s)
+  return {tileSize = size, regionId = r.descriptor.id, center = center,
+    materials = '/earthng/planet/materials.json', packs = '/e2r_stream/fast-art/v10/packs.json',
+    far = wanted.far, horizon = wanted.horizon, vista = wanted.vista, farDecor = wanted.decor and true or false,
+    -- a vista block's edge at 100 m (4x faster, its skirts hide the seam with the 25 m horizon)
+    terrainStep = wanted.vista and 100 or nil,
+    farStep = 100, horizonStep = wanted.step or 100,
+    latitude = r.data.geo and r.data.geo[4], geo = r.data.geo, nature = r.data.nature,
+    look = r.data.look, country = r.country and r.country.id,
+    leftHand = generator.keepsLeft and generator.keepsLeft(r.country and r.country.id, r.data.look) or nil,
+    seaLevel = finite(r.data.seaLevel) and r.data.seaLevel or nil,
+    maxTrees = tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = tune.maxGrass,
+    maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
+    groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = tune.propSpacing,
+    detail = tune.detail,
+    -- the storefront experiment: only a pack whose data asks for it (docs/BILYCHI_EXPERIMENT.md)
+    experimentalShopfront = type(r.data.experiments) == 'table' and r.data.experiments.shopfront == true or nil,
+    experimentalDetail = type(r.data.experiments) == 'table' and r.data.experiments.detail == true or nil,
+    cellSize = s}
+end
+
+function DELIVER.stamp(r, wanted, road, nav)
+  if road.spawn and not finite(road.spawn.yaw) and vector(road.spawn.dir, 3) then
+    road.spawn.yaw = math.atan2(-road.spawn.dir[1], road.spawn.dir[2])
+  end
+  road.tile, road.source = {wanted.i, wanted.j}, r.descriptor.id
+  road.materials = '/earthng/planet/materials.json'
+  road.packs = '/e2r_stream/fast-art/v10/packs.json'
+  road.navSegments = type(nav) == 'table' and nav.segments or {}
+  road.navSignals = type(nav) == 'table' and nav.signals or nil
+  road.navNames = type(nav) == 'table' and nav.names or nil
+end
+
+-- tests (world.lua --dump-layers): each new layer as it is delivered, intact before the
+-- renderer takes and releases it
+local function delivered(key, layer, value)
+  if M.onDeliver and value ~= nil then
+    M.onDeliver(key, layer, value, active.landing and active.landing.required[key] ~= nil)
+  end
+end
+
+-- A near tile's road out before its scene (generator roadReady)
+function DELIVER.road(r, key, wanted, road, nav)
+  local st = state.stream
+  local entry = active.tiles[key] or {}
+  if entry.road and (entry.sceneLost or entry.grassLost) then
+    -- a rebuild for the scene or the grass alone: the renderer has this road already
+    entry.sceneLost = nil
+    if entry.grassLost then entry.grassLost, entry.grassAgain = nil, true end
+  else
+    DELIVER.stamp(r, wanted, road, nav)
+    delivered(key, 'road', road); delivered(key, 'nav', nav)
+    entry.road, entry.nav, entry.scene = road, nav, nil
+    entry.roadTaken, entry.roadDelivered, entry.sceneTaken, entry.sceneDelivered = nil, nil, nil, nil
+    active.manifests[key .. ':road'] = road
+    entry.used = touch()
+    entry.triangles, entry.vertices = entrySize(entry)
+    active.tiles[key] = entry
+    st.ready[key], st.scenes[key], st.far[key] = true, nil, nil
+    active.nearKnownAt = nil
+    trimTiles()
+  end
+end
+
+-- The scene out before its grass (generator sceneReady)
+function DELIVER.scene(r, key, scene)
+  local st = state.stream
+  local entry = active.tiles[key] or {}
+  if entry.scene and entry.grassAgain then
+    -- a rebuild for the grass alone: the renderer has this scene already
+    entry.grassAgain = nil
+  else
+    scene.source, scene.materials = r.descriptor.id, '/earthng/planet/materials.json'
+    delivered(key, 'scene', scene)
+    entry.scene, entry.sceneTaken, entry.sceneDelivered = scene, nil, nil
+    entry.grass, entry.grassTaken, entry.grassDelivered, entry.grassLost, entry.grassAgain = nil, nil, nil, nil, nil
+    active.manifests[key .. ':scene'] = scene
+    entry.used = touch()
+    entry.triangles, entry.vertices = entrySize(entry)
+    active.tiles[key] = entry
+    st.scenes[key], st.grass[key] = entry.road and true or nil, nil
+    trimTiles()
+  end
+end
+
+-- The rest of a built tile (what roadReady/sceneReady did not hand out already)
+function DELIVER.finish(r, key, wanted, size, road, scene, far, nav, grass, early, split)
+  local st = state.stream
+  if type(road) ~= 'table' or type(road.items) ~= 'table' or type(road.mats) ~= 'table'
+    or type(scene) ~= 'table' or type(scene.items) ~= 'table' then error('generator returned an invalid tile manifest') end
+  if wanted.far and (type(far) ~= 'table' or type(far.items) ~= 'table') then error('generator returned an invalid far manifest') end
+  if split and (type(grass) ~= 'table' or type(grass.items) ~= 'table') then error('generator returned an invalid grass manifest') end
+  if not early then DELIVER.stamp(r, wanted, road, nav) end
+  if split then
+    -- road and scene are out already: only the grass is new. A tile unloaded since (a preset
+    -- change, eviction) has nothing to hang it on; a bare entry here broke trimTiles.
+    local entry = active.tiles[key]
+    if not (entry and entry.road and entry.triangles) then return end
+    grass.source, grass.materials = r.descriptor.id, '/earthng/planet/materials.json'
+    delivered(key, 'grass', grass)
+    entry.grass, entry.grassTaken, entry.grassDelivered = grass, nil, nil
+    active.manifests[key .. ':grass'] = grass
+    entry.used = touch()
+    active.tiles[key] = entry
+    st.grass[key] = entry.scene and true or nil
+    st.built = st.built + 1
+    local layerKey = key .. ':road'
+    if active.everBuilt[layerKey] then st.rebuilds = st.rebuilds + 1 end
+    active.everBuilt[layerKey] = true
+    trimTiles()
+    return
+  end
+  scene.source, scene.materials = r.descriptor.id, '/earthng/planet/materials.json'
+  if wanted.horizon then
+    far.source, far.materials = r.descriptor.id, '/earthng/planet/materials.json'
+    far.tileSize = size
+    local entry = active.horizon[key] or {}
+    entry.horizon, entry.decor = far, false
+    entry.horizonTaken, entry.horizonDelivered = nil, nil
+    entry.serial = (entry.serial or 0) + 1
+    entry.used = touch()
+    entry.triangles, entry.vertices = geometrySize(far)
+    active.horizon[key] = entry
+    active.manifests[key .. ':horizon'] = far
+    st.horizon[key] = {serial = entry.serial, i = wanted.i, j = wanted.j, size = size,
+      x = (wanted.i + 0.5) * size, y = (wanted.j + 0.5) * size}
+    st.horizonBuilt = (st.horizonBuilt or 0) + 1
+    local layerKey = key .. ':horizon'
+    if active.everBuilt[layerKey] then st.horizonRebuilds = (st.horizonRebuilds or 0) + 1 end
+    active.everBuilt[layerKey] = true
+    trimHorizon()
+    return
+  end
+  local entry = active.tiles[key] or {}
+  if wanted.far then
+    far.source, far.materials = r.descriptor.id, '/earthng/planet/materials.json'
+    entry.far, entry.decor = far, wanted.decor and true or false
+    entry.farTaken, entry.farDelivered = nil, nil
+    entry.serial = (entry.serial or 0) + 1
+    active.manifests[key .. ':far'] = far
+    st.far[key] = entry.serial
+  elseif early then
+    -- the road went out already (roadReady): only the scene is new
+    delivered(key, 'scene', scene)
+    entry.scene, entry.sceneTaken, entry.sceneDelivered = scene, nil, nil
+    active.manifests[key .. ':scene'] = scene
+  else
+    delivered(key, 'road', road); delivered(key, 'scene', scene); delivered(key, 'nav', nav)
+    entry.road, entry.scene, entry.nav = road, scene, nav
+    active.manifests[key .. ':road'], active.manifests[key .. ':scene'] = road, scene
+    entry.roadTaken, entry.sceneTaken, entry.roadDelivered, entry.sceneDelivered = nil, nil, nil, nil
+  end
+  entry.used = touch()
+  entry.triangles, entry.vertices = entrySize(entry)
+  active.tiles[key] = entry
+  st.ready[key], st.scenes[key] = entry.road and true or nil, entry.scene and true or nil
+  if not wanted.far then st.far[key] = nil end
+  st.built = st.built + 1
+  local layerKey = key .. (wanted.far and ':far' or ':road')
+  if active.everBuilt[layerKey] then st.rebuilds = st.rebuilds + 1 end
+  active.everBuilt[layerKey] = true
+  trimTiles()
+end
+
+
 local function buildTile(key, wanted)
   local r = active.region
   local size = wanted.size or r.data.tileSize
@@ -1252,39 +1430,11 @@ local function buildTile(key, wanted)
   end
   local center = active.landing and {active.landing.x, active.landing.y} or nil
   local tune = active.tune or {}
-  local st = state.stream
-  local function stamp(road, nav)
-    if road.spawn and not finite(road.spawn.yaw) and vector(road.spawn.dir, 3) then
-      road.spawn.yaw = math.atan2(-road.spawn.dir[1], road.spawn.dir[2])
-    end
-    road.tile, road.source = {wanted.i, wanted.j}, r.descriptor.id
-    road.materials = '/earthng/planet/materials.json'
-    road.packs = '/e2r_stream/fast-art/v10/packs.json'
-    road.navSegments = type(nav) == 'table' and nav.segments or {}
-    road.navSignals = type(nav) == 'table' and nav.signals or nil
-    road.navNames = type(nav) == 'table' and nav.names or nil
-  end
   -- While driving a near tile's road goes out as soon as it is built (AHEAD), and the build
   -- yields AHEAD to update(), which parks it until the scene's turn. The landing builds whole.
   local early
   local roadReady = not wanted.far and not wanted.horizon and not active.startupPinned and function(road, nav)
-    local entry = active.tiles[key] or {}
-    if entry.road and (entry.sceneLost or entry.grassLost) then
-      -- a rebuild for the scene or the grass alone: the renderer has this road already
-      entry.sceneLost = nil
-      if entry.grassLost then entry.grassLost, entry.grassAgain = nil, true end
-    else
-      stamp(road, nav)
-      entry.road, entry.nav, entry.scene = road, nav, nil
-      entry.roadTaken, entry.roadDelivered, entry.sceneTaken, entry.sceneDelivered = nil, nil, nil, nil
-      active.manifests[key .. ':road'] = road
-      entry.used = touch()
-      entry.triangles, entry.vertices = entrySize(entry)
-      active.tiles[key] = entry
-      st.ready[key], st.scenes[key], st.far[key] = true, nil, nil
-      active.nearKnownAt = nil
-      trimTiles()
-    end
+    DELIVER.road(r, key, wanted, road, nav)
     early = true
     coroutine.yield(AHEAD)
   end
@@ -1295,46 +1445,47 @@ local function buildTile(key, wanted)
   local p, before = active.pose, active.tiles[key]
   local fast = (p.vx or 0) ^ 2 + (p.vy or 0) ^ 2 >= AHEAD.slow ^ 2
   local sceneReady = roadReady and (fast or (before and before.grassLost)) and function(scene)
-    local entry = active.tiles[key] or {}
-    if entry.scene and entry.grassAgain then
-      -- a rebuild for the grass alone: the renderer has this scene already
-      entry.grassAgain = nil
-    else
-      scene.source, scene.materials = r.descriptor.id, '/earthng/planet/materials.json'
-      entry.scene, entry.sceneTaken, entry.sceneDelivered = scene, nil, nil
-      entry.grass, entry.grassTaken, entry.grassDelivered, entry.grassLost, entry.grassAgain = nil, nil, nil, nil, nil
-      active.manifests[key .. ':scene'] = scene
-      entry.used = touch()
-      entry.triangles, entry.vertices = entrySize(entry)
-      active.tiles[key] = entry
-      st.scenes[key], st.grass[key] = entry.road and true or nil, nil
-      trimTiles()
-    end
+    DELIVER.scene(r, key, scene)
     split = true
     coroutine.yield(GRASS)
   end
-  local road, scene, far, nav, grass = generator.build(cells, wanted.i, wanted.j,
-    {tileSize = size, regionId = r.descriptor.id, center = center, pause = active.pause,
-      materials = '/earthng/planet/materials.json', packs = '/e2r_stream/fast-art/v10/packs.json',
-      far = wanted.far, horizon = wanted.horizon, vista = wanted.vista, farDecor = wanted.decor and true or false,
-      -- the horizon is draped in the far colour map; a far tile takes its water from it (generator.lua)
-      farMap = (wanted.horizon or wanted.far) and FARMAP or nil,
-      mark = function(stage) STAGE[coroutine.running()] = stage end,
-      -- a vista block's edge at 100 m (4x faster, its skirts hide the seam with the 25 m horizon)
-      terrainStep = wanted.vista and 100 or nil,
-      farStep = 100, horizonStep = wanted.step or 100,
-      latitude = r.data.geo and r.data.geo[4], geo = r.data.geo, nature = r.data.nature,
-      look = r.data.look, country = r.country and r.country.id,
-      leftHand = generator.keepsLeft and generator.keepsLeft(r.country and r.country.id, r.data.look) or nil,
-      seaLevel = finite(r.data.seaLevel) and r.data.seaLevel or nil,
-      maxTrees = tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = tune.maxGrass,
-      maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
-      groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = tune.propSpacing,
-      detail = tune.detail, roadReady = roadReady or nil, sceneReady = sceneReady or nil,
-      editorPlan = #active.editorObjects > 0 and function(rect)
+  -- Experimental and explicitly enabled per test profile. The normal runtime
+  -- does not require a DLL; pending or failed work falls back to Lua.
+  local rustBridge, rustJob, rustRoadJob
+  if not wanted.horizon and exists('settings/earthng-rust-roofs.json') then
+    local configOk, config = pcall(jsonReadFile, 'settings/earthng-rust-roofs.json')
+    if configOk and type(config) == 'table' and config.enabled == true then
+      local loaded, module = pcall(require, 'ge/extensions/e2r/rust_tile_runtime')
+      if loaded and type(module) == 'table' then
+        local started, job = pcall(module.begin, cells, tileRect, wanted.far == true, config, active.epoch)
+        if started and job then rustBridge, rustJob = module, job end
+      end
+    end
+  end
+  local function tilePause()
+    rustBridge.pump(rustJob)
+    if rustRoadJob then rustBridge.pump(rustRoadJob) end
+    active.pause()
+  end
+  local options = DELIVER.options(r, wanted, size, center, tune, s)
+  options.pause = rustJob and tilePause or active.pause
+  options.roofTriangles = rustJob and not wanted.far and rustJob.provider or nil
+  options.farRoofTriangles = rustJob and wanted.far and rustJob.provider or nil
+  options.roadStart = rustJob and function(prepared, list, mitre)
+    local ok, job = pcall(rustBridge.beginRoad, rustJob, prepared, list, mitre)
+    if ok then rustRoadJob = job end
+  end or nil
+  options.roadResult = rustJob and function(road)
+    return rustBridge.roadResult(rustRoadJob, road)
+  end or nil
+  -- the horizon is draped in the far colour map; a far tile takes its water from it (generator.lua)
+  options.farMap = (wanted.horizon or wanted.far) and FARMAP or nil
+  options.mark = function(stage) STAGE[coroutine.running()] = stage end
+  options.roadReady, options.sceneReady = roadReady or nil, sceneReady or nil
+  options.editorPlan = #active.editorObjects > 0 and function(rect)
         return manualEditor.plan(active.editorObjects, rect)
-      end or nil,
-      manualPlan = #active.manual > 0 and function(rect, lists, segments, scene, signs)
+      end or nil
+  options.manualPlan = #active.manual > 0 and function(rect, lists, segments, scene, signs)
         local accepted, rejected = manual.plan(active.manual, rect, lists, segments, scene, signs, active.pause)
         -- Only the owning half-open tile reports a result; halo objects may be
         -- processed on neighbours too, without appearing there a second time.
@@ -1351,106 +1502,443 @@ local function buildTile(key, wanted)
           end
         end
         return accepted
-      end or nil,
-      -- the storefront experiment: only a pack whose data asks for it (docs/BILYCHI_EXPERIMENT.md)
-      experimentalShopfront = type(r.data.experiments) == 'table' and r.data.experiments.shopfront == true or nil,
-      experimentalDetail = type(r.data.experiments) == 'table' and r.data.experiments.detail == true or nil,
-      cellSize = s})
-  if type(road) ~= 'table' or type(road.items) ~= 'table' or type(road.mats) ~= 'table'
-    or type(scene) ~= 'table' or type(scene.items) ~= 'table' then error('generator returned an invalid tile manifest') end
-  if wanted.far and (type(far) ~= 'table' or type(far.items) ~= 'table') then error('generator returned an invalid far manifest') end
-  if split and (type(grass) ~= 'table' or type(grass.items) ~= 'table') then error('generator returned an invalid grass manifest') end
-  if not early then stamp(road, nav) end
-  if split then
-    -- road and scene are out already: only the grass is new
-    local entry = active.tiles[key] or {}
-    grass.source, grass.materials = r.descriptor.id, '/earthng/planet/materials.json'
-    entry.grass, entry.grassTaken, entry.grassDelivered = grass, nil, nil
-    active.manifests[key .. ':grass'] = grass
-    entry.used = touch()
-    active.tiles[key] = entry
-    st.grass[key] = entry.scene and true or nil
-    st.built = st.built + 1
-    local layerKey = key .. ':road'
-    if active.everBuilt[layerKey] then st.rebuilds = st.rebuilds + 1 end
-    active.everBuilt[layerKey] = true
-    trimTiles()
-    return
+      end or nil
+  local road, scene, far, nav, grass = generator.build(cells, wanted.i, wanted.j, options)
+  if rustRoadJob then rustBridge.finish(rustRoadJob) end
+  if rustJob then rustBridge.finish(rustJob) end
+  DELIVER.finish(r, key, wanted, size, road, scene, far, nav, grass, early, split)
+end
+
+-- --- the experimental Rust tile worker pool (rust_bridge.lua) -----------------------------------
+-- A near tile whose cells are all this region's own (no neighbour region, no live cells) and
+-- that has no editor or manual objects is built by a worker VM running this very generator.lua;
+-- the frame only decodes and delivers its parts (road, scene, the rest) through DELIVER. While
+-- the pool is full such tiles wait and the Lua builder takes the far ring and the rest. Late,
+-- failed, rejected or cancelled work goes back to the Lua builder (active.remoteFailed).
+local REMOTE_CONFIG = 'settings/earthng-rust-bridge.json'
+
+function REMOTE.stats()
+  local st = state and state.stream
+  if not st then return {} end
+  st.rust = st.rust or {submitted = 0, parts = 0, finished = 0, failed = 0, cancelled = 0, busy = 0, rejected = 0,
+    timeouts = 0, ineligible = {}, decodeMs = 0, decodeMaxMs = 0, deliverMs = 0, workerRunMs = 0, workerQueueMs = 0,
+    workerStageMs = {}, encodeMs = 0, bytes = 0, inflightMax = 0, roadMs = 0, roadMaxMs = 0, roadCount = 0,
+    finalMs = 0, finalMaxMs = 0, errors = {}, resumeMs = 0, resumeMaxMs = 0, stepMs = 0, stepMaxMs = 0, stepSlow = 0,
+    heldMax = 0, held = 0, queueMbMax = 0, pumpKb = 0, resumeKb = 0, fresh = 0, freshKb = 0, capped = 0}
+  return st.rust
+end
+
+function REMOTE.reset()
+  local link = REMOTE.link
+  if link and not link.dead then
+    for id in pairs(link.jobs) do link:cancel(id) end
   end
-  scene.source, scene.materials = r.descriptor.id, '/earthng/planet/materials.json'
-  if wanted.horizon then
-    far.source, far.materials = r.descriptor.id, '/earthng/planet/materials.json'
-    far.tileSize = size
-    local entry = active.horizon[key] or {}
-    entry.horizon, entry.decor = far, false
-    entry.horizonTaken, entry.horizonDelivered = nil, nil
-    entry.serial = (entry.serial or 0) + 1
-    entry.used = touch()
-    entry.triangles, entry.vertices = geometrySize(far)
-    active.horizon[key] = entry
-    active.manifests[key .. ':horizon'] = far
-    st.horizon[key] = {serial = entry.serial, i = wanted.i, j = wanted.j, size = size,
-      x = (wanted.i + 0.5) * size, y = (wanted.j + 0.5) * size}
-    st.horizonBuilt = (st.horizonBuilt or 0) + 1
-    local layerKey = key .. ':horizon'
-    if active.everBuilt[layerKey] then st.horizonRebuilds = (st.horizonRebuilds or 0) + 1 end
-    active.everBuilt[layerKey] = true
-    trimHorizon()
-    return
+  REMOTE.queue, REMOTE.lanes, REMOTE.elig, REMOTE.bytes = {}, {}, {}, 0
+  if RUST and RUST.release then RUST.release() end
+end
+
+-- A preset change (setTune): the pool's jobs and undelivered parts carry the old density. They go,
+-- and their tiles are submitted again (remoteFailed would leave them to Lua). A grass part landing
+-- after the change found its tile unloaded and made a bare entry (kyiv-hops-rust: 'triangles' nil).
+function REMOTE.abandon()
+  if not active or not active.remote then return end
+  local link = REMOTE.link
+  for key, job in pairs(active.remote) do
+    if link and not link.dead then link:cancel(job.id) end
+    active.remote[key] = nil
   end
-  local entry = active.tiles[key] or {}
-  if wanted.far then
-    far.source, far.materials = r.descriptor.id, '/earthng/planet/materials.json'
-    entry.far, entry.decor = far, wanted.decor and true or false
-    entry.farTaken, entry.farDelivered = nil, nil
-    entry.serial = (entry.serial or 0) + 1
-    active.manifests[key .. ':far'] = far
-    st.far[key] = entry.serial
-  elseif early then
-    -- the road went out already (roadReady): only the scene is new
-    entry.scene, entry.sceneTaken, entry.sceneDelivered = scene, nil, nil
-    active.manifests[key .. ':scene'] = scene
+  REMOTE.queue, REMOTE.lanes, REMOTE.bytes = {}, {}, 0
+  if RUST and RUST.release then RUST.release() end
+end
+
+function REMOTE.ensure()
+  if not RUST then return nil end
+  local link = REMOTE.link
+  if link and not link.dead then return link end
+  local now = os.clock()
+  if REMOTE.nextTry and now < REMOTE.nextTry then return nil end
+  REMOTE.nextTry = now + 2
+  if not exists(REMOTE_CONFIG) then return nil end
+  local ok, config = pcall(jsonReadFile, REMOTE_CONFIG)
+  if not ok or type(config) ~= 'table' or config.enabled ~= true then return nil end
+  REMOTE.tries = (REMOTE.tries or 0) + 1
+  if REMOTE.tries > 5 then return nil end
+  local made, why = RUST.connect(config)
+  REMOTE.link, REMOTE.config = made, config
+  -- a set of the codec's persistent views per delivery lane (bridge_codec.lua)
+  if RUST.viewSets then RUST.viewSets(config.views or 2) end
+  -- the collector's report of a heap fall says what the pool held and had allocated by then
+  local okGc, gcMod = pcall(require, 'ge/extensions/e2r/gc')
+  if okGc and type(gcMod) == 'table' then
+    gcMod.context = function()
+      local s = REMOTE.stats()
+      local lanes = 0
+      for _ in pairs(REMOTE.lanes) do lanes = lanes + 1 end
+      return string.format(' | queue %.0f MB, held %d, lanes %d, pump %.0f MB, decode %.0f MB, fresh %.0f MB',
+        (REMOTE.bytes or 0) / 1048576, s.held or 0, lanes, (s.pumpKb or 0) / 1024, (s.resumeKb or 0) / 1024,
+        (s.freshKb or 0) / 1024)
+    end
+  end
+  local rs = REMOTE.stats()
+  rs.connect = why or 'ok'
+  rs.connects = (rs.connects or 0) + 1
+  return made
+end
+
+-- true, or false and why (counted in state.stream.rust.ineligible)
+function REMOTE.eligible(key, wanted)
+  if wanted.far or wanted.horizon or wanted.vista then return false, 'layer' end
+  local r = active.region
+  local hit = REMOTE.elig[key]
+  if hit ~= nil then return hit == true, hit ~= true and hit or nil end
+  local why = true
+  if r.data.schemaVersion ~= 2 then why = 'schema'
+  elseif r.country and r.country.id == 'live' then why = 'live'
+  elseif #active.editorObjects > 0 or #active.manual > 0 then why = 'editor'
   else
-    entry.road, entry.scene, entry.nav = road, scene, nav
-    active.manifests[key .. ':road'], active.manifests[key .. ':scene'] = road, scene
-    entry.roadTaken, entry.sceneTaken, entry.roadDelivered, entry.sceneDelivered = nil, nil, nil, nil
+    local size, s = wanted.size or r.data.tileSize, r.data.cellSize
+    local x0, y0, pad = wanted.i * size, wanted.j * size, 40
+    local b = blocksOf(r.data)
+    for i = math.floor((x0 - pad) / s), math.ceil((x0 + size + pad) / s) - 1 do
+      for j = math.floor((y0 - pad) / s), math.ceil((y0 + size + pad) / s) - 1 do
+        if hasCell(r, i, j) then
+          if not ownCell(r, i, j) then why = 'foreign'
+          else
+            local block = r.data.blocks[keyOf(math.floor(i / b), math.floor(j / b))]
+            if block.memory then why = 'live' end
+          end
+        end
+      end
+    end
   end
-  entry.used = touch()
-  entry.triangles, entry.vertices = entrySize(entry)
-  active.tiles[key] = entry
-  st.ready[key], st.scenes[key] = entry.road and true or nil, entry.scene and true or nil
-  if not wanted.far then st.far[key] = nil end
-  st.built = st.built + 1
-  local layerKey = key .. (wanted.far and ':far' or ':road')
-  if active.everBuilt[layerKey] then st.rebuilds = st.rebuilds + 1 end
-  active.everBuilt[layerKey] = true
-  trimTiles()
+  REMOTE.elig[key] = why
+  return why == true, why ~= true and why or nil
+end
+
+-- jobs still in the pool, and jobs whose parts are all here and wait for delivery (a scene held
+-- back by REMOTE.HOLD): the second must not take the pool's slots from a road coming due
+function REMOTE.count()
+  local n, waiting = 0, 0
+  local jobs = REMOTE.link and REMOTE.link.jobs or {}
+  for _, job in pairs(active.remote) do
+    if jobs[job.id] then n = n + 1 else waiting = waiting + 1 end
+  end
+  return n, waiting
+end
+
+function REMOTE.limit(link)
+  return link.workers * 2 + (active.startupPinned and 4 or 0)
+end
+
+-- Parts received and not delivered are Lua strings in the game's heap: past queueMb (the bridge
+-- config) no tile goes to the pool but one coming due (wanted.priority, ETA s, within AHEAD.urgent).
+function REMOTE.full(link, wanted)
+  local n, waiting = REMOTE.count()
+  local limit = REMOTE.limit(link)
+  if n >= limit or waiting >= limit then return true end
+  local cap = REMOTE.config and tonumber(REMOTE.config.queueMb)
+  if cap and (REMOTE.bytes or 0) > cap * 1048576 and not (wanted and (wanted.priority or 1e9) <= AHEAD.urgent) then
+    return true
+  end
+  return false
+end
+
+-- the pool is up and full: eligible tiles wait for it instead of a Lua build
+function REMOTE.saturated(wanted)
+  local link = REMOTE.link
+  return link ~= nil and link.ready and not link.dead and REMOTE.full(link, wanted)
+end
+
+function REMOTE.waits(key, entry)
+  return REMOTE.saturated(entry) and not active.remoteFailed[key] and REMOTE.eligible(key, entry)
+end
+
+-- true when the tile went to the pool
+function REMOTE.submit(key, wanted)
+  local link = REMOTE.link
+  if not link or link.dead or not link.ready or active.remoteFailed[key] or active.remote[key] then return false end
+  local ok, why = REMOTE.eligible(key, wanted)
+  local rs = REMOTE.stats()
+  if not ok then rs.ineligible[why] = (rs.ineligible[why] or 0) + 1; return false end
+  if REMOTE.full(link, wanted) then
+    local cap = REMOTE.config and tonumber(REMOTE.config.queueMb)
+    if cap and (REMOTE.bytes or 0) > cap * 1048576 then rs.capped = rs.capped + 1 end
+    return false
+  end
+  local r = active.region
+  link:region(r.descriptor.id, r.data)
+  local size = wanted.size or r.data.tileSize
+  local p, before = active.pose, active.tiles[key]
+  local fast = (p.vx or 0) ^ 2 + (p.vy or 0) ^ 2 >= AHEAD.slow ^ 2
+  -- the same split as buildTile's roadReady / sceneReady; a tile beyond the landing sends its road
+  -- apart even in the landing, so that REMOTE.HOLD can keep its scene back without the road
+  local roadEarly = not active.startupPinned or not (active.landing and active.landing.required[key])
+  local sceneEarly = roadEarly and (fast or (before and before.grassLost)) and true or false
+  local center = active.landing and {active.landing.x, active.landing.y} or nil
+  local args = {regionId = r.descriptor.id, i = wanted.i, j = wanted.j, size = size, roadEarly = roadEarly,
+    sceneEarly = sceneEarly, options = DELIVER.options(r, wanted, size, center, active.tune or {}, r.data.cellSize)}
+  local id = link:submit(args, wanted.priority or 0, active.epoch, 0)
+  active.remote[key] = {id = id, wanted = wanted, size = size, at = os.clock(), roadEarly = roadEarly}
+  rs.submitted = rs.submitted + 1
+  local n, waiting = REMOTE.count()
+  if n + waiting > rs.inflightMax then rs.inflightMax = n + waiting end
+  return true
+end
+
+-- the game's own content a worker assumed present: checked here once per path
+function REMOTE.fsOk(list)
+  if type(list) ~= 'table' then return true end
+  local bad
+  for _, path in ipairs(list) do
+    local known = REMOTE.fs[path]
+    if known == nil then known = exists(path); REMOTE.fs[path] = known end
+    if not known then bad = bad or {}; bad[#bad + 1] = path end
+  end
+  if bad and REMOTE.link then REMOTE.link:fsFalse(bad) end
+  return bad == nil
+end
+
+-- back to the Lua builder; a road already out keeps, the scene is built again in Lua
+function REMOTE.drop(key, why)
+  local rs = REMOTE.stats()
+  active.remote[key] = nil
+  active.remoteFailed[key] = why or true
+  local entry = active.tiles[key]
+  if entry and entry.road and not entry.scene then entry.sceneLost = true end
+  if why and #rs.errors < 20 then rs.errors[#rs.errors + 1] = key .. ': ' .. tostring(why):sub(1, 200) end
+end
+
+function REMOTE.deliver(d)
+  local key, job, part = d.key, d.job, d.part
+  if active.remote[key] ~= job then return end
+  local rs = REMOTE.stats()
+  local t = hptimer()
+  local value = RUST.decode(part.data, nil, active.pause, part.base)
+  local ms = t:stop()
+  rs.decodeMs = rs.decodeMs + ms
+  if ms > rs.decodeMaxMs then rs.decodeMaxMs = ms end
+  if active.remote[key] ~= job then return end
+  if not REMOTE.fsOk(value.assumed) then
+    rs.rejected = rs.rejected + 1
+    if REMOTE.link then REMOTE.link:cancel(job.id) end
+    REMOTE.drop(key, 'assumed a missing game file')
+    return
+  end
+  t = hptimer()
+  local r = active.region
+  rs.parts = rs.parts + 1
+  if part.kind == 1 then
+    job.road, job.nav, job.early = value.road, value.nav, true
+    DELIVER.road(r, key, job.wanted, value.road, value.nav)
+    local wait = (os.clock() - job.at) * 1000
+    rs.roadMs, rs.roadCount = rs.roadMs + wait, rs.roadCount + 1
+    if wait > rs.roadMaxMs then rs.roadMaxMs = wait end
+  elseif part.kind == 2 then
+    job.scene, job.split = value.scene, true
+    DELIVER.scene(r, key, value.scene)
+  else
+    for cell, low in pairs(value.lows or {}) do active.lows[cell] = active.lows[cell] or low end
+    active.remote[key] = nil
+    DELIVER.finish(r, key, job.wanted, job.size, value.road or job.road, value.scene or job.scene, value.far,
+      value.nav or job.nav, value.grass, job.early, job.split)
+    rs.finished = rs.finished + 1
+    local wait = (os.clock() - job.at) * 1000
+    rs.finalMs = rs.finalMs + wait
+    if wait > rs.finalMaxMs then rs.finalMaxMs = wait end
+    completeLanding()
+  end
+  rs.deliverMs = rs.deliverMs + t:stop()
+end
+
+-- Every frame before the Lua builder: link bytes, cancellations, priorities, and deliveries
+-- within the frame's budget (active.timer). wanted: this frame's desired set.
+function REMOTE.step(wanted, dirty)
+  local link = REMOTE.ensure()
+  if not link then return end
+  local rs = REMOTE.stats()
+  -- heap grown by receiving (the parts' strings, their pieces and concatenation): debt the
+  -- collector pays inside this frame's allocations
+  local kb0 = collectgarbage('count')
+  -- ~0.4 MB a ms (kyivfast-q50-rust-7): 1.5 ms is ~0.6 MB a frame, plenty while driving, while the
+  -- landing's nine tiles are 50-150 MB and its frames long anyway (the player waits for them)
+  if active.startupPinned then link:pump(12, 32 * 1024 * 1024) else link:pump(1.5, 8 * 1024 * 1024) end
+  local grown = collectgarbage('count') - kb0
+  if grown > 0 then rs.pumpKb = rs.pumpKb + grown end
+  if link.dead then
+    rs.dead = link.why
+    for key in pairs(active.remote) do REMOTE.drop(key, 'link: ' .. tostring(link.why)) end
+    REMOTE.queue, REMOTE.lanes, REMOTE.bytes = {}, {}, 0
+    if RUST.release then RUST.release() end
+    return
+  end
+  rs.received, rs.sent, rs.pumpMs, rs.pumpMaxMs = link.stats.received, link.stats.sent, link.stats.pumpMs, link.stats.pumpMaxMs
+  local now = os.clock()
+  for key, job in pairs(active.remote) do
+    local want = wanted[key]
+    local lj = link.jobs[job.id]
+    if not want or want.far or want.horizon then
+      -- the car has left it: a road already out stays, the scene is built again if it is near once more
+      link:cancel(job.id)
+      active.remote[key] = nil
+      rs.cancelled = rs.cancelled + 1
+      local entry = active.tiles[key]
+      if entry and entry.road and not entry.scene then entry.sceneLost = true end
+    elseif lj then
+      if dirty then link:priority(job.id, want.priority or 0) end
+      while lj.parts[1] do
+        REMOTE.queue[#REMOTE.queue + 1] = {key = key, job = job, part = table.remove(lj.parts, 1)}
+      end
+      local done = lj.done
+      if done then
+        link.jobs[job.id] = nil
+        rs.workerRunMs, rs.workerQueueMs = rs.workerRunMs + done.runMs, rs.workerQueueMs + done.queueMs
+        if done.status == RUST.OK then
+          local ok, stats = pcall(RUST.decode, done.message)
+          if ok and type(stats) == 'table' then
+            rs.encodeMs, rs.bytes = rs.encodeMs + (stats.encodeMs or 0), rs.bytes + (stats.bytes or 0)
+            for stage, ms in pairs(stats.stageMs or {}) do rs.workerStageMs[stage] = (rs.workerStageMs[stage] or 0) + ms end
+          end
+        elseif done.status == RUST.BUSY then
+          rs.busy = rs.busy + 1
+          active.remote[key] = nil
+        else
+          if done.status == RUST.CANCELLED then rs.cancelled = rs.cancelled + 1 else rs.failed = rs.failed + 1 end
+          REMOTE.drop(key, done.message)
+        end
+      elseif now - job.at > 30 then
+        rs.timeouts = rs.timeouts + 1
+        link:cancel(job.id)
+        REMOTE.drop(key, 'timeout')
+      end
+    end
+  end
+  -- A decoded scene waits in active.tiles until the renderer takes it; past a few, decoding more
+  -- only grows the heap the engine's full collection walks: the near ring decoded ahead left 270 MB
+  -- more live heap after the touch-down and 2-4 more full collections of 140-230 ms while driving
+  -- (kyiv-q50-rust-3). The renderer starts every near wanted tile by its ETA, so these leave in
+  -- order. Counted: decoded and not taken (one being spawned is the spawn queue's, which the
+  -- renderer bounds; counting those too left the pipe empty, kyiv-q50-rust-4: 2945 frames without
+  -- a scene in view against 2451).
+  local held, bytes = 0, 0
+  for key, w in pairs(wanted) do
+    if not w.far and not w.horizon then
+      local e = active.tiles[key]
+      if e and e.scene and not e.sceneTaken then held = held + 1 end
+    end
+  end
+  for k = #REMOTE.queue, 1, -1 do
+    local d = REMOTE.queue[k]
+    if active.remote[d.key] ~= d.job then table.remove(REMOTE.queue, k) else bytes = bytes + #d.part.data end
+  end
+  rs.held = held
+  REMOTE.bytes = bytes
+  if held > rs.heldMax then rs.heldMax = held end
+  if bytes / 1048576 > rs.queueMbMax then rs.queueMbMax = bytes / 1048576 end
+  if RUST.codecStats then rs.fresh, rs.freshKb = RUST.codecStats.fresh, RUST.codecStats.freshKb end
+  -- the part the car reaches first: a road by its tile's ETA, a scene or the rest later by
+  -- the same wait as the Lua builder's sceneWait (all roads first starved the scenes in view:
+  -- 2129 -> 2499 frames without a scene in view, kyiv-q50-rust-1)
+  local p = active.pose or {}
+  local speed = math.sqrt((p.vx or 0) ^ 2 + (p.vy or 0) ^ 2)
+  local lag = AHEAD.lag + math.max(0, speed - AHEAD.slow) * AHEAD.lagPerMs
+  -- Two lanes, one delivery each: roads, and scenes with the rest. A city scene takes 1-3 s of
+  -- frames to decode, and on one lane the next tile's road waited behind it (roadMaxMs 4752,
+  -- kyiv-q50-rust-4). A scene goes only once its own road is out (DELIVER.road clears the scene);
+  -- a whole tile in one part (no road sent apart: the landing's) goes on the second lane at once.
+  for lane = 1, 2 do
+    while true do
+      local L = REMOTE.lanes[lane]
+      if not L then
+        if lane == 2 and active.timer and active.timer:stop() >= active.budget then break end
+        local pick, best = nil, nil
+        for k, d in ipairs(REMOTE.queue) do
+          local kind, job = d.part.kind, d.job
+          local mine = (lane == 1) == (kind == 1) and (lane == 1 or job.early or not job.roadEarly)
+          if mine then
+            local w = wanted[d.key]
+            local eta = w and w.priority or 1e9
+            local whole = kind == 3 and not job.roadEarly
+            if lane == 1 or whole or held < REMOTE.HOLD or eta <= AHEAD.urgent then
+              local rank = kind == 1 and eta or eta + (eta < 8 and math.min(lag, 2) or lag)
+              if not best or rank < best then pick, best = k, rank end
+            end
+          end
+        end
+        local d = pick and table.remove(REMOTE.queue, pick)
+        if not d then break end
+        if lane == 2 and (d.part.kind == 2 or not d.job.split) then held = held + 1 end
+        L = {co = coroutine.create(function() REMOTE.deliver(d) end), key = d.key}
+        REMOTE.lanes[lane] = L
+      end
+      -- decodeMs/deliverMs above are wall time across frames; this is the frame's own share
+      local rt, rkb = hptimer(), collectgarbage('count')
+      local ok, err = coroutine.resume(L.co)
+      local rms = rt:stop()
+      local rgrown = collectgarbage('count') - rkb
+      if rgrown > 0 then rs.resumeKb = rs.resumeKb + rgrown end
+      rs.resumeMs = rs.resumeMs + rms
+      if rms > rs.resumeMaxMs then rs.resumeMaxMs = rms end
+      if not ok then
+        -- the codec gives its views back on its own errors; an abandoned decode's go at idle below
+        rs.failed = rs.failed + 1
+        if active.remote[L.key] then REMOTE.drop(L.key, 'deliver: ' .. tostring(err)) end
+        REMOTE.lanes[lane] = nil
+      elseif coroutine.status(L.co) == 'dead' then
+        REMOTE.lanes[lane] = nil
+      else
+        break   -- the frame's budget is spent; the delivery goes on next frame
+      end
+    end
+  end
+  -- no decode suspended in either lane: the codec's shared views are free whoever held them
+  if next(REMOTE.lanes) == nil and RUST.release then RUST.release() end
+end
+
+-- deliveries waiting or under way: near work for the frame's budget (update)
+function REMOTE.busy()
+  return next(REMOTE.lanes) ~= nil or #REMOTE.queue > 0
 end
 
 -- After the landing, a frame with no near tile waiting builds the far ring and the horizon
 -- on a smaller budget: they can wait, the frame cannot (central Kyiv spent 5.3 ms a frame
 -- here while driving). A near tile coming due gets the whole budget back at once.
 local FAR_BUDGET_MS = 2
+-- The far ring's budget while the Rust pool has the near ring (the bridge config may set farMs).
+-- With the near ring off the frame, the Lua builder has the far ring nearly every frame (Lua alone
+-- rarely gets to it while driving: 51 tiles built against 134 at 70 m/s). At 1 ms instead of 2: mean
+-- frame -8..16 %, p99 65 -> 57, 41 -> 40, 60 -> 53, 43 -> 38.5 ms, the car's tile scene sooner
+-- (kyivfast/pass/kyiv/yaremche-q50-rust-7 against -7f1); the ring fills slower (134 -> 99 tiles).
+local REMOTE_FAR_MS = 1
+function REMOTE.farMs()
+  local v = REMOTE.config and tonumber(REMOTE.config.farMs)
+  return v or REMOTE_FAR_MS
+end
 -- pending: a near tile without its road, or one whose scene the car left before it was built
 -- and is near again; urgent: such a road due within AHEAD.urgent s
+-- lua: such a tile the Lua builder has to build (not one the Rust pool serves)
 local function nearPending(wanted)
-  local pending, urgent = false, false
+  local pending, urgent, lua = false, false, false
   local p = active.pose
   local slow = (p.vx or 0) ^ 2 + (p.vy or 0) ^ 2 < AHEAD.slow ^ 2
   local grassLost = 0
+  local link = RUST and REMOTE.link
+  local pool = link and link.ready and not link.dead
   for key, entry in pairs(wanted) do
     if not entry.far and not entry.horizon and not active.failed[key] then
       local cached = active.tiles[key]
       if cached and (cached.grassLost or cached.grassAgain) then grassLost = grassLost + 1 end
+      local mine = not (pool and not active.remoteFailed[key] and REMOTE.eligible(key, entry))
       if not (cached and cached.road) then
         pending, urgent = true, urgent or entry.priority < AHEAD.urgent
+        lua = lua or mine
       elseif cached.sceneLost or (cached.grassLost and slow) then
         pending = true
+        lua = lua or mine
       end
     end
   end
   state.stream.grassLost = grassLost
-  return pending, urgent
+  return pending, urgent, lua
 end
 
 -- A parked scene build given up (the car has left its tile, or a road ahead needs the room): the
@@ -1498,18 +1986,39 @@ local function update(dt, budgetMs, farBudgetMs, now)
   local driveCap = farBudgetMs and 50 or (speed < 2 and 12 or 8)
   budgetMs = finite(budgetMs) and math.max(0.1, math.min(active.startupPinned and 100 or driveCap, budgetMs)) or 2
   if dirty or active.nearKnownAt ~= state.stream.built then
-    active.nearWaiting, active.nearUrgent = nearPending(wanted)
+    active.nearWaiting, active.nearUrgent, active.nearLua = nearPending(wanted)
     active.nearKnownAt = state.stream.built
   end
   local nearWork = active.nearWaiting or next(active.parked) ~= nil or next(active.parkedGrass) ~= nil
-    or (active.work and not active.workFar and not active.workHorizon)
+    or (active.work and not active.workFar and not active.workHorizon) or (RUST and REMOTE.link and REMOTE.busy())
   if not active.startupPinned and not nearWork then
-    budgetMs = math.min(budgetMs, farBudgetMs or (speed < 2 and 12 or FAR_BUDGET_MS))
+    budgetMs = math.min(budgetMs, farBudgetMs or (speed < 2 and 12 or (RUST and REMOTE.link and REMOTE.farMs() or FAR_BUDGET_MS)))
   end
   -- the road the car reaches within seconds is missing: the frame pays for it rather than the car
   if not active.startupPinned and not farBudgetMs and active.nearUrgent then budgetMs = math.max(budgetMs, AHEAD.urgentMs) end
   state.stream.budgetMs = budgetMs
   active.timer, active.budget = timer, budgetMs
+  -- the Rust worker pool's results first: they are built already (REMOTE)
+  if RUST and REMOTE.link then
+    local st0 = hptimer()
+    REMOTE.step(wanted, dirty)
+    local rs, ms = REMOTE.stats(), st0:stop()
+    rs.stepMs = rs.stepMs + ms
+    if ms > rs.stepMaxMs then rs.stepMaxMs = ms end
+    if ms > budgetMs + 4 then rs.stepSlow = rs.stepSlow + 1 end
+  elseif RUST then
+    REMOTE.step(wanted, dirty)
+  end
+  -- The near work left is the pool's (its tiles have no road yet, so the frame keeps its budget for
+  -- their delivery above): the Lua builder has only the far ring and the horizon, on the budget they
+  -- get when nothing near waits. On the near budget they took 2.2 -> 11.3 s of the drive and their
+  -- spawn and garbage the frame (kyivfast-q50-rust-2: 51 -> 145 tiles built).
+  if RUST and REMOTE.link and not active.startupPinned and not farBudgetMs and not active.nearLua
+      and next(active.parked) == nil and next(active.parkedGrass) == nil
+      and not (active.work and not active.workFar and not active.workHorizon) then
+    budgetMs = math.min(budgetMs, timer:stop() + (speed < 2 and 12 or REMOTE.farMs()))
+    active.budget = budgetMs
+  end
   local p = pose
   local lag = AHEAD.lag + math.max(0, speed - AHEAD.slow) * AHEAD.lagPerMs
   local slow = speed < AHEAD.slow
@@ -1527,7 +2036,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
     if eta < 8 then return sceneWait(eta) + 3 end
     return lag + AHEAD.grassLag
   end
-  local steps = 0
+  local steps, submitted = 0, false
   repeat
     -- At the frame's first step a scene build (its road is out) goes back among the parked, and a
     -- far one too when a road is urgent: a road that came due since then goes first, and the
@@ -1570,8 +2079,13 @@ local function update(dt, budgetMs, farBudgetMs, now)
       local roomT = TRIANGLE_LIMIT - (state.stream.cachedTriangles or 0)
       local roomV = VERTEX_LIMIT - (state.stream.cachedVertices or 0)
       local sizes = active.evictedSize or {}
+      -- the landing waits for its own tiles only: while the pool builds some of them, the Lua
+      -- builder takes the rest of the set, not the far ring (it took 1.5 s of the landing's frames)
+      local landingOnly = RUST and next(active.remote) ~= nil and active.landing and state.job.state == 'working'
+        and active.landing.required
       for key, entry in pairs(wanted) do
         local cached = entry.horizon and active.horizon[key] or active.tiles[key]
+        if landingOnly and not landingOnly[key] then goto nextWanted end
         local ready, priority = nil, entry.priority
         if entry.horizon then ready = cached and cached.horizon
         elseif entry.far then ready = cached and cached.far and (not entry.decor or cached.decor)
@@ -1588,7 +2102,9 @@ local function update(dt, budgetMs, farBudgetMs, now)
           local size = sizes[key]
           again = size and size[1] < roomT * .8 and size[2] < roomV * .8 or false
         end
-        if not ready and not active.failed[key] and again then
+        -- a tile in the Rust pool is being built; one the full pool will take waits for it
+        if not ready and not active.failed[key] and again and not active.remote[key]
+          and not (RUST and REMOTE.waits(key, entry)) then
           queued = queued + 1
           -- one far build at a time: a parked one is finished before another starts
           local farWaits = (entry.far or entry.horizon) and next(active.parkedFar) ~= nil
@@ -1596,6 +2112,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
             best, bestKey, bestPriority = entry, key, priority
           end
         end
+        ::nextWanted::
       end
       -- Parked scene builds (their roads are out): the nearest goes on when it is due before the
       -- best road; one the car has left is given up.
@@ -1649,6 +2166,9 @@ local function update(dt, budgetMs, farBudgetMs, now)
         active.parkedGrass[grassKey] = nil
         active.workKey, active.workFar, active.workHorizon, active.workScene = grassKey, false, false, false
         active.workGrass = true
+      elseif best and RUST and REMOTE.submit(bestKey, best) then
+        -- the Rust pool builds it; the next pick comes on the next step
+        submitted = true
       elseif best then
         -- a road due before every parked scene, and no room for one more: the latest scene goes
         if parkedCount >= AHEAD.parked and not best.far and not best.horizon then loseScene(worstKey) end
@@ -1664,6 +2184,9 @@ local function update(dt, budgetMs, farBudgetMs, now)
       state.stream.building = 1
       if state.job and state.job.state == 'working' then state.job.stage = 'Generating roads and scenery in Lua' end
     end
+    if submitted then
+      submitted, steps = false, steps + 1
+    else
     local resumeTimer = hptimer()
     local kind = active.workHorizon and 'horizon' or (active.workFar and 'far')
       or (active.workGrass and 'grass') or (active.workScene and 'scene') or 'road'
@@ -1714,6 +2237,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
       active.work = nil
       completeLanding()
       trimTiles()
+    end
     end
     state.stream.building = active.work and 1 or 0
   until steps >= 10000 or timer:stop() >= budgetMs
@@ -2097,6 +2621,7 @@ local function setTune(tune)
       -- Also invalidate prepared tiles which have not reached the renderer yet.
       -- Otherwise a preset change leaves a ring built with the previous density.
       if active.work and not active.workHorizon then active.work, active.workKey, state.stream.building = nil, nil, 0 end
+      REMOTE.abandon()
       local keys = {}
       for key in pairs(active.tiles) do keys[#keys+1] = key end
       for _, key in ipairs(keys) do unload(key); unload(key, 'far') end
@@ -2147,6 +2672,7 @@ M.editorObjectCurrent = function(id, rev)
   return false
 end
 M.nav = function(key) local entry = active and active.tiles[key]; return entry and entry.nav end
+
 -- The routing graph of the region driven now (routing/<region>.bin beside regions/, from
 -- earthng/build_routing.py; a companion zip may bring it): path, a key that changes with the region.
 -- The world frame is that region's own, so its graph needs no transform.

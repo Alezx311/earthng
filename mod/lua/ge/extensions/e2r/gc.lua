@@ -131,6 +131,11 @@ function M.step(ours, dt, loading)
   local gcMs = fall and engineGcMs()
   if fall then
     local more = string.format(' from %.0f, frame %.0f ms, LuaGC %s', lastKb / 1024, frameMs, gcMs and string.format('%.0f', gcMs) or '-')
+    -- what the streaming held and had allocated by then (native.lua sets it while the Rust pool is up)
+    if M.context then
+      local ok, s = pcall(M.context)
+      if ok and type(s) == 'string' then more = more .. s end
+    end
     if gcMs then fall = gcMs > M.ENGINE_GC_MS else fall = frameMs > M.ENGINE_MS_PER_MB * kb / 1024 end
     note(fall and 'engineLog' or 'sweepLog', kb, more)
   end

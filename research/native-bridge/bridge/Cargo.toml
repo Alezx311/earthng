@@ -1,0 +1,18 @@
+[package]
+name = "earthng-bridge"
+version = "0.1.0"
+edition = "2024"
+description = "Experimental in-process tile worker pool for EarthNG (research, not a release API)"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mlua = { version = "0.10", features = ["luajit52", "vendored"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+debug = 1
+opt-level = 3
