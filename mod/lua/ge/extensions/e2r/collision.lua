@@ -19,7 +19,9 @@
 local M = {}
 
 local QUIET = {road = {}, scene = {}}
-for _, kind in ipairs({'mark', 'mark_yellow', 'edge_grass', 'edge_dirt', 'manhole', 'drain', 'patch'}) do
+-- (and the field tracks' ruts, generator.lua ROADS.ruts: the bed under them collides)
+for _, kind in ipairs({'mark', 'mark_yellow', 'edge_grass', 'edge_dirt', 'manhole', 'drain', 'patch',
+    'ruts_dirt', 'ruts_two', 'ruts_gravel', 'ruts_dry'}) do
   QUIET.road['e2rf_' .. kind], QUIET.scene['e2rf_' .. kind] = true, true
 end
 -- the land coming into another in a piece of open ground (generator.lua VEG.land): it lies in

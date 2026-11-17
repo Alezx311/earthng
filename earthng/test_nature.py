@@ -266,6 +266,87 @@ class Runtime(unittest.TestCase):
         self.assertFalse(list(self.g.triangles(track, 'e2rf_trodden')))
         self.assertFalse(list(self.g.triangles(track, 'e2rf_road')))
 
+    def test_track_edges_follow_cross_slope(self):
+        cell = {'terrain': dict(terrain(), heights=[0, 0, 120, 120]),
+                'lines': [{'id': 't', 'kind': 'path', 'tags': {'highway': 'track', 'surface': 'dirt'},
+                           'points': [[20, 250, 0], [480, 250, 0]]}]}
+        road = self.g.build([cell], relief=False)[0]
+        triangles = list(self.g.triangles(road, 'e2rf_road_dirt'))
+        south = self.g.surface_at(triangles, 240, 249)
+        north = self.g.surface_at(triangles, 240, 251)
+        self.assertIsNotNone(south)
+        self.assertIsNotNone(north)
+        self.assertAlmostEqual(north - south, .2, delta=.03)
+
+    def track(self, tags, heights=(0, 0, 120, 120), **options):
+        cell = {'terrain': dict(terrain(), heights=list(heights)),
+                'lines': [{'id': 't', 'kind': 'path', 'tags': tags, 'points': [[20, 250, 0], [480, 250, 0]]}]}
+        return self.g.build([cell], relief=False, **options)[0]
+
+    def test_field_tracks_get_ruts_over_their_bed(self):
+        road = self.track({'highway': 'track', 'surface': 'dirt'})
+        bed = list(self.g.triangles(road, 'e2rf_road_dirt'))
+        ruts = list(self.g.triangles(road, 'e2rf_ruts_dirt'))
+        self.assertTrue(bed)
+        self.assertTrue(ruts)
+        hw = 3.2 / 2                      # TRACK_WIDTH of grade 3 (generator.lua, index grade + 1)
+        for x in range(40, 461, 20):
+            # over the whole bed, a few millimetres over it, on the cross slope
+            for y in (250 - hw + .05, 250, 250 + hw - .05):
+                under, over = self.g.surface_at(bed, x, y), self.g.surface_at(ruts, x, y)
+                self.assertIsNotNone(over, (x, y))
+                self.assertGreater(over - under, .004)
+                self.assertLess(over - under, .02)
+            # the ragged part lies beyond the bed, on the verge, and ends at 1.45 half widths
+            self.assertIsNotNone(self.g.surface_at(ruts, x, 250 + hw * 1.3))
+            self.assertIsNotNone(self.g.surface_at(ruts, x, 250 - hw * 1.3))
+            self.assertIsNone(self.g.surface_at(ruts, x, 250 + hw * 1.5))
+        corners = list(self.g.uv_corners(road, 'e2rf_ruts_dirt'))
+        self.assertTrue(all(-1e-6 <= c[3] <= 1 + 1e-6 for c in corners))
+        # u grows to the right of the way (it runs east: 0 on the north side, 1 on the south),
+        # the bed between the core's u
+        south = [c[3] for c in corners if c[1] < 250 - hw * 1.4]
+        north = [c[3] for c in corners if c[1] > 250 + hw * 1.4]
+        self.assertTrue(south and all(c > .98 for c in south))
+        self.assertTrue(north and all(c < .02 for c in north))
+        core = 1 / 1.45
+        on_bed = [c[3] for c in corners if abs(c[1] - 250) < hw - .01]
+        self.assertTrue(all(abs(u - .5) <= core / 2 + 1e-6 for u in on_bed))
+        # the bed keeps its own material, its collision and its look for the other packs
+        self.assertTrue(all(item.decor is None or not item.decor for item, _ in self.g.meshes(road, 'e2rf_road_dirt')))
+
+    def test_ruts_by_grade_and_none_on_paved_ways(self):
+        kinds = {'e2rf_ruts_dirt', 'e2rf_ruts_two', 'e2rf_ruts_gravel', 'e2rf_ruts_dry'}
+
+        def ruts(road):
+            return {mesh.material for _, mesh in self.g.meshes(road) if mesh.material in kinds}
+        self.assertEqual(ruts(self.track({'highway': 'track'})), {'e2rf_ruts_dirt'})
+        self.assertEqual(ruts(self.track({'highway': 'track', 'tracktype': 'grade4'})), {'e2rf_ruts_dirt'})
+        self.assertEqual(ruts(self.track({'highway': 'track', 'tracktype': 'grade5', 'surface': 'grass'})), {'e2rf_ruts_two'})
+        self.assertEqual(ruts(self.track({'highway': 'track', 'surface': 'gravel'})), {'e2rf_ruts_gravel'})
+        self.assertEqual(ruts(self.track({'highway': 'track', 'surface': 'concrete'})), set())
+        # a road, even an unpaved one, keeps its old surface: the ruts are the tracks' slice
+        cell = {'terrain': terrain(0), 'roads': [{'id': 'r', 'nodes': ['a', 'b'], 'width': 6,
+                'tags': {'highway': 'unclassified', 'surface': 'dirt'}, 'points': [[0, 250, 0], [500, 250, 0]]}]}
+        self.assertEqual(ruts(self.g.build([cell], relief=False)[0]), set())
+        # a far tile draws no ruts
+        far = self.g.build([{'terrain': terrain(0), 'lines': [{'id': 't', 'kind': 'path', 'tags': {'highway': 'track'},
+                            'points': [[20, 250, 0], [480, 250, 0]]}]}], far=True, relief=False)
+        self.assertFalse([1 for manifest in far[:3] if manifest is not None and manifest['items'] is not None
+                          for _, mesh in self.g.meshes(manifest) if mesh.material in kinds])
+
+    def test_ruts_stop_where_a_track_meets_a_road(self):
+        cell = {'terrain': terrain(0),
+                'roads': [{'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'tertiary'},
+                           'points': [[250, 0, 0], [250, 500, 0]]}],
+                'lines': [{'id': 't', 'kind': 'path', 'tags': {'highway': 'track'}, 'points': [[20, 250, 0], [480, 250, 0]]}]}
+        road = self.g.build([cell], relief=False)[0]
+        ruts = list(self.g.triangles(road, 'e2rf_ruts_dirt'))
+        self.assertTrue(ruts)
+        for x in (247, 250, 253):
+            for y in (247, 250, 253):
+                self.assertIsNone(self.g.surface_at(ruts, x, y), (x, y))
+
     def test_meadow_grass_forest_floor_and_rocks_stay_off_roads_and_far_grass(self):
         meadow = {'terrain': terrain(), 'areas': [patch('meadow')],
                   'roads': [{'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential', 'sidewalk': 'no'},

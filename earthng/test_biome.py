@@ -46,7 +46,7 @@ class BiomeTests(unittest.TestCase):
             module.present = True
         return lua, gen
 
-    def build(self, lua, gen, height=120, geo=True, **extra):
+    def build(self, lua, gen, height=120, geo=True, lines=(), **extra):
         def table(v):
             if isinstance(v, dict):
                 return lua.table_from({k: table(x) for k, x in v.items()})
@@ -56,7 +56,7 @@ class BiomeTests(unittest.TestCase):
         n = 41
         # a 25 m DEM, a gentle slope west to east plus the base height
         heights = [height + 20 + 0.02 * (k % n) * 25 for k in range(n * n)]
-        cells = [dict(roads=[], junctions=[], buildings=[], areas=[], lines=[], points=[],
+        cells = [dict(roads=[], junctions=[], buildings=[], areas=[], lines=list(lines), points=[],
                       terrain=dict(rect=[-250, -250, 750, 750], nx=n, ny=n, heights=heights))]
         options = dict(tileSize=500, seaLevel=20, latitude=45.5, maxTrees=2400, maxGrass=4000, maxRocks=120, **extra)
         if geo:
@@ -91,6 +91,20 @@ class BiomeTests(unittest.TestCase):
         self.assertTrue([p for p in plants if 'rocks_desert' in p or 'utah_boulder' in p or 'utah_rock' in p])
         # the level files those shapes need are named for world.lua
         self.assertTrue(any('/johnson_valley/' in m for m in scene['stockMaterials'].values()))
+
+    def test_a_desert_track_keeps_the_pale_dirt_of_the_map(self):
+        track = {'id': 't', 'kind': 'path', 'tags': {'highway': 'track', 'tracktype': 'grade5'},
+                 'points': [[20, 250, 140], [480, 250, 140]]}
+        climate(self.root, 4)                # BWh
+        lua, gen = self.generator()
+        ground, _, _ = self.build(lua, gen, lines=[track])
+        self.assertGreater(ground['e2rf_ruts_dry'], 0)
+        self.assertEqual(ground['e2rf_ruts_two'] + ground['e2rf_ruts_dirt'], 0)
+        climate(self.root, 26)               # Dfb: the grass track's two ruts
+        lua, gen = self.generator()
+        ground, _, _ = self.build(lua, gen, lines=[track])
+        self.assertGreater(ground['e2rf_ruts_two'], 0)
+        self.assertEqual(ground['e2rf_ruts_dry'], 0)
 
     def test_summit_above_the_snow_line_is_snow_rock_and_scree(self):
         climate(self.root, 29)               # ET of a mid-latitude range: the slopes' climate is searched

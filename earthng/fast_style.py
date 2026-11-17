@@ -365,6 +365,29 @@ TEXTURES['track'] = {'baseColorMap': f'{ART}/real/track.color.png', 'normalMap':
 KINDS['track'] = ('track', [.44, .42, .39, 1], 'GRAVEL', 1.0, 'strip')
 EXTRA['track'] = {'alphaTest': True, 'alphaRef': 60, 'castShadows': False}
 TRACK_MIP_REF = 80
+# Field tracks in the real pack (generator.lua ROADS.ruts): the game's dirt-road decal (crown,
+# wheel ruts, dusty edges; its maps through the VFS) laid over the track's bed, u across and v
+# along. The opacity is our own (fast_art.ruts_art): solid over the middle RUTS_CORE of the width,
+# where the bed lies, and ragged outside it, on the verge. 'ruts_two' opens a ragged gap down the
+# middle where the bed's grass shows. The bed and its collision stay the carriageway they were:
+# every other pack hides these (fast_art.pack_fields) and keeps its old track.
+RUTS_STEM = '/assets/materials/decalroad/dirt/Dirt_road_variation_02/t_dirt_variation_02'
+RUTS_CORE = 1 / 1.45          # the bed's share of the decal's width (generator.lua DECAL.rutsWide)
+_RUTS_MAPS = _maps('/assets/materials/decalroad/dirt/Dirt_road_variation_02', 't_dirt_variation_02', 'b', 'nm', 'r', 'ao')
+TEXTURES['ruts'] = {**_RUTS_MAPS, 'opacityMap': f'{ART}/real/ruts_o.data.png'}
+TEXTURES['ruts_two'] = {**_RUTS_MAPS, 'opacityMap': f'{ART}/real/ruts_two_o.data.png'}
+# tints over the map's sRGB mean (155 146 128): the dirt of the bed they cover, grey gravel, the
+# pale dry dirt of the map as it is. The dirt is matched in game to the bed (road_dirt) on the
+# far tiles, which have no ruts: at Vytachiv in sun the bed came out 159 134 93 and .78 .72 .68
+# ruts 178 153 124, pale pink sand (rural-ruts-20261117).
+RUTS = {'ruts_dirt': ('ruts', [.70, .63, .51, 1], 'DIRT'), 'ruts_two': ('ruts_two', [.70, .63, .51, 1], 'DIRT'),
+        'ruts_gravel': ('ruts', [.86, .88, .94, 1], 'GRAVEL'), 'ruts_dry': ('ruts', [1, 1, 1, 1], 'DIRT')}
+RUTS_REF = 100
+for _k, (_tex, _tint, _ground) in RUTS.items():
+    KINDS[_k] = (_tex, _tint, _ground, 1.0, 'strip')
+    EXTRA[_k] = {'alphaTest': True, 'alphaRef': RUTS_REF, 'castShadows': False}
+# an older game without the maps loads a flat colour; the generator then draws no ruts at all
+FALLBACK.update({_k: None for _k in RUTS})
 KINDS['rail'] = (None, [.58, .58, .59, 1], 'METAL', 1.0, 'wall')
 KINDS['rail_side'] = (None, [.31, .23, .18, 1], 'METAL', 1.0, 'wall')
 # gilded domes (generator.lua BLD.dome)
@@ -385,6 +408,7 @@ KINDS['park'] = ('grass', [.30, .40, .22, 1], 'GRASS', _photo.GROUND_M, 'plan')
 
 # baseColorFactor per kind: the game's grass is dry West Coast grass; Kyiv's is green
 TINT = {'ground': [.55, .85, .42, 1], 'forest': [.36, .58, .28, 1], 'paved': [.62, .62, .60, 1]}
+TINT.update({_k: _v[1] for _k, _v in RUTS.items()})
 TINT['glyphs_dark'] = [.03, .03, .035, 1]
 TINT.update({_k: [_c / 255 for _c in _rgb] + [1] for _k, _rgb in RAILINGS.items()})
 # Lines as East Coast paints them. The edge grass tint was set from linear means but acts as an
@@ -903,7 +927,8 @@ for _k, _land in list(LAND_OF.items()) + [(k, v[0]) for k, v in {**FADES, **CUTS
     _l = LANDS[_land]
     KINDS[_k] = (None, [*(c / 255 for c in _l[4]), 1], _l[3], MACRO_M, 'plan')
     # cut, not blended (a translucent ProceduralMesh is lit in the forward pass); the masks'
-    # mips keep every level's coverage (fast_art.MIP_REFS 'uniform')
+    # mips keep every level's coverage down to 3 m texels, then cut each piece at half
+    # (fast_art.MIP_REFS 'uniform', fast_dds.UNIFORM_MIN_SIDE)
     if _k in FADES:
         EXTRA[_k] = {'alphaTest': True, 'alphaRef': round(255 * (1 - FADES[_k][1])), 'castShadows': False}
     elif _k in CUTS:
@@ -1008,7 +1033,7 @@ def material(kind):
         stage['baseColorFactor'] = toned
     if kind == 'road_worn':
         stage['roughnessFactor'] = .96
-    elif kind in ('road_gravel', 'road_dirt', 'road_broken', 'road_track'):
+    elif kind in ('road_gravel', 'road_dirt', 'road_broken', 'road_track') or kind in RUTS:
         stage['roughnessFactor'] = .98
     out = {'name': 'e2rf_' + kind, 'mapTo': 'e2rf_' + kind, 'class': 'Material', 'version': 1.5,
            'groundType': ground, 'Stages': [stage, {}, {}, {}], 'doubleSided': False, **EXTRA.get(kind, {})}

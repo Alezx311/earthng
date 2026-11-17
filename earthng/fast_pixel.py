@@ -190,6 +190,7 @@ def fields(base):
                    'edge_grass': 'ground', 'edge_dirt': 'trodden',
                    'road_worn': 'road', 'road_gravel': 'trodden', 'road_dirt': 'trodden',
                    'road_broken': 'trodden', 'road_track': 'trodden',
+                   'ruts_dirt': 'trodden', 'ruts_two': 'trodden', 'ruts_gravel': 'trodden', 'ruts_dry': 'trodden',
                    'roof_sheet': 'roof_metal', 'roof_mtile_red': 'roof_tile', 'roof_mtile_brown': 'roof_tile',
                    'roof_mtile_green': 'roof_tile', 'door_garage': 'wall_block', 'door_rust': 'wall_block',
                    'clad_metal': 'wall_block', 'clad_tin': 'wall_block', 'plinth': 'paved',

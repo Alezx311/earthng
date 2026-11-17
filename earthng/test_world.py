@@ -131,6 +131,8 @@ def main():
                    help='wait for the whole landing square before leaving the old place (no early arrival; A/B)')
     p.add_argument('--gc-cycle', help='the collector step of the landing changes every 2 s among these (10,1,400,-10,100)')
     p.add_argument('--walkers', type=int, help='after landing: this many pedestrians (walkers.lua)')
+    p.add_argument('--no-batches', action='store_true',
+                   help='flow cars and walkers as a TSStatic each, not DynamicShapeBatch copies (A/B)')
     p.add_argument('--walk-bodies', type=int, help='physical bodies for walkers about to be hit (pedhit.lua, default 24)')
     p.add_argument('--knock', action='store_true',
                    help='after landing: a car through rows of knockable props (earthng/probe/knock_row.lua) -> knock.json')
@@ -278,6 +280,8 @@ def main():
         test['walkers'] = a.walkers
     if a.walk_bodies is not None:
         test['walkBodies'] = a.walk_bodies
+    if a.no_batches:
+        test['batches'] = False
     if a.traffic is not None:
         test['traffic'] = a.traffic
         test['trafficKind'] = a.traffic_kind

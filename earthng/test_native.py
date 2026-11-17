@@ -91,7 +91,7 @@ class NativeTests(unittest.TestCase):
           logs={}; log=function(level, source, message) logs[#logs+1]={level, source, message} end
           -- every read moves the clock: the generator's pause reads it at every pause point
           hptimer=function() local elapsed=0; return {stop=function() elapsed=elapsed+0.2; return elapsed end} end
-          buildCalls=0; fakeTriangles=0; fakeFarTriangles=0; seenManual={}; seenEditor={}
+          buildCalls=0; fakeTriangles=0; fakeFarTriangles=0; fakeGrassChunks=false; seenManual={}; seenEditor={}
           stubGenerator={build=function(cells,i,j,options)
             buildCalls=buildCalls+1
             if options.manualPlan then
@@ -118,6 +118,9 @@ class NativeTests(unittest.TestCase):
             if options.sceneReady then
               local scene={items={},mats={}}
               options.sceneReady(scene)
+              if fakeGrassChunks and options.grassChunk then
+                options.grassChunk({{name='early-lawn'}}, {'test.materials.json'})
+              end
               for n=1,5 do options.pause() end
               return road,scene,far,nav,{items={},mats={}}
             end
@@ -1226,6 +1229,29 @@ class NativeV2Tests(NativeTests.__base__):
         for key, due in stream.wanted.items():
             if due < 1e6 and stream.grass[key] is not None:
                 self.assertTrue(stream.scenes[key], key)
+
+    def test_grass_chunks_are_available_before_the_full_layer_even_when_slow(self):
+        lua, mod, cv = self.make(fixture(10))
+        lat, lon = geographic(1250, 4750)
+        mod.land(cv(dict(seq=14, lat=lat, lon=lon)))
+        self.assertEqual(self.pump(mod).state, 'ready')
+        lua.globals().fakeGrassChunks = True
+        mod.pose(cv(dict(x=2500, y=4750, vx=1, vy=0, state='driving')))
+        for _ in range(2000):
+            mod.update(.016, 1)
+            stream = mod.status().stream
+            for key in stream.scenes.keys():
+                version, pending = mod.grassChunkState(key)
+                if pending:
+                    self.assertGreater(version, 0)
+                    self.assertIsNone(stream.grass[key], 'the full grass layer is not ready yet')
+                    chunk = mod.takeGrassChunk(key)
+                    self.assertEqual(chunk['items'][1].name, 'early-lawn')
+                    self.assertFalse(mod.grassChunkState(key)[1])
+                    mod.unload(key)
+                    self.assertEqual(mod.grassChunkState(key), (None, False))
+                    return
+        self.fail('no early grass chunk delivered')
 
     def test_terrain_only_decoder_reads_the_grid_of_a_full_cell(self):
         lua, _, _ = self.make()

@@ -37,8 +37,9 @@ import venues
 FORMAT = 'earthng-features-v2'
 # EARTHNG_CELLS_V3=1 writes fixed-width blocks (EGB3, country_format.transcode_cell) that the game
 # copies with one ffi.copy. They decode 2.9 times faster, but in the game the landing in central
-# Kyiv was the same (generator 7.17 s against 7.29 s, out/egb-01..04) and a pack 15 % larger, so
-# packs stay v2 (docs/RUST_IN_MOD.md, "EGB3 у паках").
+# Kyiv was the same (generator 7.17 s against 7.29 s, out/egb-01..04) and a pack 15 % larger; driving
+# in Manhattan at 40 m/s built as many tiles with the same road lead (out/egb-ab-1116), so packs
+# stay v2 (docs/RUST_IN_MOD.md, "EGB3 у паках"; docs/PERFORMANCE.md, "Їзда: EGB2 проти EGB3").
 FIXED_CELLS = os.environ.get('EARTHNG_CELLS_V3', '').strip() in ('1', 'yes', 'on', 'true')
 CELL = 1000
 HALO = 100
@@ -605,7 +606,19 @@ def compile_block(store, cells, include=None):
 def _finish_block(store, cells, include):
     """A block ready for the zip: deflated bytes and the presence mask, or None when every
     cell lacked elevation. Deflate runs here so each worker compresses its own blocks."""
-    return _pack(*compile_block(store, cells, include))
+    payloads, counts = compile_block(store, cells, include)
+    try:
+        return _pack(payloads, counts)
+    except ValueError as exc:
+        if FIXED_CELLS and 'cell relief over the u16 range' in str(exc):
+            for i, j in cells:
+                payload = payloads.get(binary.slot(i, j))
+                if payload is not None:
+                    try:
+                        binary.transcode_cell(payload)
+                    except ValueError as cause:
+                        raise ValueError(f'{cause}: {store.directory}, cell ({i}, {j})') from cause
+        raise
 
 
 def _pack(payloads, counts):
@@ -976,7 +989,7 @@ def _part_key(region, *settings):
         if spec is not None and spec.origin:
             digest.update(Path(spec.origin).read_bytes())
     directory, core, region_id = _region_spec(region)
-    digest.update(json.dumps([directory.name, core, region_id, FORMAT, nature.VERSION, *settings],
+    digest.update(json.dumps([directory.name, core, region_id, FORMAT, FIXED_CELLS, nature.VERSION, *settings],
                              sort_keys=True, default=str).encode())
     outline = region.get('shape') if isinstance(region, dict) else None
     if outline is not None:

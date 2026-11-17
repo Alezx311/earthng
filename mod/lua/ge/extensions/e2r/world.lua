@@ -41,6 +41,10 @@ end)()
 M.flowSim = require('ge/extensions/e2r/flow')   -- cars without physics, hundreds of them (flow.lua)
 M.handoffSim = require('ge/extensions/e2r/handoff')   -- real cars in their place round the player
 M.walkSim = require('ge/extensions/e2r/walkers')   -- pedestrians on the sidewalks, no physics (walkers.lua)
+-- copies of a shape in one DynamicShapeBatch (shapebatch.lua) for the flow and the walkers;
+-- M.useBatches = false (a probe, before the layer starts) keeps a TSStatic each, as older games do
+M.shapeBatch = require('ge/extensions/e2r/shapebatch')
+M.useBatches = true
 M.pedHit = require('ge/extensions/e2r/pedhit')   -- a physical body in a walker's place before a hit
 M.knock = require('ge/extensions/e2r/knock')   -- street furniture a vehicle knocks down (knock.lua)
 M.winguard = require('ge/extensions/e2r/winguard')   -- widget windows stay on the game screen (winguard.lua)
@@ -618,6 +622,11 @@ end
 local function retireForest(tile)
   if detailStream and tile then detailStream:remove(tile) end
   if not tile then return end
+  if tile.grassEarlyOwner then
+    tile.grassEarlyOwner.dropped = true
+    if detailStream then detailStream:remove(tile.grassEarlyOwner) end
+    tile.grassEarlyOwner, tile.grassEarlyVersion = nil, nil
+  end
   tile.forestGen = (tile.forestGen or 0) + 1
   -- its knockable props leave knock.lua's hash, its debris the scene (they stand again when it is rebuilt)
   if S.knock then M.knock.unregisterTile(S.knock.K, tile, S.knock.api) end
@@ -854,7 +863,7 @@ local function spawnItem(it, group, pause, tile, layer)
     obj:setField('fresnelPower', 0, '10')
     obj:setField('specularPower', 0, '200')
     obj:setField('overallRippleMagnitude', 0, river and '0.35' or '0.28')
-    obj:setField('overallWaveMagnitude', 0, river and '0.02' or '0.04')
+    obj:setField('overallWaveMagnitude', 0, river and '0.04' or '0.08')
     obj:setField('overallFoamOpacity', 0, river and '0.85' or '0.6')
     obj:setField('foamMaxDepth', 0, '0.55')
     obj:setField('reflectivity', 0, '0.18')
@@ -1669,7 +1678,8 @@ local function setTraffic(amount, kind)
 end
 
 -- The flow (flow.lua): hundreds of cars without physics on the graph of the tiles (S.nav), one
--- TSStatic each in a group outside the MissionGroup (no collision). Round the player's car the
+-- copy each in a DynamicShapeBatch of its body (shapebatch.lua; a TSStatic each where the game has
+-- no batches), in a group outside the MissionGroup (no collision). Round the player's car the
 -- nearest of them are real simple_traffic cars (handoff.lua), so the cars one can hit are real.
 -- The player's car, those real cars and the game's AI traffic are the flow's obstacles.
 function M.flowSet(n)
@@ -1682,6 +1692,9 @@ function M.flowSet(n)
       shapes[b] = {}
       for k, paint in ipairs(fs.PAINTS) do shapes[b][k] = '/levels/e2r_world/art/flow/car_' .. body .. '_' .. paint .. '.dae' end
     end
+    -- the batches' shapes: one a body, painted per copy (flow.lua batchView)
+    shapes.paintable = {}
+    for b, body in ipairs(fs.BODIES) do shapes.paintable[b] = '/levels/e2r_world/art/flow/car_' .. body .. '_paint.dae' end
     -- the game's simple cars, picked once (a group scans every config) and sorted by the flow's
     -- bodies, so a flow sedan becomes a real sedan; a body the group lacks takes stock configs
     local t = hptimer()
@@ -1695,8 +1708,11 @@ function M.flowSet(n)
       return {model = 'simple_traffic', config = stock[(k[body] - 1) % #stock + 1]}
     end)
     api.ms.group = t:stop()
-    S.flow = {F = F, V = fs.view(F, shapes, tileGroup('E2R_flow', true)), H = hs.new{bodies = fs.BODY_SHARE,
-      size = S.flowReal or hs.SIZE}, api = api}
+    local group = tileGroup('E2R_flow', true)
+    local sb = M.shapeBatch
+    local batches = M.useBatches and sb.available() and sb.new(group) or nil
+    S.flow = {F = F, V = fs.view(F, shapes, group, batches), H = hs.new{bodies = fs.BODY_SHARE,
+      size = S.flowReal or hs.SIZE}, api = api, batches = batches}
     local veh = getPlayerVehicle(0)
     local q = veh and veh:getPosition() or focus()
     if q then hs.prewarm(S.flow.H, api, q.x, q.y) end
@@ -1722,6 +1738,13 @@ function M.flowReal(n)
     if q and #fl.H.pool < M.handoffSim.target(fl.H) then M.handoffSim.prewarm(fl.H, fl.api, q.x, q.y) end
   end
   result.flowReal = n
+end
+
+function M.batchStats(r, B)
+  if not B then r.batches = nil; return end
+  local rb = r.batches or {}
+  r.batches, rb.objects, rb.live, rb.resizes, rb.finalMs, rb.finalMax, rb.waits =
+    rb, B.objects, B.live, B.resizes, B.finalMs, B.finalMax, B.waits
 end
 
 function M.flowStep()
@@ -1784,6 +1807,9 @@ function M.flowStep()
   local r = result.flow or {}
   result.flow = r
   r.cars, r.links, r.simMs, r.drawMs, r.syncMs = fl.F.count, fl.F.linkList and #fl.F.linkList or 0, fl.simMs, fl.drawMs, fl.syncMs
+  -- drawn as copies in batches (shapebatch.lua): batches, copies shown, doublings, finalizeShape
+  -- ms (all, the longest), copies that waited a frame for their batch; nil: TSStatics
+  M.batchStats(r, fl.batches)
   r.simMax, r.drawMax = math.max(r.simMax or 0, fl.simMs), math.max(r.drawMax or 0, fl.drawMs)
   r.syncMax = math.max(r.syncMax or 0, fl.syncMs or 0)
   r.stats = fl.F.stats
@@ -1852,7 +1878,11 @@ function M.walkersSet(n, now)
   wk.zeroAt = nil
   ws.setTarget(wk.W, n)
   if not (wk.parked and S.state == 'driving') then return end
-  wk.V, wk.parked, wk.syncAt = ws.view(wk.W, M.peopleShapes(), tileGroup('E2R_walkers', true)), nil, nil
+  -- one copy a walker in DynamicShapeBatch objects where the game has them (shapebatch.lua), else
+  -- a TSStatic each (BeamNG 0.39)
+  local group, sb = tileGroup('E2R_walkers', true), M.shapeBatch
+  wk.batches = M.useBatches and sb.available() and sb.new(group) or nil
+  wk.V, wk.parked, wk.syncAt = ws.view(wk.W, M.peopleShapes(), group, wk.batches), nil, nil
   if not wk.ground then
     -- the ground under a walker: one vec3 filled again (no garbage per read)
     local at = vec3(0, 0, 0)
@@ -2317,6 +2347,7 @@ function M.walkersStep()
   r.syncMax = math.max(r.syncMax or 0, syncMs)
   -- shapes in the scene, walkers posed (within 60 m) and with one shape (to 200 m)
   r.objects, r.posed, r.drawn, r.placed = wk.V.objects, wk.V.nearUsed, wk.V.farUsed, wk.moved
+  M.batchStats(r, wk.batches)
   r.stats, r.hit, r.bodies, r.pool, r.spawnMs = wk.W.stats, wk.P.stats, ph.activeCount(wk.P), #wk.P.pool, wk.spawnMs
   r.hitLog = wk.P.log
   r.blood = wk.blood and wk.blood.n or 0
@@ -2554,6 +2585,7 @@ local function updateTiles()
     local key = LIMIT.nextGrass(S.tiles, st.grass, st.wanted)
     if key then startGrass(key, S.tiles[key]) end
   end
+  if NATIVE then LIMIT.ingestGrassChunks(S.tiles, p) end
   if fast then
     -- the far city (earthng/fast_far.py): a tile without its own scene, within farRadius, gets
     -- its far layer; the far layer goes when the scene is in or the car is far away
@@ -2570,10 +2602,13 @@ local function updateTiles()
       -- trees were drawn twice and z-fought for the whole spawn. Drop the far
       -- forest as soon as the near scene starts; its ground mesh stays until the
       -- near ground has replaced it.
+      local groundReady = near and near.roadComplete and not near.failed and not near.dropped
       if near and near.sceneStarted then retireForest(far); far.vegetationDropped = true end
-      if d > farR + 500 or (near and near.sceneComplete) or behind(cx, cy, d) then
+      if d > farR + 500 or groundReady or behind(cx, cy, d) then
         retireForest(far)
-        if near and near.sceneComplete then buryGroup('E2RF_' .. key)
+        if groundReady then
+          LIMIT.hideFarGround(far.group)
+          buryGroup('E2RF_' .. key)
         else LIMIT.bury('E2RF_' .. key, far.i * tileSize, far.j * tileSize, tileSize) end
         far.dropped = true
         S.far[key] = nil
@@ -2595,7 +2630,8 @@ local function updateTiles()
       local bestF, bestFD
       for key in pairs(st.far or {}) do
         local near = S.tiles[key]
-        if not S.far[key] and not (near and (near.sceneStarted or near.sceneComplete)) then
+        if not S.far[key] and not (near and near.roadComplete and not near.failed and not near.dropped)
+            and not (near and near.sceneStarted) then
           local i, j = key:match('^(-?%d+)_(-?%d+)$')
           i, j = tonumber(i), tonumber(j)
           local cx, cy = tileCentre(i, j)
@@ -2829,6 +2865,44 @@ local COLLISION_R = 450
 -- in the MissionGroup or not (night-probe-11): 66 ms in Yaremche, 100-130 ms in central
 -- Kyiv, +20-30 ms of physics the next frame. A rebuild is asked for only when a tile the
 -- car can reach soon lacks collision; the radius grows with speed.
+-- The grave queue deletes a few objects per frame; hide the old terrain immediately when the
+-- replacement ground is ready so it cannot remain visible above a mountain slope meanwhile.
+function LIMIT.hideFarGround(group)
+  if not group then return end
+  for i = 0, group:getCount() - 1 do
+    local obj = group:getObject(i)
+    if obj then pcall(function() if obj:getClassName() == 'ProceduralMesh' then obj:setHidden(true) end end) end
+  end
+end
+
+function LIMIT.ingestGrassChunks(tiles, p)
+  if not native.grassChunkState or not native.takeGrassChunk then return end
+  local bestKey, bestDistance
+  for key, tile in pairs(tiles) do
+    local version, pending = native.grassChunkState(key)
+    if version and tile.grassEarlyVersion ~= version then
+      if tile.grassEarlyOwner then
+        tile.grassEarlyOwner.dropped = true
+        getDetailStream():remove(tile.grassEarlyOwner)
+      end
+      tile.grassEarlyVersion = version
+      tile.grassEarlyOwner = {decor = tile.decor}
+    end
+    if version and pending then
+      local cx, cy = tileCentre(tile.i, tile.j)
+      local d = (cx - p.x) ^ 2 + (cy - p.y) ^ 2
+      if not bestDistance or d < bestDistance then bestKey, bestDistance = key, d end
+    end
+  end
+  if bestKey then
+    local chunk, tile = native.takeGrassChunk(bestKey), tiles[bestKey]
+    if chunk and tile and tile.grassEarlyOwner then
+      loadNewMaterials(nil, chunk.stockMaterials)
+      for _, it in ipairs(chunk.items or {}) do getDetailStream():add(tile.grassEarlyOwner, it) end
+    end
+  end
+end
+
 function LIMIT.collisionRadius(v)
   local speed = v and v:length() or 0
   return math.max(650, math.min(1600, speed * ((S.deliveryP99 or 2) + 10) + 400))
@@ -2865,7 +2939,7 @@ end
 -- the far view's bands took the only slot and three meshes a second never caught a city.
 -- Nearby grass waits a quarter second; the far ring and horizon wait a second. A road due
 -- inside roadUrgent is marked so its own floor applies. An early decor slot is yielded.
-function LIMIT.allowSpawn(gate)
+function LIMIT.allowSpawn(gate, deferYield)
   if not gate then return true end
   local head
   local q = S.queue
@@ -2881,7 +2955,7 @@ function LIMIT.allowSpawn(gate)
   S.urgentRoad = urgent and true or false
   local interval = head and head.grass and not (head.far or head.horizon) and .25 or 1
   if LIMIT.nearQueued() or S.urgentRoad or S.now - (S.burstAt or -1e9) >= interval then return true end
-  gate:yield()
+  if not deferYield then gate:yield() end
   return false
 end
 
@@ -5382,6 +5456,7 @@ local function runTest()
     -- below switches them on, manual play never gets there
     if S.state == 'driving' and not S.manualTraffic then
       S.manualTraffic = true
+      if test.batches == false then M.useBatches = false end
       if test.flowReal then S.flowReal = test.flowReal end
       if test.flow then M.flowSet(test.flow) end
       if test.walkBodies then S.walkBodies = test.walkBodies end
@@ -5484,6 +5559,8 @@ local function runTest()
       end)
     end
     if test.traffic then setTraffic(test.traffic, test.trafficKind) end
+    -- --no-batches: the flow and the walkers as TSStatics (A/B against DynamicShapeBatch)
+    if test.batches == false then M.useBatches = false end
     if test.flowReal then S.flowReal = test.flowReal end
     if test.flow then
       M.flowSet(test.flow)
@@ -6141,19 +6218,23 @@ function M.tick(dt)
     local kb2 = collectgarbage('count')
     -- near roads and buildings spawn on every open gate (20 ms, a few materials). Grass and
     -- the far ring still share one packet a second. An idle decor slot is yielded.
-    if work and not changed and LIMIT.allowSpawn(gate) then
-      if gate and not LIMIT.nearQueued() and not S.urgentRoad then S.burstAt = S.now end
-      if stepQueue(gate and LIMIT.burstMs or nil) then changed = true end
+    if work and not changed then
+      local allowed = LIMIT.allowSpawn(gate, true)
       local p, vel = focus()
-      -- graves also drain above, before tiles are chosen; this finishes a group the frame
-      -- something spawns, without a triple budget that hitch the same frame
-      local graveBudget = (vel and vel:length() >= 15) and 80 or 40
-      if S.graves and #S.graves > 8 then graveBudget = math.max(graveBudget, 120) end
-      digGraves(graveBudget)
+      if allowed then
+        if gate and not LIMIT.nearQueued() and not S.urgentRoad then S.burstAt = S.now end
+        if stepQueue(gate and LIMIT.burstMs or nil) then changed = true end
+        -- graves also drain above, before tiles are chosen; this finishes a group the frame
+        -- something spawns, without a triple budget that hitch the same frame
+        local graveBudget = (vel and vel:length() >= 15) and 80 or 40
+        if S.graves and #S.graves > 8 then graveBudget = math.max(graveBudget, 120) end
+        digGraves(graveBudget)
+      end
       local detailTimer = hptimer()
-      getDetailStream():step(p, S.appliedTune or TUNE_DEFAULT, S.now, detailTimer, gate and 3 or 1)
+      if getDetailStream():step(p, S.appliedTune or TUNE_DEFAULT, S.now, detailTimer, gate and 3 or 1) then changed = true end
       result.detailMs = detailTimer:stop()
       result.liveGrass, result.liveRocks = detailStream.count.grass, detailStream.count.rock
+      if gate and not allowed and not changed then gate:yield() end
     end
     if gate and changed then gate:done() end
     if gate then result.gate = gate:report() end

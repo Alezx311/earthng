@@ -63,8 +63,9 @@ end
 -- A field's standing crop near the road: wheat as dense dry tufts to the knee (the game's dry
 -- grass, the patch's dry set), the rows of sunflower or maize as long green tufts on the 2/3 m
 -- grid, straight across the rows and loose along them (the field's texture has its rows on the
--- same grid, generator FIELD, fast_photo field_sheet). Even everywhere: a field is sown, not wild.
-M.CROP = {wheat = {low = .62, high = .88, stray = .9}, rows = {low = .45, high = .7, across = .06, along = 1.2}}
+-- same grid, generator FIELD, fast_photo field_sheet). Crops keep three of five near tufts;
+-- the saved budget can extend the outer ring without raising the global object cap.
+M.CROP = {wheat = {low = .62, high = .88, stray = .9}, rows = {low = .45, high = .7, across = .06, along = 1.2}, near = 3}
 
 -- The lawn is not one mown carpet (seen from a parked car it was): its height sways in patches
 -- (tall: 0..1 of noise over 9 and 23 m, a square's tufts from low to high of their height),
@@ -108,15 +109,15 @@ end
 function M.patchCount(patch, level)
   local n, zs = 0, 0
   for k = 1, #patch.samples, 4 do
-    local slot, _, thin = sampleOf(patch.samples[k])
+    local slot, _, thin, crop = sampleOf(patch.samples[k])
     local even = (slot % 4 + math.floor(slot / 4)) % 2 == 0
     local T, c = M.TUFT
     -- thin: the first two of the near and inner tufts (both near ones, in expand's order)
     if level == 3 then c = even and 1 or 0
     elseif level == 2 then c = even and 1 or 2
     elseif level == 1 then c = thin and 0 or T.inner2
-    elseif level == 0 then c = thin and T.thin or T.near
-    else c = 2 + (thin and T.thin or T.near + T.inner2) end
+    elseif level == 0 then c = thin and T.thin or (crop and M.CROP.near or T.near)
+    else c = 2 + (thin and T.thin or (crop and M.CROP.near or T.near) + T.inner2) end
     n, zs = n + c, zs + c * patch.samples[k + 1]
   end
   return n, zs
@@ -145,7 +146,7 @@ function M.expand(part, pause)
       local even = (sx + sy) % 2 == 0
       local x = patch.x + sx * 2 + 1
       local y = patch.y + sy * 2 + 1
-      local kept = 0
+      local kept, cropNear = 0, 0
       local wildHeight, wildKeep, weeds = 1, 1, false
       -- Crops with their own models never use wild grass; odd squares have no far-ring tuft.
       if crop ~= 'wheat' and not (crop and long) and not (level == 3 and not even) then
@@ -163,6 +164,11 @@ function M.expand(part, pause)
         if own <= 1 and thin then
           kept = kept + 1
           show = show and kept <= T.thin
+        end
+        if own == 0 and crop and not thin then
+          cropNear = cropNear + 1
+          local rotation = (math.floor(x / 2) * 3 + math.floor(y / 2) * 7) % T.near
+          show = show and (cropNear - 1 + rotation) % T.near < M.CROP.near
         end
         -- Lua 5.1 leaves a negative remainder; a cell west or south of the origin is negative.
         local h = 0
@@ -233,7 +239,8 @@ end
 -- scale, shape, n): a table per tuft kept ~200k tables alive for the game's collector.
 function M.new(create, destroy)
   -- count: live objects by group (every grass ring is 'grass')
-  local self = {cells = {}, live = {}, count = {grass = 0, rock = 0}, cellsLive = 0, serial = 0, revision = 0}
+  local self = {cells = {}, live = {}, count = {grass = 0, rock = 0}, cellsLive = 0, serial = 0, revision = 0,
+    mutations = 0, creating = false}
 
   local function cellOf(kind, x, y)
     local key = kind .. ':' .. x .. ':' .. y
@@ -308,6 +315,7 @@ function M.new(create, destroy)
   local function drop(key)
     local entry = self.live[key]
     if not entry then return end
+    self.mutations = self.mutations + 1
     destroy(entry.handle)
     self.live[key] = nil
     local group = GROUP[entry.kind]
@@ -330,6 +338,7 @@ function M.new(create, destroy)
 
   function self:step(p, tune, now, timer, budget)
     if not p then return end
+    local before, wasCreating = self.mutations, self.creating
     self.focus, self.tune = p, tune
     if not self.work then
       if self.last and now - self.last < .25 and self.seen == self.revision
@@ -406,7 +415,9 @@ function M.new(create, destroy)
             end
             table.sort(parts, function(a, b) return a.serial < b.serial end)
             local rev = cell.rev
+            self.mutations, self.creating = self.mutations + 1, true
             local handle = create(parts, function() pause(true) end)
+            self.creating = false
             -- the cell may have changed while create() yielded; the next pass rebuilds it
             self.live[cell.key] = {handle = handle, n = n, rev = rev, kind = kind}
             self.count[group], self.cellsLive = self.count[group] + n, self.cellsLive + 1
@@ -419,8 +430,9 @@ function M.new(create, destroy)
     -- The closure's clock must be the current frame, including after a yield.
     self.timer, self.budget = timer, budget
     local ok, err = coroutine.resume(self.work)
-    if not ok then self.work = nil; error(err) end
+    if not ok then self.work, self.creating = nil, false; error(err) end
     if coroutine.status(self.work) == 'dead' then self.work = nil end
+    return wasCreating or self.creating or self.mutations ~= before
   end
   return self
 end

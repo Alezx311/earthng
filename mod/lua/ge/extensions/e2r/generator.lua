@@ -65,7 +65,7 @@ local SEA_ABOVE = 0.3   -- the water surface over the DEM's flat sea / river sur
 local WATER = {bed = 'bare_ground', lakeDepth = 10, seaDepth = 80, riverDepth = 5, carve = 2.5,
   above = SEA_ABOVE, gridNear = 5, gridFar = 16, riverStep = 40, riverMaxW = 90, riverMinAspect = 2.5,
   -- rows of the wet cover (WATER.cover), m
-  coverCell = 20}
+  coverCell = 10}
 function WATER.classOf(area, box)
   local tags = area.tags or {}
   local w = tags.water or tags.waterway or ''
@@ -81,7 +81,7 @@ function WATER.classOf(area, box)
   if long > 150 and long > short * WATER.riverMinAspect then return 'river' end
   return 'lake'
 end
-function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, level, inside, boundsOf, pause)
+function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, level, inside, boundsOf, pause, blocked)
   local n = 0
   local function block(x0, y0, x1, y1, z, depth, look)
     local w, l = x1 - x0, y1 - y0
@@ -95,14 +95,21 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
       look = look or 'lake', grid = math.min(distant and WATER.gridFar or WATER.gridNear, w, l),
       decor = true, layer = 'scene'}
   end
-  -- Sea / ocean: one infinite WaterPlane for the session (world.lua singleton). Per-tile
-  -- WaterBlocks stacked at 50–500 m and read as shelves; a plane has no seams. Inland tiles
-  -- that suppressed seaQuads (Death Valley) emit nothing, so no plane appears there alone.
+  -- An infinite WaterPlane cannot be clipped around low roads or terrain, and a single coastal
+  -- tile could flood inland roads far away. Keep sea to its mapped tile cells and apply the
+  -- same road mask as lakes. All blocks use the one sea level, not a per-tile DEM median.
   if sea and seaQuads and #seaQuads > 0 then
-    n = n + 1
-    scene.items[#scene.items + 1] = {
-      kind = 'ocean', name = string.format('e2rl_%s_ocean', key),
-      pos = {0, 0, sea}, look = 'sea', decor = true, layer = 'scene'}
+    local rings = {}
+    for _, q in ipairs(seaQuads) do
+      rings[#rings + 1] = {{q[1], q[2]}, {q[3], q[2]}, {q[3], q[4]}, {q[1], q[4]}}
+    end
+    -- Horizon tiles can be 4 km wide: cap the grid at 50x50 rather than expanding a 10 m
+    -- shoreline to 160,000 cells on a tile the player cannot reach.
+    local seaCell = distant and math.max(WATER.coverCell, (rect[3] - rect[1]) / 50) or WATER.coverCell
+    local cover = WATER.cover(rings, rect[1], rect[2], rect[3], rect[4], seaCell,
+      blocked and function(a, b, c, d) return blocked(a, b, c, d, sea) end, pause)
+    for _, r in ipairs(cover) do block(r[1], r[2], r[3], r[4], sea, WATER.seaDepth, 'sea') end
+    pause()
   end
   for _, area in ipairs(distant and {} or areas or {}) do
     if area.kind == 'water' then
@@ -138,13 +145,25 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
           for _, node in ipairs(narrow and nodes or NONE) do
             if node[4] > WATER.riverMaxW then narrow = false; break end
           end
-          if narrow then
+          -- A River cannot have holes cut around roads. If any covered cell intersects a road
+          -- at or below the water, use the same clipped blocks as a wide water body instead.
+          local cover, clipped = WATER.cover(area.rings, x0, y0, x1, y1, WATER.coverCell,
+            blocked and function(a, b, c, d) return blocked(a, b, c, d, surface) end, pause)
+          if narrow and blocked then
+            local high = surface
+            for _, node in ipairs(nodes) do high = math.max(high, node[3]) end
+            -- A River spline can reach beyond its mapped bank. Use clipped blocks whenever a
+            -- low road is near its bounds, even if the sampled wet cells did not touch it.
+            if blocked(x0 - WATER.coverCell, y0 - WATER.coverCell,
+                x1 + WATER.coverCell, y1 + WATER.coverCell, high) then clipped = true end
+          end
+          if narrow and not clipped then
             n = n + 1
             scene.items[#scene.items + 1] = {
               kind = 'river', name = string.format('e2rl_%s_river_%d', key, n),
               nodes = nodes, look = 'river', decor = true, layer = 'scene'}
           else
-            for _, r in ipairs(WATER.cover(area.rings, x0, y0, x1, y1, WATER.coverCell)) do
+            for _, r in ipairs(cover) do
               block(r[1], r[2], r[3], r[4], surface, WATER.lakeDepth, 'lake')
             end
           end
@@ -160,7 +179,7 @@ end
 -- rings (even-odd: an island stays dry) on three scanlines across the row, so a block reaches a
 -- little onto the bank (under it where the bank rises) rather than leaving the carved bed bare;
 -- runs that repeat on the next row grow one block.
-function WATER.cover(rings, x0, y0, x1, y1, cell)
+function WATER.cover(rings, x0, y0, x1, y1, cell, blocked, pause)
   local nx = math.max(1, math.ceil((x1 - x0) / cell - 1e-6))
   local ny = math.max(1, math.ceil((y1 - y0) / cell - 1e-6))
   local w, h = (x1 - x0) / nx, (y1 - y0) / ny
@@ -186,12 +205,19 @@ function WATER.cover(rings, x0, y0, x1, y1, cell)
       end
     end
   end
-  local blocks, open = {}, {}
+  local blocks, open, clipped = {}, {}, false
   for r = 0, ny do
     local runs = {}
     if r < ny then
       local wet = {}
       mark(y0 + (r + .02) * h, wet); mark(y0 + (r + .5) * h, wet); mark(y0 + (r + .98) * h, wet)
+      if blocked then
+        for c = 0, nx - 1 do
+          if wet[c] and blocked(x0 + c * w, y0 + r * h, x0 + (c + 1) * w, y0 + (r + 1) * h) then
+            wet[c], clipped = nil, true
+          end
+        end
+      end
       local c = 0
       while c < nx do
         if wet[c] then
@@ -211,10 +237,45 @@ function WATER.cover(rings, x0, y0, x1, y1, cell)
     end
     for _, b in pairs(open) do blocks[#blocks + 1] = b end
     open = keep
+    if pause and r % 4 == 0 then pause() end
   end
   table.sort(blocks, function(a, b) return a[2] < b[2] or (a[2] == b[2] and a[1] < b[1]) end)
   for k, b in ipairs(blocks) do blocks[k] = {x0 + b[1] * w, y0 + b[2] * h, x0 + b[3] * w, y0 + b[4] * h} end
-  return blocks
+  return blocks, clipped
+end
+-- Conservative intersection of an expanded road centreline with a water cell. The slab test
+-- finds the part of a road inside the cell, so a bridge above the water is kept wet below it;
+-- tunnels deliberately remain below the water. Segment bins already include the road width.
+function WATER.roadBlocked(bins, x0, y0, x1, y1, surface, lift)
+  local seen = {}
+  for by = floor(y0 / 50), floor(y1 / 50) do
+    for bx = floor(x0 / 50), floor(x1 / 50) do
+      for _, s in ipairs(bins[(bx + 32768) * 65536 + by + 32768] or NONE) do
+        if not seen[s] and not s.waterTunnel then
+          seen[s] = true
+          local pad = s.width / 2 + 1
+          local lo, hi = 0, 1
+          for axis = 1, 2 do
+            local p, delta = s.a[axis], axis == 1 and s.dx or s.dy
+            local low, high = (axis == 1 and x0 or y0) - pad, (axis == 1 and x1 or y1) + pad
+            if math.abs(delta) < EPS then
+              if p < low or p > high then lo, hi = 1, 0; break end
+            else
+              local t0, t1 = (low - p) / delta, (high - p) / delta
+              if t0 > t1 then t0, t1 = t1, t0 end
+              lo, hi = math.max(lo, t0), math.min(hi, t1)
+              if lo > hi then break end
+            end
+          end
+          if lo <= hi then
+            local z0, dz = s.a[3] or 0, (s.b[3] or 0) - (s.a[3] or 0)
+            if z0 + math.min(lo * dz, hi * dz) + lift <= surface + .25 then return true end
+          end
+        end
+      end
+    end
+  end
+  return false
 end
 -- Centre line of a river polygon: samples along the long axis, width from the wet cross-section.
 function WATER.riverNodes(rings, rect, x0, y0, x1, y1, surface, demAt, level, inside)
@@ -743,6 +804,15 @@ local DECAL = {markRepeat = 6.4, markSpread = 1.45, markLift = .008,
   edgeWidth = 2, edgeAt = .38, edgeIn = .6, edgeRepeat = 8, edgeLift = {.004, .03},
   curbRepeat = 2, curbRow = {.005, .195},
   dirtRoads = {motorway = true, trunk = true, primary = true, secondary = true, tertiary = true}}
+-- Field tracks' ruts (ROADS.ruts, fast_style RUTS): the game's dirt-road decal over a track's bed,
+-- rutsWide times as wide, its ragged opacity (fast_art.ruts_art) ending on the verge. The bed is
+-- the middle 1 / rutsWide of its width, always solid; v repeats every rutsAspect widths (the map
+-- is 256 x 4096). Lifts over the bed and at the decal's outer edge, as the edge decals.
+DECAL.rutsWide, DECAL.rutsAspect, DECAL.rutsLift = 1.45, 16, {.006, .03}
+DECAL.rutsMaps = {}
+for _, suffix in ipairs({'_b.color', '_nm.normal', '_r.data', '_ao.data'}) do
+  DECAL.rutsMaps[#DECAL.rutsMaps + 1] = '/assets/materials/decalroad/dirt/Dirt_road_variation_02/t_dirt_variation_02' .. suffix .. '.dds'
+end
 local BUILT_BIN = 50   -- m: bins of the built-up share (sidewalks, town groves)
 -- Every map of the edge materials (fast_style.TEXTURES). A game without one of them (an older
 -- BeamNG) gets the fallback materials from world.lua, and no edge strip is drawn.
@@ -2749,6 +2819,83 @@ function ROADS.trackRuns(points, segmentBins, height, grade)
     end
   end
   return out
+end
+
+-- Whether the game has the ruts' maps (an older BeamNG: the track keeps its plain bed).
+function ROADS.rutsPresent()
+  if ROADS.rutsFound == nil then
+    ROADS.rutsFound = true
+    if FS then
+      for _, path in ipairs(DECAL.rutsMaps) do
+        local ok, found = pcall(function() return FS:fileExists(path) end)
+        if not (ok and found) then ROADS.rutsFound = false; break end
+      end
+    end
+  end
+  return ROADS.rutsFound
+end
+-- The ruts over a track's bed (roadGrade, the bed's material, whether the open ground round it is
+-- not grass): none on a paved track (grade 0-1); where the ground is desert, steppe, turf or snow
+-- the map's own pale dirt; on the grass track (its bed is grass) two ruts with the bed's grass
+-- down the middle; grey ruts on gravel; black-earth dirt on the rest.
+function ROADS.rutsKind(grade, material, dry)
+  if (grade or 0) < 2 then return nil end
+  if dry then return 'ruts_dry' end
+  if material == 'road_track' then return 'ruts_two' end
+  return grade == 2 and 'ruts_gravel' or 'ruts_dirt'
+end
+-- The ruts of one strip, segment by segment: over the bed its own corners (the same quad and
+-- diagonal, `low` over it), beside it a band out to DECAL.rutsWide times the half width, on the
+-- verge's slope (from the bed's edge down to ground() tune.shoulder away), `high` over it at the
+-- decal's edge. u runs across (0 on the left of the way, growing to its right), v along. Corners carry the ground's
+-- normals: the bed is shaded flat, and on a slope a flat track read darker than the field.
+-- o: {edge, hw, dist, points, walk, shoulder, ground, normal, low, high, core(kind, quad), band(kind, quad),
+-- rect (segments beyond it are skipped), pause}
+function ROADS.ruts(kind, o)
+  local hw = o.hw
+  local hd = hw * DECAL.rutsWide
+  local span = 2 * hd * DECAL.rutsAspect
+  local function corner(k, offset, v)
+    local s = math.abs(offset)
+    local p = o.edge(k, offset, o.low)
+    if s > hw + 1e-6 then
+      local sign = offset > 0 and 1 or -1
+      local inner = o.edge(k, sign * hw)
+      local out = o.edge(k, sign * (hw + o.shoulder))
+      local zout = o.ground(out[1], out[2]) or inner[3]
+      local t = (s - hw) / o.shoulder
+      p[3] = inner[3] + (zout - inner[3]) * t + o.low + (o.high - o.low) * (s - hw) / (hd - hw)
+    end
+    p[4], p[5] = (1 - offset / hd) / 2, v
+    p[6], p[7], p[8] = o.normal(p[1], p[2])
+    return p
+  end
+  -- a point's corners serve both its segments and the bed and its bands (the collectors only
+  -- read them): each was worked out three times, ~45 ms of a field tile's ~1.4 s (ruts-cost)
+  local rows = {}
+  local function at(k, offset, v)
+    local row = rows[k]
+    if not row then row = {}; rows[k] = row end
+    local p = row[offset]
+    if not p then p = corner(k, offset, v); row[offset] = p end
+    return p
+  end
+  local n = 0
+  for k = 1, #o.points - 1 do
+   rows[k - 1] = nil
+   if not o.rect or BOX.segment(o.rect, o.points[k], o.points[k + 1], hd + 1) then
+    local v0, v1 = o.dist[k] / span, o.dist[k + 1] / span
+    o.core(kind, {at(k, hw, v0), at(k, -hw, v0), at(k + 1, -hw, v1), at(k + 1, hw, v1)})
+    for _, sign in ipairs({1, -1}) do
+      local walk = o.walk[k] or NONE
+      if not walk[sign] and not ((o.walk.kerb or NONE)[k] or NONE)[sign] then
+        o.band(kind, {at(k, sign * hd, v0), at(k, sign * hw, v0), at(k + 1, sign * hw, v1), at(k + 1, sign * hd, v1)})
+      end
+    end
+   end
+    n = n + 1
+    if n % 32 == 0 and o.pause then o.pause() end
+  end
 end
 
 local SPEED = {motorway = 110, trunk = 90, primary = 60, secondary = 60, tertiary = 50,
@@ -7859,6 +8006,63 @@ end
 local prepared = setmetatable({}, {__mode = 'k'})
 local KINDS = {'roads', 'junctions', 'buildings', 'areas', 'lines', 'points'}
 
+-- A mapped footprint can cover a public street (bad source geometry or a road wider than its
+-- mapping). Do not put a solid building over the road's centre. Require two interior samples,
+-- clear of the footprint edge, so a minor mapping offset does not erase a whole building.
+-- Tunnels, bridges, service roads and raised parts can legitimately pass a building in plan.
+function BLD.clearRoads(lists, pause)
+  local bins, size = {}, 50
+  for _, road in ipairs(lists.roads) do
+    local tags = road.tags or NONE
+    if not road.track and not ROADS.foot(tags) and not ROADS.bridge(tags) and not ROADS.tunnel(tags)
+        and tags.tunnel ~= 'building_passage' and tags.highway ~= 'service'
+        and (tonumber(tags.layer) or 0) == 0 then
+      local p = road.points or NONE
+      for k = 1, #p - 1 do
+        local a, b = p[k], p[k + 1]
+        local length = math.sqrt((a[1] - b[1]) ^ 2 + (a[2] - b[2]) ^ 2)
+        local count = math.ceil(length / 2)
+        for n = 0, count do
+          local t = count > 0 and n / count or 0
+          local x, y = a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t
+          local key = math.floor(x / size) * 65536 + math.floor(y / size)
+          local bin = bins[key] or {}
+          bins[key], bin[#bin + 1] = bin, {x, y, a[3] and b[3] and a[3] + (b[3] - a[3]) * t}
+        end
+      end
+    end
+    pause()
+  end
+  local keep = {}
+  for _, building in ipairs(lists.buildings) do
+    local rings, tags = building.rings or NONE, building.tags or NONE
+    local ring = rings[1] or NONE
+    local hit = false
+    if #ring >= 3 and not tags.e2r_outline and (building.minHeight or number(tags.min_height, 0)) < 2.5 then
+      local box, sum, count = ringBounds(rings), 0, 0
+      for _, p in ipairs(ring) do if p[3] then sum, count = sum + p[3], count + 1 end end
+      local z, first = count > 0 and sum / count or nil, nil
+      for bx = math.floor(box[1] / size), math.floor(box[3] / size) do
+        for by = math.floor(box[2] / size), math.floor(box[4] / size) do
+          for _, p in ipairs(bins[bx * 65536 + by] or NONE) do
+            if p[1] > box[1] and p[1] < box[3] and p[2] > box[2] and p[2] < box[4]
+                and (not z or not p[3] or math.abs(z - p[3]) < 4)
+                and inside(rings, p[1], p[2]) and not nearEdge(rings, p[1], p[2], 1) then
+              if first and (p[1] - first[1]) ^ 2 + (p[2] - first[2]) ^ 2 >= 2.25 then hit = true; break end
+              first = first or p
+            end
+          end
+          if hit then break end
+        end
+        if hit then break end
+      end
+    end
+    if not hit then keep[#keep + 1] = building end
+    pause()
+  end
+  lists.buildings = keep
+end
+
 local function collect(cells, pause)
   local lists = {roads = {}, junctions = {}, buildings = {}, areas = {}, lines = {}, points = {}}
   local seen, terrain = {}, {}
@@ -7891,6 +8095,7 @@ local function collect(cells, pause)
     end
   end
   lists.lines = lines
+  BLD.clearRoads(lists, pause)
   BLD.pinLots(lists)
   for _, list in pairs(lists) do
     local ids = {}
@@ -11159,7 +11364,7 @@ local function build(cells, i, j, options)
         if boundsTouch(rect, bounds, width / 2 + reach) then
           -- a track lies on the ground (ROADS.trackRuns): it does not shape it
           local segment = {a = a, b = b, dx = dx, dy = dy, len2 = length * length, width = width, road = road,
-            tags = tags, surface = not road.track and not ROADS.bridge(tags) and not ROADS.tunnel(tags)}
+            tags = tags, waterTunnel = ROADS.tunnel(tags), surface = not road.track and not ROADS.bridge(tags) and not ROADS.tunnel(tags)}
           segments[#segments + 1] = segment
           local margin = width / 2 + tune.pullZero
           for by = math.floor((bounds[2] - margin) / 50), math.floor((bounds[4] + margin) / 50) do
@@ -11890,7 +12095,15 @@ local function build(cells, i, j, options)
         if grade >= 4 and k > 1 and k < #points then
           widen = 1 + (hash('edge:' .. floor(p[1] + .5) .. ':' .. floor(p[2] + .5)) % 1000 / 1000 - .5) * .34
         end
-        return {p[1] + n[1] * offset * widen, p[2] + n[2] * offset * widen, (p[3] or 0) + lift + (dz or 0)}
+        local x, y = p[1] + n[1] * offset * widen, p[2] + n[2] * offset * widen
+        local cross = 0
+        if road.track then
+          -- A field track follows the ground across its width as well as along it.
+          -- Keep the centre's wear and road-clearance height; only add the local slope.
+          local centre, side = pulled(p[1], p[2]), pulled(x, y)
+          if centre and side then cross = side - centre end
+        end
+        return {x, y, (p[3] or 0) + lift + (dz or 0) + cross}
       end
       strip.edge = edge
       for k = 1, #points - 1 do
@@ -12353,6 +12566,106 @@ local function build(cells, i, j, options)
     end
     return false
   end
+  -- before the verges and the drapes: a verge's land and a meadow's drape depend on it
+  bio.landOff = options.land == false
+  -- The land at a point (VEG.land): moisture -1 (dry) .. 1 (lush) and bareness 0 .. 1, from the
+  -- raw DEM `reach` m round it, so neighbouring tiles agree. Among buildings it stays lawn.
+  function bio.landAt(x, y, d)
+    local c = demAt(x, y)
+    local e, w, n, s = demAt(x + d, y), demAt(x - d, y), demAt(x, y + d), demAt(x, y - d)
+    if not (c and e and w and n and s) then return 0, 0 end
+    local gx, gy = (e - w) / (2 * d), (n - s) / (2 * d)
+    local slope = math.sqrt(gx * gx + gy * gy)
+    -- over 0: a hollow (its neighbours stand higher), under 0: a ridge or a brow
+    local curve = ((e + w + n + s) / 4 - c) / d
+    -- the ground rises to the north: the slope faces south, the sun's side north of the equator
+    local sun = slope > 1e-3 and gy / slope or 0
+    local p = bio.on and bio.at(x, y)
+    if p and p.south then sun = -sun end
+    local steep = math.max(0, math.min(1, (slope - .05) / .23))
+    steep = steep * steep * (3 - 2 * steep)
+    local n1, n2, n3 = bio.noise(x, y, 320, 71), bio.noise(x, y, 85, 73), bio.noise(x, y, 23, 75)
+    local moist = math.max(-1, math.min(1, curve * 9)) * .9 - steep * (.75 + .45 * sun) * 1.1
+      + (n1 - .5) * 1.1 + (n2 - .5) * .5 + (n3 - .5) * .05
+    local cliff = math.max(0, math.min(1, (slope - .3) / .32))
+    local brow = math.max(0, math.min(1, (slope - .12) / .18))
+    local bare = cliff * cliff * (3 - 2 * cliff) + math.max(0, -curve * 6 - .25) * brow + (n3 - .5) * .1 * brow
+    local town = math.max(0, math.min(1, (builtAt(x, y) - .015) / .045))
+    return math.max(-1, math.min(1, moist)) * (1 - town), math.max(0, math.min(1, bare)) * (1 - town)
+  end
+  -- landAt on the VEG.land.fine lattice, bilinear between its nodes: the ground pieces and the
+  -- grass read one smooth field, each node sampled once (a tile: ~6.5k nodes, not a call for
+  -- every one of the lawn's ~250k grass samples)
+  bio.landM, bio.landB = {}, {}
+  function bio.landNear(x, y)
+    local f = VEG.land.fine
+    local gx, gy = x / f, y / f
+    local ix, iy = floor(gx), floor(gy)
+    local tx, ty = gx - ix, gy - iy
+    local M, B = bio.landM, bio.landB
+    local m, b = 0, 0
+    for c = 0, 3 do
+      local right, up = c % 2, c >= 2 and 1 or 0
+      local key = (ix + right + 524288) * 1048576 + iy + up + 524288
+      local nm = M[key]
+      if not nm then
+        nm, B[key] = bio.landAt((ix + right) * f, (iy + up) * f, VEG.land.reach)
+        M[key] = nm
+      end
+      local w = (right == 1 and tx or 1 - tx) * (up == 1 and ty or 1 - ty)
+      m, b = m + nm * w, b + B[key] * w
+    end
+    return m, b
+  end
+  -- raw moisture and bareness as levels: moisture -W .. W (0: the common grass, W = levels + 1:
+  -- the land whole), bareness 0 .. W
+  function bio.landLevelsOf(m, b)
+    local L = VEG.land
+    local lm = L.level(L.moist, math.abs(m))
+    return m < 0 and -lm or lm, L.level(L.bare, b)
+  end
+  -- the field shifted by VEG.land.dither of a level, by a hash of the point (a piece's centre)
+  function bio.landDither(x, y, m, b)
+    local L = VEG.land
+    local h = ihash(5507, floor(x * 4), floor(y * 4))
+    local jm, jb = (h % 1000 / 1000 - .5) * L.dither, (floor(h / 1000) % 1000 / 1000 - .5) * L.dither
+    m = m + (m < 0 and -1 or 1) * jm * (L.moist[2] - L.moist[1])
+    return m, b + jb * (L.bare[2] - L.bare[1])
+  end
+  -- the levels at a point; without `d` from the near lattice (landNear), dithered
+  function bio.landLevels(x, y, d)
+    local m, b
+    if d then m, b = bio.landAt(x, y, d) else m, b = bio.landDither(x, y, bio.landNear(x, y)) end
+    return bio.landLevelsOf(m, b)
+  end
+  -- The lands of levels m, b: the land under ('grass', 'dry' or 'lush'), the land coming in over
+  -- it and its level 1 .. VEG.land.levels, or one land whole (level nil). Loam comes in over
+  -- whichever grass is there; two grasses and loam do not meet in one piece.
+  function bio.landPairOf(m, b)
+    local L = VEG.land
+    local whole = L.levels + 1
+    local under = m <= -L.under and 'dry' or m >= L.under and 'lush' or 'grass'
+    if b >= whole then return 'earth' end
+    if b > 0 then return under, 'earth', b end
+    if m >= whole then return 'lush' elseif m <= -whole then return 'dry' end
+    if m ~= 0 then return 'grass', m > 0 and 'lush' or 'dry', math.abs(m) end
+    return 'grass'
+  end
+  function bio.landPair(x, y, d)
+    return bio.landPairOf(bio.landLevels(x, y, d))
+  end
+  -- The lands of ground drawn apart from the lattice (a verge) at x, y: `kind` itself where it is
+  -- not open land; one land whole (its solid kind, `kind` for the common grass); or the land
+  -- under, the land coming in and the level, to draw as the pieces are (cut under, fade over).
+  -- The plain grass beside every road read as a green band, cut in steps, across a dry slope;
+  -- the land whole as a pale band beside pieces that dissolve into it (rural-land-mips v-above).
+  function bio.landOf(x, y, kind)
+    local L = VEG.land
+    if bio.landOff or not L.kinds[kind] then return kind end
+    local under, over, level = bio.landPair(x, y)
+    if over then return under, over, level end
+    return L.solid[under] or kind
+  end
   local function emit(collectorOf, material, poly, skip, up)
     -- Distant tiles skip the carriageway. The verge is the transition band: the same
     -- ground wedge the near tile cuts at this edge, so the shared border keeps its vertices.
@@ -12375,7 +12688,15 @@ local function build(cells, i, j, options)
         -- a verge is the place's own ground: desert, alpine turf or snow, not a green band
         local kind = material
         if bio.on and #shaded >= 3 then kind = surfaceKind(cx / #shaded, cy / #shaded, 'ground') end
-        if #shaded >= 3 then collectorOf.polygon(kind, shaded, up) end
+        if #shaded >= 3 then
+          local under, over, level = bio.landOf(cx / #shaded, cy / #shaded, kind)
+          if over then
+            collectorOf.polygon('cut_' .. under .. level, shaded, up)
+            ;(distant and collectorOf or roadDecor).polygon('fade_' .. over .. level, shaded, up)
+          else
+            collectorOf.polygon(under, shaded, up)
+          end
+        end
       else
         collectorOf.polygon(material, piece, up)
       end
@@ -12662,6 +12983,24 @@ local function build(cells, i, j, options)
       end
     end
   end
+  -- Ruts over the field tracks (ROADS.ruts). A track crossing another lies a millimetre or two
+  -- apart from it, not fighting for depth; the bands beside the bed are cut by other roads as the
+  -- verges are.
+  if visualRoads and ROADS.rutsPresent() then
+    for _, strip in ipairs(strips) do
+      local first = strip.points[1]
+      local kind = strip.road.track and strip.surface and first and ROADS.rutsKind(strip.grade, strip.material,
+        bio.on and surfaceKind(first[1], first[2], 'ground') ~= 'ground')
+      if kind and BOX.touch(rect, strip.points, strip.hw * DECAL.rutsWide) then
+        local own = function(entry) return entry.road == strip end
+        ROADS.ruts(kind, {rect = rect, edge = strip.edge, hw = strip.hw, dist = strip.dist, points = strip.points, walk = strip.walk,
+          shoulder = tune.shoulder, ground = ground, normal = groundNormal, pause = pause,
+          low = DECAL.rutsLift[1] + (hash('ruts:' .. tostring(strip.road.id)) % 3) * .002, high = DECAL.rutsLift[2],
+          core = function(k, quad) roadDecor.polygon(k, quad, true) end,
+          band = function(k, quad) emit(roadDecor, k, quad, own, true) end})
+      end
+    end
+  end
 
   mark('verges')
   if visualRoads and markKind then
@@ -12767,10 +13106,9 @@ local function build(cells, i, j, options)
   end
   if sea and seaAll then seaQuads = {rect} end
   -- WaterBlocks for the sea and OSM lakes (not the old e2rf_water mesh sheet)
-  WATER.fill(scene, key, rect, sea, seaQuads, lists.areas, distant, demAt, ROADS.level, inside, ringBounds, pause)
+  WATER.fill(scene, key, rect, sea, seaQuads, lists.areas, distant, demAt, ROADS.level, inside, ringBounds, pause,
+    function(x0, y0, x1, y1, z) return WATER.roadBlocked(segmentBins, x0, y0, x1, y1, z, lift) end)
   mark('groundsea')
-  -- set before the drapes: a meadow's drape depends on it
-  bio.landOff = options.land == false
   for _, area in ipairs(distant and NONE or lists.areas) do
     local kind = area.kind
     -- a meadow claims its whole ground triangles (rock where steep, the climate's ground), but
@@ -12787,92 +13125,6 @@ local function build(cells, i, j, options)
     local p = {x, y, z}
     p[6], p[7], p[8] = groundNormal(x, y)
     return p
-  end
-  -- The land at a point (VEG.land): moisture -1 (dry) .. 1 (lush) and bareness 0 .. 1, from the
-  -- raw DEM `reach` m round it, so neighbouring tiles agree. Among buildings it stays lawn.
-  function bio.landAt(x, y, d)
-    local c = demAt(x, y)
-    local e, w, n, s = demAt(x + d, y), demAt(x - d, y), demAt(x, y + d), demAt(x, y - d)
-    if not (c and e and w and n and s) then return 0, 0 end
-    local gx, gy = (e - w) / (2 * d), (n - s) / (2 * d)
-    local slope = math.sqrt(gx * gx + gy * gy)
-    -- over 0: a hollow (its neighbours stand higher), under 0: a ridge or a brow
-    local curve = ((e + w + n + s) / 4 - c) / d
-    -- the ground rises to the north: the slope faces south, the sun's side north of the equator
-    local sun = slope > 1e-3 and gy / slope or 0
-    local p = bio.on and bio.at(x, y)
-    if p and p.south then sun = -sun end
-    local steep = math.max(0, math.min(1, (slope - .05) / .23))
-    steep = steep * steep * (3 - 2 * steep)
-    local n1, n2, n3 = bio.noise(x, y, 320, 71), bio.noise(x, y, 85, 73), bio.noise(x, y, 23, 75)
-    local moist = math.max(-1, math.min(1, curve * 9)) * .9 - steep * (.75 + .45 * sun) * 1.1
-      + (n1 - .5) * 1.1 + (n2 - .5) * .5 + (n3 - .5) * .05
-    local cliff = math.max(0, math.min(1, (slope - .3) / .32))
-    local brow = math.max(0, math.min(1, (slope - .12) / .18))
-    local bare = cliff * cliff * (3 - 2 * cliff) + math.max(0, -curve * 6 - .25) * brow + (n3 - .5) * .1 * brow
-    local town = math.max(0, math.min(1, (builtAt(x, y) - .015) / .045))
-    return math.max(-1, math.min(1, moist)) * (1 - town), math.max(0, math.min(1, bare)) * (1 - town)
-  end
-  -- landAt on the VEG.land.fine lattice, bilinear between its nodes: the ground pieces and the
-  -- grass read one smooth field, each node sampled once (a tile: ~6.5k nodes, not a call for
-  -- every one of the lawn's ~250k grass samples)
-  bio.landM, bio.landB = {}, {}
-  function bio.landNear(x, y)
-    local f = VEG.land.fine
-    local gx, gy = x / f, y / f
-    local ix, iy = floor(gx), floor(gy)
-    local tx, ty = gx - ix, gy - iy
-    local M, B = bio.landM, bio.landB
-    local m, b = 0, 0
-    for c = 0, 3 do
-      local right, up = c % 2, c >= 2 and 1 or 0
-      local key = (ix + right + 524288) * 1048576 + iy + up + 524288
-      local nm = M[key]
-      if not nm then
-        nm, B[key] = bio.landAt((ix + right) * f, (iy + up) * f, VEG.land.reach)
-        M[key] = nm
-      end
-      local w = (right == 1 and tx or 1 - tx) * (up == 1 and ty or 1 - ty)
-      m, b = m + nm * w, b + B[key] * w
-    end
-    return m, b
-  end
-  -- raw moisture and bareness as levels: moisture -W .. W (0: the common grass, W = levels + 1:
-  -- the land whole), bareness 0 .. W
-  function bio.landLevelsOf(m, b)
-    local L = VEG.land
-    local lm = L.level(L.moist, math.abs(m))
-    return m < 0 and -lm or lm, L.level(L.bare, b)
-  end
-  -- the field shifted by VEG.land.dither of a level, by a hash of the point (a piece's centre)
-  function bio.landDither(x, y, m, b)
-    local L = VEG.land
-    local h = ihash(5507, floor(x * 4), floor(y * 4))
-    local jm, jb = (h % 1000 / 1000 - .5) * L.dither, (floor(h / 1000) % 1000 / 1000 - .5) * L.dither
-    m = m + (m < 0 and -1 or 1) * jm * (L.moist[2] - L.moist[1])
-    return m, b + jb * (L.bare[2] - L.bare[1])
-  end
-  -- the levels at a point; without `d` from the near lattice (landNear), dithered
-  function bio.landLevels(x, y, d)
-    local m, b
-    if d then m, b = bio.landAt(x, y, d) else m, b = bio.landDither(x, y, bio.landNear(x, y)) end
-    return bio.landLevelsOf(m, b)
-  end
-  -- The lands of levels m, b: the land under ('grass', 'dry' or 'lush'), the land coming in over
-  -- it and its level 1 .. VEG.land.levels, or one land whole (level nil). Loam comes in over
-  -- whichever grass is there; two grasses and loam do not meet in one piece.
-  function bio.landPairOf(m, b)
-    local L = VEG.land
-    local whole = L.levels + 1
-    local under = m <= -L.under and 'dry' or m >= L.under and 'lush' or 'grass'
-    if b >= whole then return 'earth' end
-    if b > 0 then return under, 'earth', b end
-    if m >= whole then return 'lush' elseif m <= -whole then return 'dry' end
-    if m ~= 0 then return 'grass', m > 0 and 'lush' or 'dry', math.abs(m) end
-    return 'grass'
-  end
-  function bio.landPair(x, y, d)
-    return bio.landPairOf(bio.landLevels(x, y, d))
   end
   -- A distant triangle (farStep m and more) of open land: its lands from the mean of the near
   -- lattice at three points inside it, drawn as the near pieces are (cut under, fade over). It
@@ -13066,6 +13318,24 @@ local function build(cells, i, j, options)
     coarse = fine * math.max(1, math.floor(coarse / fine + 1e-6))
     if size < coarse * 2 - EPS then coarse = fine end
     local x0, y0, x1, y1 = rect[1], rect[2], rect[3], rect[4]
+    -- On sharply curved terrain a 100 m triangle can cut across a hill or a valley by many
+    -- metres. Refine only the far tile that needs it, keeping the same fine edge as its neighbour.
+    -- Compare the actual drawn ground at the centre to the diagonal of the coarse triangle.
+    if options.far and not options.horizon and (options.adaptiveFar or not options.farStep) and coarse >= fine * 2 then
+      local refine = false
+      local y = y0 + coarse
+      while y + coarse <= y1 - coarse + EPS and not refine do
+        local x = x0 + coarse
+        while x + coarse <= x1 - coarse + EPS do
+          local a, b, mid = heightAt(x, y), heightAt(x + coarse, y + coarse), heightAt(x + coarse / 2, y + coarse / 2)
+          if a and b and mid and math.abs(mid - (a + b) / 2) > 4 then refine = true; break end
+          x = x + coarse
+        end
+        y = y + coarse
+        pause()
+      end
+      if refine then coarse = fine * math.max(1, math.floor(coarse / (2 * fine))) end
+    end
     -- the horizon draped in the far view's colour map (far.lua mapAt): one surface of the
     -- aerial colours instead of a 100 m triangle per cover kind, rivers in water colour. A far
     -- tile has no WaterBlocks (WATER.fill): its water takes the map too, not the bare bed (brown
@@ -13159,6 +13429,20 @@ local function build(cells, i, j, options)
       end
       return out
     end
+    -- Match the interior's ticks exactly. Dividing the span evenly by a rounded count makes
+    -- different knots when the final coarse cell is shorter, leaving T-junctions and cracks.
+    local function pointsByStep(ax, ay, bx, by, stride)
+      local out = {}
+      local length = math.max(math.abs(bx - ax), math.abs(by - ay))
+      local d = 0
+      while d < length - EPS do
+        local t = d / length
+        out[#out + 1] = {ax + (bx - ax) * t, ay + (by - ay) * t}
+        d = d + stride
+      end
+      out[#out + 1] = {bx, by}
+      return out
+    end
     -- Outer fine polyline P and inner coarse knots. P[0] matches the first knot's
     -- parameter, P[n] the last. Triangles (L, P[i], P[i+1]) plus (L, P[n], R).
     local function fan(outer, inner)
@@ -13194,16 +13478,15 @@ local function build(cells, i, j, options)
     local nFine = math.floor(coarse / fine + .5)
     local span = (x1 - x0) - 2 * coarse
     local nSpanFine = math.floor(span / fine + .5)
-    local nSpanCoarse = math.floor(span / coarse + .5)
     if span > EPS then
       fan(pointsAlong(x0 + coarse, y0, x1 - coarse, y0, nSpanFine),
-        pointsAlong(x0 + coarse, y0 + coarse, x1 - coarse, y0 + coarse, nSpanCoarse))
+        pointsByStep(x0 + coarse, y0 + coarse, x1 - coarse, y0 + coarse, coarse))
       fan(pointsAlong(x0 + coarse, y1, x1 - coarse, y1, nSpanFine),
-        pointsAlong(x0 + coarse, y1 - coarse, x1 - coarse, y1 - coarse, nSpanCoarse))
+        pointsByStep(x0 + coarse, y1 - coarse, x1 - coarse, y1 - coarse, coarse))
       fan(pointsAlong(x0, y0 + coarse, x0, y1 - coarse, nSpanFine),
-        pointsAlong(x0 + coarse, y0 + coarse, x0 + coarse, y1 - coarse, nSpanCoarse))
+        pointsByStep(x0 + coarse, y0 + coarse, x0 + coarse, y1 - coarse, coarse))
       fan(pointsAlong(x1, y0 + coarse, x1, y1 - coarse, nSpanFine),
-        pointsAlong(x1 - coarse, y0 + coarse, x1 - coarse, y1 - coarse, nSpanCoarse))
+        pointsByStep(x1 - coarse, y0 + coarse, x1 - coarse, y1 - coarse, coarse))
     end
     local function corner(outer, x, y) fanPoint(outer, x, y) end
     corner(pointsAlong(x0, y0 + coarse, x0, y0, nFine), x0 + coarse, y0 + coarse)
@@ -15087,8 +15370,7 @@ local function build(cells, i, j, options)
       local spans = {mesh[shapes[1]].span, mesh[shapes[2]].span, mesh[shapes[3]].span}
       local bottoms = {mesh[shapes[1]].bottom, mesh[shapes[2]].bottom, mesh[shapes[3]].bottom}
       local x0, y0 = floor(rect[1] / cell) * cell, floor(rect[2] / cell) * cell
-      for oy = y0, rect[4] - 1e-6, cell do
-        for ox = x0, rect[3] - 1e-6, cell do
+      local function makePatch(ox, oy)
           if ox >= rect[1] and ox < rect[3] and oy >= rect[2] and oy < rect[4] and climate(ox + 4, oy + 4) then
             local samples, anchor, dryAny = {}, nil, false
             for sy = 0, 3 do
@@ -15133,6 +15415,50 @@ local function build(cells, i, j, options)
               if scene.items[#scene.items].grassPatch.dry then bio.dryWarm = VEG.dryLawnSet.shapes[1] end
             end
           end
+      end
+      -- Deliver a small area around the current focus while the rest of the 500 m tile is
+      -- still being prepared. The same patches are skipped in the subsequent full-tile pass.
+      -- Only the lawn items appended here are removed; earlier scatter stays in the final layer.
+      local focus = options.sceneReady and options.grassChunk and options.grassFocus
+      if type(focus) == 'function' then focus = focus() end
+      local radius = 112
+      local prefix = #scene.items
+      local function flush()
+        if #scene.items <= prefix then return end
+        local chunk, used = {}, {}
+        for i = prefix + 1, #scene.items do chunk[#chunk + 1] = scene.items[i]; scene.items[i] = nil end
+        for _, item in ipairs(chunk) do
+          local p = item.grassPatch
+          for _, set in ipairs({p, p.tall or NONE, p.dry or NONE}) do
+            for _, shape in ipairs(set.shapes or NONE) do used[#used + 1] = shape end
+          end
+        end
+        options.grassChunk(chunk, VEG.stockFor(chunk, used))
+      end
+      if type(focus) == 'table' and type(focus.x) == 'number' and type(focus.y) == 'number' then
+        local nearby = {}
+        for oy = math.max(y0, floor((focus.y - radius) / cell) * cell), math.min(rect[4] - 1e-6, focus.y + radius), cell do
+          for ox = math.max(x0, floor((focus.x - radius) / cell) * cell), math.min(rect[3] - 1e-6, focus.x + radius), cell do
+            local d = (ox + 4 - focus.x) ^ 2 + (oy + 4 - focus.y) ^ 2
+            if d <= radius * radius then nearby[#nearby + 1] = {ox, oy, d} end
+          end
+          pause()
+        end
+        table.sort(nearby, function(a, b)
+          return a[3] < b[3] or (a[3] == b[3] and (a[2] < b[2] or (a[2] == b[2] and a[1] < b[1])))
+        end)
+        for i, q in ipairs(nearby) do
+          makePatch(q[1], q[2])
+          if #scene.items - prefix >= 64 then flush() end
+          if i % 16 == 0 then pause() end
+        end
+        flush()
+      else focus = nil end
+      for oy = y0, rect[4] - 1e-6, cell do
+        for ox = x0, rect[3] - 1e-6, cell do
+          if not focus or (ox + 4 - focus.x) ^ 2 + (oy + 4 - focus.y) ^ 2 > radius * radius then
+            makePatch(ox, oy)
+          end
           if ox % 64 == 0 then pause() end
         end
         pause()
@@ -15152,10 +15478,10 @@ local function build(cells, i, j, options)
     -- Forest floor and mapped fields stay a thin scatter. Lawn kinds are absent here,
     -- so a town tile does not plant a second tuft on the carpet.
     -- (no green tufts on fields: one every 8 m stood alone on the ploughed soil and the wheat)
+    lawnCarpet()
     scatter('grass', {heath = 7, forest = 12, orchard = 5, vineyard = 9},
       {heath = .5, forest = .2, orchard = .55, vineyard = .28},
       VEG.grass, maxGrass, 0, 0.20, 0.30, .72, {forest = treeline + 80})
-    lawnCarpet()
     scatter('bush', {forest = 14, park = 18},
       {forest = .4, park = .22},
       VEG.have('bush'), maxUnder, 0, .85, 1.3, .72, {forest = treeline + 80})

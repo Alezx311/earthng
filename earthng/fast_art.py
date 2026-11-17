@@ -392,6 +392,10 @@ def pack_fields(pack, base, toned=True):
         for kind, like in style.CROP_LIKE.items():
             if 'e2rf_' + like in out:
                 out['e2rf_' + kind] = dict(out['e2rf_' + like])
+        # the field tracks' ruts are the real pack's own: every other pack keeps its old track,
+        # the bed it draws under them (the seasonal packs start from the real fields)
+        for kind in style.RUTS:
+            out['e2rf_' + kind] = {**out['e2rf_' + kind], 'opacityFactor': 0}
     return out
 
 
@@ -535,7 +539,7 @@ def land_art(real):
     (real / 'land.version').write_text(LAND_ART_VERSION)
 
 
-LAND_ART_VERSION = '6'  # change whenever a land sheet, the relief, a field's crop or the mask changes
+LAND_ART_VERSION = '7'  # change whenever a land sheet, the relief, a field's crop or the mask (or its mips) changes
 
 
 def ensure(user):
@@ -631,6 +635,11 @@ def prebuild(distributable=False):
         if not (shared / 'real' / 'track_o.data.dds').exists():
             rail_art(shared / 'real')
             to_dds(shared / 'real')
+        # and the field tracks' ruts (generator.lua ROADS.ruts)
+        stamp = shared / 'real' / 'ruts.version'
+        if not stamp.exists() or stamp.read_text() != RUTS_ART_VERSION:
+            ruts_art(shared / 'real')
+            to_dds(shared / 'real')
         stamp = shared / 'real' / 'brand_sign.version'
         if not (shared / 'real' / 'brand_photo.glow.dds').exists() or not stamp.exists() or stamp.read_text() != BRAND_ART_VERSION:
             brand_art(shared / 'real')
@@ -695,6 +704,7 @@ def build(r, game_assets=True):
     land_art(r / 'real')
     yard_art(r / 'real')
     rail_art(r / 'real')
+    ruts_art(r / 'real')
     brand_art(r / 'real')
     glyph_art(r / 'real')
     # the PO-2 concrete fence: one 2.5 m x 2 m slab... laid over a 2.5 m repeat, the slab in the
@@ -758,6 +768,7 @@ def facade_art(r):
 MIP_REFS = {'chainlink_o.data.png': style.CHAINLINK_MIP_REF, 'line_o.data.png': style.EXTRA['mark']['alphaRef'],
             'railing_o.data.png': style.RAILING_MIP_REF, 'fence_boards_o.data.png': style.FENCE_BOARDS_MIP_REF,
             'track_o.data.png': style.TRACK_MIP_REF, 'land_blend_o.data.png': 'uniform', 'land_blend_inv_o.data.png': 'uniform',
+            'ruts_o.data.png': style.RUTS_REF, 'ruts_two_o.data.png': style.RUTS_REF,
             # the signs' letters: a box filter thins their strokes away from the 16 px level on
             'glyphs_o.data.png': style.EXTRA['glyphs']['alphaRef']}
 # The yard atlas (generator.lua YARD.cell keeps the same order): playground paint, wood, metal,
@@ -1191,6 +1202,53 @@ def rail_art(r):
     colour.save(r / 'track.color.png')
     normal.save(r / 'track.normal.png')
     Image.fromarray(alpha).convert('RGB').save(r / 'track_o.data.png')
+
+
+# Field tracks (generator.lua ROADS.ruts, fast_style RUTS): the opacity over the game's dirt-road
+# decal, u across and v along, 80 m of track a repeat. The middle RUTS_CORE of the width (the
+# bed) is always solid; outside it the dirt ends raggedly, from the bed's edge to the decal's,
+# with grass biting in and dirt spilling out. The two-track one also opens a ragged strip of
+# the bed's grass down the middle.
+RUTS_ART_VERSION = '1'
+RUTS_PX = (256, 2048)
+
+
+def _periodic_noise(rng, w, h, cells_u, cells_v):
+    """Smooth noise in [0, 1], w x h, repeating along v (rows): random cells, bicubic, wrapped."""
+    import numpy as np
+    small = rng.random((cells_v, cells_u)).astype(np.float32)
+    tall = Image.fromarray(np.vstack([small, small, small]), 'F').resize((w, h * 3), Image.BICUBIC)
+    return np.asarray(tall, np.float32)[h:2 * h]
+
+
+def ruts_masks(seed=2026):
+    """(full, two-track) opacity as uint8 arrays, rows along the track."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    w, h = RUTS_PX
+    edge_noise = (.4 * _periodic_noise(rng, w, h, 6, 24) + .3 * _periodic_noise(rng, w, h, 12, 64)
+                  + .18 * _periodic_noise(rng, w, h, 32, 200) + .12 * _periodic_noise(rng, w, h, 64, 600))
+    u = (np.arange(w, dtype=np.float32) + .5) / w
+    bed = .5 * (1 - style.RUTS_CORE)
+    # 0 at the decal's edge, 1 at the bed's: the dirt ends where this plus the noise passes .5.
+    # The noise fades out towards both, so the bed's edge and the decal's are never drawn.
+    d = np.minimum(u, 1 - u)[None, :] / bed
+    value = d + .9 * (edge_noise - .5) * np.clip(1 - d * d, 0, 1)
+    value[:, d[0] >= 1] = 1.0
+    full = np.clip((value - .5) * 8 + .5, 0, 1)
+    gap_noise = (.5 * _periodic_noise(rng, w, h, 3, 40) + .3 * _periodic_noise(rng, w, h, 8, 160)
+                 + .2 * _periodic_noise(rng, w, h, 24, 500))
+    middle = np.abs(u - .5)[None, :] / .07 + 1.3 * (gap_noise - .5)
+    grass = np.clip((.5 - middle) * 8 + .5, 0, 1)
+    two = np.minimum(full, 1 - grass)
+    return (full * 255).astype(np.uint8), (two * 255).astype(np.uint8)
+
+
+def ruts_art(r):
+    full, two = ruts_masks()
+    Image.fromarray(full).convert('RGB').save(r / 'ruts_o.data.png')
+    Image.fromarray(two).convert('RGB').save(r / 'ruts_two_o.data.png')
+    (r / 'ruts.version').write_text(RUTS_ART_VERSION)
 
 
 def to_dds(r):

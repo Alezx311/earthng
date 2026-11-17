@@ -10,6 +10,10 @@ car can look from 10 m on, ~450 triangles:
     where glass meets paint.
 Four bodies (sedan, hatchback, crossover, a minibus like a city's marshrutka). Forward is +x, up +z,
 the origin on the ground under the middle of the car.
+
+Besides one shape per body and paint (a TSStatic each), every body has car_<body>_paint.dae whose
+paint takes its colour per copy (instanceDiffuse through the R palette mask): the flow's
+DynamicShapeBatch copies (shapebatch.lua) get one colour each, so four batches draw every paint.
 """
 import json
 import math
@@ -52,6 +56,8 @@ SHARED = {
     'plate': {'baseColorFactor': [.85, .86, .86, 1], 'roughnessFactor': .5},
 }
 PREFIX = 'e2r_flow_'
+# the paint coloured per copy (flow.lua PAINTABLE): white times the copy's colour
+PAINTABLE = 'paint'
 SMOOTH = 50          # degrees: faces of one material meeting flatter than this share their normals
 
 
@@ -326,6 +332,9 @@ def materials():
     for name, rgb in PAINTS:
         out[PREFIX + name] = {'baseColorFactor': [*rgb, 1], 'roughnessFactor': .3, 'metallicFactor': .45,
                               'clearCoatFactor': .5, 'clearCoatRoughnessFactor': .15}
+    out[PREFIX + PAINTABLE] = {'baseColorFactor': [1, 1, 1, 1], 'roughnessFactor': .3, 'metallicFactor': .45,
+                               'clearCoatFactor': .5, 'clearCoatRoughnessFactor': .15, 'instanceDiffuse': True,
+                               'colorPaletteMap': '/vehicles/common/nullcolormaskR.color.png'}
     for name, stage in SHARED.items():
         out[PREFIX + name] = stage
     return {m: {'name': m, 'mapTo': m, 'class': 'Material', 'version': 1.5, 'Stages': [stage, {}, {}, {}]}
@@ -335,5 +344,7 @@ def materials():
 def level_files(level):
     files = {f'levels/{level}/art/flow/car_{body}_{name}.dae': car_dae(body, name)
              for body, _ in BODIES for name, _ in PAINTS}
+    for body, _ in BODIES:
+        files[f'levels/{level}/art/flow/car_{body}_{PAINTABLE}.dae'] = car_dae(body, PAINTABLE)
     files[f'levels/{level}/art/flow/main.materials.json'] = json.dumps(materials(), indent=2)
     return files

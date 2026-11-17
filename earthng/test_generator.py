@@ -103,6 +103,33 @@ class GeneratorTests(unittest.TestCase):
         options.setdefault('relief', False)
         return self.generator.build(self.table(cells), i, j, self.table(options))
 
+    def test_road_centre_clears_conflicting_buildings_only(self):
+        collect = self.lua.execute('''
+          for i = 1, 200 do
+            local name, value = debug.getupvalue(..., i)
+            if not name then break end
+            if name == 'collect' then return value end
+          end
+          error('collect not found')
+        ''', self.generator.build)
+        road = {'id': 'r', 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[0, 50, 0], [100, 50, 0]]}
+        def building(y0, y1, **extra):
+            return {'id': 'b', 'rings': [[[40, y0, 0], [60, y0, 0],
+                                          [60, y1, 0], [40, y1, 0]]], **extra}
+        def kept(b, r=road):
+            lists, _ = collect(self.table([{'roads': [r], 'buildings': [b]}]), self.lua.eval('function() end'))
+            return len(lists.buildings)
+        self.assertEqual(kept(building(45, 55)), 0)
+        self.assertEqual(kept(building(50, 60)), 1)  # touches its edge
+        self.assertEqual(kept(building(45, 55, minHeight=5)), 1)
+        for tags in ({'highway': 'residential', 'tunnel': 'yes'},
+                     {'highway': 'residential', 'bridge': 'yes'},
+                     {'highway': 'service'}, {'highway': 'residential', 'tunnel': 'building_passage'}):
+            self.assertEqual(kept(building(45, 55), {**road, 'tags': tags}), 1)
+        high_road = {**road, 'points': [[0, 50, 20], [100, 50, 20]]}
+        self.assertEqual(kept(building(45, 55), high_road), 1)
+
     def meshes(self, manifest, material=None):
         for item in manifest['items'].values():
             for mesh in (item['meshes'] or self.lua.table()).values():
@@ -1970,9 +1997,12 @@ class GeneratorTests(unittest.TestCase):
         cell = {'roads': [road], 'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 5, 'ny': 5, 'heights': [20.0] * 25}}
 
         def verges(manifest):
-            # verge pieces: small ground triangles that sit wholly in the band along the road
-            return [t for t in self.triangles(manifest, 'e2rf_ground')
-                    if all(238 <= p[1] <= 262 for p in t)]
+            # verge pieces: small ground triangles that sit wholly in the band along the road (a
+            # verge is drawn in the open land it lies in: generator.lua bio.landOf)
+            kinds = {mesh.material for _, mesh in self.meshes(manifest)}
+            kinds = [k for k in kinds if k in ('e2rf_ground', 'e2rf_grass_dry', 'e2rf_grass_lush', 'e2rf_earth')
+                     or k.startswith('e2rf_cut_')]
+            return [t for kind in kinds for t in self.triangles(manifest, kind) if all(238 <= p[1] <= 262 for p in t)]
         far = verges(self.build([cell], far=True)[2])
         self.assertTrue(far)
         for triangle in far:
@@ -2822,12 +2852,54 @@ class GeneratorTests(unittest.TestCase):
         self.assertFalse(wet(230, 260), 'the middle of the island is dry')
         self.assertFalse(wet(50, 400), 'the bank north of the river is dry')
         self.assertFalse(wet(450, 100), 'the bank south of the river is dry')
+        self.assertFalse(wet(50, 109), 'the finer cover does not flood a point 11 m beyond the slanted bank')
         for x, y in ((50, 180), (450, 370), (100, 200), (350, 300)):
             self.assertTrue(wet(x, y), (x, y))
         # the cover reaches at most a row onto the bank
         area = sum(it.scale[1] * it.scale[2] for it in blocks)
         self.assertLess(area, (500 * 150 - 60 * 60) * 1.35)
         self.assertGreater(area, 500 * 150 - 60 * 60)
+
+    def test_water_respects_road_elevation_and_keeps_water_under_bridge_and_tunnel(self):
+        grid = {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [10] * 4}
+        water = {'id': 'lake', 'kind': 'water', 'tags': {'water': 'lake'},
+                 'rings': [[[0, 150], [500, 150], [500, 350], [0, 350], [0, 150]]]}
+        def blocks(tags, z):
+            road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential', **tags},
+                    'points': line(0, 250, 500, 250, z)}
+            scene = self.build([{'terrain': grid, 'areas': [water], 'roads': [road]}], maxTrees=0, maxGrass=0)[1]
+            return [it for it in self.water_items(scene) if it.kind == 'water']
+        def wet(items, x, y):
+            return any(abs(x - it.pos[1]) < it.scale[1] / 2 and abs(y - it.pos[2]) < it.scale[2] / 2 for it in items)
+        ordinary = blocks({}, 10)
+        self.assertFalse(wet(ordinary, 250, 250), 'water must not cover the road')
+        self.assertTrue(wet(ordinary, 250, 220), 'the lake remains beside the road')
+        self.assertTrue(wet(blocks({'bridge': 'yes'}, 20), 250, 250), 'water remains under a raised bridge')
+        self.assertFalse(wet(blocks({'bridge': 'yes'}, 10), 250, 250), 'a low bridge is not flooded')
+        self.assertTrue(wet(blocks({'tunnel': 'yes'}, 5), 250, 250), 'a tunnel may pass under water')
+
+    def test_narrow_river_is_split_around_a_road_when_it_would_flood(self):
+        grid = {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [10] * 4}
+        water = {'id': 'river', 'kind': 'water', 'tags': {'water': 'river'},
+                 'rings': [[[0, 225], [500, 225], [500, 275], [0, 275], [0, 225]]]}
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': line(250, 0, 250, 500, 10)}
+        scene = self.build([{'terrain': grid, 'areas': [water], 'roads': [road]}], maxTrees=0, maxGrass=0)[1]
+        items = self.water_items(scene)
+        self.assertTrue(items)
+        self.assertFalse(any(it.kind == 'river' for it in items))
+        self.assertFalse(any(abs(250-it.pos[1]) < it.scale[1]/2 and abs(250-it.pos[2]) < it.scale[2]/2 for it in items))
+
+    def test_water_in_a_neighbour_tile_avoids_a_road_across_the_edge(self):
+        grid = {'rect': [0, 0, 1000, 500], 'nx': 2, 'ny': 2, 'heights': [10] * 4}
+        water = {'id': 'lake', 'kind': 'water', 'tags': {'water': 'lake'},
+                 'rings': [[[450, 100], [700, 100], [700, 400], [450, 400], [450, 100]]]}
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': line(498, 0, 498, 500, 10)}
+        scene = self.build([{'terrain': grid, 'areas': [water], 'roads': [road]}], 1, 0, maxTrees=0, maxGrass=0)[1]
+        blocks = [it for it in self.water_items(scene) if it.kind == 'water']
+        self.assertTrue(blocks)
+        self.assertFalse(any(abs(501-it.pos[1]) < it.scale[1]/2 and abs(250-it.pos[2]) < it.scale[2]/2 for it in blocks))
 
     def test_a_lake_is_one_water_block_not_a_tile_grid(self):
         lake = {'id': 'pond', 'kind': 'water', 'tags': {'water': 'lake'},
@@ -2839,25 +2911,40 @@ class GeneratorTests(unittest.TestCase):
         self.assertGreater(lakes[0].scale[1] * lakes[0].scale[2], 150 * 150)
         self.assertEqual(list(self.triangles(scene, 'e2rf_water')), [])
 
-    def test_sea_below_zero_gets_a_water_plane_only_where_ground_dips(self):
+    def test_sea_is_bounded_to_tiles_where_ground_dips(self):
         def cell(heights):
             return {'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 2, 'ny': 2, 'heights': heights}}
         for far in (False, True):
             with self.subTest(far=far):
                 _, scene, farScene, _ = self.build([cell([20, 20, 20, 20])], far=far, seaLevel=20)
                 scene = farScene if far else scene
-                # open sea: one ocean marker (world.lua keeps a single WaterPlane)
-                water = [it for it in self.water_items(scene) if it.kind == 'ocean']
-                self.assertEqual(len(water), 1)
+                water = [it for it in self.water_items(scene) if it.kind == 'water' and it.look == 'sea']
+                self.assertTrue(water)
+                self.assertFalse(any(it.kind == 'ocean' for it in self.water_items(scene)))
                 self.assertAlmostEqual(water[0].pos[3], 20.3)
                 self.assertEqual(list(self.triangles(scene, 'e2rf_water')), [])
                 _, scene, farScene, _ = self.build([cell([30, 30, 30, 30])], far=far, seaLevel=20)
-                self.assertEqual([it for it in self.water_items(farScene if far else scene) if it.kind == 'ocean'], [])
-        # a coast (west under the sea, east on land): still requests the ocean plane
+                self.assertEqual([it for it in self.water_items(farScene if far else scene) if it.kind == 'water' and it.look == 'sea'], [])
+        # a coast (west under the sea, east on land): emits bounded sea blocks
         _, scene, *_ = self.build([cell([20, 30, 20, 30])], seaLevel=20)
-        self.assertTrue([it for it in self.water_items(scene) if it.kind == 'ocean'])
+        self.assertTrue([it for it in self.water_items(scene) if it.kind == 'water' and it.look == 'sea'])
         _, scene, *_ = self.build([cell([20, 20, 20, 20])])  # no seaLevel (v1 data): no sea
         self.assertEqual(self.water_items(scene), [])
+
+    def test_sea_blocks_leave_a_low_road_dry_and_water_under_a_bridge(self):
+        grid = {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [10] * 4}
+        def water(tags, z):
+            road = {'id': 'coast', 'nodes': ['a', 'b'], 'width': 8,
+                    'tags': {'highway': 'residential', **tags}, 'points': line(0, 250, 500, 250, z)}
+            scene = self.build([{'terrain': grid, 'roads': [road]}], seaLevel=10, maxTrees=0, maxGrass=0)[1]
+            return [it for it in self.water_items(scene) if it.kind == 'water' and it.look == 'sea']
+        def wet(items, x, y):
+            return any(abs(x-it.pos[1]) < it.scale[1]/2 and abs(y-it.pos[2]) < it.scale[2]/2 for it in items)
+        ordinary = water({}, 10)
+        self.assertFalse(wet(ordinary, 250, 250))
+        self.assertTrue(wet(ordinary, 250, 220))
+        self.assertTrue(wet(water({'bridge': 'yes'}, 20), 250, 250))
+        self.assertTrue(wet(water({'tunnel': 'yes'}, 5), 250, 250))
 
     def corners(self, manifest, material=None):
         found = []
@@ -2899,6 +2986,35 @@ class GeneratorTests(unittest.TestCase):
             if kinds & fades:
                 self.assertTrue(kinds & cuts, kinds)
 
+    def test_a_verge_takes_the_open_land_it_lies_in(self):
+        # a road across the spike's bare flank: its verges are that loam, not a band of the plain
+        # grass along the road (bio.landOf); without the lands they stay the plain ground
+        heights = [20.0] * 25
+        heights[6] = 400  # grid point (250 m, 250 m)
+        road = {'id': 'flank', 'width': 7, 'nodes': [1, 2], 'points': [[150, 150, 157], [350, 150, 157]],
+                'tags': {'highway': 'unclassified', 'sidewalk': 'no'}}
+        cell = {'roads': [road], 'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 5, 'ny': 5, 'heights': heights}}
+        lands = ('e2rf_ground', 'e2rf_grass_dry', 'e2rf_grass_lush', 'e2rf_earth')
+
+        def band(manifest):
+            # the verge pieces: centres between the carriageway's edge and tune.shoulder beyond it
+            return {kind for kind in lands for t in self.triangles(manifest, kind)
+                    if 3.5 < abs(sum(p[1] for p in t) / 3 - 150) <= 6.5 and 190 < sum(p[0] for p in t) / 3 < 310}
+        self.assertEqual(band(self.build([cell], i=0, j=0)[0]), {'e2rf_earth'})
+        self.assertEqual(band(self.build([cell], i=0, j=0, land=False)[0]), {'e2rf_ground'})
+        # on a gentle flank the grass is drying: the verge dissolves as the pieces round it do,
+        # each cut under the road layer with its fade over it at the same level
+        heights[6] = 40
+        road['points'] = [[150, 150, 30], [350, 150, 30]]
+        near = self.build([cell], i=0, j=0)[0]
+        kinds = {mesh.material for _, mesh in self.meshes(near)}
+        found = {kind for kind in kinds for t in self.triangles(near, kind)
+                 if 3.5 < abs(sum(p[1] for p in t) / 3 - 150) <= 6.5 and 190 < sum(p[0] for p in t) / 3 < 310}
+        cuts = {k[-1] for k in found if k.startswith('e2rf_cut_grass')}
+        self.assertTrue(cuts, found)
+        self.assertEqual(cuts, {k[-1] for k in found if k.startswith('e2rf_fade_dry')})
+        self.assertNotIn('e2rf_ground', found)
+
     def test_far_ground_keeps_a_hill_and_a_valley(self):
         def cell(heights):
             return {'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 5, 'ny': 5, 'heights': heights}}
@@ -2918,6 +3034,62 @@ class GeneratorTests(unittest.TestCase):
         valley[6] = 5
         low = list(self.triangles(self.build([cell(valley)], far=True, land=False)[2], 'e2rf_ground'))
         self.assertLess(self.surface_at(low, 200, 200), self.surface_at(low, 0, 0))
+
+    def test_far_ground_has_no_unmatched_interior_edges_with_short_last_cell(self):
+        from collections import Counter
+        cell = {'terrain': {'rect': [0, 0, 1000, 1000], 'nx': 2, 'ny': 2, 'heights': [10] * 4}}
+        for step in (50, 75, 100):
+            with self.subTest(step=step):
+                far = self.build([cell], far=True, farStep=step, land=False)[2]
+                triangles = self.triangles(far, 'e2rf_ground')
+                edges = Counter()
+                for tri in triangles:
+                    for i in range(3):
+                        a = tuple(round(v, 5) for v in tri[i][:2])
+                        b = tuple(round(v, 5) for v in tri[(i + 1) % 3][:2])
+                        edges[tuple(sorted((a, b)))] += 1
+                def perimeter(edge):
+                    return any(all(abs(p[axis] - value) < 1e-5 for p in edge)
+                               for axis in (0, 1) for value in (0, 500))
+                self.assertFalse([edge for edge, count in edges.items() if count != 2 and not perimeter(edge)])
+
+    def test_lawn_streams_near_focus_first_without_losing_or_duplicating_patches(self):
+        cell = {'terrain': {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [40] * 4}}
+        baseline = self.build([cell], maxTrees=0, maxRocks=0)[1]
+        expected = {it.name for it in baseline['items'].values() if it.grassPatch}
+        chunks = []
+        def receive(items, stock):
+            chunks.append([it for it in items.values()])
+        _, _, _, _, rest = self.build([cell], maxTrees=0, maxRocks=0,
+                                      sceneReady=lambda scene: None, grassChunk=receive,
+                                      grassFocus={'x': 250, 'y': 250})
+        early = [it for chunk in chunks for it in chunk]
+        later = [it for it in rest['items'].values() if it.grassPatch]
+        self.assertTrue(early and later)
+        self.assertTrue(all(len(chunk) <= 64 for chunk in chunks))
+        self.assertTrue(all((it.grassPatch.x + 4 - 250) ** 2 + (it.grassPatch.y + 4 - 250) ** 2 <= 112 ** 2 for it in early))
+        distances = [(it.grassPatch.x + 4 - 250) ** 2 + (it.grassPatch.y + 4 - 250) ** 2 for it in early]
+        self.assertEqual(distances, sorted(distances), 'nearby patches are delivered first')
+        names = [it.name for it in early + later]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(set(names), expected)
+
+    def test_far_ground_refines_a_sharp_hill_without_changing_its_shared_edge(self):
+        n = 41
+        heights = [20.0] * (n * n)
+        heights[10 * n + 10] = 80.0  # a 25 m DEM knot between 100 m mesh vertices
+        cell = {'terrain': {'rect': [0, 0, 1000, 1000], 'nx': n, 'ny': n, 'heights': heights}}
+        near = self.build([cell], land=False)[0]
+        far = self.build([cell], far=True, farStep=100, adaptiveFar=True, land=False)[2]
+        coarse = self.build([cell], far=True, farStep=100, land=False)[2]
+        near_tris = list(self.triangles(near, 'e2rf_ground'))
+        far_tris = list(self.triangles(far, 'e2rf_ground'))
+        coarse_tris = list(self.triangles(coarse, 'e2rf_ground'))
+        reference = self.surface_at(near_tris, 250, 250)
+        self.assertLess(abs(self.surface_at(far_tris, 250, 250) - reference), .01)
+        self.assertGreater(abs(self.surface_at(coarse_tris, 250, 250) - reference), 20)
+        self.assertGreater(len(far_tris), len(coarse_tris))
+        self.assertEqual(self.border(near, 500, surface=True), self.border(far, 500, surface=True))
 
     def test_far_ridge_normals_tilt_away_from_the_crest(self):
         heights = [300.0 if ix == 1 else 20.0 for iy in range(5) for ix in range(5)]

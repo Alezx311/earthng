@@ -52,9 +52,40 @@ class DetailTests(unittest.TestCase):
           p={x=0,y=0,z=500}; step(100); assert(stream.count.grass==0 and next(live)==nil)
         ''')
 
+    def test_reports_mutations_across_a_yielding_cell_build(self):
+        lua = self.make()
+        lua.execute('''
+          tune.grassM=40; tune.grassBudget=400
+          stream=detail.new(function() coroutine.yield(); return {} end, function() end)
+          add(1,1)
+          local first=stream:step(p,tune,1,timer,1)
+          assert(first and stream.creating, 'cell creation started and yielded')
+          local second=stream:step(p,tune,1.1,timer,1)
+          assert(second and not stream.creating and stream.count.grass==1, 'cell creation finished')
+          local idle=stream:step(p,tune,1.2,timer,1)
+          assert(not idle, 'an unchanged stream must not consume the gate')
+        ''')
+
     def tame(self, lua):
         # the lawn's own chaos (detail.WILD) off: these tests check the rings' shares
         lua.execute('detail.WILD = {tall = {low = 1, high = 1, power = 1}, gap = {from = -2, to = -1}, weed = {from = 2, low = .55, high = 1}}')
+
+    def test_crop_near_ring_uses_less_budget_and_counts_match(self):
+        lua = self.make()
+        self.tame(lua)
+        lua.execute('''
+          local function count(flag, level)
+            local patch={x=0,y=0,shapes={'a','b','c'},spans={1,1,1},bottoms={0,0,0},samples={flag,0,0,0}}
+            local expected=detail.patchCount(patch, level)
+            local actual=detail.expand({tile={},staticN=0,level=level,patches={patch},x={},y={},z={},yaw={},scale={},shape={}}).n
+            assert(expected==actual, expected..' ~= '..actual)
+            return actual
+          end
+          assert(count(0,0)==5)
+          assert(count(64,0)==3 and count(128,0)==3)
+          for level=0,3 do count(64,level); count(128,level); count(96,level) end
+          count(64,nil); count(128,nil)
+        ''')
 
     def test_lawn_patch_expands_to_an_even_short_carpet(self):
         lua = self.make()
@@ -171,10 +202,10 @@ class DetailTests(unittest.TestCase):
               tall = {shapes = {'/3d_grass/long.dae'}, spans = {.5}, bottoms = {0}},
               dry = {shapes = {'/dry/a.dae'}, spans = {.7}, bottoms = {0}}}
           end
-          -- wheat: every tuft of every square (no wild gaps), dry ones, knee high
+          -- wheat: seven tufts per square (no wild gaps), dry ones, knee high
           local wheat = field(64)
           local out = detail.expand({tile = {}, n = 0, staticN = 0, patches = {wheat}})
-          assert(out.n == 16 * 9 and out.n == detail.patchCount(wheat, nil), out.n)
+          assert(out.n == 16 * 7 and out.n == detail.patchCount(wheat, nil), out.n)
           for k = 1, out.n do
             assert(out.shape[k] == '/dry/a.dae')
             local h = out.scale[k] * .7
@@ -184,7 +215,7 @@ class DetailTests(unittest.TestCase):
           for _, case in ipairs({{128, 'y'}, {384, 'x'}}) do
             local rows = field(case[1])
             out = detail.expand({tile = {}, n = 0, staticN = 0, patches = {rows}})
-            assert(out.n == 16 * 9)
+            assert(out.n == 16 * 7 and out.n == detail.patchCount(rows, nil))
             local spread = 0
             for k = 1, out.n do
               assert(out.shape[k] == '/3d_grass/long.dae')
@@ -557,6 +588,55 @@ class DetailTests(unittest.TestCase):
           assert(not tile.dropped and not tile.sceneStarted and tile.refreshScene)
           assert(#state.queue==1 and not state.queue[1].scene)
           assert(saved.unrelated=='keep' and saved.tune.quality==100)
+        ''')
+
+    def test_replaced_far_ground_is_hidden_before_grave_queue_deletes_it(self):
+        lua = self.world()
+        lua.execute('''
+          local L=up(up(world.tick,'updateTiles'),'LIMIT')
+          local ground={getClassName=function() return 'ProceduralMesh' end,
+            setHidden=function(self, value) self.hidden=value end}
+          local other={getClassName=function() return 'TSStatic' end,
+            setHidden=function(self, value) self.hidden=value end}
+          local group={getCount=function() return 2 end,
+            getObject=function(_, i) return i==0 and ground or other end}
+          L.hideFarGround(group)
+          assert(ground.hidden==true and other.hidden==nil)
+        ''')
+
+    def test_throttled_spawn_can_offer_its_open_gate_to_detail(self):
+        lua = self.world()
+        lua.execute('''
+          local L=up(up(world.tick,'updateTiles'),'LIMIT')
+          state.now=10; state.burstAt=10; state.queue={}; state.status={stream={wanted={}}}
+          local gate={yielded=0,yield=function(self) self.yielded=self.yielded+1 end}
+          assert(not L.allowSpawn(gate,true) and gate.yielded==0, 'detail can use this slot')
+          assert(not L.allowSpawn(gate) and gate.yielded==1, 'unused slot is still yielded')
+        ''')
+
+    def test_early_grass_is_prioritised_and_replaced_without_duplicates(self):
+        lua = self.world()
+        lua.execute('''
+          local L=up(up(world.tick,'updateTiles'),'LIMIT')
+          state.stream={tile=500}
+          local versions={near=1,far=1}; local pending={near=true,far=true}; local taken={}
+          native.grassChunkState=function(key) return versions[key], pending[key] end
+          native.takeGrassChunk=function(key)
+            pending[key]=false; taken[#taken+1]=key
+            local x=key=='near' and 1 or 501
+            return {items={{kind='static',shape='/3d_grass/a.dae',pos={x,1,0}}},stockMaterials={}}
+          end
+          local tiles={near={i=0,j=0,decor={}},far={i=1,j=0,decor={}}}
+          L.ingestGrassChunks(tiles,{x=0,y=0})
+          assert(#taken==1 and taken[1]=='near')
+          local old=tiles.near.grassEarlyOwner
+          assert(old and #old.detailCells==1)
+          L.ingestGrassChunks(tiles,{x=0,y=0})
+          assert(#taken==2 and taken[2]=='far')
+          versions.near=2; pending.near=true
+          L.ingestGrassChunks(tiles,{x=0,y=0})
+          assert(old.dropped and old.detailCells==nil)
+          assert(tiles.near.grassEarlyOwner~=old and #tiles.near.grassEarlyOwner.detailCells==1)
         ''')
 
 

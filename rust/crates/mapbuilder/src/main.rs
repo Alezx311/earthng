@@ -51,11 +51,11 @@ enum Command {
         #[arg(long, default_value_t = 200.0)]
         step: f64,
         /// colour map texel, m (a whole fraction of the step); 0 writes no colour map
-        #[arg(long, default_value_t = 50.0)]
+        #[arg(long, default_value_t = 25.0)]
         tex_step: f64,
         /// the colour map's largest side, texels: the game takes power-of-two sizes only, so the
         /// map is resampled to the nearest one up to this (the roughness map to half of it)
-        #[arg(long, default_value_t = 2048)]
+        #[arg(long, default_value_t = 4096)]
         tex_max: usize,
         /// also write <region>.ppm, the colour map as a picture
         #[arg(long)]

@@ -10,34 +10,33 @@
 --   - Every step, for every vehicle with physics that moves (the player's car, the real cars of the
 --     hand-off, the game's traffic), the walkers near its path (walkers.near) are swept against its
 --     box: a walker it will touch within LEAD s gets a body. The body is placed outside the vehicle
---     box (never inside the mesh) with a kick along the contact normal so soft-body nodes do not
---     embed. Hit, or already overlapping the box after settle: eject + blood (api.splat: on
+--     box with the walker's velocity; it is only kicked after a confirmed hit. Hit, or already
+--     overlapping the box after settle: eject + blood (api.splat: on
 --     the ground, along the way, on a wall ahead and on the car, world.lua BLOOD).
 --   - Not hit within MISS_T s (the driver braked or swerved): the body goes back to the pool and the
 --     walker walks on. Hit: it lies, and once still (POOL_T, POOL_V) a pool of blood spreads under
---     it (api.splat kind 'pool'); out of FREE_R from the player (or after FREE_T s) it is reset
+--     it (api.splat kind 'pool'); out of FREE_R from the player it is reset
 --     and parked, and the walker's slot fills again elsewhere.
 -- The game calls go through `api` (M.gameApi), so earthng/test_walkers.py runs this in lupa.
 local M = {}
 
 M.SIZE = 24             -- bodies in the pool (was 6: crowds left most walkers without a hit)
-M.LEAD = .45            -- s before the touch the body takes the walker's place
+M.LEAD = .12            -- s before touch: keep the animated walker standing until the car is close
 local MISS_T = .9       -- s a placed body waits for the hit (a statue on a slope tips over in ~1 s)
 local FREE_R = 120      -- m from the player beyond which a lying body goes back to the pool
-local FREE_T = 90       -- s a body lies at most
 local RESET_T = .35     -- s for a reset (the vehicle's own Lua) before the body is parked again
 local MIN_SPEED = .8    -- m/s: a vehicle slower than this hits nobody
 local MAX_SPEED = 70    -- m/s: faster is a teleport (its velocity is the jump over one frame, p18)
 local SETTLE_T = .08    -- s after the placing before the body's velocity means anything (it was at z -2000)
 local HIT_DV = 1.0      -- m/s over its walk: a placed body moving this much faster was struck...
-local TOUCH_R = 1.8     -- m: ...when a vehicle's box is this near (not a statue tipping over by itself)
+local TOUCH_R = .35     -- m: velocity change counts only very close to the vehicle's box
 local CLEAR_R = .75     -- m: no body is put where another one stands
 local OUT_PAD = .22     -- m outside the vehicle box when placing / ejecting (soft body thickness)
 local KICK_MIN = 2.5    -- m/s outward kick on place, so the body is not born inside the bumper
 local EJECT_GAIN = .55  -- share of closing speed added on a confirmed hit
 local EJECT_LIFT = .35  -- upward share of eject speed
 local RECLAIM_R = 55    -- m: a 'down' body this far from the player may be recycled for a new hit
-local GHOST_LEAD = .12  -- s: within this of touch, a walker with no free body is still struck (ghost)
+local GHOST_LEAD = .04  -- s: no body available; wait until immediately before contact
 local POOL_T, POOL_V = 1.5, .6   -- s after the hit and m/s below which a body lies still: its pool of blood
 
 function M.new(opts)
@@ -190,7 +189,8 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
       if not bx then
         e.state = 'idle'
       else
-        local h = e.hitter and touching({e.hitter}, bx, by) or touching(hitters, bx, by)
+        -- Hitters are refreshed each step: the snapshot at placement is only for logging.
+        local h = touching(hitters, bx, by)
         local inside, nx, ny, depth = false, e.nx or 0, e.ny or 0, 0
         if h then
           inside, nx, ny, depth = M.boxHit(bx, by, walkers.RADIUS, h)
@@ -228,7 +228,7 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
         e.pooled = true
         splatAt(api, bx, by, bz or e.z or 0, nil, 'pool')
       end
-      if far or now - e.at > FREE_T then
+      if far then
         walkers.release(W, e.walker)
         e.walker, e.hitter = nil, nil
         api.reset(e.id)
@@ -294,11 +294,9 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
           sy = w.y + ny * (depth + OUT_PAD)
         end
         local carSpeed = math.sqrt(h.vx * h.vx + h.vy * h.vy)
-        local kick = math.max(KICK_MIN, carSpeed * .2)
-        local ivx = row.wvx + nx * kick + h.vx * .15
-        local ivy = row.wvy + ny * kick + h.vy * .15
+        local ivx, ivy = row.wvx, row.wvy
         walkers.take(W, w)
-        api.place(e.id, sx, sy, walkers.standZ(w), w.hx, w.hy, row.speed, w, {vx = ivx, vy = ivy, vz = .4})
+        api.place(e.id, sx, sy, walkers.standZ(w), w.hx, w.hy, row.speed, w, {vx = ivx, vy = ivy, vz = 0})
         e.state, e.at, e.walker, e.pooled = 'placed', now, w, nil
         e.vx, e.vy, e.nx, e.ny, e.z = ivx, ivy, nx, ny, walkers.standZ(w)
         e.hitter = {x = h.x, y = h.y, vx = h.vx, vy = h.vy, fx = h.fx, fy = h.fy, hl = h.hl, hw = h.hw,

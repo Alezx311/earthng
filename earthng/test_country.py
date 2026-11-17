@@ -524,6 +524,8 @@ class ResumablePartTests(unittest.TestCase):
         import build_country
         region = {'dir': 'C:/x/fast-index/fast-18-abc', 'core': [30, 50, 31.5, 51], 'id': 'e0300-n500'}
         key = build_country._part_key(region, None, {'block': 'postsoviet'}, None)
+        with patch.object(build_country, 'FIXED_CELLS', not build_country.FIXED_CELLS):
+            self.assertNotEqual(key, build_country._part_key(region, None, {'block': 'postsoviet'}, None))
         self.assertEqual(key, build_country._part_key(dict(region), None, {'block': 'postsoviet'}, None))
         self.assertNotEqual(key, build_country._part_key(region, None, {'block': 'nordic'}, None))
         self.assertNotEqual(key, build_country._part_key(dict(region, dir='C:/x/fast-index/fast-18-def'),

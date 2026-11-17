@@ -1,6 +1,8 @@
 -- Traffic flow: hundreds of cars without physics on the navgraph of the loaded tiles (S.nav).
 -- The game's AI cars cost ~1.5 ms of the frame each (traffic-07), so a jam is drawn by this
--- layer instead: Lua moves the cars, a TSStatic without collision shows each one.
+-- layer instead: Lua moves the cars, a copy in the DynamicShapeBatch of its body shows each one
+-- (shapebatch.lua, four scene objects for the whole flow), or a TSStatic without collision where
+-- the game has no batches (BeamNG 0.39).
 --   - The graph: every nav segment {id, a, b, lanes '--++', speed m/s, half width, drive, x,y,z...}
 --     is a link a->b with its '+' lanes and one b->a with its '-' lanes.
 --   - A car follows its leader on its lane by the intelligent driver model (IDM); the last car of
@@ -14,7 +16,7 @@
 --   - The player's car (and the game's AI cars) are obstacles on the lane they are on.
 --   - Cars keep to the graph round the focus: a car whose link has gone, that left the graph or
 --     drove out of KEEP_R is taken away, and a new one starts at least HIDE_R from the focus.
--- Pure Lua apart from M.view (the TSStatic side), so earthng/test_flow.py runs it in lupa.
+-- Pure Lua apart from M.view (the scene side), so earthng/test_flow.py runs it in lupa.
 local M = {}
 
 local LEN, S0, T, AMAX, BRAKE = 4.6, 2.2, 1.4, 1.6, 2.4  -- car length, IDM jam gap, headway, comfortable accel/brake
@@ -953,8 +955,37 @@ function M.quat(yaw, pitch)
   return sy * sa, -cy * sa, -sy * ca, cy * ca
 end
 
-function M.view(F, shapes, group)
-  local V = {objs = {}, frame = 0, shapes = shapes, warm = {}}
+-- batches: a shapebatch.lua pool, so the cars are copies in one DynamicShapeBatch per body (0.5 us
+-- a move whatever the scene holds, one scene object per body); nil: a TSStatic a car. The body's
+-- paintable shape (shapes.paintable[body], flow_art.py PAINTABLE) takes the paint as the copy's
+-- colour (PAINT_RGB, sRGB as the handoff's real cars get it): four batches, made at the start
+-- (finalizeShape is 13-25 ms each). A copy is turned by the direction of its +y axis and stands
+-- level: the slope is not drawn (shapebatch.lua); a car within ~90 m of the player is real anyway.
+local function batchView(F, V, shapes, batches)
+  local kinds, colours = {}, {}
+  for b, path in ipairs(shapes.paintable) do
+    kinds[b] = batches:kind(path)
+    batches:warm(kinds[b])
+  end
+  for k, rgb in ipairs(M.PAINT_RGB) do colours[k] = ColorF(rgb[1], rgb[2], rgb[3], 1) end
+  V.kinds, V.colours = kinds, colours
+  F.onSpawn = function(car)
+    local x, y, z, yaw, pitch = M.pose(F, car.link, car.s, car.lane)
+    car.batch, car.slot = batches:add(kinds[car.body or 1] or kinds[1], x, y, z, -math.sin(yaw), math.cos(yaw), 0,
+      colours[car.paint] or colours[1])
+    car.drawnYaw, car.drawnPitch, car.drawnX, car.drawnY = yaw, pitch, x, y
+    car.drawnS, car.drawnLink, car.drawnLane = car.s, car.link, car.lane
+  end
+  F.onRemove = function(car)
+    if car.batch then batches:drop(car.batch, car.slot) end
+    car.batch, car.slot = nil, nil
+  end
+  return V
+end
+
+function M.view(F, shapes, group, batches)
+  local V = {objs = {}, frame = 0, shapes = shapes, warm = {}, batches = batches}
+  if batches then return batchView(F, V, shapes, batches) end
   -- one hidden copy of every shape while the flow runs: the first car of a shape no longer
   -- loads it in a driving frame (32 shapes in the first fill were a 261 ms step, flow-08)
   for _, byPaint in ipairs(shapes) do
@@ -1000,8 +1031,10 @@ end
 function M.draw(F, V, fx, fy)
   V.frame = V.frame + 1
   local moved, nearR2 = 0, NEAR_R * NEAR_R
+  local batches = V.batches
+  if batches then batches:tick() end
   for id, car in pairs(F.cars) do
-    local obj = V.objs[id]
+    local obj = batches and car.batch or V.objs[id]
     -- a car standing where it was drawn (a queue at a light, a jam) is not moved again
     if obj and (car.s ~= car.drawnS or car.link ~= car.drawnLink or car.lane ~= car.drawnLane) then
       -- near or far by where it was drawn last (a car moves under a metre a frame): a far car
@@ -1011,8 +1044,12 @@ function M.draw(F, V, fx, fy)
       if near or (id + V.frame) % FAR_EVERY == 0 then
         local x, y, z, yaw, pitch, hint = M.pose(F, car.link, car.s, car.lane, car.hint)
         car.hint = hint
-        local qx, qy, qz, qw = M.quat(yaw, pitch)
-        obj:setPosRot(x, y, z, qx, qy, qz, qw)
+        if batches then
+          batches:move(obj, car.slot, x, y, z, -math.sin(yaw), math.cos(yaw), 0)
+        else
+          local qx, qy, qz, qw = M.quat(yaw, pitch)
+          obj:setPosRot(x, y, z, qx, qy, qz, qw)
+        end
         car.drawnYaw, car.drawnPitch, car.drawnX, car.drawnY = yaw, pitch, x, y
         car.drawnS, car.drawnLink, car.drawnLane = car.s, car.link, car.lane
         moved = moved + 1
@@ -1028,6 +1065,8 @@ end
 -- (result.flow.poseErr).
 function M.poseCheck(F, V, n)
   local worst, nose, seen = 0, 0, 0
+  -- a batch's copies cannot be read back: their turn is checked on a still (dsb-01)
+  if V.batches then return worst, nose, seen end
   for id, car in pairs(F.cars) do
     local obj = V.objs[id]
     if obj and car.drawnYaw then

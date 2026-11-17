@@ -208,6 +208,48 @@ class RoadDecalTests(unittest.TestCase):
             self.assertEqual(cut['groundType'], 'GRASS')
         self.assertEqual(art.pack_fields('toon', '/e2r_stream/fast-art/' + art.VERSION)['e2rf_road']['detailMap'], '')
 
+    def test_the_land_mask_cuts_far_pieces_at_half(self):
+        """Over 3 m texels the dissolve mask keeps its pattern; the coarser mips (6-96 m, the size
+        of a piece) are one grey, at which every level shows one land whole: under below half,
+        coming in from half (no chequer of whole pieces far off, no hole, no overlap)."""
+        import struct
+        rng = np.random.default_rng(7)
+        mask = Image.fromarray((rng.random((256, 256)) * 255).astype(np.uint8)).convert('RGB')
+        with tempfile.TemporaryDirectory() as folder:
+            dest = Path(folder) / 'land_blend_o.data.dds'
+            fast_dds.save(mask, dest, alpha_ref='uniform')
+            data = dest.read_bytes()
+        self.assertEqual(struct.unpack_from('<I', data, 28)[0], 9)    # the whole chain, the engine checks it
+        # the first flat level of the 96 m sheet has texels of 6 m at most, half a piece
+        self.assertLessEqual(style.MACRO_M / (fast_dds.UNIFORM_MIN_SIDE // 2), 6.0)
+        offset, side, reds = 148, 256, {}
+        while True:
+            n = max(1, side // 4) ** 2
+            blocks = np.frombuffer(data, '<u4', n * 2, offset).reshape(n, 2)
+            offset += n * 8
+            # every texel's red from its block's two endpoints and its 2-bit index
+            r0, r1 = ((blocks[:, 0] & 0xffff) >> 11) * 255 / 31, (blocks[:, 0] >> 27) * 255 / 31
+            palette = np.stack([r0, r1, (2 * r0 + r1) / 3, (r0 + 2 * r1) / 3], 1)
+            index = (blocks[:, 1:2] >> (2 * np.arange(16, dtype=np.uint32))) & 3
+            reds[side] = np.take_along_axis(palette, index.astype(np.int64), 1)[:, :min(16, side * side)].ravel()
+            if side == 1:
+                break
+            side //= 2
+        for side, red in reds.items():
+            if side >= fast_dds.UNIFORM_MIN_SIDE:
+                # every grey level over about the same share
+                self.assertLess(abs(np.quantile(red, .25) - 64), 16, side)
+                self.assertLess(abs(np.quantile(red, .75) - 192), 16, side)
+            else:
+                self.assertTrue(np.all(red == red[0]), side)
+                grey = red[0]
+                for level, cover in enumerate(style.LAND_COVER, 1):
+                    fade = style.EXTRA[f'fade_dry{level}']['alphaRef']
+                    cut = style.EXTRA[f'cut_grass{level}']['alphaRef']
+                    # the inverse map is mid grey as well
+                    shown = (grey >= fade, grey >= cut)
+                    self.assertEqual(shown, (False, True) if cover < .5 else (True, False), (side, level))
+
     def test_decal_kinds_fall_back_to_their_old_look(self):
         decal_paths = ('/assets/materials/decalroad/', '/assets/materials/trim/')
         for kind, old in style.DECAL_FALLBACK.items():
@@ -254,6 +296,64 @@ class RoadDecalTests(unittest.TestCase):
         self.assertEqual(autumn['e2rf_park']['detailNormalMapStrength'], 0)
         self.assertEqual(autumn['e2rf_edge_grass']['opacityFactor'], 0)
         self.assertNotIn('opacityFactor', autumn['e2rf_edge_dirt'])
+
+
+class RutsTests(unittest.TestCase):
+    """Field tracks' ruts (fast_style RUTS, fast_art.ruts_art, generator.lua ROADS.ruts)."""
+
+    def test_ruts_are_the_real_packs_own(self):
+        base = '/e2r_stream/fast-art/' + art.VERSION
+        for kind, (_, _, ground) in style.RUTS.items():
+            material = style.MATERIALS['e2rf_' + kind]
+            stage = material['Stages'][0]
+            self.assertTrue(material['alphaTest'])
+            self.assertEqual(material['alphaRef'], style.RUTS_REF)
+            self.assertFalse(material['castShadows'])
+            self.assertEqual(material['groundType'], ground)
+            self.assertTrue(stage['baseColorMap'].startswith(style.RUTS_STEM))
+            self.assertTrue(stage['normalMap'].startswith(style.RUTS_STEM))
+            self.assertTrue(stage['opacityMap'].startswith(base + '/real/ruts'))
+            self.assertTrue(stage['opacityMap'].endswith('.dds'))
+            # an older game without the maps: a flat colour, and the generator draws none
+            self.assertIn('diffuseColor', material['e2rFallback']['Stages'][0])
+        real = art.pack_fields('real', base)
+        for kind in style.RUTS:
+            self.assertNotIn('opacityFactor', real['e2rf_' + kind])
+        self.assertNotEqual(real['e2rf_ruts_dirt']['baseColorFactor'], real['e2rf_ruts_dry']['baseColorFactor'])
+        for pack in art.PACKS:
+            if pack == 'real':
+                continue
+            fields = art.pack_fields(pack, base)
+            for kind in style.RUTS:
+                self.assertEqual(fields['e2rf_' + kind]['opacityFactor'], 0, (pack, kind))
+            if pack == 'pixel':
+                self.assertTrue(fields['e2rf_ruts_dirt']['baseColorMap'].endswith('/pixel/trodden.color.dds'))
+
+    def test_ruts_never_collide(self):
+        source = (ROOT / 'mod/lua/ge/extensions/e2r/collision.lua').read_text(encoding='utf8')
+        quiet = source.split('local QUIET', 1)[1].split('end', 1)[0]
+        for kind in style.RUTS:
+            self.assertIn(f"'{kind}'", quiet)
+
+    def test_the_bed_is_always_under_solid_ruts(self):
+        import numpy as np
+        full, two = art.ruts_masks()
+        w = full.shape[1]
+        bed = .5 * (1 - style.RUTS_CORE)
+        b0, b1 = int(np.ceil(bed * w)), int(np.floor((1 - bed) * w))
+        self.assertTrue((full[:, b0:b1] >= style.RUTS_REF).all())
+        # the decal's own edge is never drawn, and its ragged part is partly dirt, partly grass
+        self.assertTrue((full[:, :2] < style.RUTS_REF).all())
+        self.assertTrue((full[:, -2:] < style.RUTS_REF).all())
+        ragged = full[:, 2:b0] >= style.RUTS_REF
+        self.assertTrue(.2 < ragged.mean() < .8)
+        # the two-track: a grass strip in the middle, solid ruts between it and the bed's edges
+        self.assertTrue((two[:, b0:int(.35 * w)] >= style.RUTS_REF).all())
+        self.assertTrue((two[:, int(.65 * w):b1] >= style.RUTS_REF).all())
+        middle = two[:, int(.45 * w):int(.55 * w)] < style.RUTS_REF
+        self.assertTrue(.3 < middle.mean() < .95)
+        # repeat along the track without a seam
+        self.assertLess(np.abs(full[0].astype(int) - full[-1].astype(int)).mean(), 40)
 
 
 class DrawnArtTests(unittest.TestCase):

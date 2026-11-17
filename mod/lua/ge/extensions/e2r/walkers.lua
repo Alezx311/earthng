@@ -18,6 +18,9 @@
 --   - Walkers keep round the focus: one further than KEEP_R, or whose segment has gone, is taken
 --     away; a new one appears at least HIDE_R from the focus, so nobody pops up in plain sight.
 --   - Clothes and skin are colours per walker (TSStatic instanceColor*), from the LOOK palettes.
+--     Where the game has DynamicShapeBatch a walker is one copy in the batch of its pose and skin
+--     instead (batchDraw, shapebatch.lua): the shirt is the copy's colour, the skin and trousers
+--     baked materials put in by remaps, the trousers following the skin (BATCH_PANTS).
 --   - Up to M.MAX walkers. How many walk is the count asked, or fewer where there is little
 --     sidewalk: one per SPACING m of weighted sidewalk round the focus (M.counts). A sidewalk's
 --     weight is how many roads lie round it (WEIGHT_*): a lone road through fields gets few people,
@@ -903,9 +906,12 @@ end
 -- V.far[slot]: the one shape of a walker between NEAR_R and DRAW_R; V.near[slot]: the set of
 -- POSES + 1 shapes of a walker within NEAR_R. Both come from pools (V.farFree, V.nearFree) and
 -- go back hidden; V.objects counts every object made and not deleted.
-function M.view(W, shapes, group)
+-- batches: a shapebatch.lua pool instead (walkers.batchDraw): one copy a walker in the batch of
+-- its pose and its trousers and skin, nothing more in the scene.
+function M.view(W, shapes, group, batches)
   return {frame = 0, shapes = shapes, group = group, far = {}, near = {}, farFree = {}, nearFree = {}, top = 0,
-    objects = 0, sets = 0, needAt = 0, colours = {{}, {}, {}}, farUsed = 0, nearUsed = 0, shown = {}, farLook = {}}
+    objects = 0, sets = 0, needAt = 0, colours = {{}, {}, {}}, farUsed = 0, nearUsed = 0, shown = {}, farLook = {},
+    batches = batches, kinds = {}, shirts = {}, bmode = {}, bkind = {}, bb = {}, bi = {}, blook = {}}
 end
 
 local function linear(rgb) return ColorF(rgb[1], rgb[2], rgb[3], 1):asLinear4F() end
@@ -971,10 +977,99 @@ local function groundZ(w, ground)
   return w.gz or (w.z + CURB)
 end
 
+-- --- the batches (DynamicShapeBatch, shapebatch.lua) ---------------------------------------------
+-- A batch copy takes one colour, the first palette slot: the shirt. Trousers and skin are put in
+-- by material remaps (people_art.py e2r_ped_pants_<k>, e2r_ped_skin_<k>, the PANTS and SKIN
+-- palettes baked). Each batch costs 13-25 ms of finalizeShape (shapebatch.lua), so a kind is a pose
+-- and a skin, the trousers following the skin (BATCH_PANTS): (POSES + 1) x 5 = 45 batches at most,
+-- one made a frame as walkers need them (a walker waits unseen for its kind's). Distances, poses
+-- and the look by w.look are the TSStatic side's.
+M.PANTS_MAT, M.SKIN_MAT = 'e2r_ped_pants', 'e2r_ped_skin'
+M.BATCH_PANTS = {1, 2, 3, 4, 5}    -- the trousers of each skin in the batches
+local function kindOf(V, pose, skin)
+  local byPose = V.kinds[pose]
+  if not byPose then byPose = {}; V.kinds[pose] = byPose end
+  local K = byPose[skin]
+  if not K then
+    local pants = M.BATCH_PANTS[skin] or 1
+    K = V.batches:kind(V.shapes[pose + 1], {M.PANTS_MAT, M.PANTS_MAT .. '_' .. pants, M.SKIN_MAT, M.SKIN_MAT .. '_' .. skin},
+      'ped' .. pose .. '_' .. skin)
+    byPose[skin] = K
+  end
+  return K
+end
+
+-- the shirt as one ColorF per palette entry (sRGB, as the engine's ColorF), made once
+local function shirtOf(V, i)
+  local c = V.shirts[i]
+  if not c then
+    local rgb = M.SHIRTS[i]
+    c = ColorF(rgb[1], rgb[2], rgb[3], 1)
+    V.shirts[i] = c
+  end
+  return c
+end
+
+local function batchDraw(W, V, fx, fy, ground)
+  V.frame = V.frame + 1
+  local P = V.batches
+  P:tick()
+  local near2, nearOut2, draw2, drawOut2 = NEAR_R * NEAR_R, NEAR_OUT * NEAR_OUT, DRAW_R * DRAW_R, DRAW_OUT * DRAW_OUT
+  local slots, bmode, bkind, bb, bi, blook = W.slots, V.bmode, V.bkind, V.bb, V.bi, V.blook
+  local moved, top, farUsed, nearUsed = 0, 0, 0, 0
+  for slot = 1, math.max(W.target, V.top) do
+    local w = slots[slot]
+    local was = bmode[slot] or 0
+    -- 0: none, 1: the one pose, 2: posed as it walks
+    local mode = 0
+    if w and not w.free and not w.taken and slot <= W.target then
+      local d2 = (w.x - fx) ^ 2 + (w.y - fy) ^ 2
+      if d2 < (was == 2 and nearOut2 or near2) then mode = 2
+      elseif d2 < (was > 0 and drawOut2 or draw2) then mode = 1 end
+    end
+    if mode == 0 then
+      if bb[slot] then P:drop(bb[slot], bi[slot]) end
+      bb[slot], bi[slot], bkind[slot], blook[slot] = nil, nil, nil, nil
+    else
+      top = slot
+      if mode == 2 then nearUsed = nearUsed + 1 else farUsed = farUsed + 1 end
+      local pose = FAR_POSE
+      if mode == 2 then
+        pose = w.waiting and M.POSES or math.floor((w.walked % STRIDE) / STRIDE * M.POSES) % M.POSES
+      end
+      local K = kindOf(V, pose, w.skin)
+      local hx, hy = w.hx or 1, w.hy or 0
+      local len = math.sqrt(hx * hx + hy * hy)
+      if len > 1e-9 then hx, hy = hx / len, hy / len else hx, hy = 1, 0 end
+      if K ~= bkind[slot] or blook[slot] ~= w.look then
+        local B, i = P:add(K, w.x, w.y, groundZ(w, ground), -hy, hx, 0, shirtOf(V, w.shirt))
+        -- the kind's batch not made yet (one a frame): the old copy stays until it is
+        if B then
+          if bb[slot] then P:drop(bb[slot], bi[slot]) end
+          bb[slot], bi[slot], bkind[slot], blook[slot] = B, i, K, w.look
+          moved = moved + 1
+        elseif bb[slot] and blook[slot] ~= w.look then
+          -- another walker in the slot: the old one's copy goes now
+          P:drop(bb[slot], bi[slot])
+          bb[slot], bi[slot], bkind[slot], blook[slot] = nil, nil, nil, nil
+        end
+      elseif w.dirty then
+        P:move(bb[slot], bi[slot], w.x, w.y, groundZ(w, ground), -hy, hx, 0)
+        moved = moved + 1
+      end
+    end
+    bmode[slot] = mode
+    if w then w.dirty = nil end
+  end
+  V.top, V.farUsed, V.nearUsed, V.objects = top, farUsed, nearUsed, P.objects
+  return moved
+end
+
 -- Every frame after M.step. ground(x, y, z): the surface under a point, or nil
 -- (be:getSurfaceHeightBelow in the game). A walker is placed again only when its turn moved it
 -- (w.dirty) or it got its shape this frame. Returns how many were placed.
 function M.draw(W, V, fx, fy, ground)
+  if V.batches then return batchDraw(W, V, fx, fy, ground) end
   V.frame = V.frame + 1
   local shown, farLook = V.shown, V.farLook
   local moved, budget = 0, MAKE_PER_FRAME
@@ -1076,7 +1171,10 @@ function M.standZ(w) return w.gz or (w.z + CURB) end
 
 -- Every object deleted and every walker gone (W keeps its sidewalks; the count asked becomes 0).
 function M.clear(W, V)
-  if V then
+  if V and V.batches then
+    V.batches:clear()
+    V.bmode, V.bkind, V.bb, V.bi, V.blook, V.top, V.objects, V.farUsed, V.nearUsed = {}, {}, {}, {}, {}, 0, 0, 0, 0
+  elseif V then
     for _, o in pairs(V.far) do o:delete() end
     for _, o in ipairs(V.farFree) do o:delete() end
     for _, set in pairs(V.near) do for q = 0, M.POSES do set[q]:delete() end end

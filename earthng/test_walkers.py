@@ -448,8 +448,8 @@ class WalkerTests(unittest.TestCase):
         ''')
         placed_at, hit_at, gap, placed, hit, freed, after_far, final, freed_slot, calls = (out[k] for k in range(1, 11))
         self.assertGreater(placed_at, 0)
-        # placed within LEAD (0.45 s at 15 m/s) of the touch
-        self.assertLess(gap, 2.3 + .3 + 15 * .45 + .8)
+        # placed within LEAD (0.12 s at 15 m/s) of the touch
+        self.assertLess(gap, 2.3 + .3 + 15 * .12 + .8)
         self.assertGreater(hit_at, placed_at)
         self.assertEqual((placed, hit, freed), (1, 1, 1))
         self.assertEqual(after_far, 'reset')
@@ -548,8 +548,8 @@ class WalkerTests(unittest.TestCase):
           local w = W.slots[1]
           local api, P = fakeApi(), pedhit.new{size = 1}
           pedhit.prewarm(P, api, 0, 0)
-          -- a car 4 m short of the walker coming at 10 m/s: the body is placed, then the car stops dead
-          local car = {x = w.x - w.hx * 4.8, y = w.y - w.hy * 4.8, vx = w.hx * 10, vy = w.hy * 10, fx = w.hx, fy = w.hy, hl = 2.3, hw = .95}
+          -- less than LEAD from the walker, then the car stops dead
+          local car = {x = w.x - w.hx * 3.5, y = w.y - w.hy * 3.5, vx = w.hx * 10, vy = w.hy * 10, fx = w.hx, fy = w.hy, hl = 2.3, hw = .95}
           pedhit.step(P, walkers, W, {car}, 0, api, car.x, car.y)
           local taken = w.taken and 1 or 0
           car.vx, car.vy = 0, 0
@@ -569,6 +569,34 @@ class WalkerTests(unittest.TestCase):
         self.assertEqual(out[7], 'idle')
         self.assertEqual(out[8], 1)
 
+    def test_placement_has_no_early_kick_and_old_car_position_is_not_a_hit(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed=4}
+          walkers.sync(W, grid(3, 100), 100, 0); walkers.setTarget(W, 1); walkers.step(W, .01, 100, 0)
+          local w = W.slots[1]; w.speed = .001
+          local api, P = fakeApi(), pedhit.new{size=1}; pedhit.prewarm(P, api, 0, 0)
+          local car={id=7,x=w.x-w.hx*3.5,y=w.y-w.hy*3.5,vx=w.hx*10,vy=w.hy*10,fx=w.hx,fy=w.hy,hl=2.3,hw=.95}
+          pedhit.step(P,walkers,W,{car},0,api,car.x,car.y)
+          local b=api.bodies[1]; local initial=math.sqrt(b.vx*b.vx+b.vy*b.vy)
+          car.x,car.y=car.x-30*car.fx,car.y-30*car.fy
+          b.vx,b.vy=10,10
+          pedhit.step(P,walkers,W,{car},.2,api,car.x,car.y)
+          return {initial,P.stats.hit,P.pool[1].state}
+        ''')
+        self.assertLess(out[1], .01)
+        self.assertEqual((out[2], out[3]), (0, 'placed'))
+
+    def test_a_nearby_down_body_is_not_removed_on_a_timer(self):
+        out = self.lua().execute('''
+          local W=walkers.new{seed=4}
+          local api,P=fakeApi(),pedhit.new{size=1}; pedhit.prewarm(P,api,0,0)
+          local b=api.bodies[1]; b.x,b.y,b.vx,b.vy=0,0,0,0
+          P.pool[1].state='down'; P.pool[1].at=0
+          pedhit.step(P,walkers,W,{},120,api,0,0)
+          return {P.pool[1].state,P.stats.freed}
+        ''')
+        self.assertEqual((out[1], out[2]), ('down', 0))
+
     def test_a_teleported_car_places_nobody_and_a_fresh_body_is_not_hit_by_its_own_jump(self):
         out = self.lua().execute('''
           local W = walkers.new{seed = 4}
@@ -583,7 +611,7 @@ class WalkerTests(unittest.TestCase):
           pedhit.step(P, walkers, W, {jump}, 0, api, jump.x, jump.y)
           local placedByJump = P.stats.placed
           -- a real one: placed; the body reads the jump from z -2000 in its first frame, the car beside it
-          local car = {x = w.x - w.hx * 4.8, y = w.y - w.hy * 4.8, vx = w.hx * 10, vy = w.hy * 10, fx = w.hx, fy = w.hy, hl = 2.3, hw = .95}
+          local car = {x = w.x - w.hx * 3.5, y = w.y - w.hy * 3.5, vx = w.hx * 10, vy = w.hy * 10, fx = w.hx, fy = w.hy, hl = 2.3, hw = .95}
           pedhit.step(P, walkers, W, {car}, 1, api, car.x, car.y)
           api.bodies[1].vx = 3000
           car.x, car.y = w.x - w.hx * 3, w.y - w.hy * 3
@@ -603,8 +631,8 @@ class WalkerTests(unittest.TestCase):
           walkers.step(W, .01, 100, 0)
           local w = W.slots[1]
           local api, P = fakeApi(), pedhit.new{size = 0}
-          -- still ~0.22 s from touch: count noBody, walker keeps walking until ghost range
-          local car = {x = w.x - w.hx * 4.8, y = w.y - w.hy * 4.8, vx = w.hx * 10, vy = w.hy * 10, fx = w.hx, fy = w.hy, hl = 2.3, hw = .95}
+          -- ~0.09 s from touch: count noBody, walker keeps walking until ghost range
+          local car = {x = w.x - w.hx * 3.5, y = w.y - w.hy * 3.5, vx = w.hx * 10, vy = w.hy * 10, fx = w.hx, fy = w.hy, hl = 2.3, hw = .95}
           pedhit.step(P, walkers, W, {car}, 0, api, car.x, car.y)
           return {P.stats.noBody, w.taken and 1 or 0, w.free and 1 or 0, P.stats.ghost}
         ''')
@@ -838,6 +866,119 @@ class WalkerTests(unittest.TestCase):
         self.assertEqual(shown_off, 0)
         self.assertLessEqual(trimmed, 48 + 6 * 9)
         self.assertEqual(cleared, 0)
+
+    BATCHES = '''
+      -- the game's DynamicShapeBatch as a table (as test_shapebatch.py), beside the TSStatic stand-in
+      BATCH = {made = 0, alive = 0}
+      local Bt = {}
+      Bt.__index = Bt
+      function Bt:registerObject() end
+      function Bt:setShape(s) self.shape = s end
+      function Bt:setMaterialRemap(a, b) self.remap = (self.remap or '') .. a .. '>' .. b .. ';' end
+      function Bt:finalizeShape() end
+      function Bt:resize(n) self.size = n end
+      function Bt:setInstance(i, p, d, s, c)
+        assert(i < self.size)
+        local a = self.at[i]
+        if not a then a = {}; self.at[i] = a end      -- reused: the garbage measured is the walkers'
+        a[1], a[2], a[3], a[4], a[5], a[6], a[7] = p.x, p.y, p.z, d.x, d.y, d.z, c
+      end
+      function Bt:setInstanceEnabled(i, on) self.on[i] = on or nil end
+      function Bt:delete() BATCH.alive = BATCH.alive - 1 end
+      local plain = createObject
+      function createObject(kind)
+        if kind ~= 'DynamicShapeBatch' then return plain(kind) end
+        BATCH.made, BATCH.alive = BATCH.made + 1, BATCH.alive + 1
+        return setmetatable({on = {}, at = {}}, Bt)
+      end
+      function vec3(x, y, z) return {x = x, y = y, z = z} end
+    '''
+
+    def test_in_batches_a_walker_is_one_copy_of_its_pose_and_skin_and_nothing_else_is_made(self):
+        lua = self.lua()
+        lua.execute(self.BATCHES)
+        lua.globals().sb = lua.execute(WALKERS.with_name('shapebatch.lua').read_text(encoding='utf8'))
+        out = lua.execute('''
+          for k in pairs(OBJ) do OBJ[k] = 0 end
+          local W = walkers.new{seed = 5, spacing = 0}
+          walkers.sync(W, grid(12, 100), 550, 550)
+          local P = sb.new(nil)
+          local V = walkers.view(W, shapes(), nil, P)
+          walkers.setTarget(W, 1000)
+          for t = 1, 900 do
+            walkers.step(W, 1 / 60, 550, 550)
+            walkers.draw(W, V, 550, 550)
+          end
+          -- each walker within 200 m one copy, of the kind of its pose and skin, its shirt the colour
+          local copies, far, wrong, upright, near = 0, 0, 0, 0, 0
+          for slot, w in pairs(W.slots) do
+            local B, i = V.bb[slot], V.bi[slot]
+            if B then
+              copies = copies + 1
+              local d = math.sqrt((w.x - 550) ^ 2 + (w.y - 550) ^ 2)
+              if d > 215.01 then far = far + 1 end
+              if d < 60 then near = near + 1 end
+              local at = B.obj.at[i]
+              local rgb = walkers.SHIRTS[w.shirt]
+              local pants = walkers.BATCH_PANTS[w.skin]
+              local remap = 'e2r_ped_pants>e2r_ped_pants_' .. pants .. ';e2r_ped_skin>e2r_ped_skin_' .. w.skin .. ';'
+              if not B.obj.on[i] or at[1] ~= w.x or at[7][1] ~= rgb[1] or B.obj.remap ~= remap then wrong = wrong + 1 end
+              -- the shape's +y along the heading turned left: +x along the heading
+              local hx, hy = at[5], -at[4]
+              local h = math.sqrt(w.hx ^ 2 + w.hy ^ 2)
+              if at[6] == 0 and math.abs(hx - w.hx / h) < 1e-6 and math.abs(hy - w.hy / h) < 1e-6 then upright = upright + 1 end
+            end
+          end
+          local busy = {copies, P.live, V.farUsed + V.nearUsed, far, wrong, upright, BATCH.alive, OBJ.made, near}
+          -- no garbage per frame once the kinds are made
+          jit.off()
+          collectgarbage('collect')
+          collectgarbage('stop')
+          local kb = collectgarbage('count')
+          for t = 1, 600 do
+            walkers.step(W, 1 / 60, 550, 550)
+            walkers.draw(W, V, 550, 550)
+          end
+          kb = (collectgarbage('count') - kb) / 600
+          collectgarbage('restart')
+          jit.on()
+          busy[10] = kb
+          walkers.setTarget(W, 0)
+          walkers.step(W, 1 / 60, 550, 550)
+          walkers.draw(W, V, 550, 550)
+          local liveOff = P.live
+          walkers.clear(W, V)
+          return {busy[1], busy[2], busy[3], busy[4], busy[5], busy[6], busy[7], busy[8], busy[9], liveOff, BATCH.alive, busy[10]}
+        ''')
+        copies, live, drawn, far, wrong, upright, batches, statics, near, live_off, after, kb = (out[k] for k in range(1, 13))
+        self.assertLess(kb, .25, kb)
+        self.assertGreater(copies, 300)
+        self.assertGreater(near, 10)
+        self.assertEqual(live, copies)                # no copy left behind by a pose or a look
+        self.assertEqual(drawn, copies)
+        self.assertEqual((far, wrong), (0, 0))
+        self.assertEqual(upright, copies)
+        self.assertLessEqual(batches, (9 * 5))        # a pose and a skin each
+        self.assertEqual(statics, 0)                  # no TSStatic at all
+        self.assertEqual((live_off, after), (0, 0))
+
+    def test_people_art_bakes_the_walkers_trousers_and_skins_for_the_batches(self):
+        import json
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import people_art
+        lua = self.lua()
+        lua_list = lambda name: [tuple(v.values()) for v in lua.eval(f'walkers.{name}').values()]
+        self.assertEqual(lua_list('PANTS'), [tuple(c) for c in people_art.PANTS])
+        self.assertEqual(lua_list('SKIN'), [tuple(c) for c in people_art.SKIN])
+        out, _ = people_art.files()
+        mats = json.loads(out['people.materials.json'])
+        for k, rgb in enumerate(people_art.PANTS, 1):
+            self.assertEqual(mats[f'e2r_ped_pants_{k}']['Stages'][0]['baseColorFactor'], [*rgb, 1])
+        for k, rgb in enumerate(people_art.SKIN, 1):
+            self.assertEqual(mats[f'e2r_ped_skin_{k}']['Stages'][0]['baseColorFactor'], [*rgb, 1])
+        self.assertTrue(all(1 <= p <= len(people_art.PANTS) for p in lua.eval('walkers.BATCH_PANTS').values()))
+        self.assertEqual(len(lua.eval('walkers.BATCH_PANTS')), len(people_art.SKIN))
 
     def test_no_garbage_while_walking(self):
         out = self.lua().execute('''

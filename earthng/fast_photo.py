@@ -650,7 +650,8 @@ def macro_sheet(kind):
 def blend_mask():
     """The opacity map the lands dissolve into each other by (generator.lua VEG.land): blobs of
     2-12 m with every grey level over the same share of the sheet, so an alpha test at ref
-    covers 1 - ref / 255 of it. fast_dds keeps that in every mip ('uniform')."""
+    covers 1 - ref / 255 of it. fast_dds keeps that in the mips down to 3 m texels ('uniform'),
+    the smaller ones are mid grey (fast_dds.UNIFORM_MIN_SIDE)."""
     n = _noise(4211, 9) * .5 + _noise(4212, 21) * .32
     rng = np.random.default_rng(4213)
     fine = rng.random((MACRO_PX // 4, MACRO_PX // 4), dtype=np.float32)

@@ -2,6 +2,32 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-17: flow cars and walkers as DynamicShapeBatch copies
+
+Taken from the branch `codex/native-bridge-benchmark` (fd26353): the batches only, without the
+Rust tile pool or the capacity probes. Everything stays in the native mod: Lua and art in the
+planet zip, stock car shapes and textures read through the VFS.
+
+- `e2r/shapebatch.lua`: a pool of `DynamicShapeBatch` objects by kind (shape + material remaps).
+  It keeps free slots and doubles a full batch. It makes at most one new batch a frame and no
+  garbage per call.
+- `flow.lua`: a car is a copy in one of four batches, one per body (`car_<body>_paint.dae`,
+  `e2r_flow_paint`). It is painted by the copy's colour from `flow.PAINT_RGB`, the same table the
+  hand-off repaints the real car from.
+- `walkers.lua`: a walker is a copy in the batch of its pose and skin (45 at most). The shirt is
+  the copy's colour; trousers and skin are remapped materials (`people_art.py`
+  `e2r_ped_pants_<k>`, `e2r_ped_skin_<k>`).
+- `world.lua`: `M.useBatches`. Where the class or its calls are missing (BeamNG 0.39) every copy
+  stays a TSStatic. `test_world.py --no-batches` forces that for A/B. `result.flow/walk.batches`.
+- Kyiv, route `kyiv-center` on autopilot from its start on the road, 16 m/s, 90 s, about 1 km,
+  quality 50, 400 cars and 500 walkers, 2+2 alternating runs: the frame is the same (26.6 / 26.6
+  ms against 26.0 / 27.0, frames over 100 ms 14 / 15 against 12 / 14). Flow sync is 1.7 against
+  2.3-2.8 ms and walkers' draw 0.25 against 0.33. Scene objects: 4 + 45 instead of ~430 + ~1240.
+  A frame that makes a walker batch takes up to 9 ms.
+- The branch's gain (56.2 against 61.2 ms) came from a landing where the car drives 23 m into a
+  wall, one run each, so it measured crowds around a standing car. It does not hold on a drive.
+- Not checked: the TSStatic path in 0.39 itself; whether the copy's `ColorF` is sRGB or linear.
+
 ## 2026-11-14: ground from eye level, fields and the distance
 
 Seen from beside the car at Vytachiv (50.1128, 30.8790), quality 50. Full notes are in

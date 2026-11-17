@@ -55,6 +55,15 @@ def bc1(rgb):
 
 
 BC1_UNORM, BC1_UNORM_SRGB = 71, 72
+# The 'uniform' maps (the lands' dissolve mask, fast_style.LAND_COVER) keep their pattern down to
+# this side; the smaller levels are one mid grey. Over the 96 m land sheet a 16 px texel is 6 m
+# and a 4 px one 24 m, the size of the pieces the mask cuts (12.5 m): each piece took one or two
+# texels, all or none of it passed the test, and from 80 m (a driver's eye) or 300 m (25 m up)
+# the open land turned into a chequer of whole dry and green triangles (rural-ruts-views-after,
+# v-above). Mid grey cuts every piece at half its cover instead: levels 1-3 show the land under,
+# 4-6 the land coming in, so far off the lands meet along one border where their mix is half
+# and half.
+UNIFORM_MIN_SIDE = 32
 
 
 def keep_coverage(a, ref, coverage):
@@ -84,9 +93,11 @@ def save(image, path, srgb=None, alpha_ref=None):
     coverage = None
     while True:
         a = np.asarray(im, dtype=np.uint8)
-        if alpha_ref == 'uniform':
+        if alpha_ref == 'uniform' and min(a.shape[:2]) < UNIFORM_MIN_SIDE:
+            a = np.full_like(a, 128)
+        elif alpha_ref == 'uniform':
             # every grey level over the same share of the map in every mip: a test at any ref
-            # keeps its coverage (the lands' dissolve mask is cut at four of them)
+            # keeps its coverage (the lands' dissolve mask is cut at six of them)
             v = a[..., 0].astype(np.float32)
             rank = np.argsort(np.argsort(v, axis=None, kind='stable')).reshape(v.shape)
             a = (rank * (255.999 / rank.size)).astype(np.uint8)[..., None].repeat(3, -1)

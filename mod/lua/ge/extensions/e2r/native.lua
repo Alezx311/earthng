@@ -1288,13 +1288,10 @@ local function buildTile(key, wanted)
     early = true
     coroutine.yield(AHEAD)
   end
-  -- At speed the scene goes out the same way before its grass (generator sceneReady), and the
-  -- build yields GRASS to update(), which parks it behind every road and scene due before it.
-  -- Slower, a tile is built whole as before, unless this build is for grass it lost.
+  -- Deliver the scene before its grass at every driving speed. The lawn can then publish
+  -- patches near the focus as bounded chunks while the rest of the tile is still building.
   local split
-  local p, before = active.pose, active.tiles[key]
-  local fast = (p.vx or 0) ^ 2 + (p.vy or 0) ^ 2 >= AHEAD.slow ^ 2
-  local sceneReady = roadReady and (fast or (before and before.grassLost)) and function(scene)
+  local sceneReady = roadReady and function(scene)
     local entry = active.tiles[key] or {}
     if entry.scene and entry.grassAgain then
       -- a rebuild for the grass alone: the renderer has this scene already
@@ -1310,6 +1307,8 @@ local function buildTile(key, wanted)
       st.scenes[key], st.grass[key] = entry.road and true or nil, nil
       trimTiles()
     end
+    entry.grassVersion = (entry.grassVersion or 0) + 1
+    entry.grassChunks = {}
     split = true
     coroutine.yield(GRASS)
   end
@@ -1322,7 +1321,7 @@ local function buildTile(key, wanted)
       mark = function(stage) STAGE[coroutine.running()] = stage end,
       -- a vista block's edge at 100 m (4x faster, its skirts hide the seam with the 25 m horizon)
       terrainStep = wanted.vista and 100 or nil,
-      farStep = 100, horizonStep = wanted.step or 100,
+      farStep = 100, adaptiveFar = not wanted.horizon, horizonStep = wanted.step or 100,
       latitude = r.data.geo and r.data.geo[4], geo = r.data.geo, nature = r.data.nature,
       look = r.data.look, country = r.country and r.country.id,
       leftHand = generator.keepsLeft and generator.keepsLeft(r.country and r.country.id, r.data.look) or nil,
@@ -1331,6 +1330,12 @@ local function buildTile(key, wanted)
       maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
       groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = tune.propSpacing,
       detail = tune.detail, roadReady = roadReady or nil, sceneReady = sceneReady or nil,
+      grassFocus = function() return active and active.pose end, grassChunk = sceneReady and function(items, stock)
+        local entry = active.tiles[key]
+        if entry and entry.grassChunks then
+          entry.grassChunks[#entry.grassChunks + 1] = {items = items, stockMaterials = stock}
+        end
+      end or nil,
       editorPlan = #active.editorObjects > 0 and function(rect)
         return manualEditor.plan(active.editorObjects, rect)
       end or nil,
@@ -1859,6 +1864,7 @@ local function unload(key, layer)
       entry.road, entry.scene, entry.nav, entry.sceneLost = nil, nil, nil, nil
       entry.roadDelivered, entry.sceneDelivered, entry.roadTaken, entry.sceneTaken = nil, nil, nil, nil
       entry.grass, entry.grassTaken, entry.grassDelivered, entry.grassLost, entry.grassAgain = nil, nil, nil, nil, nil
+      entry.grassChunks, entry.grassVersion = nil, nil
     end
     st.ready[key], st.scenes[key], st.grass[key], active.evicted[key .. ':road'] = nil, nil, nil, nil
     active.manifests[key .. ':road'], active.manifests[key .. ':scene'], active.manifests[key .. ':grass'] = nil, nil, nil
@@ -2080,6 +2086,18 @@ M.update = update
 M.pose = pose
 M.manifest = manifest
 M.release = release
+-- Pending lawn chunks have their own owner in world.lua, so a restarted build can replace
+-- them without removing other scene detail. At most one chunk is taken per frame.
+M.grassChunkState = function(key)
+  local entry = active and active.tiles[key]
+  if not entry then return nil, false end
+  return entry.grassVersion, entry.grassChunks and #entry.grassChunks > 0 or false
+end
+M.takeGrassChunk = function(key)
+  local entry = active and active.tiles[key]
+  if not entry or not entry.grassChunks or #entry.grassChunks == 0 then return nil end
+  return table.remove(entry.grassChunks, 1)
+end
 local function setTune(tune)
   ensure()
   local out = clampTune(tune)
