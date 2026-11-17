@@ -90,8 +90,10 @@ pipelines do this automatically. Code-only planet refresh does not create data.
 
 Country sidecars live under `earthng/countries/<id>/map/`; planet fallback sidecars
 live under `earthng/planet/maps/<id>/`. Each has `index.json`, `places.json` and
-road tiles. Only mounted, available countries contribute their sidecars. A newer
-country sidecar takes priority over the planet fallback. OSM data remains ODbL,
+road tiles. Only mounted, available countries contribute their sidecars. The country's
+own sidecar takes priority over the planet fallback, unless the planet's is of a newer
+generation (its `sourceStamp[0]`, `build_map.py` GENERATION): then an older pack gains
+the points and their facts from the planet without a rebuild. OSM data remains ODbL,
 credited in the map and index; there are no BeamNG assets in these files.
 
 Tests: `test_map_data.py` covers PBF extraction, villages, aliases, country search,
