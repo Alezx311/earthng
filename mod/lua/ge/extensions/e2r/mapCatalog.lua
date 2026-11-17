@@ -10,6 +10,16 @@ local function overlaps(a, b)
   return a[1] <= b.e and a[3] >= b.w and a[2] <= b.n and a[4] >= b.s
 end
 
+-- an index.json the runtime reads (version 1 with its tiles), else nil
+function M.usable(index)
+  return type(index) == 'table' and index.version == 1 and type(index.tiles) == 'table' and index or nil
+end
+-- what a sidecar holds: the first number of its source stamp (build_map.py GENERATION)
+function M.generation(index)
+  local stamp = index.sourceStamp
+  return type(stamp) == 'table' and tonumber(stamp[1]) or 0
+end
+
 function M.step(countries)
   local ids, current = {}, {}
   for _, c in ipairs(countries or {}) do
@@ -27,11 +37,13 @@ function M.step(countries)
   -- At most one country's index/settlements per frame; no geometry decoding or network.
   local c = table.remove(pending, 1)
   if not c then return end
-  local root = '/earthng/countries/' .. c.id .. '/map/'
-  if not FS:fileExists(root .. 'index.json') then root = '/earthng/planet/maps/' .. c.id .. '/' end
-  if not FS:fileExists(root .. 'index.json') then return end
-  local index = read(root .. 'index.json')
-  if not index or index.version ~= 1 or type(index.tiles) ~= 'table' then return end
+  -- the pack's own sidecar, or the planet's when that one is of a newer generation (build_map.py
+  -- GENERATION 2 added the points, 3 their OSM facts): an older pack gains them without a rebuild
+  local root, planet = '/earthng/countries/' .. c.id .. '/map/', '/earthng/planet/maps/' .. c.id .. '/'
+  local index = FS:fileExists(root .. 'index.json') and M.usable(read(root .. 'index.json')) or nil
+  local other = FS:fileExists(planet .. 'index.json') and M.usable(read(planet .. 'index.json')) or nil
+  if other and (not index or M.generation(other) > M.generation(index)) then root, index = planet, other end
+  if not index then return end
   local places = read(root .. 'places.json') or {}
   for _, p in ipairs(places) do p.context = c.title .. (p[10] and p[10] ~= '' and (' · ' .. p[10]) or '') end
   catalogs[#catalogs + 1] = {root = root, index = index, places = places, title = c.title}

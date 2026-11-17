@@ -148,6 +148,25 @@ class MapDataTests(unittest.TestCase):
             self.assertEqual(index['poiTags'], index['pois'])
             self.assertEqual(index['sourceStamp'][0], 3)
 
+    def test_a_newer_planet_sidecar_serves_an_older_pack(self):
+        """The planet's maps/<id>/ of a newer generation (points, their facts) wins over the pack's
+        own older map/; of the same generation the pack's own stays first."""
+        country, planet = '/earthng/countries/ua/map/', '/earthng/planet/maps/ua/'
+        def roots(country_gen, planet_gen):
+            files = {}
+            for root, gen in ((country, country_gen), (planet, planet_gen)):
+                if gen is not None:
+                    files[root + 'index.json'] = {'version': 1, 'tiles': {}, 'sourceStamp': [gen, 'ukraine.osm.pbf', 1, 2]}
+                    files[root + 'places.json'] = []
+            lua = self.runtime(files)
+            lua.execute("catalog.step({{id='ua', title='Україна', available=true}})")
+            return [c.root for c in lua.eval('catalog.catalogs()').values()]
+        self.assertEqual(roots(1, 3), [planet])
+        self.assertEqual(roots(3, 3), [country])
+        self.assertEqual(roots(3, 1), [country])
+        self.assertEqual(roots(None, 1), [planet])
+        self.assertEqual(roots(1, None), [country])
+
     def test_the_search_finds_points_by_any_name_exact_first(self):
         root = '/earthng/countries/ua/map/'
         pois = ''.join('\t'.join(row) + '\n' for row in sorted([
