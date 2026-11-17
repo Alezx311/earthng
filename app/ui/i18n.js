@@ -2,7 +2,10 @@
 // LOOK_UK translates them by id.
 const STRINGS = {
   uk: {
-    'nav.map': 'Карта', 'nav.projects': 'Проєкти', 'nav.settings': 'Налаштування',
+    'nav.map': 'Карта', 'nav.projects': 'Проєкти', 'nav.settings': 'Налаштування', 'nav.ready': 'Готові карти',
+    'ready.title': 'Готові карти', 'ready.body': 'Встановіть готовий пак країни без збірки.',
+    'ready.none': 'Готових паків немає.', 'ready.install': 'Встановити', 'ready.installed': 'Встановлено',
+    'ready.installing': 'Встановлюю готову карту', 'ready.again': 'До готових карт',
     'search.placeholder': 'Місто, адреса чи регіон…',
     'search.enter': 'Enter — шукати міста й адреси',
     'search.looking': 'Шукаю…',
@@ -67,7 +70,10 @@ const STRINGS = {
     'stage.Region index': 'Індекс доріг', 'stage.Export': 'Експорт пака', 'stage.Install': 'Встановлення',
   },
   en: {
-    'nav.map': 'Map', 'nav.projects': 'Projects', 'nav.settings': 'Settings',
+    'nav.map': 'Map', 'nav.projects': 'Projects', 'nav.settings': 'Settings', 'nav.ready': 'Ready maps',
+    'ready.title': 'Ready maps', 'ready.body': 'Install a ready country pack without building it.',
+    'ready.none': 'No ready packs available.', 'ready.install': 'Install', 'ready.installed': 'Installed',
+    'ready.installing': 'Installing a ready map', 'ready.again': 'Back to ready maps',
     'search.placeholder': 'Town, address or region…',
     'search.enter': 'Enter: search towns and addresses',
     'search.looking': 'Searching…',

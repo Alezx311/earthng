@@ -64,6 +64,47 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(status['game_folder_ok'])
         self.assertFalse(status['planet']['installed'])
 
+    def test_ready_pack_installs_catalogued_local_zip_and_keeps_planet(self):
+        local = self.service.root / 'out' / 'native-packs'
+        local.mkdir(parents=True)
+        source = local / 'earthng_albania.zip'
+        with zipfile.ZipFile(source, 'w') as archive:
+            archive.writestr('earthng/countries/albania/manifest.json', '{}')
+        planet_zip(self.game / 'mods' / app_service.PLANET)
+        catalog = [{'id': 'albania', 'title': 'Albania', 'url': ''},
+                   {'id': '../bad', 'title': 'Bad', 'url': 'https://example.org/bad'}]
+        with patch.object(app_service.country_fetch, 'catalog_entries', return_value=catalog):
+            self.assertEqual(self.ask(cmd='ready_packs')['packs'], [{'id': 'albania', 'title': 'Albania', 'state': 'local'}])
+            self.assertFalse(self.ask(cmd='install_ready_pack', pack='../bad')['ok'])
+            self.assertTrue(self.ask(cmd='install_ready_pack', pack='albania')['ok'])
+            done = self.wait_done()
+            self.assertEqual(done['result'], 'complete', done)
+            self.assertEqual((self.game / 'mods' / source.name).read_bytes(), source.read_bytes())
+            self.assertEqual(self.ask(cmd='ready_packs')['packs'][0]['state'], 'installed')
+
+    def test_ready_pack_downloads_and_installs_planet_first(self):
+        catalog = [{'id': 'albania', 'title': 'Albania', 'url': 'https://example.org/albania.zip'}]
+        downloaded = []
+
+        def download(url, dest, emit=print, cancel=None):
+            downloaded.append(url)
+            Path(dest).parent.mkdir(parents=True, exist_ok=True)
+            if url.endswith(app_service.PLANET):
+                planet_zip(dest)
+            else:
+                with zipfile.ZipFile(dest, 'w') as archive:
+                    archive.writestr('earthng/countries/albania/manifest.json', '{}')
+            return dest
+
+        with patch.object(app_service.country_fetch, 'catalog_entries', return_value=catalog), \
+             patch.object(app_service.country_fetch, 'download', side_effect=download):
+            self.assertTrue(self.ask(cmd='install_ready_pack', pack='albania')['ok'])
+            done = self.wait_done()
+        self.assertEqual(done['result'], 'complete', done)
+        self.assertTrue(downloaded[0].endswith(app_service.PLANET))
+        self.assertEqual(downloaded[1], catalog[0]['url'])
+        self.assertTrue((self.game / 'mods' / 'earthng_albania.zip').exists())
+
     def test_game_folder_choice_is_kept(self):
         other = self.root / 'other'
         (other / 'settings').mkdir(parents=True)

@@ -243,6 +243,47 @@ class Service:
             self.cancel.set()
         return {'stopping': bool(self.job and self.job.is_alive())}
 
+    def cmd_ready_packs(self):
+        packs = []
+        for entry in country_fetch.catalog_entries():
+            slug = entry['id']
+            if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', slug):
+                continue
+            available = country_fetch.availability(slug, self.mods, self.root)
+            if available['state'] != 'none':
+                packs.append({'id': slug, 'title': entry['title'], 'state': available['state']})
+        return {'packs': packs}
+
+    def cmd_install_ready_pack(self, pack):
+        entries = {e['id']: e for e in self.cmd_ready_packs()['packs']}
+        if pack not in entries:
+            raise ValueError('unknown ready pack')
+        mods = self.mods
+
+        def target(cancel):
+            if not game_folder_ok(mods):
+                raise ValueError(f'{mods} is not a BeamNG user folder (it has no mods folder or settings)')
+            if self.planet_needed():
+                self.send({'event': 'stage', 'name': 'Planet', 'seconds': None})
+                self.fetch_planet(mods, cancel)
+                self.send({'event': 'stage', 'name': 'Planet', 'seconds': 0})
+            self.send({'event': 'stage', 'name': 'Install', 'seconds': None})
+            source = country_fetch.availability(pack, mods, self.root)
+            if source['state'] == 'installed':
+                target_path = source['path']
+            else:
+                if source['state'] == 'url':
+                    archive = self.root / 'downloads' / f'earthng_{pack}.zip'
+                    country_fetch.download(source['url'], archive, self.log, cancel)
+                elif source['state'] == 'local':
+                    archive = source['path']
+                else:
+                    raise ValueError('ready pack is no longer available')
+                target_path = country_fetch.install_zip(archive, mods, pack, cancel=cancel)
+            self.send({'event': 'stage', 'name': 'Install', 'seconds': 0})
+            return target_path
+        return self.start_job('install_ready_pack', target)
+
     # ------------------------------------------------------------------ places and options
     def ensure_places(self, refresh=False):
         if self.places is None or refresh:

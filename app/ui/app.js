@@ -58,6 +58,12 @@ function mockService(m) {
       reason: 'rough estimate', cached_tiles: false, cached_pbf: false, pbf_bytes: 54466814, planet: 'missing',
       source: m.box ? 'overpass' : 'pbf', pbf_seconds: 40, ask_pbf: !m.box });
     case 'projects': return answer({ projects: [] });
+    case 'ready_packs': return answer({ packs: [{ id: 'albania', title: 'Albania', state: 'url' }] });
+    case 'install_ready_pack': {
+      answer({ job: m.cmd });
+      setTimeout(() => window.earthng.receive({ event: 'done', job: m.cmd, result: 'complete', path: 'earthng_albania.zip' }), 800);
+      return undefined;
+    }
     case 'build': case 'install_planet': {   // a pretend job: stages one by one, then done
       answer({ job: m.cmd });
       const stages = m.cmd === 'build' ? ['Planet', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'] : ['Planet'];
@@ -304,7 +310,7 @@ function startProgress(kind, stages, weights) {
   // a drawn box has no name of its own: the region's name would mislead ("a point in Ukraine")
   job = { kind, name: state.areaName || (state.box ? null : state.place && state.place.name), stages, weights: weights || stages.map(() => 1), done: new Set(), active: null };
   showCard('build');
-  $('build-title').textContent = t(kind === 'build' ? 'build.title' : 'build.planetTitle') + (kind === 'build' && job.name ? ` — ${job.name}` : '');
+  $('build-title').textContent = t(kind === 'build' ? 'build.title' : kind === 'install_ready_pack' ? 'ready.installing' : 'build.planetTitle') + (kind === 'build' && job.name ? ` — ${job.name}` : '');
   $('stages').replaceChildren(...stages.map(name => el('li', { dataset: { stage: name } },
     el('span', { className: 'dot' }), el('span', { textContent: t(`stage.${name}`) }), el('span', { className: 't' }))));
   $('log').textContent = '';
@@ -341,9 +347,9 @@ async function build(allowPbf = false) {
   const stages = (est && est.stages) || ['Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'];
   startProgress('build', stages, est && est.seconds ? est.seconds.map(v => Math.max(1, v)) : null);
   job.allowPbf = allowPbf;
+  jobStarted();
   try {
     await call('build', { place: state.place.id, box: state.box, look: state.look, include: state.include, allow_pbf: allowPbf });
-    jobStarted();
   } catch (err) {
     finishBuild('failed', err.message);
   }
@@ -436,7 +442,31 @@ function showDone(kind, path) {
   $('done-body').textContent = planet ? t('done.planetBody') : t('done.body', job && job.name);
   $('done-path').textContent = path || '';
   $('launch-game').hidden = planet;
-  $('done-another').textContent = t(planet ? 'build.back' : 'done.another');
+  $('done-another').textContent = t(planet ? 'build.back' : kind === 'install_ready_pack' ? 'ready.again' : 'done.another');
+}
+
+async function listReadyPacks() {
+  try {
+    const { packs } = await call('ready_packs');
+    $('ready-packs').replaceChildren(...(packs.length ? packs.map(pack => {
+      const button = el('button', { textContent: t(pack.state === 'installed' ? 'ready.installed' : 'ready.install'), disabled: pack.state === 'installed' || state.building });
+      button.onclick = () => installReadyPack(pack);
+      return el('li', {}, el('span', { textContent: pack.title }), button);
+    }) : [el('li', { textContent: t('ready.none') })]));
+  } catch (err) { $('ready-packs').replaceChildren(el('li', { textContent: err.message })); }
+}
+
+async function installReadyPack(pack) {
+  if (state.building) return;
+  showSection('map');
+  startProgress('install_ready_pack', ['Planet', 'Install']);
+  job.pack = pack;
+  job.name = pack.title;
+  job.back = state.place ? 'area' : 'empty';
+  jobStarted();
+  try {
+    await call('install_ready_pack', { pack: pack.id });
+  } catch (err) { finishBuild('failed', err.message); }
 }
 
 // ------------------------------------------------------------------ projects
@@ -531,9 +561,9 @@ async function installPlanet() {
   startProgress('install_planet', ['Planet']);
   job.back = back;
   onStage('Planet', null);
+  jobStarted();
   try {
     await call('install_planet');
-    jobStarted();
   } catch (err) {
     finishBuild('failed', err.message);
   }
@@ -626,6 +656,7 @@ function showSection(name) {
   document.querySelectorAll('.rail-btn[data-section]').forEach(b => b.classList.toggle('active', b.dataset.section === name));
   document.querySelectorAll('[data-panel]').forEach(p => { p.hidden = p.dataset.panel !== name; });
   if (name === 'projects') listProjects();
+  if (name === 'ready') listReadyPacks();
   if (name === 'settings') refreshStatus();
 }
 
@@ -668,10 +699,10 @@ $('pbf-back').onclick = () => showCard(state.place ? 'area' : 'empty');
 $('save-project').onclick = () => saveProject(false);
 $('stop').onclick = () => call('stop').catch(() => {});
 $('build-back').onclick = backFromJob;
-$('build-retry').onclick = () => (job && job.kind === 'install_planet' ? installPlanet() : build(!!(job && job.allowPbf)));
+$('build-retry').onclick = () => (job && job.kind === 'install_planet' ? installPlanet() : job && job.kind === 'install_ready_pack' ? installReadyPack(job.pack) : build(!!(job && job.allowPbf)));
 $('open-mods').onclick = () => call('open_folder', { which: 'mods' }).catch(() => {});
 $('launch-game').onclick = () => call('open_url', { url: 'steam://rungameid/284160' }, 'app').catch(() => {});
-$('done-another').onclick = () => { if (job && job.kind === 'install_planet') backFromJob(); else clearArea(); };
+$('done-another').onclick = () => { if (job && job.kind === 'install_ready_pack') showSection('ready'); else if (job && job.kind === 'install_planet') backFromJob(); else clearArea(); };
 $('open-home').onclick = () => call('open_folder', { which: 'home' }).catch(() => {});
 $('planet-install').onclick = installPlanet;
 $('game-folders').onchange = e => setGameFolder(e.target.value);
@@ -687,6 +718,7 @@ $('lang').onclick = () => {
   $('lang').textContent = LANG === 'uk' ? 'УК' : 'EN';
   applyI18n(); renderOptions(); drawEdits(); setMode(state.mode); setMode(state.mode);
   refreshStatus().catch(() => {}); renderRecent();
+  if (!document.querySelector('[data-panel="ready"]').hidden) listReadyPacks();
   if (state.box || state.place) $('area-title').textContent = areaName();
 };
 $('lang').textContent = LANG === 'uk' ? 'УК' : 'EN';
