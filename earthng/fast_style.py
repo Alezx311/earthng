@@ -312,6 +312,14 @@ KINDS['fascia'] = (None, [.11, .12, .13, 1], 'METAL', 1.0, 'wall')
 KINDS['sign_white'] = (None, [.9, .9, .88, 1], 'METAL', 1.0, 'wall')
 KINDS['glyphs_dark'] = ('glyphs', [.03, .03, .035, 1], 'METAL', 1.0, 'wall')
 EXTRA['glyphs_dark'] = {'alphaTest': True, 'alphaRef': 110, 'castShadows': False}
+# the faces a country's own signs need (signstyle.lua, generator.lua SIGNS.drawWarn and the North
+# American set): the yellow of warnings, guide-sign green and blue, black ink, red letters (YIELD)
+SIGN_COLOURS = {'sign_yellow': [.97, .77, .06], 'sign_green': [.0, .42, .23], 'sign_blue': [.04, .26, .58],
+                'sign_black': [.04, .04, .045]}
+for _kind, _rgb in SIGN_COLOURS.items():
+    KINDS[_kind] = (None, [*_rgb, 1], 'METAL', 1.0, 'wall')
+KINDS['glyphs_red'] = ('glyphs', [.72, .08, .06, 1], 'METAL', 1.0, 'wall')
+EXTRA['glyphs_red'] = {'alphaTest': True, 'alphaRef': 110, 'castShadows': False}
 # a traffic light's lenses (generator.lua SIGNS.lamp): the dark glass, and what signals.lua shows lit
 KINDS['lens_dark'] = (None, [.05, .05, .055, 1], 'METAL', 1.0, 'wall')
 LENS = {'lens_red': (1., .09, .05), 'lens_yellow': (1., .62, .05), 'lens_green': (.1, 1., .42)}
@@ -410,6 +418,7 @@ KINDS['park'] = ('grass', [.30, .40, .22, 1], 'GRASS', _photo.GROUND_M, 'plan')
 TINT = {'ground': [.55, .85, .42, 1], 'forest': [.36, .58, .28, 1], 'paved': [.62, .62, .60, 1]}
 TINT.update({_k: _v[1] for _k, _v in RUTS.items()})
 TINT['glyphs_dark'] = [.03, .03, .035, 1]
+TINT['glyphs_red'] = [.72, .08, .06, 1]
 TINT.update({_k: [_c / 255 for _c in _rgb] + [1] for _k, _rgb in RAILINGS.items()})
 # Lines as East Coast paints them. The edge grass tint was set from linear means but acts as an
 # sRGB factor (_factor below); in game it sits at .9 of the verge, so it stays. The dirt edge is

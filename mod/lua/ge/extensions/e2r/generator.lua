@@ -2918,12 +2918,21 @@ function ROADS.keepsLeft(country, look)
   end
   return false
 end
--- a street's names and limit for the line of where the car is (location.lua): nil when it has none
+-- a street's names and limit for the line of where the car is (location.lua): nil when it has none.
+-- h: its class without _link, k: a slip road; d, dr, j: where a slip road goes (destination,
+-- destination:ref) and its junction number, for the exit strip
 local function navNames(road)
   local tags = road.tags or {}
   local limit = tostring(tags.maxspeed or ''):match('^%d+')
   local name, uk, en, ref = tags.name, tags['name:uk'], tags['name:en'], tags.ref
-  if name or uk or en or ref or limit then return {n = name, u = uk, e = en, r = ref, l = limit} end
+  local highway = tostring(tags.highway or '')
+  local link = highway:find('_link$') ~= nil
+  local dest = tags.destination
+  if not dest and ROADS.oneway(tags) then dest = tags['destination:forward'] end
+  if name or uk or en or ref or limit or link or dest then
+    return {n = name, u = uk, e = en, r = ref, l = limit, h = highway:gsub('_link$', ''), k = link or nil,
+      d = dest, dr = tags['destination:ref'], j = tags['junction:ref']}
+  end
 end
 local function navSegment(road)
   local tags, points = road.tags or {}, road.points or {}
@@ -3285,6 +3294,25 @@ SIGNS.models = {give_way = 'give_way', stop_sign = 'stop', priority = 'priorityr
   steep_up = 'warn_steep_up', steep_down = 'warn_steep_down', zebra_ahead = 'warn_zebra_warning',
   ring_ahead = 'warn_roundabout_warning', rough = 'warn_uneven_road', rocks = 'warn_falling_rocks',
   no_overtaking = 'no_overtaking', hump = 'warn_humps', danger = 'warn_other_danger', narrow = 'warn_road_narrows'}
+-- A country's own faces (signstyle.lua): SIGNS.style is set per build from the pack and the tile.
+-- The kinds a family draws itself instead of the game's Italian model, and those it has no sign
+-- for at all (no priority-road sign in North America).
+do
+  local ok, module = pcall(require, 'ge/extensions/e2r/signstyle')
+  SIGNS.styles = ok and type(module) == 'table' and module or nil
+end
+SIGNS.style = SIGNS.styles and SIGNS.styles.DEFAULT or {warn = 'triangle', limit = 'disc'}
+SIGNS.warnings = {curve_l = true, curve_r = true, twist_l = true, twist_r = true, steep_up = true, steep_down = true,
+  zebra_ahead = true, ring_ahead = true, rough = true, rocks = true, hump = true, danger = true, narrow = true}
+SIGNS.american = {give_way = 'yield', noentry = 'noentry_us', oneway = 'oneway_us', no_overtaking = 'nopass',
+  crossing = 'ped_us', dead_end = 'deadend_us', priority = false, roundabout = false}
+-- what `kind` is under the current style: 'model' (the game's), a drawn face's name, or false (none)
+function SIGNS.faceOf(kind)
+  local st = SIGNS.style
+  if st.us and SIGNS.american[kind] ~= nil then return SIGNS.american[kind] end
+  if SIGNS.warnings[kind] and st.warn ~= 'triangle' then return 'warn' end
+  return 'model'
+end
 -- The road's own stretches. open: speed from which it is a road out of town (the class says so
 -- where no maxspeed does): warnings stand ahead of what they warn of only there.
 SIGNS.along = {open = 70, ahead = 120, again = 2000, ends = 40, span = 100, turn = math.rad(38), gap = 200,
@@ -3456,7 +3484,7 @@ function SIGNS.plan(roads, mouths, order, points, cutsOf, pause)
   end
   -- a limit: the game's model has this number, or it is drawn
   local function addLimit(road, s, dir, key, limit, mph)
-    if not mph and SIGNS.speeds[limit] then add('speed', road, s, dir, key, 'speed_' .. limit)
+    if not mph and SIGNS.speeds[limit] and SIGNS.style.limit == 'disc' then add('speed', road, s, dir, key, 'speed_' .. limit)
     else add('limit', road, s, dir, key, nil, {limit, mph}) end
   end
   -- traffic into the node from mouth m, and out of the node into it
@@ -3830,8 +3858,12 @@ function SIGNS.place(requests, env, pause)
   for index, r in ipairs(requests) do
     if index % 32 == 0 then pause() end
     local road, tags = r.road, r.road.tags or NONE
-    if not ROADS.bridge(tags) and not ROADS.tunnel(tags) and
-        (not r.model or not FS or FS:fileExists(r.model)) then
+    -- the country's face: drawn (no model to look for), the game's, or no such sign there
+    local face = 'model'
+    if r.model then face = SIGNS.faceOf(r.kind) end
+    if face ~= 'model' then r.face = face or nil end
+    if face ~= false and not ROADS.bridge(tags) and not ROADS.tunnel(tags) and
+        (not r.model or r.face or not FS or FS:fileExists(r.model)) then
       local kerb = ROADS.leftHand and -1 or 1
       local side = -r.dir * kerb
       local s = r.s
@@ -9055,17 +9087,22 @@ end
 SIGNS.disc = {z = 2.55, r = .33, ring = .05, size = .3, board = {.6, .78}, sides = 16}
 function SIGNS.drawLimit(mesh, x, y, z, yaw, limit, mph)
   local D, T = SIGNS.disc, SOLID.frame(x, y, z, -yaw)
-  SIGNS.pole(mesh, T, D.z + (mph and D.board[2] / 2 or 0))
+  -- the country's face (signstyle.lua): a board in North America (miles, or Canada's MAXIMUM),
+  -- Britain's roundel says miles without a word, Sweden's and Finland's disc is yellow
+  local face = SIGNS.style.limit
+  local board = face == 'us' or face == 'ca' or (mph and face ~= 'uk')
+  SIGNS.pole(mesh, T, D.z + (board and D.board[2] / 2 or 0))
   local chars = BLD.glyphs(tostring(limit))
   local width = #chars * D.size * BLD.PLATE.aspect
-  if mph then
+  if board then
     local w, h = D.board[1], D.board[2]
     SOLID.box(mesh, 'sign_white', 0, T, -w / 2, -.04, D.z - h / 2, w / 2, -.02, D.z + h / 2)
-    local words = BLD.glyphs('SPEED')
     local small = .085
-    SIGNS.word(mesh, 'glyphs_dark', T, words, small, -#words * small * BLD.PLATE.aspect / 2, -.045, D.z + h / 2 - .14, 1)
-    words = BLD.glyphs('LIMIT')
-    SIGNS.word(mesh, 'glyphs_dark', T, words, small, -#words * small * BLD.PLATE.aspect / 2, -.045, D.z + h / 2 - .25, 1)
+    local lines = face == 'ca' and not mph and {'MAXIMUM'} or {'SPEED', 'LIMIT'}
+    for k, text in ipairs(lines) do
+      local words, size = SIGNS.fit(text, small, .06, w - .08)
+      SIGNS.word(mesh, 'glyphs_dark', T, words, size, -#words * size * BLD.PLATE.aspect / 2, -.045, D.z + h / 2 - .03 - k * .11, 1)
+    end
     SIGNS.word(mesh, 'glyphs_dark', T, chars, D.size, -width / 2, -.045, D.z - h / 2 + .07, 1)
     return
   end
@@ -9077,32 +9114,61 @@ function SIGNS.drawLimit(mesh, x, y, z, yaw, limit, mph)
     back[D.sides + 1 - k] = {outer[k][1], -.02, outer[k][3]}
   end
   SOLID.face(mesh, 'paint_red', 0, T, outer)
-  SOLID.face(mesh, 'sign_white', 0, T, inner)
+  SOLID.face(mesh, face == 'yellow' and 'sign_yellow' or 'sign_white', 0, T, inner)
   SOLID.face(mesh, 'yard', YARD.cell.metal, T, back)
   SIGNS.word(mesh, 'glyphs_dark', T, chars, D.size, -width / 2, -.04, D.z - D.size / 2, 1)
+end
+SIGNS.own = {z = 2.45, tri = .9, diamond = .78, border = .065, back = -.02, rim = -.03, fill = -.035, ink = -.04,
+  letters = -.045}
+function SIGNS.flat(mesh, material, T, pts, y)
+  local ring = {}
+  for k, p in ipairs(pts) do ring[k] = {p[1], y, p[2]} end
+  SOLID.face(mesh, material, 0, T, ring)
+end
+-- the same outline seen from behind: the plain metal of the back
+function SIGNS.flatBack(mesh, T, pts)
+  local ring, n = {}, #pts
+  for k, p in ipairs(pts) do ring[n + 1 - k] = {p[1], SIGNS.own.back, p[2]} end
+  SOLID.face(mesh, 'yard', YARD.cell.metal, T, ring)
 end
 -- The name of a place on a white board where the road enters it
 SIGNS.town = {z = 2.3, height = .62, size = .34, least = .2, width = 3.6, pad = .14}
 function SIGNS.drawTown(mesh, x, y, z, yaw, name)
   local B, T = SIGNS.town, SOLID.frame(x, y, z, -yaw)
+  -- the board's colours by country (signstyle.lua): Germany's yellow, the Netherlands' blue,
+  -- North America's green; a border round it where the country has one (France red, Italy black)
+  local look = SIGNS.style.town or NONE
+  local board, ink, rim = look[1] or 'sign_white', look[2] or 'glyphs_dark', look[3]
   local chars, size = SIGNS.fit(name, B.size, B.least, B.width)
   local w = #chars * size * BLD.PLATE.aspect + 2 * B.pad
   SOLID.box(mesh, 'yard', YARD.cell.metal, T, -w / 2 + .1, -.03, 0, -w / 2 + .16, .03, B.z)
   SOLID.box(mesh, 'yard', YARD.cell.metal, T, w / 2 - .16, -.03, 0, w / 2 - .1, .03, B.z)
-  SOLID.box(mesh, 'sign_white', 0, T, -w / 2, -.04, B.z, w / 2, -.02, B.z + B.height)
-  SIGNS.word(mesh, 'glyphs_dark', T, chars, size, -w / 2 + B.pad, -.045, B.z + (B.height - size) / 2, 1)
+  SOLID.box(mesh, board, 0, T, -w / 2, -.04, B.z, w / 2, -.02, B.z + B.height)
+  if rim then
+    local r, e, y0 = .035, .05, -.0405
+    for _, q in ipairs({{-w / 2 + e, B.z + e, w / 2 - e, B.z + e + r}, {-w / 2 + e, B.z + B.height - e - r, w / 2 - e, B.z + B.height - e},
+        {-w / 2 + e, B.z + e, -w / 2 + e + r, B.z + B.height - e}, {w / 2 - e - r, B.z + e, w / 2 - e, B.z + B.height - e}}) do
+      local ink2 = rim == 'glyphs_dark' and 'sign_black' or rim == 'glyphs' and 'sign_white' or rim
+      SIGNS.flat(mesh, ink2, T, {{q[1], q[2]}, {q[3], q[2]}, {q[3], q[4]}, {q[1], q[4]}}, y0)
+    end
+  end
+  SIGNS.word(mesh, ink, T, chars, size, -w / 2 + B.pad, -.045, B.z + (B.height - size) / 2, 1)
 end
 -- The two streets of a crossing on one pole: the blade across the approach names the street
 -- ahead, the one along it this street; each reads from both sides.
 SIGNS.blades = {z = 3.1, height = .38, size = .28, least = .16, width = 3.2, pad = .1, gap = .44}
 function SIGNS.blade(mesh, T, name, z)
   local B = SIGNS.blades
+  -- the colours by country (signstyle.lua): green in North America, blue in France, white with
+  -- black letters in Germany and Britain
+  local look = SIGNS.style.blade or NONE
+  local board, ink = look[1] or 'plate', look[2] or 'glyphs'
   local chars, size = SIGNS.fit(BLD.streetLabel(name), B.size, B.least, B.width)
   local w = #chars * size * BLD.PLATE.aspect + 2 * B.pad
-  SOLID.box(mesh, 'plate', 0, T, -w, -.015, z, 0, .015, z + B.height)
+  SOLID.box(mesh, board, 0, T, -w, -.015, z, 0, .015, z + B.height)
   local foot = z + (B.height - size) / 2
-  SIGNS.word(mesh, 'glyphs', T, chars, size, -w + B.pad, -.02, foot, 1)
-  SIGNS.word(mesh, 'glyphs', T, chars, size, -B.pad, .02, foot, -1)
+  SIGNS.word(mesh, ink, T, chars, size, -w + B.pad, -.02, foot, 1)
+  SIGNS.word(mesh, ink, T, chars, size, -B.pad, .02, foot, -1)
 end
 function SIGNS.drawNames(mesh, x, y, z, yaw, own, cross)
   local B = SIGNS.blades
@@ -9146,6 +9212,214 @@ function SIGNS.drawCamera(mesh, x, y, z, yaw)
   end
   SOLID.face(mesh, 'lens_dark', 0, T, ring)
 end
+-- --- a country's own faces (signstyle.lua) ---------------------------------------------------------
+-- Flat colours and the glyph atlas on the sign plane: x to the driver's right, z up, the face at
+-- y < 0 (nearer the driver the more negative). Outlines run counter-clockwise seen from the front.
+function SIGNS.dot(mesh, material, T, x, z, r, y, sides)
+  local ring = {}
+  sides = sides or 10
+  for k = 1, sides do
+    local a = (k - .5) * 2 * math.pi / sides
+    ring[k] = {x + math.cos(a) * r, z + math.sin(a) * r}
+  end
+  SIGNS.flat(mesh, material, T, ring, y)
+end
+-- a stroke w wide through {x, z} points, round at its joints
+function SIGNS.stroke(mesh, material, T, pts, w, y)
+  local h = w / 2
+  for k = 1, #pts - 1 do
+    local a, b = pts[k], pts[k + 1]
+    local dx, dz = b[1] - a[1], b[2] - a[2]
+    local l = math.sqrt(dx * dx + dz * dz)
+    if l > 1e-6 then
+      local nx, nz = -dz / l * h, dx / l * h
+      SIGNS.flat(mesh, material, T, {{a[1] - nx, a[2] - nz}, {b[1] - nx, b[2] - nz}, {b[1] + nx, b[2] + nz}, {a[1] + nx, a[2] + nz}}, y)
+    end
+    if k > 1 then SIGNS.dot(mesh, material, T, a[1], a[2], h, y, 8) end
+  end
+end
+-- an arrow's head at the last point, along the last piece, `size` long
+function SIGNS.arrowHead(mesh, material, T, pts, size, y)
+  local n = #pts
+  local a, b = pts[n - 1], pts[n]
+  local dx, dz = b[1] - a[1], b[2] - a[2]
+  local l = math.sqrt(dx * dx + dz * dz)
+  if l < 1e-6 then return end
+  dx, dz = dx / l, dz / l
+  local tip = {b[1] + dx * size * .55, b[2] + dz * size * .55}
+  local bx, bz = b[1] - dx * size * .35, b[2] - dz * size * .35
+  local nx, nz = -dz * size * .5, dx * size * .5
+  SIGNS.flat(mesh, material, T, {{bx - nx, bz - nz}, tip, {bx + nx, bz + nz}}, y)
+end
+-- a line of letters centred at x, its foot at z
+function SIGNS.centred(mesh, material, T, text, size, x, z, width)
+  local chars, s = SIGNS.fit(text, size, size * .55, width or 10)
+  local w = #chars * s * BLD.PLATE.aspect
+  SIGNS.word(mesh, material, T, chars, s, x - w / 2, SIGNS.own.letters, z, 1)
+  return s
+end
+
+-- Pictograms of the warnings, in units of the face (-1..1 across), centred at (0, cz), k m a unit
+SIGNS.PICTO = {}
+function SIGNS.mirror(pts) local out = {} for k, p in ipairs(pts) do out[k] = {-p[1], p[2]} end return out end
+function SIGNS.scaled(pts, k, cz) local out = {} for i, p in ipairs(pts) do out[i] = {p[1] * k, cz + p[2] * k} end return out end
+function SIGNS.PICTO.bend(mesh, T, k, cz, left, twist)
+  local pts = twist and {{-.25, -1}, {-.25, -.55}, {.3, -.15}, {.3, .1}, {-.25, .5}, {-.25, .62}}
+    or {{-.15, -1}, {-.15, -.15}, {.15, .3}, {.5, .5}}
+  if left then pts = SIGNS.mirror(pts) end
+  pts = SIGNS.scaled(pts, k, cz)
+  SIGNS.stroke(mesh, 'sign_black', T, pts, .2 * k, SIGNS.own.ink)
+  SIGNS.arrowHead(mesh, 'sign_black', T, pts, .55 * k, SIGNS.own.ink)
+end
+function SIGNS.PICTO.steep(mesh, T, k, cz, up)
+  local pts = up and {{-.9, -.55}, {.9, -.55}, {.9, .35}} or {{-.9, -.55}, {.9, -.55}, {-.9, .35}}
+  SIGNS.flat(mesh, 'sign_black', T, SIGNS.scaled(pts, k, cz), SIGNS.own.ink)
+end
+function SIGNS.PICTO.walker(mesh, T, k, cz)
+  local y = SIGNS.own.ink
+  SIGNS.dot(mesh, 'sign_black', T, .05 * k, cz + .72 * k, .17 * k, y)
+  SIGNS.stroke(mesh, 'sign_black', T, SIGNS.scaled({{0, .48}, {-.05, -.08}}, k, cz), .24 * k, y)
+  SIGNS.stroke(mesh, 'sign_black', T, SIGNS.scaled({{-.05, -.08}, {-.38, -.85}}, k, cz), .17 * k, y)
+  SIGNS.stroke(mesh, 'sign_black', T, SIGNS.scaled({{-.05, -.08}, {.32, -.8}}, k, cz), .17 * k, y)
+  SIGNS.stroke(mesh, 'sign_black', T, SIGNS.scaled({{0, .38}, {-.38, .02}}, k, cz), .13 * k, y)
+  SIGNS.stroke(mesh, 'sign_black', T, SIGNS.scaled({{0, .38}, {.36, .12}}, k, cz), .13 * k, y)
+end
+function SIGNS.PICTO.ring(mesh, T, k, cz)
+  for i = 0, 2 do
+    local pts = {}
+    for a = 0, 5 do
+      local angle = math.rad(i * 120 + 25 + a * 16)
+      pts[#pts + 1] = {math.cos(angle) * .55, math.sin(angle) * .55}
+    end
+    pts = SIGNS.scaled(pts, k, cz)
+    SIGNS.stroke(mesh, 'sign_black', T, pts, .16 * k, SIGNS.own.ink)
+    SIGNS.arrowHead(mesh, 'sign_black', T, pts, .42 * k, SIGNS.own.ink)
+  end
+end
+function SIGNS.PICTO.bumps(mesh, T, k, cz, count)
+  local pts = {}
+  for i = 0, 16 do
+    local x = -.9 + i * 1.8 / 16
+    pts[#pts + 1] = {x, -.45 + (count == 1 and .55 or .4) * math.abs(math.sin(math.pi * (x + .9) / 1.8 * count))}
+  end
+  SIGNS.stroke(mesh, 'sign_black', T, SIGNS.scaled(pts, k, cz), .17 * k, SIGNS.own.ink)
+end
+function SIGNS.PICTO.rocks(mesh, T, k, cz)
+  SIGNS.flat(mesh, 'sign_black', T, SIGNS.scaled({{-.9, -.75}, {-.35, -.75}, {-.55, .8}, {-.9, .8}}, k, cz), SIGNS.own.ink)
+  for _, r in ipairs({{.05, .45, .14}, {.35, .02, .17}, {.12, -.5, .21}}) do
+    SIGNS.dot(mesh, 'sign_black', T, r[1] * k, cz + r[2] * k, r[3] * k, SIGNS.own.ink, 7)
+  end
+end
+function SIGNS.PICTO.danger(mesh, T, k, cz)
+  SIGNS.stroke(mesh, 'sign_black', T, SIGNS.scaled({{0, .78}, {0, -.22}}, k, cz), .28 * k, SIGNS.own.ink)
+  SIGNS.dot(mesh, 'sign_black', T, 0, cz - .62 * k, .16 * k, SIGNS.own.ink)
+end
+function SIGNS.PICTO.narrow(mesh, T, k, cz)
+  local side = {{-.6, -.9}, {-.6, -.25}, {-.28, .25}, {-.28, .9}}
+  SIGNS.stroke(mesh, 'sign_black', T, SIGNS.scaled(side, k, cz), .15 * k, SIGNS.own.ink)
+  SIGNS.stroke(mesh, 'sign_black', T, SIGNS.scaled(SIGNS.mirror(side), k, cz), .15 * k, SIGNS.own.ink)
+end
+function SIGNS.picto(mesh, T, kind, k, cz)
+  if kind == 'curve_l' or kind == 'curve_r' then SIGNS.PICTO.bend(mesh, T, k, cz, kind == 'curve_l')
+  elseif kind == 'twist_l' or kind == 'twist_r' then SIGNS.PICTO.bend(mesh, T, k, cz, kind == 'twist_l', true)
+  elseif kind == 'steep_up' or kind == 'steep_down' then SIGNS.PICTO.steep(mesh, T, k, cz, kind == 'steep_up')
+  elseif kind == 'zebra_ahead' then SIGNS.PICTO.walker(mesh, T, k, cz)
+  elseif kind == 'ring_ahead' then SIGNS.PICTO.ring(mesh, T, k, cz)
+  elseif kind == 'rough' then SIGNS.PICTO.bumps(mesh, T, k, cz, 2)
+  elseif kind == 'hump' then SIGNS.PICTO.bumps(mesh, T, k, cz, 1)
+  elseif kind == 'rocks' then SIGNS.PICTO.rocks(mesh, T, k, cz)
+  elseif kind == 'narrow' then SIGNS.PICTO.narrow(mesh, T, k, cz)
+  else SIGNS.PICTO.danger(mesh, T, k, cz) end
+end
+
+-- A warning in the country's shape: the Vienna triangle in red round yellow (Sweden, Finland,
+-- Iceland, Poland), or the yellow diamond (North America, Ireland, Australia, Japan, Brazil)
+function SIGNS.drawWarn(mesh, x, y, z, yaw, kind, shape)
+  local O, T = SIGNS.own, SOLID.frame(x, y, z, -yaw)
+  local cz = O.z
+  if shape == 'diamond' then
+    local d, b = O.diamond / math.sqrt(2), O.border
+    SIGNS.pole(mesh, T, cz + d)
+    local outer = {{0, cz - d}, {d, cz}, {0, cz + d}, {-d, cz}}
+    SIGNS.flatBack(mesh, T, outer)
+    SIGNS.flat(mesh, 'sign_black', T, outer, O.rim)
+    local i = d - b * 1.2
+    SIGNS.flat(mesh, 'sign_yellow', T, {{0, cz - i}, {i, cz}, {0, cz + i}, {-i, cz}}, O.fill)
+    SIGNS.picto(mesh, T, kind, .26, cz)
+    return
+  end
+  local s = O.tri
+  local h = s * math.sqrt(3) / 2
+  local bottom, top = cz - h / 3, cz + h * 2 / 3
+  SIGNS.pole(mesh, T, top - .1)
+  local outer = {{-s / 2, bottom}, {s / 2, bottom}, {0, top}}
+  SIGNS.flatBack(mesh, T, outer)
+  SIGNS.flat(mesh, 'paint_red', T, outer, O.rim)
+  local b = O.border * 1.6
+  local inset = b * math.sqrt(3)
+  SIGNS.flat(mesh, 'sign_yellow', T, {{-s / 2 + inset, bottom + b}, {s / 2 - inset, bottom + b}, {0, top - 2 * b}}, O.fill)
+  SIGNS.picto(mesh, T, kind, .17, cz - .02)
+end
+
+-- The North American regulatory faces (MUTCD) the game has no model of
+function SIGNS.drawAmerican(mesh, x, y, z, yaw, face, ways)
+  local O, T = SIGNS.own, SOLID.frame(x, y, z, -yaw)
+  local cz = O.z
+  if face == 'yield' then
+    local s = .9
+    local h = s * math.sqrt(3) / 2
+    local top, bottom = cz + h / 3, cz - h * 2 / 3
+    SIGNS.pole(mesh, T, top - .05)
+    local outer = {{-s / 2, top}, {0, bottom}, {s / 2, top}}
+    SIGNS.flatBack(mesh, T, outer)
+    SIGNS.flat(mesh, 'paint_red', T, outer, O.rim)
+    local b = .11
+    SIGNS.flat(mesh, 'sign_white', T, {{-s / 2 + b * 1.73, top - b}, {0, bottom + 2 * b}, {s / 2 - b * 1.73, top - b}}, O.fill)
+    SIGNS.centred(mesh, 'glyphs_red', T, 'YIELD', .11, 0, cz + .02, .4)
+  elseif face == 'noentry_us' then
+    local r = .38
+    SIGNS.pole(mesh, T, cz)
+    local ring = {}
+    for k = 1, 20 do local a = (k - .5) * math.pi / 10; ring[k] = {math.cos(a) * r, cz + math.sin(a) * r} end
+    SIGNS.flatBack(mesh, T, ring)
+    SIGNS.flat(mesh, 'paint_red', T, ring, O.rim)
+    SIGNS.flat(mesh, 'sign_white', T, {{-.29, cz - .055}, {.29, cz - .055}, {.29, cz + .055}, {-.29, cz + .055}}, O.fill)
+    SIGNS.centred(mesh, 'glyphs', T, 'DO NOT', .1, 0, cz + .1, .45)
+    SIGNS.centred(mesh, 'glyphs', T, 'ENTER', .1, 0, cz - .2, .45)
+  elseif face == 'oneway_us' then
+    local w, h = .46, .62
+    SIGNS.pole(mesh, T, cz + h / 2)
+    local board = {{-w / 2, cz - h / 2}, {w / 2, cz - h / 2}, {w / 2, cz + h / 2}, {-w / 2, cz + h / 2}}
+    SIGNS.flatBack(mesh, T, board)
+    SIGNS.flat(mesh, 'sign_black', T, board, O.rim)
+    local pts = {{0, cz - .12}, {0, cz + .16}}
+    SIGNS.stroke(mesh, 'sign_white', T, pts, .09, O.fill)
+    SIGNS.arrowHead(mesh, 'sign_white', T, pts, .2, O.fill)
+    SIGNS.centred(mesh, 'glyphs', T, 'ONE WAY', .075, 0, cz - .27, .4)
+  elseif face == 'nopass' then
+    local w, h = .6, .76
+    SIGNS.pole(mesh, T, cz + h / 2)
+    local board = {{-w / 2, cz - h / 2}, {w / 2, cz - h / 2}, {w / 2, cz + h / 2}, {-w / 2, cz + h / 2}}
+    SIGNS.flatBack(mesh, T, board)
+    SIGNS.flat(mesh, 'sign_white', T, board, O.rim)
+    SIGNS.centred(mesh, 'glyphs_dark', T, 'DO NOT', .12, 0, cz + .06, .5)
+    SIGNS.centred(mesh, 'glyphs_dark', T, 'PASS', .14, 0, cz - .2, .5)
+  elseif face == 'ped_us' or face == 'deadend_us' then
+    local d = O.diamond / math.sqrt(2)
+    SIGNS.pole(mesh, T, cz + d)
+    local outer = {{0, cz - d}, {d, cz}, {0, cz + d}, {-d, cz}}
+    SIGNS.flatBack(mesh, T, outer)
+    SIGNS.flat(mesh, 'sign_black', T, outer, O.rim)
+    local i = d - O.border * 1.2
+    SIGNS.flat(mesh, 'sign_yellow', T, {{0, cz - i}, {i, cz}, {0, cz + i}, {-i, cz}}, O.fill)
+    if face == 'ped_us' then SIGNS.PICTO.walker(mesh, T, .26, cz)
+    else
+      SIGNS.centred(mesh, 'glyphs_dark', T, 'DEAD', .11, 0, cz + .01, .42)
+      SIGNS.centred(mesh, 'glyphs_dark', T, 'END', .11, 0, cz - .14, .42)
+    end
+  end
+end
+
 function SIGNS.drawLight(mesh, lit, x, y, z, yaw, group, width)
   local H, c = SIGNS.head, YARD.cell
   local T = SOLID.frame(x, y, z, -yaw)
@@ -11300,6 +11574,15 @@ local function build(cells, i, j, options)
   local look = type(options.look) == 'table' and options.look or NONE
   BLD.packBlock = BLD.blockOf(options.country)
   BLD.neutral = BLD.neutralSigns(lists, options.country)
+  -- the country's road signs (signstyle.lua): by the pack, else where the tile is
+  if SIGNS.styles then
+    local geo, lat, lon = options.geo, nil, nil
+    if type(geo) == 'table' and tonumber(geo[8]) then
+      local dx, dy = (rect[1] + rect[3]) / 2 - geo[1], (rect[2] + rect[4]) / 2 - geo[2]
+      lat, lon = geo[4] + geo[7] * dx + geo[8] * dy, geo[3] + geo[5] * dx + geo[6] * dy
+    end
+    SIGNS.style = SIGNS.styles.family(options.signCountry or options.country, look, lat, lon)
+  end
   local postsoviet = look.block == 'postsoviet' or BLD.postsoviet[tostring(options.country or '')] or false
   local function lookOf(slot)
     local value = look[slot]
@@ -14447,6 +14730,10 @@ local function build(cells, i, j, options)
             local stop = request.stop
             OFFROAD.lights[#OFFROAD.lights + 1] = {road = tostring(request.road.id), x = stop[1], y = stop[2], z = stop[3] or 0,
               dx = request.tx, dy = request.ty, group = request.group}
+          elseif request.face == 'warn' then
+            SIGNS.drawWarn(sceneDecor, x, y, z, yaw, kind, SIGNS.style.warn)
+          elseif request.face then
+            SIGNS.drawAmerican(sceneDecor, x, y, z, yaw, request.face)
           elseif kind == 'limit' then
             SIGNS.drawLimit(sceneDecor, x, y, z, yaw, request.value[1], request.value[2])
           elseif kind == 'town' then
@@ -15603,6 +15890,8 @@ end
 
 M.build = build
 M.keepsLeft = ROADS.keepsLeft
+-- the sign families (signstyle.lua) where require cannot reach them (the tests)
+function M.setSignStyles(styles) SIGNS.styles, SIGNS.style = styles, styles.DEFAULT end
 M.YARD = YARD
 M.BRANDS = SOLID.BRANDS
 M.PIN = BLD.PIN

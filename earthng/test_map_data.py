@@ -114,6 +114,40 @@ class MapDataTests(unittest.TestCase):
             self.assertEqual(json.loads((output / 'index.json').read_text())['pois'], 2)
         self.assertEqual(build_map.search_key('  ҐАНОК  Їжак’s  ÉCOLE'), "ґанок їжак's École".replace('É', 'É'))
 
+    def test_the_facts_of_each_point_line_for_line(self):
+        """poi_tags.tsv (GENERATION 3): line i holds the OSM id and the facts of pois.tsv line i;
+        whitespace collapsed, long values cut, no e-mail, the Ukrainian name only when it differs."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'sample.osm'
+            long_text = 'x' * 300
+            source.write_text(f'''<osm version="0.6">
+              <node id="1" lat="50.45" lon="30.52"><tag k="amenity" v="fuel"/><tag k="name" v="WOG"/>
+                <tag k="opening_hours" v="24/7"/><tag k="fuel:diesel" v="yes"/><tag k="email" v="a@b.c"/>
+                <tag k="description" v="{long_text}"/><tag k="addr:street" v="Хрещатик   вул."/></node>
+              <node id="2" lat="50.46" lon="30.53"><tag k="amenity" v="cafe"/><tag k="name" v="Кава"/><tag k="name:uk" v="Кава"/></node>
+              <node id="5" lat="50.0" lon="30.0"/><node id="6" lat="50.0" lon="30.002"/><node id="7" lat="50.002" lon="30.002"/>
+              <way id="10"><nd ref="5"/><nd ref="6"/><nd ref="7"/><nd ref="5"/>
+                <tag k="tourism" v="museum"/><tag k="name" v="Музей"/><tag k="name:uk" v="Музей історії"/></way></osm>''', encoding='utf8')
+            output = build_map.build(source, root / 'map', emit=lambda _: None)
+            pois = (output / 'pois.tsv').read_text(encoding='utf8').splitlines()
+            tags = (output / 'poi_tags.tsv').read_text(encoding='utf8').splitlines()
+            self.assertEqual(len(pois), len(tags))
+            facts = {p.split('\t')[4]: dict(kv.split('=', 1) for kv in t.split('\t')) for p, t in zip(pois, tags)}
+            self.assertEqual(facts['WOG']['osm'], 'n1')
+            self.assertEqual(facts['WOG']['amenity'], 'fuel')
+            self.assertEqual(facts['WOG']['opening_hours'], '24/7')
+            self.assertEqual(facts['WOG']['fuel:diesel'], 'yes')
+            self.assertEqual(facts['WOG']['addr:street'], 'Хрещатик вул.')
+            self.assertEqual(len(facts['WOG']['description']), build_map.POI_VALUE)
+            self.assertNotIn('email', facts['WOG'])
+            self.assertNotIn('name:uk', facts['Кава'], 'the same as the name')
+            self.assertEqual(facts['Музей']['osm'], 'w10')
+            self.assertEqual(facts['Музей']['name:uk'], 'Музей історії')
+            index = json.loads((output / 'index.json').read_text())
+            self.assertEqual(index['poiTags'], index['pois'])
+            self.assertEqual(index['sourceStamp'][0], 3)
+
     def test_the_search_finds_points_by_any_name_exact_first(self):
         root = '/earthng/countries/ua/map/'
         pois = ''.join('\t'.join(row) + '\n' for row in sorted([

@@ -45,18 +45,28 @@ end
 -- within each, the nearest to `near` ({lat, lon}: the map's centre) first, so "Хрещатик" seen
 -- over Kyiv is the station there, not a spring of the same name across the country.
 M.POI_SCAN = 4000
+-- a sidecar's text file read once and kept on its catalog (false: none): pois.tsv as c.pois,
+-- poi_tags.tsv (build_map.py GENERATION 3, the OSM facts of each point, line for line) as c.tags
+local FIELD = {['pois.tsv'] = 'pois', ['poi_tags.tsv'] = 'tags'}
+function M.text(c, name)
+  local field = FIELD[name]
+  if c[field] == nil then
+    c[field] = false
+    if FS:fileExists(c.root .. name) then
+      local ok, text = pcall(readFile, c.root .. name)
+      c[field] = ok and type(text) == 'string' and text or false
+    end
+  end
+  return c[field]
+end
+-- the loaded sidecars, {root, title, index, places}, for the world map's point index (poiindex.lua)
+function M.catalogs() return catalogs end
+
 function M.searchPois(needle, limit, near)
   local hits = {}
   if #needle < 3 then return hits end
   for _, c in ipairs(catalogs) do
-    if c.pois == nil then
-      c.pois = false
-      if FS:fileExists(c.root .. 'pois.tsv') then
-        local ok, text = pcall(readFile, c.root .. 'pois.tsv')
-        c.pois = ok and type(text) == 'string' and text or false
-      end
-    end
-    local text, at = c.pois, 1
+    local text, at = M.text(c, 'pois.tsv'), 1
     while text and #hits < M.POI_SCAN do
       local i = text:find(needle, at, true)
       if not i then break end

@@ -2081,6 +2081,23 @@ M.at = at
 M.keepsLeft = function()
   return active ~= nil and generator.keepsLeft ~= nil and generator.keepsLeft(active.region.country and active.region.country.id, active.region.data.look)
 end
+-- The road sign family (signstyle.lua) of the region the car is in: the exit board colour for
+-- the junction strip (location.lua). Cached per region; the place is the pack's geo origin.
+do
+  local okStyles, styles = pcall(require, 'ge/extensions/e2r/signstyle')
+  local cachedFor, cached
+  M.signFamily = function()
+    if not okStyles or type(styles) ~= 'table' or not active then return styles and styles.DEFAULT or {} end
+    local r = active.region
+    if cachedFor ~= r then
+      local geo = r.data and r.data.geo
+      cached = styles.family(r.country and r.country.id, r.data and r.data.look,
+        type(geo) == 'table' and geo[4] or nil, type(geo) == 'table' and geo[3] or nil)
+      cachedFor = r
+    end
+    return cached
+  end
+end
 M.land = land
 M.update = update
 M.pose = pose

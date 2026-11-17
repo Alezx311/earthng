@@ -6,6 +6,7 @@ import fast_style
 import test_generator
 
 J = [250, 250, 10]
+STYLES = test_generator.SOURCE.parent / 'signstyle.lua'
 
 
 def arm(ident, end, highway='residential', **tags):
@@ -19,6 +20,107 @@ class Points(unittest.TestCase):
         self.assertEqual(fast_style.point_kind({'railway': 'level_crossing'}), 'level_crossing')
         self.assertEqual(fast_style.point_kind({'highway': 'speed_camera'}), 'speed_camera')
         self.assertIsNone(fast_style.point_kind({'railway': 'crossing'}), 'a footpath over the rails')
+
+
+class CountrySignTests(unittest.TestCase):
+    """A country's own faces (signstyle.lua): yellow diamonds, yellow triangles, MUTCD boards,
+    Britain's roundel, the colours of town boards and street blades."""
+
+    def setUp(self):
+        self.h = test_generator.GeneratorTests()
+        self.h.setUp()
+        self.style = self.h.lua.execute(STYLES.read_text(encoding='utf8'))
+        self.h.generator.setSignStyles(self.style)
+
+    def build(self, roads, points=(), **opts):
+        report = self.h.lua.table()
+        opts.setdefault('experimentalDetail', True)
+        scene = self.h.build([{'roads': roads, 'points': list(points)}], 0, 0, terrainStep=100, maxTrees=0, maxGrass=0,
+                             propSpacing=0, detailReport=report, **opts)[1]
+        models = sorted(item.shape.split('italy_traf_sign_')[1][:-4] for item in scene['items'].values()
+                        if item.streetKind == 'sign')
+        return report, scene, models
+
+    def tris(self, scene, material):
+        return list(self.h.triangles(scene, 'e2rf_' + material))
+
+    def bend(self):
+        points = [[10, 100, 10], [200, 100, 10], [320, 100, 10], [370, 125, 10], [395, 170, 10], [400, 240, 10], [400, 480, 10]]
+        return {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'secondary', 'maxspeed': '90'}, 'points': points}
+
+    def limit_road(self, maxspeed):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        node = {'id': 's', 'kind': 'traffic_sign', 'pos': [250, 250, 10],
+                'tags': {'traffic_sign': 'maxspeed', 'maxspeed': maxspeed, 'direction': 'forward'}}
+        return [road], [node]
+
+    def test_the_family_comes_from_the_pack_then_the_place(self):
+        style = self.style
+        country = style.country
+        self.assertEqual(country('us-new-york'), 'US')
+        self.assertEqual(country('ontario'), 'CA')
+        self.assertEqual(country('kyiv-oblast'), 'UA')
+        self.assertEqual(country('uk-wales'), 'GB')
+        self.assertEqual(country('spot-london', 51.5, -0.12), 'GB')
+        self.assertEqual(country('spot-innsbruck', 47.26, 11.39), 'AT')
+        self.assertEqual(country('spot-belfast', 54.6, -5.93), 'GB', 'Northern Ireland is not Ireland')
+        self.assertEqual(country('spot-dublin', 53.35, -6.26), 'IE')
+        self.assertIsNone(country('spot-nowhere'))
+        self.assertEqual(style.family('somewhere', self.h.table({'block': 'north-america'}))[0].warn, 'diamond')
+        self.assertEqual(style.family('ukraine')[0].warn, 'triangle')
+
+    def test_a_bend_in_america_is_a_yellow_diamond(self):
+        report, scene, models = self.build([self.bend()], country='us-nevada')
+        self.assertFalse([m for m in models if m.startswith('warn_')], 'no Italian triangle')
+        self.assertEqual((report.signs.curve_l, report.signs.curve_r), (1, 1))
+        self.assertTrue(self.tris(scene, 'sign_yellow'))
+        self.assertTrue(self.tris(scene, 'sign_black'), 'the black edge and arrow')
+        # in Ukraine the game's own triangle stands
+        _, scene, models = self.build([self.bend()], country='ukraine')
+        self.assertIn('warn_bend_l', models)
+        self.assertFalse(self.tris(scene, 'sign_yellow'))
+
+    def test_sweden_warns_on_yellow_triangles_and_limits_on_yellow_discs(self):
+        report, scene, models = self.build([self.bend()], country='sweden')
+        self.assertFalse([m for m in models if m.startswith('warn_')])
+        self.assertTrue(self.tris(scene, 'sign_yellow'))
+        self.assertTrue(self.tris(scene, 'paint_red'), 'the red rim of the triangle')
+        report, scene, models = self.build(*self.limit_road('50'), country='sweden')
+        self.assertNotIn('speed_50', models, 'the white disc of the game is not Swedish')
+        self.assertEqual(report.signs.limit, 1)
+        self.assertTrue(self.tris(scene, 'sign_yellow'))
+
+    def test_america_has_no_priority_road_and_yields_in_words(self):
+        roads = [arm('w', [0, 250, 10], 'primary'), arm('e', [500, 250, 10], 'primary'), arm('s', [250, 0, 10], 'residential')]
+        report, scene, models = self.build(roads, country='us-ohio')
+        self.assertNotIn('priorityroad', models)
+        self.assertNotIn('give_way', models)
+        self.assertEqual(report.signs.give_way, 1)
+        self.assertTrue(self.tris(scene, 'glyphs_red'), 'YIELD')
+        self.assertIsNone(report.signs.priority)
+
+    def test_britain_says_its_limit_on_a_roundel_without_miles(self):
+        _, scene, _ = self.build(*self.limit_road('30 mph'), country='united-kingdom')
+        self.assertTrue(self.tris(scene, 'paint_red'), 'the red ring')
+        # the US board for the same tag in America: letters, no ring
+        _, scene, _ = self.build(*self.limit_road('30 mph'), country='us-new-york')
+        self.assertFalse(self.tris(scene, 'paint_red'))
+        self.assertTrue(self.tris(scene, 'glyphs_dark'))
+
+    def test_a_german_town_board_is_yellow_and_american_blades_green(self):
+        road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential'},
+                'points': [[100, 250, 10], [250, 250, 10], [400, 250, 10]]}
+        node = {'id': 's', 'kind': 'traffic_sign', 'pos': [250, 250, 10],
+                'tags': {'traffic_sign': 'city_limit', 'direction': 'forward', 'name': 'Bonn'}}
+        _, scene, _ = self.build([road], [node], country='germany')
+        self.assertTrue(self.tris(scene, 'sign_yellow'))
+        self.assertFalse(self.tris(scene, 'sign_white'))
+        roads = [arm('w', [0, 250, 10], 'residential', name='Main Street'), arm('e', [500, 250, 10], 'residential', name='Main Street'),
+                 arm('s', [250, 0, 10], 'residential', name='Oak Lane')]
+        _, scene, _ = self.build(roads, country='us-ohio')
+        self.assertTrue(self.tris(scene, 'sign_green'))
+        self.assertFalse(self.tris(scene, 'plate'))
 
 
 class RoadSignTests(unittest.TestCase):

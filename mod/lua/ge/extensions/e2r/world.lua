@@ -28,6 +28,9 @@ M.pinBox = {}
 -- the route to a point picked on the map (docs/NAVIGATION.md); on M for the same reason
 M.navigator = NATIVE and require('ge/extensions/e2r/navigator') or nil
 M.location = NATIVE and require('ge/extensions/e2r/location') or nil
+-- the world map on M: points of interest, filters, OSM facts on hover (worldmap.lua)
+M.worldmap = NATIVE and select(2, pcall(require, 'ge/extensions/e2r/worldmap')) or nil
+if type(M.worldmap) ~= 'table' then M.worldmap = nil end
 M.signals = NATIVE and require('ge/extensions/e2r/signals') or nil
 if M.signals and not M.signals.step then M.signals = nil end
 if M.navigator then M.navigator.source = native end
@@ -1508,6 +1511,7 @@ local function navRead()
       seg.box, seg.names = box, data.names and data.names[s[1]]
       S.nav[s[1]] = seg
       S.navDirty = true
+      S.navVersion = (S.navVersion or 0) + 1   -- location.lua re-indexes the junctions
     end
     seg.tiles[job.key] = true
   end
@@ -1533,7 +1537,9 @@ function M.locationStep()
       return S.locationRegion, S.locationCountry
     end}
   local env = S.locationEnv
-  env.segments, env.lat, env.lon, env.lang = S.nav, lat, lon, lang
+  env.segments, env.lat, env.lon, env.lang, env.version = S.nav, lat, lon, lang, S.navVersion
+  env.leftHand = native.keepsLeft and native.keepsLeft() or nil
+  env.exitBlue = native.signFamily and native.signFamily().exitBlue or nil
   M.location.step(S.location, S.now, p.x, p.y, v and v.x or 0, v and v.y or 0, env)
 end
 
@@ -1565,6 +1571,7 @@ local function navBuild()
     end
     if not alive then
       S.nav[sid] = nil
+      S.navVersion = (S.navVersion or 0) + 1
     elseif (seg.x - p.x) ^ 2 + (seg.y - p.y) ^ 2 < NAV_R * NAV_R then
       local s = seg.s
       local a, b, lanes, speed, radius, drive = s[2], s[3], s[4], s[5], s[6], s[7]
@@ -4202,7 +4209,7 @@ local function drawMap(width, height, view, pick)
   end
   -- where a landing works: one even tint (pick only; the minimap stays clean)
   loadCoverage()
-  if pick or not NATIVE then
+  if pick or not NATIVE or (view.world and view.coverage) then
     local green = col(0.12, 0.62, 0.28, 0.2)
     for _, c in ipairs(mergedCoverage(S.coverage)) do
       if c[3] >= west and c[1] <= east and c[4] >= south and c[2] <= north then
@@ -4216,13 +4223,13 @@ local function drawMap(width, height, view, pick)
       end
     end
   end
-  if NATIVE and (pick or z < 12) then
+  if NATIVE and (pick or view.world or z < 12) then
     planetMap.drawRoads(im, dl, {w = west, s = south, e = east, n = north}, z, screen, col)
   end
   -- streets of the installed country packs on the landing picker (no map download), OSM-like:
   -- main roads from z11 (wider views take more than MAP_BLOCKS 8 km blocks), the rest closer;
   -- while driving the minimap keeps to the loaded tiles' lanes below, every line costs a draw call
-  if NATIVE and pick and z >= 11 then
+  if NATIVE and (pick or view.world) and z >= 11 then
     local maxRank = z >= 15 and 3 or z >= 13 and 2 or 1
     local casing, major, minor = col(0.75, 0.6, 0.35), col(0.99, 0.84, 0.55), col(1, 1, 1)
     local widthMajor = z >= 13 and 4 or 3
@@ -4282,7 +4289,7 @@ local function drawMap(width, height, view, pick)
   end
   -- Mark only loaded scenes, so the map and the generated world use the same OSM facts.
   -- Bound both the draw count and crowding in dense streets; no per-frame world scan (pins.lua).
-  if NATIVE and S.stream and z >= 12 then
+  if NATIVE and S.stream and z >= 12 and not view.noPins then
     local box = M.pinBox
     box.n, box.s, box.e, box.w = north, south, east, west
     M.pins.draw(im, dl, S.tiles, z, box, worldToGeo, screen, col, M.brandStyles)
@@ -4297,6 +4304,8 @@ local function drawMap(width, height, view, pick)
     planetMap.reserve(r1.x - 44, r0.y, r1.x, r0.y + 120)
     planetMap.reserve(r0.x, r1.y - 26, r0.x + 140, r1.y)
   end
+  -- the world map's points over the streets, their names before the place names (worldmap.lua)
+  if view.overlay then view.overlay(dl, screen, z, north, west, south, east, mouse, hovered, r0, r1) end
   -- the installed packs as pins until their streets show: a click flies to the pack
   local pinHit
   if NATIVE and pick and z < 10 then
@@ -4332,7 +4341,7 @@ local function drawMap(width, height, view, pick)
   local placeHit
   if NATIVE then
     placeHit = planetMap.drawLabels(im, dl, r0, width, height, view, merc, unmerc, col, lang,
-      hovered and mouse or nil, pick and 70 or 25)
+      hovered and mouse or nil, (pick or view.world) and 70 or 25)
     if not pick then placeHit = nil end
   end
   if S.marker then
@@ -5091,7 +5100,11 @@ function LIMIT.bigMapHook()
   S.bigHook = true
   local ext = rawget(_G, 'freeroam_bigMapMode') or rawget(_G, 'freeroam_bigMap')
   if type(ext) ~= 'table' then S.bigKey = true; return end
-  local function open() S.bigMap = not S.bigMap end
+  local function open()
+    local io = im and im.GetIO()
+    if S.bigMap and io and io.WantTextInput then return end
+    S.bigMap = not S.bigMap
+  end
   if ext.toggleBigMap then ext.toggleBigMap = open end
   if ext.enterBigMap then ext.enterBigMap = open end
 end
@@ -5103,7 +5116,39 @@ function LIMIT.bigMapKey()
   S.bigMap = not S.bigMap
 end
 
+-- what the world map (worldmap.lua) may use of this file, made once
+function LIMIT.worldApi()
+  if LIMIT.api then return LIMIT.api end
+  LIMIT.api = {
+    im = im, col = col, L = L, lang = function() return lang end, theme = function() return theme end,
+    pushTheme = pushTheme, popTheme = popTheme, winguard = M.winguard, planetMap = planetMap,
+    drawMap = function(w, h, view) drawMap(w, h, view) end,
+    car = carOnMap,
+    start = function() return S.center, S.zoom end,
+    canLand = function(lat, lon) return NATIVE and native.at(lat, lon) or nil end,
+    land = function(lat, lon)
+      setMarker(lat, lon)
+      land()
+      S.bigMap = false
+    end,
+    canNavigate = function() return M.navigator ~= nil and S.state == 'driving' end,
+    navigate = function(lat, lon)
+      if not (M.navigator and S.state == 'driving') then return false end
+      local car, x, y = focus(), native.localPoint(lat, lon)
+      if not (car and x) then return false end
+      M.navigator.setDestination(x, y, lat, lon, car, lang)
+      return true
+    end,
+    close = function() S.bigMap = false end,
+  }
+  return LIMIT.api
+end
+
 function LIMIT.drawBigMap()
+  if M.worldmap then
+    M.worldmap.draw(LIMIT.worldApi())
+    return
+  end
   local io = im.GetIO()
   local w, h = io.DisplaySize.x, io.DisplaySize.y
   im.SetNextWindowPos(im.ImVec2(0, 0), im.Cond_Always)
@@ -6107,7 +6152,7 @@ function M.onUpdate(dtReal, dtSim)
   drawWindow()
   if not S.bigHook then LIMIT.bigMapHook() end
   if S.bigKey then LIMIT.bigMapKey() end
-  if S.bigMap then LIMIT.drawBigMap() end
+  if S.bigMap then LIMIT.drawBigMap() elseif M.worldmap then M.worldmap.closed() end
   -- a setting the widget (or anything else) changed reaches the UI app within POLL_EVERY s
   if M.options then M.options.poll(S.now) end
   if S.prof then profAdd('window', wt:stop(), collectgarbage('count') - wkb) end

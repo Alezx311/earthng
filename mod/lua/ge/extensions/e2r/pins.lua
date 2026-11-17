@@ -216,6 +216,14 @@ local function shape(im, dl, name, x, y, ink, fill)
     im.ImDrawList_AddTriangleFilled(dl, V(x - 6, y - 3), V(x + 6, y - 3), V(x, y - 6.5), ink)
     for i = -1, 1 do im.ImDrawList_AddRectFilled(dl, V(x + i * 3.5 - 1, y - 2), V(x + i * 3.5 + 1, y + 4), ink) end
     im.ImDrawList_AddRectFilled(dl, V(x - 6, y + 4.5), V(x + 6, y + 6), ink)
+  elseif name == 'pump' then
+    im.ImDrawList_AddRectFilled(dl, V(x - 4.5, y - 5.5), V(x + 1.5, y + 5.5), ink, 1)
+    im.ImDrawList_AddRectFilled(dl, V(x - 3.2, y - 4.2), V(x + .2, y - 1.2), fill)
+    im.ImDrawList_AddLine(dl, V(x + 1.5, y - 3), V(x + 4.5, y - 1), ink, 1.5)
+    im.ImDrawList_AddLine(dl, V(x + 4.5, y - 1), V(x + 4.5, y + 4), ink, 1.5)
+  elseif name == 'bolt' then
+    im.ImDrawList_AddTriangleFilled(dl, V(x + 2.5, y - 6.5), V(x - 4, y + 1), V(x + .5, y + 1), ink)
+    im.ImDrawList_AddTriangleFilled(dl, V(x - .5, y - 1), V(x + 4, y - 1), V(x - 2.5, y + 6.5), ink)
   elseif name == 'cap' then
     im.ImDrawList_AddTriangleFilled(dl, V(x - 6.5, y - 1.5), V(x + 6.5, y - 1.5), V(x, y - 5), ink)
     im.ImDrawList_AddTriangleFilled(dl, V(x - 6.5, y - 1.5), V(x + 6.5, y - 1.5), V(x, y + 2), ink)
@@ -230,6 +238,21 @@ local function textWidth(im, text)
     widths[text] = w
   end
   return w
+end
+
+-- One pin's marker at x, y (the minimap and the world map, worldmap.lua): a rounded square in
+-- `fill` with a white rim and its letters or shape in white. s: a STYLE entry (text or shape).
+-- Returns its half width.
+function M.icon(im, dl, s, x, y, fill, white)
+  local half = s.text and math.max(7, textWidth(im, s.text) / 2 + 3) or 7
+  im.ImDrawList_AddRectFilled(dl, im.ImVec2(x - half - 1.5, y - 8.5), im.ImVec2(x + half + 1.5, y + 8.5), white, 5)
+  im.ImDrawList_AddRectFilled(dl, im.ImVec2(x - half, y - 7), im.ImVec2(x + half, y + 7), fill, 4)
+  if s.text then
+    im.ImDrawList_AddText1(dl, im.ImVec2(x - textWidth(im, s.text) / 2, y - 7), white, s.text)
+  else
+    shape(im, dl, s.shape, x, y, white, fill)
+  end
+  return half
 end
 
 -- tiles: the streamed tiles (each with .brandPOIs); toGeo(x, y) -> lat, lon; screen(lat, lon) -> px;
@@ -280,14 +303,7 @@ function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands)
           local g = GROUP[s.group]
           local rgb = brand and brand[3]
           local fill = rgb and col(rgb[1] / 255, rgb[2] / 255, rgb[3] / 255) or col(g[1], g[2], g[3])
-          local half = s.text and math.max(7, textWidth(im, s.text) / 2 + 3) or 7
-          im.ImDrawList_AddRectFilled(dl, im.ImVec2(x - half - 1.5, y - 8.5), im.ImVec2(x + half + 1.5, y + 8.5), white, 5)
-          im.ImDrawList_AddRectFilled(dl, im.ImVec2(x - half, y - 7), im.ImVec2(x + half, y + 7), fill, 4)
-          if s.text then
-            im.ImDrawList_AddText1(dl, im.ImVec2(x - textWidth(im, s.text) / 2, y - 7), white, s.text)
-          else
-            shape(im, dl, s.shape, x, y, white, fill)
-          end
+          local half = M.icon(im, dl, s, x, y, fill, white)
           local label = poi.label
           if s.group == 'nature' and poi.ele then label = label and (label .. ' ' .. poi.ele) or poi.ele end
           if label and z >= (s.labelZoom or 17) then

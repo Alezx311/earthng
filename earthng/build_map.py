@@ -17,7 +17,7 @@ from shapely.geometry import LineString
 from PIL import Image, ImageDraw
 
 VERSION = 1          # the index format the runtime reads (mapCatalog: version 1)
-GENERATION = 2       # what a sidecar holds, in its cache stamp: 2 added pois.tsv
+GENERATION = 3       # what a sidecar holds, in its cache stamp: 2 added pois.tsv, 3 poi_tags.tsv
 PLACE_ZOOM = {'city': 7, 'town': 9, 'village': 11, 'hamlet': 13, 'suburb': 13, 'neighbourhood': 15}
 ROAD_RANK = {'motorway': 1, 'trunk': 1, 'primary': 1, 'secondary': 2, 'tertiary': 3}
 LEVELS = ((6, 4, 1, .002), (9, 1, 2, .0004), (11, 1, 3, .0001))
@@ -80,18 +80,43 @@ def poi_line(lat, lon, tags):
     return '\t'.join(' '.join(str(v).split()) for v in fields)
 
 
+# The OSM facts of a point the world map shows on hover (poi_tags.tsv, worldmap.lua): what it is,
+# when it opens, how to reach it, its address. Names stay in pois.tsv; nothing personal (no e-mail).
+POI_DETAILS = ('amenity', 'shop', 'tourism', 'leisure', 'historic', 'natural', 'railway', 'aeroway', 'man_made',
+               'office', 'craft', 'healthcare', 'sport', 'cuisine', 'religion', 'denomination', 'brand', 'operator',
+               'network', 'ref', 'name:uk', 'opening_hours', 'phone', 'contact:phone', 'website', 'contact:website',
+               'addr:street', 'addr:housenumber', 'addr:city', 'addr:postcode', 'description', 'wheelchair',
+               'internet_access', 'fee', 'capacity', 'stars', 'rooms', 'ele', 'height', 'start_date', 'heritage',
+               'wikipedia', 'wikidata', 'drive_through', 'takeaway', 'delivery', 'outdoor_seating', 'toilets',
+               'fuel:diesel', 'fuel:lpg', 'fuel:octane_95', 'compressed_air', 'car_wash', 'iata', 'icao')
+POI_VALUE = 160   # characters of a value kept
+
+
+def poi_details(tags, osm=None):
+    """A poi_tags.tsv line: the point's OSM id ('n12', 'w34') and its POI_DETAILS tags, key=value,
+    a tab between; whitespace collapsed, long values cut."""
+    out = [f'osm={osm}'] if osm else []
+    for key in POI_DETAILS:
+        value = tags.get(key)
+        if value and not (key == 'name:uk' and value == tags.get('name')):
+            value = ' '.join(str(value).split())
+            out.append(f'{key}={value[:POI_VALUE]}')
+    return '\t'.join(out)
+
+
 def _poi_source(pbf):
-    """Every named point of a map category in the PBF: nodes where they are, ways at the mean of
-    their nodes. One osmium pass (relations are left out)."""
+    """Every named point of a map category in the PBF, (its pois.tsv line, its poi_tags.tsv line):
+    nodes where they are, ways at the mean of their nodes. One osmium pass (relations are left out)."""
     import fast_style
     keys = sorted({key for key, _, _ in fast_style.PIN_RULES})
     processor = osmium.FileProcessor(str(pbf)).with_locations().with_filter(osmium.filter.KeyFilter(*keys))
     for obj in processor:
         if obj.is_node():
             if obj.location.valid():
-                line = poi_line(obj.location.lat, obj.location.lon, dict(obj.tags))
+                tags = dict(obj.tags)
+                line = poi_line(obj.location.lat, obj.location.lon, tags)
                 if line:
-                    yield line
+                    yield line, poi_details(tags, f'n{obj.id}')
         elif obj.is_way():
             tags = dict(obj.tags)
             if not tags.get('name') and not tags.get('name:en') and not tags.get('brand'):
@@ -103,7 +128,7 @@ def _poi_source(pbf):
                 continue
             line = poi_line(sum(nd.lat for nd in nodes) / len(nodes), sum(nd.lon for nd in nodes) / len(nodes), tags)
             if line:
-                yield line
+                yield line, poi_details(tags, f'w{obj.id}')
 
 
 def road_tiles(coords, rank):
@@ -312,12 +337,18 @@ def build(pbf, out, emit=print):
         places.sort(key=lambda p: (p[2], -p[6], p[3], p[0], p[1]))
         encode(root / 'places.json', places)
         # the points the map search finds (mapCatalog.searchPois): one line each, sorted, so the
-        # runtime holds the whole list as one string
+        # runtime holds the whole list as one string; their OSM facts in poi_tags.tsv, line for line
+        # (the first object of a duplicated line gives them)
         emit(f'Map: reading named points from {pbf.name}')
-        pois = sorted(set(_poi_source(pbf)))
+        found = {}
+        for line, details in _poi_source(pbf):
+            found.setdefault(line, details)
+        pois = sorted(found)
         (root / 'pois.tsv').write_text(''.join(line + '\n' for line in pois), encoding='utf8', newline='\n')
+        (root / 'poi_tags.tsv').write_text(''.join(found[line] + '\n' for line in pois), encoding='utf8', newline='\n')
         index = {'version': VERSION, 'sourceStamp': stamp, 'source': 'OpenStreetMap contributors',
-                 'license': 'ODbL-1.0', 'places': len(places), 'pois': len(pois), 'roads': road_count, 'tiles': tiles}
+                 'license': 'ODbL-1.0', 'places': len(places), 'pois': len(pois), 'poiTags': len(pois),
+                 'roads': road_count, 'tiles': tiles}
         encode(root / 'index.json', raster_overviews(root, index))
         root.replace(out)
     emit(f'Map: {len(places)} settlements, {len(pois)} points, {road_count} roads, {len(tiles)} overview tiles')

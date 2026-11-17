@@ -142,6 +142,93 @@ class LocationTests(unittest.TestCase):
         self.assertEqual(got[:2], ('Street', 'Podil, Kyiv, Україна'))
 
 
+AHEAD = r'''
+  -- a segment between nodes a and b (the point order a -> b), two-way unless lanes say '+'
+  function edge(id, a, b, name, points, more, lanes)
+    local s = {id, a, b, lanes or '-+', 10, 3.5, 1}
+    local x0, y0, x1, y1 = 1e9, 1e9, -1e9, -1e9
+    for _, p in ipairs(points) do
+      s[#s + 1], s[#s + 2], s[#s + 3] = p[1], p[2], 0
+      x0, y0, x1, y1 = math.min(x0, p[1]), math.min(y0, p[2]), math.max(x1, p[1]), math.max(y1, p[2])
+    end
+    local names = more or {}
+    names.n = name
+    return {s = s, box = {x0, y0, x1, y1}, names = (name or more) and names or nil}
+  end
+  -- an avenue east to junction J at x = 200, a street north and one south of it, the avenue on
+  function cross()
+    return {
+      a1 = edge('a1', 'W', 'M', 'Avenue', {{0, 0}, {100, 0}}),
+      a2 = edge('a2', 'M', 'J', 'Avenue', {{100, 0}, {200, 0}}),
+      a3 = edge('a3', 'J', 'E', 'Avenue', {{200, 0}, {400, 0}}),
+      n = edge('n', 'J', 'N', 'North St', {{200, 0}, {200, 200}}),
+      s = edge('s', 'S', 'J', 'South St', {{200, -200}, {200, 0}}),
+    }
+  end
+'''
+
+
+class JunctionAheadTests(unittest.TestCase):
+    """The streets crossing the road at the next junction, and the exit a motorway comes to."""
+
+    def setUp(self):
+        self.lua = LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().L = self.lua.execute(SRC)
+        self.lua.execute(AHEAD)
+
+    def ahead(self, code):
+        return self.lua.eval('(function() ' + code + ' end)()')
+
+    def test_left_and_right_of_the_heading(self):
+        a = self.ahead('''local list = cross()
+          return L.ahead(L.junctions(list), list.a2, 150, 0, 1, 0, 'uk')''')
+        self.assertEqual((list(a.left.values()), list(a.right.values()), a.straight), (['North St'], ['South St'], 'Avenue'))
+        self.assertAlmostEqual(a.dist, 50, delta=.01)
+
+    def test_the_walk_goes_on_through_a_bend_node(self):
+        a = self.ahead('''local list = cross()
+          return L.ahead(L.junctions(list), list.a1, 30, 0, 1, 0, 'uk')''')
+        self.assertAlmostEqual(a.dist, 170, delta=.01)
+        self.assertEqual(list(a.left.values()), ['North St'])
+
+    def test_going_west_the_sides_swap(self):
+        a = self.ahead('''local list = cross()
+          return L.ahead(L.junctions(list), list.a3, 300, 0, -1, 0, 'uk')''')
+        self.assertEqual((list(a.left.values()), list(a.right.values())), (['South St'], ['North St']))
+
+    def test_a_dead_end_has_no_junction(self):
+        self.assertIsNone(self.ahead('''local list = cross()
+          return L.ahead(L.junctions(list), list.a3, 300, 0, 1, 0, 'uk')'''))
+
+    def test_a_motorway_comes_to_an_exit(self):
+        a = self.ahead('''local list = {
+            m1 = edge('m1', 'A', 'X', nil, {{0, 0}, {1000, 0}}, {r = 'M06', h = 'motorway'}, '++'),
+            m2 = edge('m2', 'X', 'B', nil, {{1000, 0}, {3000, 0}}, {r = 'M06', h = 'motorway'}, '++'),
+            ramp = edge('ramp', 'X', 'R', nil, {{1000, 0}, {1100, -30}, {1200, -80}},
+              {h = 'motorway', k = true, d = 'Бориспіль;Київ', j = '12'}, '+'),
+          }
+          return L.ahead(L.junctions(list), list.m1, 400, 0, 1, 0, 'uk')''')
+        self.assertEqual((a.exit.ref, a.exit.to, a.exit.right), ('12', 'Бориспіль / Київ', True))
+        self.assertAlmostEqual(a.dist, 600, delta=.01)
+
+    def test_the_strip_shows_near_and_hides_far(self):
+        got = self.ahead('''local t, list = L.new(), cross()
+          local env = {lang = 'uk', segments = list, version = 1}
+          L.step(t, 0, 150, 0, 15, 0, env)
+          local near = t.ahead
+          L.step(t, .25, 20, 0, 5, 0, env)          -- 180 m off at 5 m/s: not yet
+          return near.left, near.right, near.metres, t.ahead == nil''')
+        self.assertEqual(got, ('North St', 'South St', 50, True))
+
+    def test_the_strip_drops_the_street_it_is_on(self):
+        got = self.ahead('''local t, list = L.new(), cross()
+          list.n.names.n = 'Avenue'                  -- the avenue turns north; the south street stays
+          local env = {lang = 'uk', segments = list, version = 1}
+          L.step(t, 0, 150, 0, 15, 0, env)
+          return t.ahead.left, t.ahead.right''')
+        self.assertEqual(got, (None, 'South St'))
+
+
 class NamesFromRoads(unittest.TestCase):
     def test_the_generator_gives_a_segment_its_names(self):
         src = (ROOT / 'mod/lua/ge/extensions/e2r/generator.lua').read_text(encoding='utf8')
