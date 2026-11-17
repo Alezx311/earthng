@@ -27,8 +27,10 @@
 --     resize keeps the copies standing. A slot past the size is taken without an error and must
 --     never be used; clearInstances leaves a batch that shows nothing again: neither is done here.
 -- One batch per kind (a shape and its material remaps), made on first use; its copies are slots
--- 0..size-1, free ones in a list, a full batch doubles its size. No garbage per call: one vec3 for
--- the place and one for the direction, filled in place.
+-- 0..size-1, free ones in a list, a full batch doubles its size. No garbage per call. Each copy
+-- keeps the vec3 it was placed with: the engine reads those vectors when it draws, after the call
+-- has returned, and one shared vec3 left every copy on the last place written that frame (the
+-- crowd blinked). A freed slot keeps its vectors for the next copy.
 -- M.available() is false where the class or its calls are missing (an older game): the callers
 -- keep a TSStatic per copy there. Pure Lua with a stand-in createObject: earthng/test_shapebatch.py.
 local M = {}
@@ -53,8 +55,7 @@ end
 local Pool = {__index = M}
 function M.new(group)
   return setmetatable({group = group, kinds = {}, list = {}, frame = 0, made = 0, objects = 0, live = 0, resizes = 0,
-    waits = 0, finalMs = 0, finalMax = 0, timer = hptimer and hptimer() or nil, pos = vec3(0, 0, 0), dir = vec3(0, 1, 0),
-    white = ColorF(1, 1, 1, 1)}, Pool)
+    waits = 0, finalMs = 0, finalMax = 0, timer = hptimer and hptimer() or nil, white = ColorF(1, 1, 1, 1)}, Pool)
 end
 
 -- A kind: shape with its materials remapped ({from, to, from2, to2, ...}; nil: none), the same
@@ -89,7 +90,7 @@ local function batchOf(P, K)
     P.finalMs, P.finalMax = P.finalMs + ms, math.max(P.finalMax, ms)
   end
   o:resize(FIRST)
-  B = {obj = o, kind = K, size = FIRST, free = {}, nfree = FIRST, live = 0, on = {}, c = {}}
+  B = {obj = o, kind = K, size = FIRST, free = {}, nfree = FIRST, live = 0, on = {}, c = {}, p = {}, d = {}}
   -- slot 0 is taken first
   for k = 1, FIRST do B.free[k] = FIRST - k end
   K.batch = B
@@ -108,9 +109,14 @@ function M.tick(P)
 end
 
 local function place(P, B, i, x, y, z, dx, dy, dz)
-  local p, d = P.pos, P.dir
-  p.x, p.y, p.z = x, y, z
-  d.x, d.y, d.z = dx, dy, dz
+  local p, d = B.p[i], B.d[i]
+  if not p then
+    p, d = vec3(x, y, z), vec3(dx, dy, dz)
+    B.p[i], B.d[i] = p, d
+  else
+    p.x, p.y, p.z = x, y, z
+    d.x, d.y, d.z = dx, dy, dz
+  end
   B.obj:setInstance(i, p, d, 1, B.c[i] or P.white)
 end
 
@@ -148,10 +154,12 @@ function M.add(P, K, x, y, z, dx, dy, dz, colour)
   return B, i
 end
 
--- the copy placed again (colour nil: as it was)
+-- the copy placed again (colour nil: as it was). setInstance leaves a hidden slot hidden, so a
+-- copy that is already shown is enabled again: a step must not blink it off.
 function M.move(P, B, i, x, y, z, dx, dy, dz, colour)
   if colour then B.c[i] = colour end
   place(P, B, i, x, y, z, dx, dy, dz)
+  if B.on[i] then B.obj:setInstanceEnabled(i, true) end
 end
 
 -- the copy hidden and its slot free

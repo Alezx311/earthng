@@ -909,6 +909,8 @@ class WalkerTests(unittest.TestCase):
             walkers.step(W, 1 / 60, 550, 550)
             walkers.draw(W, V, 550, 550)
           end
+          -- the previous pose is still up for one frame; a still draw drops it and retires nothing
+          walkers.draw(W, V, 550, 550)
           -- each walker within 200 m one copy, of the kind of its pose and skin, its shirt the colour
           local copies, far, wrong, upright, near = 0, 0, 0, 0, 0
           for slot, w in pairs(W.slots) do
@@ -961,6 +963,36 @@ class WalkerTests(unittest.TestCase):
         self.assertLessEqual(batches, (9 * 5))        # a pose and a skin each
         self.assertEqual(statics, 0)                  # no TSStatic at all
         self.assertEqual((live_off, after), (0, 0))
+
+    def test_a_pose_change_keeps_the_previous_copy_until_the_next_frame(self):
+        lua = self.lua()
+        lua.execute(self.BATCHES)
+        lua.globals().sb = lua.execute(WALKERS.with_name('shapebatch.lua').read_text(encoding='utf8'))
+        out = lua.execute('''
+          local W = walkers.new{seed = 1, spacing = 0}
+          walkers.sync(W, grid(4, 80), 120, 120)
+          local P = sb.new(nil)
+          local V = walkers.view(W, shapes(), nil, P)
+          walkers.setTarget(W, 1)
+          local w
+          for t = 1, 400 do
+            walkers.step(W, 1 / 60, 120, 120)
+            if W.count == 1 then
+              for _, s in pairs(W.slots) do if not s.free then w = s end end
+              break
+            end
+          end
+          w.waiting, w.walked, w.dirty = nil, 0, true
+          walkers.draw(W, V, w.x, w.y)
+          local oldB, oldI = V.bb[w.slot], V.bi[w.slot]
+          w.walked, w.dirty = walkers.STRIDE / walkers.POSES + 0.01, true
+          walkers.draw(W, V, w.x, w.y)
+          local kept = oldB.obj.on[oldI] and V.bb[w.slot] ~= oldB and P.live == 2
+          walkers.draw(W, V, w.x, w.y)
+          local gone = (not oldB.obj.on[oldI]) and P.live == 1 and V.bb[w.slot].obj.on[V.bi[w.slot]]
+          return {kept and 1 or 0, gone and 1 or 0, P.live}
+        ''')
+        self.assertEqual((out[1], out[2], out[3]), (1, 1, 1))
 
     def test_people_art_bakes_the_walkers_trousers_and_skins_for_the_batches(self):
         import json

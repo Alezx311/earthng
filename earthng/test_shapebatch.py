@@ -24,6 +24,8 @@ end
 function B:setInstance(i, p, d, scale, c)
   assert(i >= 0 and i < self.size, 'slot past the size')
   BATCH.calls = BATCH.calls + 1
+  -- the engine keeps the vectors and reads them when it draws, after later copies are placed
+  self.pref[i], self.dref[i] = p, d
   self.at[i] = {p.x, p.y, p.z, d.x, d.y, d.z, c}
 end
 function B:setInstanceEnabled(i, on)
@@ -38,7 +40,7 @@ CLASS = 'DynamicShapeBatch'
 function createObject(kind)
   if kind ~= CLASS then error('no class ' .. kind) end
   BATCH.made, BATCH.alive = BATCH.made + 1, BATCH.alive + 1
-  return setmetatable({size = 0, on = {}, at = {}}, B)
+  return setmetatable({size = 0, on = {}, at = {}, pref = {}, dref = {}}, B)
 end
 function vec3(x, y, z) return {x = x, y = y, z = z} end
 function ColorF(r, g, b, a) return {r, g, b, a} end
@@ -103,12 +105,34 @@ class ShapeBatchTests(unittest.TestCase):
           local P = sb.new(nil)
           local blue = ColorF(0, 0, 1, 1)
           local B, i = P:add(P:kind('car.dae'), 0, 0, 0, 0, 1, 0, blue)
-          local p, d = P.pos, P.dir
+          local p, d = B.p[i], B.d[i]
           P:move(B, i, 5, 6, 7, -.6, .8, 0)
           local at = B.obj.at[i]
-          return at[1], at[3], at[4], at[7] == blue, P.pos == p, P.dir == d
+          local _, i2 = P:add(P:kind('car.dae'), 1, 0, 0, 0, 1, 0)
+          return at[1], at[3], at[4], at[7] == blue, B.p[i] == p, B.d[i] == d, B.p[i2] ~= p, B.obj.on[i]
         ''')
-        self.assertEqual(tuple(out), (5, 7, -.6, True, True, True))
+        self.assertEqual(tuple(out), (5, 7, -.6, True, True, True, True, True))
+
+    def test_a_later_copy_does_not_move_the_ones_already_placed(self):
+        out = self.lua().execute('''
+          local P = sb.new(nil)
+          local K = P:kind('ped.dae')
+          local slot = {}
+          for k = 1, 3 do slot[k] = {P:add(K, k * 10, k, 0, 0, 1, 0)} end
+          local B = slot[1][1]
+          P:move(B, slot[2][2], 50, 60, 70, 0, 1, 0)
+          local bad = 0
+          for k = 1, 3 do
+            local i = slot[k][2]
+            local x = k == 2 and 50 or k * 10
+            local y = k == 2 and 60 or k
+            local p, d = B.obj.pref[i], B.obj.dref[i]
+            if p.x ~= x or p.y ~= y or p.z ~= (k == 2 and 70 or 0) or d.y ~= 1 then bad = bad + 1 end
+            if p == B.obj.pref[slot[k % 3 + 1][2]] then bad = bad + 10 end
+          end
+          return bad
+        ''')
+        self.assertEqual(out, 0)
 
     def test_a_kind_remaps_before_its_one_finalize_and_new_batches_wait_for_the_next_frame(self):
         out = self.lua().execute('''

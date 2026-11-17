@@ -20,7 +20,8 @@
 --   - Clothes and skin are colours per walker (TSStatic instanceColor*), from the LOOK palettes.
 --     Where the game has DynamicShapeBatch a walker is one copy in the batch of its pose and skin
 --     instead (batchDraw, shapebatch.lua): the shirt is the copy's colour, the skin and trousers
---     baked materials put in by remaps, the trousers following the skin (BATCH_PANTS).
+--     baked materials put in by remaps, the trousers following the skin (BATCH_PANTS). A new pose
+--     is another batch; the previous copy stays through the next frame so the step does not blank.
 --   - Up to M.MAX walkers. How many walk is the count asked, or fewer where there is little
 --     sidewalk: one per SPACING m of weighted sidewalk round the focus (M.counts). A sidewalk's
 --     weight is how many roads lie round it (WEIGHT_*): a lone road through fields gets few people,
@@ -911,7 +912,8 @@ end
 function M.view(W, shapes, group, batches)
   return {frame = 0, shapes = shapes, group = group, far = {}, near = {}, farFree = {}, nearFree = {}, top = 0,
     objects = 0, sets = 0, needAt = 0, colours = {{}, {}, {}}, farUsed = 0, nearUsed = 0, shown = {}, farLook = {},
-    batches = batches, kinds = {}, shirts = {}, bmode = {}, bkind = {}, bb = {}, bi = {}, blook = {}}
+    batches = batches, kinds = {}, shirts = {}, bmode = {}, bkind = {}, bb = {}, bi = {}, blook = {},
+    retireN = 0, retireB = {}, retireI = {}}
 end
 
 local function linear(rgb) return ColorF(rgb[1], rgb[2], rgb[3], 1):asLinear4F() end
@@ -1014,6 +1016,16 @@ local function batchDraw(W, V, fx, fy, ground)
   V.frame = V.frame + 1
   local P = V.batches
   P:tick()
+  -- copies retired last frame (the pose before this one): gone now that the new one has been drawn
+  local n = V.retireN
+  if n > 0 then
+    local rb, ri = V.retireB, V.retireI
+    for k = 1, n do
+      P:drop(rb[k], ri[k])
+      rb[k], ri[k] = nil, nil
+    end
+    V.retireN = 0
+  end
   local near2, nearOut2, draw2, drawOut2 = NEAR_R * NEAR_R, NEAR_OUT * NEAR_OUT, DRAW_R * DRAW_R, DRAW_OUT * DRAW_OUT
   local slots, bmode, bkind, bb, bi, blook = W.slots, V.bmode, V.bkind, V.bb, V.bi, V.blook
   local moved, top, farUsed, nearUsed = 0, 0, 0, 0
@@ -1045,7 +1057,11 @@ local function batchDraw(W, V, fx, fy, ground)
         local B, i = P:add(K, w.x, w.y, groundZ(w, ground), -hy, hx, 0, shirtOf(V, w.shirt))
         -- the kind's batch not made yet (one a frame): the old copy stays until it is
         if B then
-          if bb[slot] then P:drop(bb[slot], bi[slot]) end
+          -- keep the previous pose one frame: dropping it here left a blank frame every step
+          if bb[slot] then
+            local r = V.retireN + 1
+            V.retireN, V.retireB[r], V.retireI[r] = r, bb[slot], bi[slot]
+          end
           bb[slot], bi[slot], bkind[slot], blook[slot] = B, i, K, w.look
           moved = moved + 1
         elseif bb[slot] and blook[slot] ~= w.look then
@@ -1174,6 +1190,7 @@ function M.clear(W, V)
   if V and V.batches then
     V.batches:clear()
     V.bmode, V.bkind, V.bb, V.bi, V.blook, V.top, V.objects, V.farUsed, V.nearUsed = {}, {}, {}, {}, {}, 0, 0, 0, 0
+    V.retireN = 0
   elseif V then
     for _, o in pairs(V.far) do o:delete() end
     for _, o in ipairs(V.farFree) do o:delete() end
