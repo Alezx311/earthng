@@ -6,7 +6,7 @@
 
 Три частини, одна гілка `master`:
 
-- **Планета** (`earthng_planet.zip`, збирає `earthng/build_mod.py` з `mod/`) тримає Lua, спільний арт, офлайн-мапу й правила. Під час гри `mod/lua/ge/extensions/e2r/generator.lua` будує тайл навколо авто, `native.lua` планує тайли, `world.lua` веде сцену, колізію й навграф. Трафік без фізики — `flow.lua` і `handoff.lua`, світлофори — `signals.lua`, маршрут — `routing.lua` і `navigator.lua`, рядок місця — `location.lua`. Клімат читає `biome.lua`, бюджети задає `quality.lua`.
+- **Планета** (`earthng_planet.zip`, збирає `earthng/build_mod.py` з `mod/`) тримає Lua, спільний арт, офлайн-мапу й правила. Під час гри `mod/lua/ge/extensions/e2r/generator.lua` будує тайл навколо авто, `native.lua` планує тайли, `world.lua` веде сцену, колізію й навграф. Трафік без фізики — `flow.lua` і `handoff.lua`, пішоходи — `walkers.lua` і `pedhit.lua`; машини потоку й пішоходи — копії в `DynamicShapeBatch` (`shapebatch.lua`, TSStatic у 0.39). Світлофори — `signals.lua`, маршрут — `routing.lua` і `navigator.lua`, рядок місця — `location.lua`. Клімат читає `biome.lua`, бюджети задає `quality.lua`.
 - **Пак країни** (`earthng_<id>.zip`) тримає компактні факти OSM і висоти, не готові міста. Збирає Python-конвеєр `earthng/` (`country_fetch.py` → `osm_tiles_country.py` → `fast_sources.py` → `build_country.py`, класи — `fast_style.py`). Важкі етапи (нарізка, індекс, клітинки, сцени, маршрути, `Map detail`) мають нативну копію в `rust/` (`earthng-mapbuilder.exe`, `earthng_native.dll`), яка пише ті самі байти; `EARTHNG_NATIVE=0` вимикає її.
 - **EarthNG.exe** (`rust/crates/app` + сторінка `app/ui/` + сервіс `earthng/app_service.py`) — вікно для гравця: вбудований Python, вибір області, збірка й встановлення пака разом із планетою. Runtime для exe збирає `earthng/prepare_app.py`.
 
@@ -18,11 +18,20 @@
 
 Карта документів — `docs/README.md`.
 
+Перед зміною вигляду землі, доріг, узбіч або будівель прочитати `docs/REAL_MAP_RULES.md`. Поточна робота над реалістичністю стосується лише паку `real`; інші паки не змінювати, зокрема через спільні матеріали та геометрію.
+
 Наповнення світу: прочитати реєстр `docs/GENERATION_GAPS.md` і один профільний документ: `docs/NATURE.md`, `docs/CITY_DETAIL.md`, `docs/VENUES.md`, `docs/SIGNS.md` або `docs/PERFORMANCE.md`. Історичні числа в `PERFORMANCE.md` і `STREET_PROPS.md` не є поточним бюджетом. Бюджет брати з коду (`quality.lua`, генератор) і зі свіжого заміру.
 
 Збирач паків і exe: `docs/MAPBUILDER_RS.md` (нативні етапи і правило «ті самі байти») і `docs/MAPBUILDER_APP.md` (exe, протокол сторінки, джерело тайлів).
 
-Процедура зміни світу: скіл `earthng-world`.
+## Скіли
+
+Скіли лежать у теках агентів: `.claude/skills/` (Claude Code), `.agents/skills/` (Codex, Cursor, Copilot), `.grok/skills/` (Grok). Якщо модель не бачить скіл у своїй теці, вона читає `SKILL.md` за шляхом нижче, коли задача підпадає під його опис.
+
+- `earthng-world` (`.grok/skills/earthng-world/SKILL.md`) — процедура зміни світу: наповнення, шари, маска зайнятого місця, бюджет кадру.
+- `beamng-mods` (у всіх трьох теках) — Lua-моддинг BeamNG і BeamMP: розширення GE і vehicle, `extensions.load`, події клієнт-сервер. В EarthNG ціль завжди `beamng-only`: GE-розширення в `mod/lua/ge/extensions/e2r/`. BeamMP мод не використовує, тож уточнювати ціль не треба. `references/` і `examples/` скіла — короткі шпаргалки; де вони розходяться з грою, правду кажуть встановлена гра і «Зовнішні інструкції». Де скіл розходиться з цим файлом або з `earthng-world` (формат звіту, перевірка), діють правила EarthNG.
+
+`beamng-mods` поставлено з `aaronflorey/agent-skills` командою `npx skills add aaronflorey/agent-skills --skill beamng-mods --agent claude-code codex grok --copy`; джерело й коміт записано в `skills-lock.json`. Копії вручну не правити: оновлення — `npx skills update beamng-mods`, після нього три теки мають лишитись однаковими.
 
 ## Зовнішні інструкції
 
