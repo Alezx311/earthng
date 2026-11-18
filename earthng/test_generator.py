@@ -1308,6 +1308,46 @@ class GeneratorTests(unittest.TestCase):
         lines = {round((min(p[1] for p in t) + max(p[1] for p in t)) / 2, 1) for t in marks}
         self.assertEqual(lines, {245.5, 248.4, 248.6, 251.5, 254.5})
 
+    def test_walkers_get_sidewalk_flags_walk_lines_and_places_to_stop(self):
+        # a nav segment's sidewalks in its own direction, a char per 10 m: '1' drawn, '0' none, '?'
+        # past the tile's 30 m margin (another tile tells there)
+        road = {'id': 'st', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential', 'sidewalk': 'right'},
+                'points': [[-200, 250, 10], [700, 250, 10]]}
+
+        def flags(cells):
+            s = self.build(cells)[3].segments[1]
+            return s[2], s.walk[1], s.walk[2]
+        self.assertEqual(flags([{'roads': [road]}]), ('a', '?' * 17 + '0' * 56 + '?' * 17, '?' * 17 + '1' * 56 + '?' * 17))
+        # oneway=-1: the segment runs against the way, so the way's left sidewalk is on its right
+        a, left, right = flags([{'roads': [dict(road, tags={'highway': 'residential', 'sidewalk': 'left', 'oneway': '-1'})]}])
+        self.assertEqual((a, left.strip('?'), right.strip('?')), ('b', '0' * 56, '1' * 56))
+        # a village street without sidewalks is walked on its verges where houses line it
+        quiet = dict(road, tags={'highway': 'residential', 'sidewalk': 'no'})
+        houses = [{'id': f'h{k}_{side}', 'height': 6, 'tags': {'building': 'house'},
+                   'rings': [[[20 + 25 * k, 250 + side * 12], [30 + 25 * k, 250 + side * 12],
+                              [30 + 25 * k, 250 + side * 22], [20 + 25 * k, 250 + side * 22]][::side]]}
+                  for k in range(18) for side in (1, -1)]
+        _, left, right = flags([{'roads': [quiet], 'buildings': houses}])
+        self.assertIn('v' * 30, left)
+        self.assertIn('v' * 30, right)
+        self.assertNotIn('1', left + right)
+        # the footways (not access=no) and the driveways among the houses are walk lines
+        lines = [{'id': 'walk', 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[50, 50, 10], [50, 200, 10]]},
+                 {'id': 'off', 'kind': 'path', 'tags': {'highway': 'footway', 'access': 'no'}, 'points': [[80, 50, 10], [80, 200, 10]]}]
+        drive = {'id': 'drive', 'nodes': ['c', 'd'], 'width': 5, 'tags': {'highway': 'service'},
+                 'points': [[200, 262, 10], [200, 330, 10]]}
+        nav = self.build([{'roads': [quiet, drive], 'lines': lines, 'buildings': houses}])[3]
+        walks = {nav.walks[k][1]: [nav.walks[k][i] for i in (2, 6, 8, 9, 11, 12)] for k in range(1, len(nav.walks) + 1)}
+        self.assertEqual(walks, {'pwalk': ['f', 1, 50, 50, 50, 200], 'sdrive': ['s', 2.5, 200, 262, 200, 330]})
+        # a mapped entrance and a shop's node: a door a metre out of the nearest wall, facing in
+        shop = {'id': 'shop', 'height': 9, 'tags': {'building': 'retail'},
+                'rings': [[[100, 100], [140, 100], [140, 130], [100, 130]]]}
+        points = [{'id': 'e1', 'kind': 'entrance', 'tags': {'entrance': 'main'}, 'pos': [120, 100.5, 10]},
+                  {'id': 's1', 'kind': 'grocery', 'tags': {'shop': 'convenience'}, 'pos': [130, 120, 10]}]
+        spots = self.build([{'roads': [road], 'buildings': [shop], 'points': points}])[1].walkSpots
+        spots = sorted([spots[k][i] for i in (1, 2, 3, 5, 6)] for k in range(1, len(spots) + 1))
+        self.assertEqual(spots, [['door', 120, 99, 0, 1], ['door', 141, 120, -1, 0]])
+
     def test_navigation_has_no_zero_length_edges(self):
         # repeated source points made zero-length navgraph edges; the game's random route walk
         # (traffic respawns) never got its length on them and froze the game
@@ -1564,14 +1604,18 @@ class GeneratorTests(unittest.TestCase):
         benches = self.street_prop_items([{'roads': [street]}], 'clutter_city_bench_wood.dae')
         self.assertGreaterEqual(len(benches), 2 * ((500 - 12) // 6))
         self.assert_props_clear(benches, [street])
-        self.assertTrue(all(abs(abs(y - 250) - (4 + 2 - .457)) < 1e-6 for _x, y, _yaw, _s in benches))
+        # at the back of the sidewalk, its origin at least 0.45 m in from the edge (its back is 0.205 m
+        # behind it), facing the street: the stock bench seats one facing its local -Y
+        self.assertTrue(all(abs(abs(y - 250) - (4 + 2 - .45)) < 1e-6 for _x, y, _yaw, _s in benches))
+        self.assertTrue(all(-math.cos(yaw) * (250 - y) > 0 for _x, y, yaw, _s in benches))
 
     def test_street_props_on_a_narrow_footway_keep_off_its_neighbour(self):
         # 1 m footways 2 m apart: a stand or a bench between them would lie on the other's
         # paving; the outer sides keep theirs
         walks = [{'id': 'a', 'kind': 'path', 'tags': {'highway': 'footway', 'width': '1'}, 'points': [[100, 100, 10], [100, 400, 10]]},
                  {'id': 'b', 'kind': 'path', 'tags': {'highway': 'footway', 'width': '1'}, 'points': [[102, 100, 10], [102, 400, 10]]}]
-        near = {'clutter_city_bike_stand.dae': .321, 'clutter_city_bench_wood.dae': .205, 'planterbox.dae': .46 * math.sqrt(2)}
+        # a bench faces its path: its seat's front edge, 0.357 m before its origin, is the near side
+        near = {'clutter_city_bike_stand.dae': .321, 'clutter_city_bench_wood.dae': .357, 'planterbox.dae': .46 * math.sqrt(2)}
         for kind, edge in near.items():
             placed = self.street_prop_items([{'lines': walks, 'areas': [RETAIL]}], kind)
             self.assert_props_clear(placed, paths=walks)
@@ -1741,12 +1785,12 @@ class GeneratorTests(unittest.TestCase):
             ring = block['rings'][0]
             self.assertLess(outline_clearance([(x, y)], ring + [ring[0]]), 3.5)
             if shape.endswith('bench_wood.dae'):
-                # local +Y (sin, cos) turned out from the wall it stands at
+                # its back to the wall: local -Y, the way one sits facing (-sin, -cos), turned out from it
                 cx, cy = (ring[0][0] + ring[1][0]) / 2, (ring[0][1] + ring[2][1]) / 2
                 # the wall it stands out from: the side it is furthest past (a bench now stands
                 # beside the door, 2.6 m along the wall, so it can be near a corner)
                 out = (x - cx, 0) if abs(x - cx) - 6 > abs(y - cy) - 30 else (0, y - cy)
-                self.assertGreater(math.sin(yaw) * out[0] + math.cos(yaw) * out[1], 0, (x, y))
+                self.assertLess(math.sin(yaw) * out[0] + math.cos(yaw) * out[1], 0, (x, y))
         rows = {}
         for p in bins:
             rows.setdefault(p[4].rsplit('_', 1)[0], []).append(p)

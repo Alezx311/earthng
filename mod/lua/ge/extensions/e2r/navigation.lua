@@ -27,7 +27,38 @@ function M.simplify(s)
   for k=8,last,3 do
     if keep[k] then out[#out+1],out[#out+2],out[#out+3] = s[k],s[k+1],s[k+2] end
   end
-  out.deck = s.deck
+  out.deck, out.walk = s.deck, s.walk
+  return out
+end
+
+-- The sidewalk flags of segment s (generator WALK.sides: {left, right}, a char per 10 m, '?' where
+-- the tile that cut it did not reach) with the '?' that walk (another tile's flags of the same
+-- segment) knows filled in: a new table when anything changed (walkers.lua rebuilds a road whose
+-- flags table is another), else nil.
+function M.mergeWalk(s, walk)
+  local have = s.walk
+  if not walk then return nil end
+  if not have then s.walk = walk; return walk end
+  local out, changed = {}, false
+  for side = 1, 2 do
+    local a, b = have[side] or '', walk[side] or ''
+    if a:find('?', 1, true) and #b > 0 then
+      local chars = {}
+      for i = 1, #a do
+        local c = a:sub(i, i)
+        if c == '?' then
+          local d = b:sub(i, i)
+          if d ~= '' and d ~= '?' then c, changed = d, true end
+        end
+        chars[i] = c
+      end
+      out[side] = table.concat(chars)
+    else
+      out[side] = a
+    end
+  end
+  if not changed then return nil end
+  s.walk = out
   return out
 end
 return M

@@ -218,14 +218,17 @@ class FacadeDetailTests(unittest.TestCase):
     def test_mapped_benches_face_the_nearest_path(self):
         import math
         bench = {'id': '-1000000000555:0', 'kind': 'bench', 'pos': [130, 150, 0], 'tags': {'amenity': 'bench'}}
-        for py, want in ((154, 0.0), (146, math.pi)):
+        # the wood bench's seat looks down its own -Y, so a bench facing a path to the north (+Y)
+        # turns half round (BENCH.turn: every bench sat with its back to the path before 18.11)
+        for py, want in ((154, math.pi), (146, 0.0)):
             path = {'id': 'p1', 'kind': 'path', 'tags': {'highway': 'footway'}, 'points': [[100, py, 0], [200, py, 0]]}
             cells = [{'roads': [self.road], 'points': [bench], 'lines': [path]}]
             on = self.h.build(cells, 0, 0, maxTrees=0, maxGrass=0)[1]
             [it] = [it for it in on['items'].values() if 'point_' in str(it.name)]
             self.assertTrue(it.shape.endswith('bench_wood.dae'))
             self.assertEqual((it.pos[1], it.pos[2]), (130, 150))
-            self.assertAlmostEqual(abs(2 * math.atan2(it.rot[3], it.rot[4])), want, places=4)
+            off = (2 * math.atan2(it.rot[3], it.rot[4]) - want) % (2 * math.pi)
+            self.assertAlmostEqual(min(off, 2 * math.pi - off), 0.0, places=4)
 
     def test_stop_name_sign_faces_the_road(self):
         road = {'id': 'w1', 'width': 8, 'tags': {'highway': 'residential', 'sidewalk': 'both'},

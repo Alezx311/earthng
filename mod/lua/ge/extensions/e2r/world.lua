@@ -1391,7 +1391,7 @@ local function startTile(key, i, j)
   if manifest.nav then table.insert(S.navPending, {key = key, path = manifest.nav}) end
   if manifest.navSegments then
     table.insert(S.navPending, {key = key, data = {segments = manifest.navSegments,
-      signals = manifest.navSignals, names = manifest.navNames}})
+      signals = manifest.navSignals, names = manifest.navNames, walks = manifest.navWalks}})
   end
   for _, it in ipairs(manifest.items) do table.insert(S.queue, {tile = tile, key = key, item = it}) end
   if #manifest.items == 0 then tile.state = 'loaded'; tile.roadComplete = true end
@@ -1417,6 +1417,8 @@ local function startScene(key, tile)
     S.signalDirty = true
   end
   tile.flowLights = manifest.lights
+  -- places to stop for the walkers (generator WALK.spots): read by walkersStep from the tiles
+  if tile.walkSpots ~= manifest.walkSpots then tile.walkSpots, S.spotsAt = manifest.walkSpots, S.now end
   tile.sceneComplete = tile.sceneLeft == 0
   tile.left = tile.left + tile.sceneLeft
   if NATIVE and tile.refreshScene then native.release(key, 'road'); tile.refreshScene = nil end
@@ -1512,8 +1514,25 @@ local function navRead()
       S.nav[s[1]] = seg
       S.navDirty = true
       S.navVersion = (S.navVersion or 0) + 1   -- location.lua re-indexes the junctions
+    elseif s.walk and require('ge/extensions/e2r/navigation').mergeWalk(seg.s, s.walk) then
+      -- the sidewalks of a road the first tile cut short: this tile knows more of it
+      S.walkAt = S.now
     end
     seg.tiles[job.key] = true
+  end
+  -- the tile's paths, footways and driveways (generator WALK.lines) for the walkers, kept while a
+  -- tile that has them is loaded, as the segments
+  if data.walks then
+    S.walks = S.walks or {}
+    for _, s in ipairs(data.walks) do
+      local wl = S.walks[s[1]]
+      if not wl then
+        wl = {s = s, tiles = {}, x = s[8], y = s[9]}
+        S.walks[s[1]] = wl
+        S.walkAt = S.now
+      end
+      wl.tiles[job.key] = true
+    end
   end
 end
 
@@ -1562,6 +1581,13 @@ local function navBuild()
       n.radius = r
     end
     return id
+  end
+  for id, wl in pairs(S.walks or {}) do
+    local alive = false
+    for key in pairs(wl.tiles) do
+      if S.tiles[key] then alive = true else wl.tiles[key] = nil end
+    end
+    if not alive then S.walks[id] = nil end
   end
   for sid, seg in pairs(S.nav) do
     -- a segment whose every tile has gone goes too
@@ -1840,15 +1866,17 @@ end
 -- Pedestrians (walkers.lua) on the sidewalks of the same graph, drawn as static pose shapes in a
 -- group outside the MissionGroup. A vehicle with physics about to touch one (the player's car, the
 -- real cars of the hand-off, the game's traffic) meets a physical body in its place (pedhit.lua).
--- The walkers' shapes: the walk poses, then the one waiting at the kerb (walkers.view); with blood,
--- the blood stains' too. The landing warms them when walkers will come with the drive: a shape's
--- first TSStatic costs ~12 ms, and a walker's first posed set (all nine at once) was a 110 ms frame
--- in every drive with walkers (polish-01..03).
+-- The walkers' shapes: the walk poses, then the one waiting at the kerb or a place to stop, then
+-- the seated one (walkers.SHAPES, walkers.view); with blood, the blood stains' too. The landing
+-- warms them when walkers will come with the drive: a shape's first TSStatic costs ~12 ms, and a
+-- walker's first posed set (then nine at once) was a 110 ms frame in every drive with walkers
+-- (polish-01..03).
 function M.peopleShapes(blood)
   local ws, dir = M.walkSim, '/levels/e2r_world/art/people/'
   local shapes = {}
   for k = 0, ws.POSES - 1 do shapes[k + 1] = dir .. 'ped_walk' .. k .. '.dae' end
   shapes[ws.POSES + 1] = dir .. 'ped_stand.dae'
+  shapes[ws.POSES + 2] = dir .. 'ped_sit.dae'
   if blood then shapes[#shapes + 1] = dir .. 'blood_splat.dae'; shapes[#shapes + 1] = dir .. 'blood_spray.dae' end
   return shapes
 end
@@ -2311,11 +2339,18 @@ function M.walkersStep()
   t:stopAndReset()
   -- the sidewalks follow the graph (a tile came or went) in a coroutine, ~1.5 ms a frame: a whole
   -- landing's sync is ~20-30 ms of Lua, a tile's 4-5 (earthng/walkers_bench.py)
-  if not wk.syncCo and wk.syncAt ~= S.navAt then
-    wk.syncAt = S.navAt
-    local W, nav, x, y = wk.W, S.nav, p.x, p.y
+  -- Paths and walk flags (navRead) and places to stop (startScene) come between graph builds: at
+  -- most every 2 s, as the graph.
+  if not wk.syncCo and (wk.syncAt ~= S.navAt
+      or ((wk.walkAt ~= S.walkAt or wk.spotsAt ~= S.spotsAt) and S.now - (wk.syncedAt or -10) >= 2)) then
+    wk.syncAt, wk.walkAt, wk.spotsAt, wk.syncedAt = S.navAt, S.walkAt, S.spotsAt, S.now
+    local spots = {}
+    for key, tile in pairs(S.tiles) do
+      if tile.walkSpots and #tile.walkSpots > 0 then spots[key] = tile.walkSpots end
+    end
+    local W, nav, walks, x, y = wk.W, S.nav, S.walks or {}, p.x, p.y
     wk.pause = wk.pause or function() if wk.timer:stop() > 1.5 then coroutine.yield() end end
-    wk.syncCo = coroutine.create(function() ws.sync(W, nav, x, y, wk.pause) end)
+    wk.syncCo = coroutine.create(function() ws.sync(W, nav, x, y, wk.pause, walks, spots) end)
   end
   if wk.syncCo then
     local ok, err = coroutine.resume(wk.syncCo)
@@ -2350,6 +2385,8 @@ function M.walkersStep()
   result.walk = r
   r.asked, r.walkers, r.room = ws.counts(wk.W)
   r.segs, r.simMs, r.drawMs, r.syncMs = #wk.W.list, wk.simMs, wk.drawMs, syncMs
+  -- at places to stop now (seated, standing, gone in at a door)
+  r.staying, r.inside = wk.W.staying, wk.W.inside
   r.simMax, r.drawMax = math.max(r.simMax or 0, wk.simMs), math.max(r.drawMax or 0, wk.drawMs)
   r.syncMax = math.max(r.syncMax or 0, syncMs)
   -- shapes in the scene, walkers posed (within 60 m) and with one shape (to 200 m)
@@ -3630,6 +3667,7 @@ local function beginArrival(job, early)
   M.knockPark()
   if S.park then parking.clear(S.park) end
   S.nav, S.navPending, S.navLights, S.navDirty, S.trafficWanted = {}, {}, {}, false, nil
+  S.walks, S.walkAt, S.spotsAt = {}, nil, nil
   S.navAt, S.navPos, S.navSerial, S.signalDirty, S.signalAt = nil, nil, nil, nil, nil
   map.reset({})
   if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
@@ -5324,6 +5362,7 @@ local function refreshCountries()
     S.navAt, S.navPos, S.navSerial, S.signalDirty, S.signalAt = nil, nil, nil, nil, nil
     S.stream, S.co, S.job, S.landing = nil, nil, nil, nil
     S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending, S.navLights = {}, {}, {}, {}, {}, {}, {}
+    S.walks, S.walkAt, S.spotsAt = {}, nil, nil
     S.collisionDirty, S.state, S.coll = true, 'off', nil
   end
   if S.state == 'generating' or S.state == 'warmup' then
@@ -5377,6 +5416,7 @@ function M.onClientEndMission()
   if S.ocean then pcall(function() S.ocean:delete() end); S.ocean = nil end
   S.stream, S.co, S.job, S.landing, S.state = nil, nil, nil, nil, 'off'
   S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending, S.navLights = {}, {}, {}, {}, {}, {}, {}
+  S.walks, S.walkAt, S.spotsAt = {}, nil, nil
   S.signalDirty, S.signalAt = nil, nil
   M.walkersLost()   -- the walkers' shapes and bodies went with the level; the count asked stays
   S.knock = nil     -- the debris and its pool went with the level; knockOff (the setting) stays

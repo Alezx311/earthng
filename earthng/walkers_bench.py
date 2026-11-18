@@ -139,7 +139,7 @@ local walkers, pedhit, segments, fx0, fy0, N, frames, warm, speed, seed, flowN =
 jit.off(true)
 local W = walkers.new{seed = seed}
 local shapes = {}
-for k = 1, walkers.POSES + 1 do shapes[k] = 'pose' .. k end
+for k = 1, walkers.SHAPES do shapes[k] = 'pose' .. k end
 local V = walkers.view(W, shapes, nil)
 -- the sync: all at once (the landing), then again with the segments of one 500 m square gone and
 -- back (a tile evicted, a tile arrived)

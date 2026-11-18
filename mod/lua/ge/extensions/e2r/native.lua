@@ -1263,6 +1263,7 @@ local function buildTile(key, wanted)
     road.navSegments = type(nav) == 'table' and nav.segments or {}
     road.navSignals = type(nav) == 'table' and nav.signals or nil
     road.navNames = type(nav) == 'table' and nav.names or nil
+    road.navWalks = type(nav) == 'table' and nav.walks or nil
   end
   -- While driving a near tile's road goes out as soon as it is built (AHEAD), and the build
   -- yields AHEAD to update(), which parks it until the scene's turn. The landing builds whole.

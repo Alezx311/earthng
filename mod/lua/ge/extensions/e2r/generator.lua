@@ -584,7 +584,7 @@ VEG.props = {
   {'/art/shapes/objects/bollard_yellow.dae', 8, curb = true, fp = {-.2, .2, -.2, .2}},
   {WCO .. 'garbage_bin_a.dae', 12, fp = {-.253, .253, -.235, .26}},
   {WCO .. 'garbage_bin_b.dae', 8, fp = {-.253, .253, -.235, .321}},
-  {ECA_CLUTTER .. 'clutter_city_bench_wood.dae', 14, face = true, fp = {-1, 1, -.357, .205}},
+  {ECA_CLUTTER .. 'clutter_city_bench_wood.dae', 14, face = true, fp = {-1, 1, -.205, .357}},
   {WCO .. 'planterbox.dae', 10, fp = {-.46, .46, -.46, .46}},
   {ECA_CLUTTER .. 'clutter_city_bike_stand.dae', 8, face = true, fp = {-2.079, 2.079, -.321, .321}},
   {WCO .. 'hydrant1.dae', 8, curb = true, fp = {-.326, .326, -.377, .377}},
@@ -596,7 +596,10 @@ VEG.props = {
 -- /art shapes take their materials from the game's global art folder. with: a second prop gap
 -- metres along the path (a bin beside its bench); away: +Y turned from the path, not to it.
 local GDC = '/art/shapes/garage_and_dealership/Clutter/'
-local BENCH = {ECA_CLUTTER .. 'clutter_city_bench_wood.dae', 1, face = true, fp = {-1, 1, -.357, .205}}
+-- The stock bench seats one facing its local -Y (seat at y -.3..0, back at 0..+.08): put() turns
+-- it by turn, so +Y of a placement is the way one sits facing, as the tables mean; fp is the bench
+-- so turned (its own bounds -1..1, -.357..+.205, mirrored).
+local BENCH = {ECA_CLUTTER .. 'clutter_city_bench_wood.dae', 1, face = true, fp = {-1, 1, -.205, .357}, turn = math.pi}
 local ROUND_BIN = {GDC .. 'clutter_city_bin_round.dae', 1, fp = {-.348, .348, -.348, .348}}
 local SMALL_BIN = {GDC .. 'italy_clutter_metal_bin.DAE', 1, fp = {-.171, .171, -.171, .171}}
 VEG.yard = {
@@ -8155,6 +8158,255 @@ local function pathCrossing(tags)
   return tags.footway == 'crossing' or tags.cycleway == 'crossing' or tags.path == 'crossing'
     or tags.footway == 'traffic_island' or (tags.crossing ~= nil and tags.crossing ~= 'no')
 end
+
+-- The pedestrians' map of a tile (walkers.lua): which sides of each street have a sidewalk drawn,
+-- the mapped paths and yard driveways people walk along, and the places they stop at. Walkers
+-- keep to what the tile drew: no sidewalk of their own between the carriageways of a divided road
+-- or along a road through the fields.
+--   seg.walk = {left, right} on a nav segment, in its own direction: one character per WALK.step m
+--     from its first point. '1' a sidewalk; 'v' the verge of a village or yard street that has none
+--     (people walk its edge); 'k' a footway mapped beside it is the sidewalk (nav.walks has it);
+--     '0' nothing; '?' past what this tile knows (its buildings and mapped footways reach WALK.pad m
+--     beyond it): world.lua takes the word of a tile that draws that part.
+--   nav.walks: {id, kind, 0, 0, 0, half width, 0, x, y, z, ...} (a nav segment's layout): 'f' a path
+--     on the ground (footway, path, pedestrian street, steps, cycleway, bridleway) walked on its
+--     middle; 's' a driveway in a built-up place (highway=service), walked just inside its edges.
+--   scene.walkSpots: {kind, x, y, z, hx, hy}: 'bench' a seat (h: the way one sits facing); 'stop'
+--     before a bus shelter (h: to the road); 'door' a metre out of a door (h: into it); 'play' the
+--     edge of a playground (h: to its middle); 'look' a kiosk or a cash machine (stood at from the walk).
+local WALK = {step = 10, pad = 30, verge = .025, out = 1, seat = .16, near = 1.5,
+  minor = {residential = true, living_street = true, unclassified = true},
+  serviceNot = {emergency_access = true, ['drive-through'] = true},
+  look = {atm = true, kiosk = true, coffee_vending = true, water_vending = true, payment_terminal = true,
+    exchange = true, drinking_water = true},
+  shop = {grocery = true, fast_food = true, post = true, service = true, poi = true, venue = true},
+  -- the stock bench (east_coast_usa clutter_city_bench_wood): its seat at 0.47 m spans local
+  -- y -0.28..0 and its back rises at +y, so one sits facing local -y
+  bench = ECA_CLUTTER .. 'clutter_city_bench_wood.dae'}
+
+-- the length of a nav segment's polyline and the running lengths at its points
+function WALK.length(seg)
+  local n, length, cum = (#seg - 7) / 3, 0, {0}
+  for k = 2, n do
+    local o = 8 + 3 * (k - 1)
+    length = length + math.sqrt((seg[o] - seg[o - 3]) ^ 2 + (seg[o + 1] - seg[o - 2]) ^ 2)
+    cum[k] = length
+  end
+  return length, cum, n
+end
+
+-- seg.walk from the strip the tile drew for its road: walk[k][side] a sidewalk, walk.kerb[k][side]
+-- a mapped footway instead; known(x, y): this tile can tell there; builtAt: the built share.
+function WALK.sides(seg, strip, known, builtAt)
+  local length, cum, n0 = WALK.length(seg)
+  local n = math.max(1, math.ceil(length / WALK.step))
+  local tags = strip.tags or NONE
+  local _, flip = ROADS.oneway(tags)
+  local pts, dist, walk, start = strip.points, strip.dist, strip.walk or NONE, strip.start or 0
+  local kerb = walk.kerb or NONE
+  local minor = WALK.minor[tags.highway] and not ROADS.bridge(tags) and not ROADS.tunnel(tags)
+  local out, q = {{}, {}}, 1
+  for i = 1, n do
+    local c = (i - .5) * length / n
+    while q < n0 - 1 and cum[q + 1] < c do q = q + 1 end
+    local o = 8 + 3 * (q - 1)
+    local span = (cum[q + 1] or c) - cum[q]
+    local f = span > EPS and (c - cum[q]) / span or 0
+    local x, y = seg[o] + ((seg[o + 3] or seg[o]) - seg[o]) * f, seg[o + 1] + ((seg[o + 4] or seg[o + 1]) - seg[o + 1]) * f
+    if not known(x, y) then
+      out[1][i], out[2][i] = '?', '?'
+    else
+      -- the strip's segment at this distance along the road's own direction (the nav segment
+      -- runs against it where the way is oneway=-1)
+      local d = flip and length - c or c
+      local lo, hi = 1, math.max(1, #pts - 1)
+      while lo < hi do
+        local mid = math.floor((lo + hi + 1) / 2)
+        if start + dist[mid] <= d then lo = mid else hi = mid - 1 end
+      end
+      for v = 1, 2 do
+        -- v 1 is the left of the nav segment: the road's left (1), or its right (-1) when flipped
+        local side = (v == 1) == not flip and 1 or -1
+        local ch = '0'
+        if (walk[lo] or NONE)[side] then ch = '1'
+        elseif (kerb[lo] or NONE)[side] then ch = 'k'
+        elseif minor and builtAt(x, y) >= WALK.verge then ch = 'v' end
+        out[v][i] = ch
+      end
+    end
+  end
+  return {table.concat(out[1]), table.concat(out[2])}
+end
+
+-- every nav segment's walk (nav.byRoad: road -> segment, filled as the segments were made)
+function WALK.flags(nav, strips, rect, builtAt, pause)
+  local byRoad = nav.byRoad
+  nav.byRoad = nil
+  if not byRoad then return end
+  local x0, y0, x1, y1 = rect[1] - WALK.pad, rect[2] - WALK.pad, rect[3] + WALK.pad, rect[4] + WALK.pad
+  local function known(x, y) return x >= x0 and x <= x1 and y >= y0 and y <= y1 end
+  for index, strip in ipairs(strips) do
+    local seg = byRoad[strip.road]
+    if seg and not seg.walk and #(strip.points or NONE) >= 2 then seg.walk = WALK.sides(seg, strip, known, builtAt) end
+    if index % 64 == 0 then pause() end
+  end
+  -- a road only passing the margin has no strip here: another tile tells
+  for _, seg in ipairs(nav.segments) do
+    if not seg.walk then
+      local blank = ('?'):rep(math.max(1, math.ceil(WALK.length(seg) / WALK.step)))
+      seg.walk = {blank, blank}
+    end
+  end
+end
+
+-- nav.walks: the paths and driveways of the tile (see WALK), on the ground the tile drew
+function WALK.lines(nav, lists, rect, ground, builtAt, pause)
+  local out = {}
+  local function emit(id, kind, hw, points)
+    local s, lx, ly = {id, kind, 0, 0, 0, hw, 0}, nil, nil
+    for _, p in ipairs(points) do
+      if not lx or (p[1] - lx) ^ 2 + (p[2] - ly) ^ 2 > .25 then
+        s[#s + 1], s[#s + 2], s[#s + 3] = p[1], p[2], ground(p[1], p[2])
+        lx, ly = p[1], p[2]
+      end
+    end
+    if #s >= 13 then out[#out + 1] = s end
+  end
+  for index, line in ipairs(lists.lines) do
+    local tags = line.tags or NONE
+    if line.kind == 'path' and ROADS.feet[tags.highway or ''] and tags.area ~= 'yes' and tags.access ~= 'no'
+        and pathOnGround(tags) and #(line.points or NONE) >= 2 and BOX.touch(rect, line.points, 5) then
+      emit('p' .. tostring(line.id), 'f', number(tags.width, 2) / 2, line.points)
+    end
+    if index % 128 == 0 then pause() end
+  end
+  for index, road in ipairs(lists.roads) do
+    local tags, points = road.tags or NONE, road.points or NONE
+    if tags.highway == 'service' and not road.track and not WALK.serviceNot[tags.service or ''] and tags.access ~= 'no'
+        and tags.area ~= 'yes' and not ROADS.bridge(tags) and not ROADS.tunnel(tags) and #points >= 2
+        and BOX.touch(rect, points, 5) then
+      local mid = points[math.floor((#points + 1) / 2)]
+      if builtAt(mid[1], mid[2]) >= WALK.verge then
+        emit('s' .. tostring(road.id), 's', math.max(.5, math.min(6, (road.width or 4) / 2)), points)
+      end
+    end
+    if index % 128 == 0 then pause() end
+  end
+  nav.walks = out
+end
+
+-- the outward normal of the wall of a building ring nearest (x, y) within reach, and the point
+-- on it: nil when no wall is that near
+function WALK.wall(rings, x, y, reach)
+  local ring = rings and rings[1]
+  if not ring or #ring < 3 then return nil end
+  local area2 = 0
+  for k = 1, #ring do
+    local p, q = ring[k], ring[k % #ring + 1]
+    area2 = area2 + p[1] * q[2] - q[1] * p[2]
+  end
+  local out = area2 > 0 and 1 or -1   -- counter-clockwise: the outside is right of each edge
+  local best, bx, by, nx, ny = reach * reach
+  for k = 1, #ring do
+    local p, q = ring[k], ring[k % #ring + 1]
+    local dx, dy = q[1] - p[1], q[2] - p[2]
+    local len2 = dx * dx + dy * dy
+    if len2 > .25 then
+      local t = math.max(.1, math.min(.9, ((x - p[1]) * dx + (y - p[2]) * dy) / len2))
+      local px, py = p[1] + dx * t, p[2] + dy * t
+      local d = (px - x) ^ 2 + (py - y) ^ 2
+      if d < best then
+        local len = math.sqrt(len2)
+        best, bx, by, nx, ny = d, px, py, dy / len * out, -dx / len * out
+      end
+    end
+  end
+  if bx then return bx, by, nx, ny end
+end
+
+-- scene.walkSpots (see WALK) from what the tile put (its benches and bus shelters), the porches
+-- and playgrounds of its yards, its mapped doors and shops
+function WALK.spots(items, lists, rect, yard, ground, pause)
+  local out = {}
+  local function add(kind, x, y, z, hx, hy)
+    if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] then out[#out + 1] = {kind, x, y, z, hx or 0, hy or 0} end
+  end
+  for index, it in ipairs(items) do
+    local p, r = it.pos, it.rot
+    if p and r and (it.shape == WALK.bench or it.shape == BUS_STOP) then
+      -- local +Y turned by the yaw (setFromEuler, clockwise from above)
+      local yaw = 2 * math.atan2(r[3], r[4])
+      local yx, yy = math.sin(yaw), math.cos(yaw)
+      if it.shape == WALK.bench then
+        add('bench', p[1] - yx * WALK.seat, p[2] - yy * WALK.seat, p[3], -yx, -yy)
+      else
+        -- the shelter stands past the sidewalk, lifted .25, its local +Y away from the road
+        add('stop', p[1] - yx * 1.1, p[2] - yy * 1.1, p[3] - .25, -yx, -yy)
+      end
+    end
+    if index % 512 == 0 then pause() end
+  end
+  local doors = {}
+  for _, d in ipairs(yard and yard.doors or NONE) do
+    add('door', d[1], d[2], d[3], d[4], d[5])
+    doors[#doors + 1] = d
+  end
+  for _, d in ipairs(yard and yard.plays or NONE) do add('play', d[1], d[2], d[3], d[4], d[5]) end
+  -- the buildings by 50 m bin (the walls of a mapped door or a shop)
+  local bins = {}
+  for index, b in ipairs(lists.buildings) do
+    local box = b.rings and b.rings[1] and #b.rings[1] >= 3 and ringBounds(b.rings)
+    if box and box[3] > rect[1] - 5 and box[1] < rect[3] + 5 and box[4] > rect[2] - 5 and box[2] < rect[4] + 5 then
+      for gx = math.floor(box[1] / 50), math.floor(box[3] / 50) do
+        for gy = math.floor(box[2] / 50), math.floor(box[4] / 50) do
+          local key = (gx + 32768) * 65536 + gy + 32768
+          local bin = bins[key] or {}
+          bins[key], bin[#bin + 1] = bin, {b = b, box = box}
+        end
+      end
+    end
+    if index % 256 == 0 then pause() end
+  end
+  local function wallAt(x, y, reach, within)
+    local best, bx, by, nx, ny = math.huge
+    for _, e in ipairs(bins[(math.floor(x / 50) + 32768) * 65536 + math.floor(y / 50) + 32768] or NONE) do
+      local box = e.box
+      if x > box[1] - reach and x < box[3] + reach and y > box[2] - reach and y < box[4] + reach
+          and (not within or inside(e.b.rings, x, y)) then
+        local px, py, qx, qy = WALK.wall(e.b.rings, x, y, within and 60 or reach)
+        if px and (px - x) ^ 2 + (py - y) ^ 2 < best then best, bx, by, nx, ny = (px - x) ^ 2 + (py - y) ^ 2, px, py, qx, qy end
+      end
+    end
+    return bx, by, nx, ny
+  end
+  for index, point in ipairs(lists.points) do
+    local p, kind, tags = point.pos, point.kind, point.tags or NONE
+    if p and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
+      if kind == 'entrance' or kind == 'door' or WALK.shop[kind] then
+        local porch = false
+        for _, d in ipairs(doors) do
+          if (d[1] - p[1]) ^ 2 + (d[2] - p[2]) ^ 2 < 6.25 then porch = true; break end
+        end
+        local bx, by, nx, ny
+        if not porch then
+          -- a door lies on its wall; a shop's node stands anywhere inside its building
+          if kind == 'entrance' or kind == 'door' then bx, by, nx, ny = wallAt(p[1], p[2], WALK.near)
+          else bx, by, nx, ny = wallAt(p[1], p[2], 0, true) end
+        end
+        if bx then
+          local x, y = bx + nx * WALK.out, by + ny * WALK.out
+          add('door', x, y, ground(x, y), -nx, -ny)
+        elseif not porch and WALK.shop[kind] then
+          add('look', p[1], p[2], ground(p[1], p[2]))
+        end
+      elseif kind == 'pin' and WALK.look[tags.e2r_cat] then
+        add('look', p[1], p[2], ground(p[1], p[2]))
+      end
+    end
+    if index % 256 == 0 then pause() end
+  end
+  return out
+end
 -- Squared distance from (px, py) to the segment a-b
 local function pointSegment2(px, py, ax, ay, bx, by)
   local dx, dy = bx - ax, by - ay
@@ -10526,6 +10778,7 @@ function YARD.build(ctx)
   local rect, lists, pause = ctx.rect, ctx.lists, ctx.pause
   local reserved = ctx.reserved or {}
   ctx.cars, ctx.kit = {}, {}
+  ctx.doors, ctx.plays = ctx.doors or {}, ctx.plays or {}   -- the pedestrians' spots (WALK.spots)
   local dense = ctx.spacing > 0 and math.min(1.5, 12 / ctx.spacing) or 0
   if dense <= 0 then return reserved, 0 end
   local halo = {rect[1] - 30, rect[2] - 30, rect[3] + 30, rect[4] + 30}
@@ -10690,6 +10943,9 @@ function YARD.build(ctx)
             for g, s in ipairs(gaps) do
               local x, y = p[1] + ux * s, p[2] + uy * s
               YARD.porch(ctx.scene, x, y, ctx.ground(x + nx * .8, y + ny * .8), ux, uy, out, ihash(seed, k, g, 7))
+              -- the pedestrians' door (WALK.spots): a metre out of the porch, facing in
+              local dx, dy = x + nx * WALK.out, y + ny * WALK.out
+              ctx.doors[#ctx.doors + 1] = {dx, dy, ctx.ground(dx, dy), -nx, -ny}
               YARD.reserve(reserved, {x - ux * 1.3 + nx, y - uy * 1.3 + ny}, {x + ux * 1.3 + nx, y + uy * 1.3 + ny}, 1)
             end
             -- how deep the garden can be here: up to 4.5 m, 60 cm short of a road, path or wall
@@ -10900,6 +11156,7 @@ function YARD.build(ctx)
         area2 = area2 + p[1] * q[2] - q[1] * p[2]
       end
       local inward = area2 > 0 and 1 or -1      -- the inside is left of a counter-clockwise edge
+      local watch = 0
       for k = 1, #ring do
         local p, q = ring[k], ring[k % #ring + 1]
         local length = math.sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2)
@@ -10907,6 +11164,11 @@ function YARD.build(ctx)
           local ux, uy = (q[1] - p[1]) / length, (q[2] - p[2]) / length
           local nx, ny = -uy * inward, ux * inward
           local mx, my = (p[1] + q[1]) / 2, (p[2] + q[2]) / 2
+          -- where the pedestrians stand watching (WALK.spots): a few edges, just inside, facing in
+          if watch < 3 then
+            watch = watch + 1
+            ctx.plays[#ctx.plays + 1] = {mx + nx * .6 + ux * 1.5, my + ny * .6 + uy * 1.5, ctx.ground(mx, my), nx, ny}
+          end
           if onRoad(mx - nx * 8, my - ny * 8, 0) or onRoad(mx - nx * 4, my - ny * 4, 0) then
             local step = YARD.hedgeLong * YARD.hedgeScale
             for s = step / 2 + .6, length - step / 2 - .6, step do
@@ -11635,7 +11897,7 @@ local function build(cells, i, j, options)
   -- A road shapes the ground up to pullZero from its edge, and the ground lattice reaches one
   -- step past the tile (its border nodes are lowered for roads in the neighbour's cells too).
   local reach = tune.pullZero + step + 5
-  local segments, segmentBins, nav, bestSpawn, bestDistance = {}, {}, {segments = {}, names = {}}, nil, math.huge
+  local segments, segmentBins, nav, bestSpawn, bestDistance = {}, {}, {segments = {}, names = {}, byRoad = {}}, nil, math.huge
   for _, road in ipairs(lists.roads) do
     local tags, points, width = road.tags or {}, road.points or {}, math.max(.5, math.min(80, road.width or 7))
     for index = 1, #points - 1 do
@@ -11664,6 +11926,7 @@ local function build(cells, i, j, options)
     local navigation = visualRoads and navSegment(road)
     if navigation then
       nav.segments[#nav.segments + 1] = navigation
+      nav.byRoad[road] = navigation
       nav.names[navigation[1]] = navNames(road)
     end
     pause()
@@ -13588,6 +13851,12 @@ local function build(cells, i, j, options)
     roadManifest.spawn = bestSpawn or groundSpawn()
     roadManifest.drivable = bestSpawn ~= nil
   end
+  -- the pedestrians' map (WALK): the sidewalks drawn, the paths and driveways
+  if not distant then
+    WALK.flags(nav, strips, rect, builtAt, pause)
+    WALK.lines(nav, lists, rect, ground, builtAt, pause)
+  end
+  nav.byRoad = nil
   if options.roadReady and not distant then
     finishRoad()
     options.roadReady(roadManifest, nav)
@@ -14609,7 +14878,7 @@ local function build(cells, i, j, options)
       if shape then x, y, z = OFFROAD.offCarriageway(point, p) end
       if x and point.kind == 'lamp' and ROADS.lampUnderDeck(segmentBins, x, y, z, lift, tune.sidewalk) then x = nil end
       if x then
-        -- a mapped bench faces the nearest path or road within 8 m (its front is local +y)
+        -- a mapped bench faces the nearest path or road within 8 m (its front is local -y)
         local yaw = 0
         if point.kind == 'bench' then
           local best, fx, fy = 8
@@ -14625,7 +14894,7 @@ local function build(cells, i, j, options)
               end
             end
           end
-          if fx then yaw = math.atan2(fx - x, fy - y) end
+          if fx then yaw = math.atan2(fx - x, fy - y) + BENCH.turn end
         end
         static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), shape, x, y, z, yaw)
         local it = scene.items[#scene.items]
@@ -14812,6 +15081,7 @@ local function build(cells, i, j, options)
       fp = {-2, 2, -2, 2}} or nil
     local containers = {}
     local function put(name, shape, x, y, z, yaw, scale, kind)
+      if shape == BENCH[1] then yaw = yaw + BENCH.turn end
       static(name, shape, x, y, z, yaw, scale)
       local it = scene.items[#scene.items]
       it.prop, it.streetKind, it.collision = true, kind, 'Collision Mesh'
@@ -14824,7 +15094,8 @@ local function build(cells, i, j, options)
         shopLinks = shops.links})
     local yardCtx = {rect = rect, scene = scene, decor = sceneDecor, ground = ground, drapeRings = drapeRings,
       put = put, lists = lists, strips = strips, segmentBins = segmentBins, reserved = reserved,
-      spacing = options.propSpacing or 0, parkedCars = options.parkedCars, lift = lift, pause = pause, have = VEG.have, lamp = LAMP, containers = containers}
+      spacing = options.propSpacing or 0, parkedCars = options.parkedCars, lift = lift, pause = pause, have = VEG.have, lamp = LAMP, containers = containers,
+      doors = {}, plays = {}}
     local before = #sceneDecor.items
     -- options.yard == false leaves the yards as the street furniture left them (A/B benches)
     if options.yard ~= false then reserved = YARD.build(yardCtx) end
@@ -14839,7 +15110,7 @@ local function build(cells, i, j, options)
     for material in pairs(sceneDecor.used) do scene.used[material] = true end
     scene.streetReservations = reserved
     -- what the yard laid out, for the offline maps and tests (cars and kit are mesh, not items)
-    scene.yard = {cars = yardCtx.cars, kit = yardCtx.kit, containers = containers}
+    scene.yard = {cars = yardCtx.cars, kit = yardCtx.kit, containers = containers, doors = yardCtx.doors, plays = yardCtx.plays}
   end
   if not wantLamps and #OFFROAD.signs > 0 then
     scene.streetReservations = scene.streetReservations or {}
@@ -14860,6 +15131,7 @@ local function build(cells, i, j, options)
     local out = manifest(scene, 'scene')
     out.parking = parking
     out.lights = OFFROAD.lights
+    if not distant then out.walkSpots = WALK.spots(scene.items, lists, rect, scene.yard, ground, pause) end
     local pins = {}
     for _, poi in ipairs(lists.points) do
       local p, tags = poi.pos, poi.tags or NONE

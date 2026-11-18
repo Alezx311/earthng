@@ -5,7 +5,7 @@ A walker is a TSStatic without collision moved by Lua; the walk is a flipbook of
 One mesh per pose, ~450 triangles: tapered limbs posed by forward kinematics from a gait table, a
 waisted torso with collar and hem, a head with jaw and hair, mitts and box shoes. Clothes and skin
 take their colour per instance (TSStatic instanceColor*) through the vehicle palette masks, so
-8 poses + 1 standing pose serve every outfit. A DynamicShapeBatch copy takes one colour only (the
+8 poses + a standing and a seated one serve every outfit. A DynamicShapeBatch copy takes one colour only (the
 shirt's), so trousers and skin also come as materials with the walkers.lua palettes baked
 (e2r_ped_pants_<k>, e2r_ped_skin_<k>), remapped per batch (shapebatch.lua). Two flat blood quads on
 one atlas (blood_splat, blood_spray) are the stains of pedhit hits (world.lua BLOOD).
@@ -59,6 +59,11 @@ MATERIAL_FIELDS = {'blood': {'alphaTest': True, 'alphaRef': 64, 'doubleSided': T
 HIP, THIGH, SHIN, SHOULDER = .93, .44, .45, 1.44
 HIP_W, SHOULDER_W = .105, .20
 UPPER, FORE = .29, .27
+# seated (ped_sit, walkers.lua M.SIT): the hip over a bench seat ~.48 high (the stock city bench's),
+# thighs down 12 degrees to the knee, shins straight down to the ground, hands on the thighs
+SIT_HIP = .57
+SIT_LEGS = {1: (78, 78), -1: (76, 75)}
+SIT_ARMS = {1: (5, 51), -1: (6, 50)}
 
 
 def gait(phase):
@@ -122,7 +127,8 @@ def _rot(deg, length, origin, down=True):
 
 
 def triangles(phase=None, parts=None):
-    """A walking pose at phase 0..1, or the standing pose (None). With a dict `parts`, each body part's
+    """A walking pose at phase 0..1, the standing pose (None) or the seated one ('sit': the origin under
+    the hip, on the ground below the seat, facing +x as the others). With a dict `parts`, each body part's
     triangles also go to parts[name] (trunk, head, thigh_l, shin_l, foot_l, upper_l, fore_l, ... _r):
     the physical pedestrian (ped_body.py) gives each part its own flexbody."""
     tris = []
@@ -135,6 +141,9 @@ def triangles(phase=None, parts=None):
         legs = {1: (2, 4), -1: (-1, 3)}
         arms = {1: (4, 12), -1: (-3, 14)}
         bob = 0
+    elif phase == 'sit':
+        legs, arms = SIT_LEGS, SIT_ARMS
+        bob = SIT_HIP - HIP
     else:
         legs, arms = {}, {}
         for side, ph in ((1, phase), (-1, (phase + .5) % 1)):
@@ -356,6 +365,7 @@ def files():
         out[f'ped_walk{k}.dae'] = text
         counts[k] = n
     out['ped_stand.dae'], counts['stand'] = pose_dae(None)
+    out['ped_sit.dae'], counts['sit'] = pose_dae('sit')
     for shape in BLOOD_ATLAS:
         out[shape + '.dae'] = blood_dae(shape)
     out['blood.color.png'], out['blood_o.data.png'] = blood_maps()

@@ -2,6 +2,32 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-18: walkers off the medians, onto paths, and to benches and doors
+
+- `generator.lua` `WALK`: every nav segment carries `walk`, two strings (left and right in its
+  direction, a char per 10 m: `1` sidewalk drawn, `k` a mapped footway instead, `v` the verge of a
+  quiet built-up street, `0` none, `?` past the tile's 30 m margin). `nav.walks`: footways and
+  paths on the ground, and service roads among buildings. `scene.walkSpots`: benches, bus stops,
+  yard porches, playgrounds, mapped entrances, shops and kiosks. Fixed: a mapped entrance's door
+  stood inside its building (`WALK.wall` normal pointed in). Fixed: every bench faced the wrong
+  way. The stock `clutter_city_bench_wood` seats one facing its local -Y (DAE vertices: seat at y
+  -0.3..0, back at 0..+0.08, identity nodes), the generator took +Y for its front. `put()` turns
+  it by pi (`BENCH.turn`) with the footprint mirrored; mapped benches too. World Editor objects
+  keep the yaw they were saved with.
+- `walkers.lua`: sidewalks only where flagged (flags missing: both sides as before), none on the
+  median side of a one-way carriageway facing an opposite one within 35 m. Walk lines are
+  pieces too, joined to sidewalks at T and X joints and across roads by waiting crossings.
+  Walkers passing a place may stop: sit on a bench (two at most), queue at a stop, go in at a door
+  and come out 20-120 s later (not drawn, not hittable meanwhile), look at a kiosk. A tenth shape,
+  `ped_sit.dae` (`people_art.py`).
+- `world.lua`: `S.walks` from the road manifests (`native.lua` `navWalks`), walk flags another
+  tile knows merged into a known segment (`navigation.mergeWalk`), the scene's spots per tile; the
+  walker sync runs on graph builds and, at most every 2 s, on new paths, flags or spots.
+  `result.walk.staying/inside`, `stats.pathPieces/spots/spotsOn/visit`.
+- Tests: `test_walkers.py` `WalkRouteTests` (flags, medians, footway into a park and across a
+  street, driveways, places to stop, no garbage), `test_generator.py` flags/lines/spots.
+- Not checked in game yet (the bench turn was checked from the DAE and in tests only).
+
 ## 2026-11-17: flow cars and walkers as DynamicShapeBatch copies
 
 Taken from the branch `codex/native-bridge-benchmark` (fd26353): the batches only, without the

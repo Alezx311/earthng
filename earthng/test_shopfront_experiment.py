@@ -86,7 +86,11 @@ class ShopfrontExperimentTests(unittest.TestCase):
         door = {'id': '-1000000000090:0', 'kind': 'door', 'pos': [128, 100, 0], 'tags': {'entrance': 'yes'}}
         rich = self.build(buildings=[self.block], points=[self.poi, door])
         self.assertEqual(self.h.plain(plain[0]), self.h.plain(rich[0]))
-        self.assertEqual(self.h.plain(plain[1]), self.h.plain(rich[1]))
+        # the pedestrians' places to stop (generator WALK.spots) take the shop and its door; nothing drawn does
+        plain_scene, rich_scene = self.h.plain(plain[1]), self.h.plain(rich[1])
+        self.assertEqual(plain_scene.pop('walkSpots'), [])
+        self.assertTrue(all(spot[0] == 'door' for spot in rich_scene.pop('walkSpots')))
+        self.assertEqual(plain_scene, rich_scene)
 
     def test_by_default_a_node_needs_a_mapped_door(self):
         report = self.h.lua.table()

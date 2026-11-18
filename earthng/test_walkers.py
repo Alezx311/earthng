@@ -86,7 +86,7 @@ local Col = {}
 Col.__index = Col
 function Col:asLinear4F() return self end
 function ColorF(r, g, b, a) return setmetatable({r, g, b, a}, Col) end
-function shapes() local s = {}; for k = 1, walkers.POSES + 1 do s[k] = 'pose' .. k end; return s end
+function shapes() local s = {}; for k = 1, walkers.SHAPES do s[k] = 'pose' .. k end; return s end
 '''
 
 
@@ -860,11 +860,11 @@ class WalkerTests(unittest.TestCase):
         self.assertEqual(shown, posed + drawn)
         self.assertEqual(shown_slots, posed + drawn)
         self.assertLessEqual(posed, 96)
-        self.assertLess(alive, 1000 + 96 * 9)
+        self.assertLess(alive, 1000 + 96 * 10)
         self.assertLess(drawn + posed, 1000)              # those beyond 200 m have none
         self.assertEqual((posed_far, drawn_far, hidden_near), (0, 0, 0))
         self.assertEqual(shown_off, 0)
-        self.assertLessEqual(trimmed, 48 + 6 * 9)
+        self.assertLessEqual(trimmed, 48 + 6 * 10)   # a posed set: 8 steps, standing, seated
         self.assertEqual(cleared, 0)
 
     BATCHES = '''
@@ -1105,6 +1105,258 @@ class WalkerTests(unittest.TestCase):
         self.assertEqual(out[1], 200)
         self.assertLess(out[2], 90)
         self.assertEqual(out[3], 200)
+
+
+# streets, walk lines and places to stop as world.lua hands them to walkers.sync
+ROUTES = '''
+-- one straight street from (x0, y) to (x1, y), a point every 10 m; walk: its sidewalk flags
+-- (generator WALK.sides: {left, right} in its direction, a char per 10 m)
+function street(id, x0, x1, y, lanes, walk)
+  local s = {id, id .. 'a', id .. 'b', lanes or '-+', 13.9, 3.5, 1}
+  local n = math.floor(math.abs(x1 - x0) / 10)
+  for k = 0, n do s[#s + 1], s[#s + 2], s[#s + 3] = x0 + (x1 - x0) * k / n, y, 0 end
+  s.walk = walk
+  return {s = s, x = (x0 + x1) / 2, y = y}
+end
+-- a walk line (generator WALK.lines) through the points {x, y, x, y, ...}: kind 'f' a footway, 's' a driveway
+function walkLine(id, kind, hw, pts)
+  local s = {id, kind, 0, 0, 0, hw, 0}
+  for k = 1, #pts, 2 do s[#s + 1], s[#s + 2], s[#s + 3] = pts[k], pts[k + 1], 0 end
+  return {s = s, x = pts[1], y = pts[2]}
+end
+-- the y of every walker not between two pieces, over `frames` steps of dt round (fx, fy)
+function walkFor(W, frames, dt, fx, fy, each)
+  for t = 1, frames do
+    walkers.step(W, dt, fx, fy)
+    for slot, w in pairs(W.slots) do
+      if not w.free and each then each(w, slot, t) end
+    end
+  end
+end
+'''
+
+
+class WalkRouteTests(unittest.TestCase):
+    """The walk beyond the sidewalks: the generator's flags, divided roads, paths, places to stop."""
+
+    def lua(self):
+        lua = LuaRuntime()
+        lua.globals().walkers = lua.execute(WALKERS.read_text(encoding='utf8'))
+        lua.execute(GRID)
+        lua.execute(ROUTES)
+        return lua
+
+    def test_sidewalk_flags_choose_the_sides_walked_and_how_far_out(self):
+        out = self.lua().execute('''
+          local function run(walk)
+            local W = walkers.new{seed = 2, spacing = 0}
+            walkers.sync(W, {A = street('A', 0, 300, 0, nil, walk)}, 150, 0)
+            walkers.setTarget(W, 30)
+            local lo, hi, near, far, maxX = 1e9, -1e9, 1e9, 0, -1e9
+            walkFor(W, 900, 1 / 30, 150, 0, function(w)
+              if not w.transit then
+                lo, hi = math.min(lo, w.y), math.max(hi, w.y)
+                near, far = math.min(near, math.abs(w.y)), math.max(far, math.abs(w.y))
+                maxX = math.max(maxX, w.x)
+              end
+            end)
+            return {#W.list, W.count, lo, hi, near, far, maxX}
+          end
+          local all = function(c) return c:rep(30) end
+          return {run(nil), run({all('0'), all('1')}), run({all('0'), all('k')}), run({all('v'), all('?')}),
+            run({all('0'), ('1'):rep(15) .. ('0'):rep(15)})}
+        ''')
+        both, right, none, verge, half = (dict(out[k]) for k in range(1, 6))
+        # no flags (an old pack's graph): both sides, as before
+        self.assertLess(both[3], -5)
+        self.assertGreater(both[4], 5)
+        # the right of a street going +x is its -y side; half width 3.5 + gap 1.7
+        self.assertLess(right[4], 0)
+        self.assertAlmostEqual(right[5], 5.2, delta=.1)
+        self.assertAlmostEqual(right[6], 5.2, delta=.1)
+        # a mapped footway serves the side ('k'): no sidewalk walkers there, so none at all here
+        self.assertEqual((none[1], none[2]), (0, 0))
+        # a verge: closer to the lanes (3.5 + 0.8)
+        self.assertGreater(verge[3], 0)
+        self.assertAlmostEqual(verge[5], 4.3, delta=.1)
+        self.assertAlmostEqual(verge[6], 4.3, delta=.1)
+        # the sidewalk only along its first 150 m
+        self.assertLess(half[7], 151)
+        self.assertEqual(half[2], 30)
+
+    def test_no_walkers_on_the_median_of_a_divided_road(self):
+        out = self.lua().execute('''
+          local function run(lanes)
+            local W = walkers.new{seed = 5, spacing = 0}
+            -- two carriageways 14 m apart, as OSM maps a divided road (one way each)
+            local segs = {A = street('A', 0, 400, 0, lanes), B = street('B', 400, 0, 14, lanes)}
+            walkers.sync(W, segs, 200, 7)
+            walkers.setTarget(W, 40)
+            local between = 0
+            walkFor(W, 600, 1 / 30, 200, 7, function(w)
+              if not w.transit and w.y > 0 and w.y < 14 then between = between + 1 end
+            end)
+            return {between, W.count}
+          end
+          local divided, twoWay = run('++'), run('-+')
+          return {divided[1], divided[2], twoWay[1]}
+        ''')
+        self.assertEqual(out[1], 0)
+        self.assertEqual(out[2], 40)
+        # the same streets both two-way: two separate streets, walked between too
+        self.assertGreater(out[3], 0)
+
+    def test_a_footway_off_a_sidewalk_takes_walkers_into_the_park_and_across_the_street(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed = 4, spacing = 0}
+          local segs = {A = street('A', 0, 300, 0)}
+          -- a footway from the middle of the street into a park, and one across the street
+          local walks = {pin = walkLine('pin', 'f', 1, {150, 0, 150, -40, 190, -80}),
+            pcross = walkLine('pcross', 'f', 1, {60, 60, 60, -60})}
+          walkers.sync(W, segs, 150, 0, nil, walks)
+          walkers.setTarget(W, 40)
+          local inLanes, deep, came, crossed = 0, 0, 0, 0
+          local was, side = {}, {}
+          walkFor(W, 9000, 1 / 30, 150, 0, function(w, slot)
+            if not w.transit and math.abs(w.y) < 3.5 then inLanes = inLanes + 1 end
+            -- on the sidewalk away from the footways, later deep in the park
+            if not w.transit and math.abs(w.y + 5.2) < .3 and math.abs(w.x - 150) > 30 and math.abs(w.x - 60) > 30 then was[slot] = true end
+            if w.y < -30 and w.x > 140 then
+              deep = deep + 1
+              if was[slot] then came = came + 1; was[slot] = nil end
+            end
+            -- the far ends of the footway across the street, one then the other
+            if math.abs(w.x - 60) < 2 and math.abs(w.y) > 40 then
+              local s = w.y > 0 and 1 or -1
+              if side[slot] and side[slot] ~= s then crossed = crossed + 1 end
+              side[slot] = s
+            end
+          end)
+          return {inLanes, deep, came, crossed, W.stats.pathPieces, W.stats.transits}
+        ''')
+        in_lanes, deep, came, crossed, pieces, transits = (out[k] for k in range(1, 7))
+        self.assertEqual(in_lanes, 0)
+        self.assertGreater(pieces, 2)
+        self.assertGreater(deep, 0)
+        self.assertGreater(came, 0)       # from the sidewalk through the joint into the park
+        self.assertGreater(crossed, 0)    # over the street from one end of the footway to the other
+
+    def test_a_driveway_is_walked_on_both_edges(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed = 8, spacing = 0}
+          walkers.sync(W, {}, 0, 50, nil, {sd = walkLine('sd', 's', 2.5, {0, 0, 0, 100})})
+          walkers.setTarget(W, 20)
+          local xs = {}
+          walkFor(W, 300, 1 / 30, 0, 50, function(w)
+            if not w.transit then xs[#xs + 1] = math.floor(math.abs(w.x) * 10 + .5) / 10 end
+          end)
+          local lo, hi = 1e9, 0
+          for _, x in ipairs(xs) do lo, hi = math.min(lo, x), math.max(hi, x) end
+          return {lo, hi, W.count}
+        ''')
+        # half width 2.5: a line 0.5 m in from each edge
+        self.assertEqual((out[1], out[2]), (2, 2))
+        self.assertEqual(out[3], 20)
+
+    def test_walkers_stop_at_benches_doors_and_shop_windows_and_leave_them(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed = 11, spacing = 0}
+          local walks = {p = walkLine('p', 'f', 1, {0, 0, 200, 0})}
+          -- a bench south of the path facing it, a door north of it (the building beyond it), a kiosk
+          local spots = {t = {{'bench', 100, -2, 0, 0, 1}, {'door', 50, 3, 0, 0, 1}, {'look', 160, 1.5, 0}}}
+          walkers.sync(W, {}, 100, 0, nil, walks, spots)
+          local bench, door = W.spotsOf.t[1], W.spotsOf.t[2]
+          walkers.setTarget(W, 30)
+          local maxBench, sat, seatOff, wentIn, cameOut, hiddenNear = 0, 0, 0, 0, 0, 0
+          local inside = {}
+          local near = {}
+          walkFor(W, 7200, 1 / 10, 100, 0, function(w, slot)
+            maxBench = math.max(maxBench, bench.users)
+            if w.stay and w.sit then
+              sat = sat + 1
+              if walkers.poseOf(w) ~= walkers.SIT then seatOff = seatOff + 1 end
+              -- on the seat, facing the way the bench does
+              if math.abs(math.abs(w.x - 100) - .45) > .01 or math.abs(w.y + 2) > .01 or w.hy < .99 then seatOff = seatOff + 1 end
+            end
+            if w.inside then inside[slot] = true
+            elseif inside[slot] and not w.stay then cameOut = cameOut + 1; inside[slot] = nil end
+          end)
+          for _, w in pairs(W.slots) do if w.inside then wentIn = wentIn + 1 end end
+          -- a walker inside is nowhere: not found round its door
+          local _, n = walkers.near(W, 50, 1, 5, near)
+          for k = 1, n do if near[k].inside then hiddenNear = hiddenNear + 1 end end
+          local visits = {W.stats.visit.bench, W.stats.visit.door, W.stats.visit.look}
+          -- all gone: the places are free again
+          walkers.setTarget(W, 0)
+          walkers.step(W, 1 / 10, 100, 0)
+          local left = {bench.users, door.users, W.staying, W.inside, next(bench.seat) and 1 or 0}
+          return {maxBench, sat, seatOff, cameOut, hiddenNear, visits, left, bench.piece and 1 or 0, door.piece and 1 or 0,
+            W.stats.spots, W.stats.spotsOn}
+        ''')
+        max_bench, sat, seat_off, came_out, hidden_near = (out[k] for k in range(1, 6))
+        visits, left = list(out[6].values()), list(out[7].values())
+        self.assertEqual((out[8], out[9], out[10], out[11]), (1, 1, 3, 3))
+        self.assertLessEqual(max_bench, 2)     # a bench seats two
+        self.assertGreater(sat, 0)
+        self.assertEqual(seat_off, 0)
+        self.assertTrue(all(v > 0 for v in visits), visits)
+        self.assertGreater(came_out, 0)
+        self.assertEqual(hidden_near, 0)
+        self.assertEqual(left, [0, 0, 0, 0, 0])
+
+    def test_places_out_of_reach_or_behind_are_left_alone(self):
+        out = self.lua().execute('''
+          local W = walkers.new{seed = 3, spacing = 0}
+          local walks = {p = walkLine('p', 'f', 1, {0, 0, 200, 0})}
+          -- a bench facing away from the path, a door whose building the path runs through, a far bench,
+          -- a door beyond a street walked only on its other side; a bench that is fine
+          local segs = {A = street('A', 0, 200, 20, nil, {('0'):rep(20), ('1'):rep(20)})}
+          local spots = {t = {{'bench', 40, -2, 0, 0, -1}, {'door', 80, -3, 0, 0, 1}, {'bench', 120, -30, 0, 0, 1},
+            {'door', 160, 27, 0, 0, 1}, {'bench', 60, -2, 0, 0, 1}}}
+          walkers.sync(W, segs, 100, 0, nil, walks, spots)
+          local on = {}
+          for k, sp in ipairs(W.spotsOf.t) do on[k] = sp.piece and (math.abs(sp.ty) < 1 and 'path' or 'street') or 'none' end
+          -- the list goes with its tile: its places too
+          walkers.sync(W, segs, 100, 0, nil, walks, {})
+          return {on, W.stats.spots}
+        ''')
+        on = list(out[1].values())
+        # the door north of the street is not reached across its lanes from the south sidewalk
+        self.assertEqual(on, ['none', 'none', 'none', 'none', 'path'])
+        self.assertEqual(out[2], 0)
+
+    def test_no_garbage_while_walking_paths_and_stopping(self):
+        out = self.lua().execute('''
+          jit.off()
+          local W = walkers.new{seed = 6, spacing = 0}
+          local walks, list = {}, {}
+          for k = 0, 9 do
+            walks['p' .. k] = walkLine('p' .. k, 'f', 1, {0, k * 30, 300, k * 30})
+            for b = 1, 5 do
+              list[#list + 1] = {'bench', b * 50, k * 30 - 2, 0, 0, 1}
+              list[#list + 1] = {'door', b * 50 + 20, k * 30 + 3, 0, 0, 1}
+            end
+          end
+          walkers.sync(W, {}, 150, 150, nil, walks, {t = list})
+          local V = walkers.view(W, shapes(), nil)
+          walkers.setTarget(W, 300)
+          local function frame()
+            walkers.step(W, 1 / 20, 150, 150)
+            walkers.draw(W, V, 150, 150, function(x, y, z) return z + .1 end)
+          end
+          for t = 1, 6000 do frame() end
+          collectgarbage('collect')
+          collectgarbage('stop')
+          local kb = collectgarbage('count')
+          for t = 1, 600 do frame() end
+          kb = collectgarbage('count') - kb
+          collectgarbage('restart')
+          jit.on()
+          return {kb / 600, W.count, W.stats.visit.bench + W.stats.visit.door}
+        ''')
+        self.assertLess(out[1], .25, out[1])
+        self.assertEqual(out[2], 300)
+        self.assertGreater(out[3], 20)
 
 
 if __name__ == '__main__':
