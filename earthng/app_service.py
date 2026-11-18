@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -197,6 +198,8 @@ class Service:
         folder.mkdir(parents=True, exist_ok=True)
         if os.name == 'nt':
             os.startfile(folder)  # noqa: S606 - the user's own folder
+        else:
+            subprocess.Popen(['xdg-open', str(folder)])  # noqa: S603, S607 - the user's own folder
         return {'path': str(folder)}
 
     # ------------------------------------------------------------------ planet

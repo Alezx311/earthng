@@ -151,6 +151,10 @@ fn open_external(url: &str) {
             use std::os::windows::process::CommandExt;
             let _ = Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).creation_flags(0x0800_0000).spawn();
         }
+        #[cfg(not(windows))]
+        {
+            let _ = Command::new("xdg-open").arg(url).spawn();
+        }
     }
 }
 
@@ -212,8 +216,16 @@ fn main() -> Result<()> {
                 let _ = ipc_proxy.send_event(UserEvent::Message(answer.to_string()));
             }
         })
-        .with_devtools(cfg!(debug_assertions) || std::env::var_os("EARTHNG_DEVTOOLS").is_some())
-        .build(&window)?;
+        .with_devtools(cfg!(debug_assertions) || std::env::var_os("EARTHNG_DEVTOOLS").is_some());
+    // Linux: WebKitGTK inside the window's GTK box (works on Wayland, where build(&window) has no X11 handle)
+    #[cfg(target_os = "linux")]
+    let webview = {
+        use tao::platform::unix::WindowExtUnix;
+        use wry::WebViewBuilderExtUnix;
+        webview.build_gtk(window.default_vbox().context("window has no GTK box")?)?
+    };
+    #[cfg(not(target_os = "linux"))]
+    let webview = webview.build(&window)?;
 
     // unpack or find the runtime off the UI thread
     let ready = proxy.clone();
@@ -240,7 +252,11 @@ fn main() -> Result<()> {
                     Err(e) => log(&format!("service: {e:#}")),
                 }
                 // WebView2 serves custom protocols as http://<scheme>.localhost (wry translates with_url only)
+                #[cfg(windows)]
                 let _ = webview.load_url("http://earthng.localhost/index.html");
+                // WebKitGTK serves the custom scheme itself
+                #[cfg(not(windows))]
+                let _ = webview.load_url("earthng://localhost/index.html");
             }
             Event::UserEvent(UserEvent::Failed(error)) => {
                 log(&format!("runtime: {error}"));
