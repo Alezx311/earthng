@@ -80,7 +80,7 @@ class WorldMapTests(unittest.TestCase):
             poi('замок', 50.4501, 30.5001, 'castle', 'Замок'),
             poi('кіоск', 50.4502, 30.5002, 'kiosk', 'Кіоск'),
             poi('wog', 50.4400, 30.5100, 'service_map', 'WOG', 'WOG en'),
-            poi('аптека', 50.4410, 30.5110, 'service_map', 'Аптека'),
+            poi('аптека', 50.4402, 30.5102, 'service_map', 'Аптека'),
             'broken line without tabs',
             poi('кафе', 50.4420, 30.5120, 'food', 'Кафе'),
         ]
@@ -162,8 +162,11 @@ class WorldMapTests(unittest.TestCase):
               search = function() return {} end, searchPois = function() return {} end},
             drawMap = function(w, h, view)
               mapView = view
-              local function screen(lat, lon) return (lon - 30.5) * 10000 + 800, (50.45 - lat) * 10000 + 450 end
-              view.overlay(1, screen, view.zoom, 50.5, 30.4, 50.4, 30.6, mouse, mouse ~= nil, {x = 340, y = 0}, {x = 1600, y = 900})
+              -- a pan of (panX, panY) px moves every point and the box by as much
+              local dx, dy = panX or 0, panY or 0
+              local function screen(lat, lon) return (lon - 30.5) * 10000 + 800 + dx, (50.45 - lat) * 10000 + 450 + dy end
+              local w, n = 30.4 - dx / 10000, 50.5 + dy / 10000
+              view.overlay(1, screen, view.zoom, n, w, n - 0.1, w + 0.2, mouse, mouse ~= nil, {x = 340, y = 0}, {x = 1600, y = 900})
             end,
             car = function() return car end, start = function() return {lat = 50.45, lon = 30.5}, 16 end,
             canLand = function() return {title = 'Україна'} end, land = function() landed = true end,
@@ -214,6 +217,60 @@ class WorldMapTests(unittest.TestCase):
         self.lua.eval('mapView').zoom = 8
         self.worldmap.draw(api)
         self.assertGreaterEqual(self.lua.eval('calls').circle, 2 * drawn.n)
+
+    def crowd(self, count=4000):
+        """count points spread over the fake view, one category each of three"""
+        cats = ['castle', 'food', 'shop_map']
+        return [poi(f'p{k}', 50.401 + (k % 80) * 0.00122, 30.401 + (k // 80) * 0.0039, cats[k % 3], f'P{k}')
+                for k in range(count)]
+
+    def test_the_markers_are_capped_and_a_drag_does_not_collect_again(self):
+        self.add('Тест', self.crowd())
+        self.build(5000)
+        self.worldmap.MAX_ICONS = 50
+        api = self.api()
+        self.worldmap.draw(api)
+        drawn = self.worldmap.drawn
+        self.assertEqual(drawn.n, 50, 'never more markers than the cap, however many points the view has')
+        collects = self.worldmap.collects
+        first = {drawn.i[k]: (drawn.x[k], drawn.y[k]) for k in range(1, drawn.n + 1)}
+        self.lua.execute('panX, panY = 37, -21')
+        self.worldmap.draw(api)
+        self.assertEqual(self.worldmap.collects, collects, 'a short drag stays in the collected box')
+        moved = {drawn.i[k]: (drawn.x[k], drawn.y[k]) for k in range(1, drawn.n + 1)}
+        same = [i for i in moved if i in first]
+        self.assertGreater(len(same), 20)
+        for i in same:
+            self.assertAlmostEqual(moved[i][0] - first[i][0], 37, places=6)
+            self.assertAlmostEqual(moved[i][1] - first[i][1], -21, places=6)
+        # a drag past the padding collects again; the squares are the world's, so a point that
+        # won its square keeps it
+        self.lua.execute('panX, panY = 1600, 0')
+        self.worldmap.draw(api)
+        self.assertEqual(self.worldmap.collects, collects + 1)
+
+    def test_a_wide_collect_is_spread_over_frames_and_the_last_markers_stay(self):
+        self.add('Тест', self.crowd(20000))
+        self.build(5000)
+        api = self.api()
+        self.worldmap.draw(api)
+        before = self.worldmap.drawn.n
+        self.assertGreater(before, 0)
+        self.worldmap.SLICE = -1   # yield at every pause (os.clock steps by a millisecond on Windows)
+        self.worldmap.state.off['food'] = True
+        self.worldmap.state.filterRev += 1
+        frames = 0
+        collects = self.worldmap.collects
+        while self.worldmap.collects == collects:
+            self.worldmap.draw(api)
+            frames += 1
+            self.assertLess(frames, 500)
+            if self.worldmap.collects == collects:
+                self.assertGreater(self.worldmap.drawn.n, 0, 'the last markers stay while the new ones are collected')
+                cats = {self.index.category(self.worldmap.drawn.e[k], self.worldmap.drawn.i[k])
+                        for k in range(1, self.worldmap.drawn.n + 1)}
+                self.assertNotIn('food', cats, 'a category switched off leaves at once')
+        self.assertGreater(frames, 2, 'a slice a frame, not the whole box at once')
 
     def test_a_click_picks_and_esc_shuts_and_the_game_pauses(self):
         pois, tags = self.kyiv()

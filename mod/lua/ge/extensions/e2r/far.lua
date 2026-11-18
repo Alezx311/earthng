@@ -510,7 +510,7 @@ local function snap(v, s) return floor(v / s + .5) * s end
 -- (a square aligned to L+1's grid, inside the natural square of L), level 0 the ring from the
 -- DEM horizon out to that hole. holeR: where built ground round p ends (quads inside are
 -- skipped); dropR: the planned DEM horizon (level 0 sinks under it, the Earth bends past it).
-local function plan(p, holeR, dropR)
+local function plan(p, holeR, dropR, cells)
   local out, N, top = {}, FAR.N, FAR.LEVELS - 1
   for L = 0, top do
     local s = FAR.BASE * 2 ^ L
@@ -524,9 +524,23 @@ local function plan(p, holeR, dropR)
   local h = N / 2 * out[top].s
   out[top].square = {out[top].cx - h, out[top].cy - h, out[top].cx + h, out[top].cy + h}
   for L = top - 1, 0, -1 do out[L].square = out[L + 1].hole end
-  out[0].circle = {p.x, p.y, holeR, dropR or holeR}
+  out[0].circle = {p.x, p.y, holeR, dropR or holeR, cells}
   return out
 end
+
+-- the square (x0, y0, size) lies wholly on cells of the set (M.cellsBuilt)
+local function onBuilt(cells, x0, y0, size)
+  local t, set = cells.t, cells.set
+  for i = floor(x0 / t), floor((x0 + size - .01) / t) do
+    local col = set[i]
+    if not col then return false end
+    for j = floor(y0 / t), floor((y0 + size - .01) / t) do
+      if not col[j] then return false end
+    end
+  end
+  return true
+end
+M.onBuilt = onBuilt
 
 -- the drop of level 0 where it lies under the DEM horizon (0 past it)
 local function nearDrop(d, holeR)
@@ -600,6 +614,10 @@ local function buildLevel(L, P, cam, pause, out)
         local fx = max(abs(x0 - circle[1]), abs(x0 + s - circle[1]))
         local fy = max(abs(y0 - circle[2]), abs(y0 + s - circle[2]))
         skip = fx * fx + fy * fy < circle[3] * circle[3]
+        -- past the disc: a quad wholly on built ground (circle[5], M.cellsBuilt). At speed the
+        -- tiles behind go, the disc shrank to them (~200 m), and level 0, sunk 6 m, stood over
+        -- every built tile ahead: flat planes across the road and its rim as a terraced wall (18.11)
+        if not skip and circle[5] then skip = onBuilt(circle[5], x0, y0, s) end
       end
       if not skip then
         -- the quad's nearest point to the camera past the far plane
@@ -1199,10 +1217,35 @@ function M.groundReach(p, maxR, built, t)
   return best
 end
 
+-- The t-metre cells round p, wholly within maxR, whose ground built(i, j, x, y) says is in:
+-- {t = t, set = {[i] = {[j] = true}}}. Level 0 leaves out its quads lying wholly on them, so it
+-- fills the cells still missing (those behind the car at speed) and not the built ones beyond
+-- them. Past maxR it stays as it was: sunk under the DEM horizon's own ground.
+function M.cellsBuilt(p, maxR, built, t)
+  t = t or 500
+  local set, n = {}, math.ceil(maxR / t) + 1
+  local ci, cj = floor(p.x / t), floor(p.y / t)
+  local r2 = maxR * maxR
+  for i = ci - n, ci + n do
+    local x0 = i * t
+    local dx = max(abs(x0 - p.x), abs(x0 + t - p.x))
+    for j = cj - n, cj + n do
+      local y0 = j * t
+      local dy = max(abs(y0 - p.y), abs(y0 + t - p.y))
+      if dx * dx + dy * dy <= r2 and built(i, j, x0 + t / 2, y0 + t / 2) then
+        local col = set[i]
+        if not col then col = {}; set[i] = col end
+        col[j] = true
+      end
+    end
+  end
+  return {t = t, set = set}
+end
+
 -- p: the focus (car or free camera); source: native.farSource(); holeR: where built ground
 -- round p ends (M.groundReach); dropR: the planned DEM horizon (default holeR), which level 0
 -- sinks under; track(id, triangles): the collision owner
-function M.update(p, source, holeR, track, enabled, dropR)
+function M.update(p, source, holeR, track, enabled, dropR, built, cellT)
   trackFn = track
   dropR = dropR or holeR
   if not enabled or not ffi or not source or not source.region then
@@ -1315,6 +1358,8 @@ function M.update(p, source, holeR, track, enabled, dropR)
   end
   local marksDue = not LV.marks or (LV.marks.x - p.x) ^ 2 + (LV.marks.y - p.y) ^ 2 > 1500 ^ 2
   if not from and not marksDue then return end
+  -- the built cells at the start of the build: shownHole/pendingHole carry them (world.lua bury)
+  if from and built then P[0].circle[5] = M.cellsBuilt(p, dropR, built, cellT) end
   local pos = {x = p.x, y = p.y}
   local cam = {x = pos.x, y = pos.y, z = p.z or 0, r0 = dropR}
   job = {plan = P, out = {}, p = pos, cam = cam}
@@ -1392,11 +1437,11 @@ function M.buildMarks(R, p, holeR)
   return out.marks
 end
 
-function M.buildLevels(R, p, holeR, levels, dropR)
+function M.buildLevels(R, p, holeR, levels, dropR, built, cellT)
   local saved = RS
   RS = {list = {R}, byRegion = {}, home = R, pause = function() end, source = {region = R.region, regions = {},
     geographic = function() return 0, 0 end, localPoint = function() return 0, 0 end}}
-  local P = plan(p, holeR, dropR)
+  local P = plan(p, holeR, dropR, built and M.cellsBuilt(p, dropR or holeR, built, cellT) or nil)
   local cam, out = {x = p.x, y = p.y, z = p.z or 0, r0 = dropR or holeR}, {}
   for L = (levels or FAR.LEVELS) - 1, 0, -1 do buildLevel(L, P, cam, function() end, out) end
   RS = saved

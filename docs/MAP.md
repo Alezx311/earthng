@@ -37,10 +37,15 @@ pauses while it is open (a switch in the panel; a game the player paused stays p
   their OSM tag (`poiindex.SUB`): fuel, EV charging, car wash, car repair, tyres, pharmacy, bank,
   post; cafe, restaurant, fast food, bar; museum, zoo, theme park, ruins; park, stadium, pool,
   cinema, theatre; bus stop and station. A fuel station stands before the other services.
-- **Points on the map.** Below zoom 10 the points are dots in their group's colour (one per 7 px
-  square, at most 3000): where things are. From zoom 10, icons (`pins.icon`, one per 24 px square,
-  at most 320), the best of a crowded square first (`pins.STYLE` priority, a castle before a
-  kiosk); names beside them from zoom 15 or a category's `labelZoom`, before the place names.
+- **Points on the map.** Below zoom 10 the points are dots in their group's colour (one per 9 px
+  square, at most `MAX_DOTS` 1200): where things are. From zoom 10, icons (`pins.icon`, one per
+  24 px square, at most `MAX_ICONS` 240), the best of a crowded square first (`pins.STYLE`
+  priority, a castle before a kiosk); names beside them (at most 60) from zoom 15 or a category's
+  `labelZoom`, before the place names. The squares are fixed to the world, not the screen. The
+  points are collected only when the zoom or the filters change or the view leaves the collected
+  box (the view and half of it again on each side), 2 ms a frame (`SLICE`) with the last points
+  shown meanwhile; a frame only shifts and draws them (zoomed out over 1.08 M points: under
+  3.5 ms a frame, a drag 0.1 ms).
 - **Hover.** The point under the cursor gets a ring and a card: name, kind and pack, address,
   fuels, opening hours, phone, website, cuisine, operator, brand, wheelchair access, elevation,
   heritage, Wikipedia, the OSM kind (`amenity=fuel`) and `osm.org/node/<id>`, coordinates, the

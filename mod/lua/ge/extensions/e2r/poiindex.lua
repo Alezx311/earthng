@@ -281,9 +281,11 @@ function M.counts(out)
 end
 
 -- Every enabled point of the box, or the best `per` of each grid cell: add(e, i, level) for each.
--- enabled: category number -> true.
-function M.collect(w, s, e, n, per, enabled, add)
+-- enabled: category number -> true; pause (optional) is called every few hundred cells, so a
+-- caller in a coroutine can spread a wide box over frames (worldmap.lua).
+function M.collect(w, s, e, n, per, enabled, add, pause)
   local G, C = M.GRID, M.COARSE
+  local walked = 0
   w, e = math.max(-180, w), math.min(180, e)
   local cy0, cy1 = floor((s + 90) / G), floor((n + 90) / G)
   local cx0, cx1 = floor((w + 180) / G), floor((e + 180) / G)
@@ -299,6 +301,8 @@ function M.collect(w, s, e, n, per, enabled, add)
             for j = 1, #list do
               local k = list[j]
               local cy, cx = floor(k / LON_CELLS), k % LON_CELLS
+              walked = walked + 1
+              if pause and walked % 256 == 0 then pause() end
               if cy >= cy0 and cy <= cy1 and cx >= cx0 and cx <= cx1 then
                 local f, taken = first[k], 0
                 local last = f + math.min(count[k], M.SCAN) - 1

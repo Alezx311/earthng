@@ -377,9 +377,20 @@ function M.loadEngine(state)
   end
 end
 
-local function land()
+-- why: who asked (the log names it). A landing drops every tile, the far ring, the traffic and
+-- the parked cars and builds the place anew: from the driver's seat it reads as the whole world
+-- reloading (18.11: seven such 'reloads' in three sessions were landings, none from streaming).
+local function land(why)
   if not S.marker then return end
   if NATIVE and not native.at(S.marker.lat, S.marker.lon) then return end
+  local away = ''
+  if S.state == 'driving' and NATIVE and native.localPoint then
+    local veh, x, y = getPlayerVehicle(0), native.localPoint(S.marker.lat, S.marker.lon)
+    local car = veh and veh:getPosition()
+    if car and x then away = string.format(', %.0f m from the car', math.sqrt((x - car.x) ^ 2 + (y - car.y) ^ 2)) end
+  end
+  if log then log('I', logTag, string.format('landing at %.5f, %.5f asked by %s (state %s%s)', S.marker.lat, S.marker.lon,
+    tostring(why or '?'), tostring(S.state), away)) end
   if M.navigator then M.navigator.clear() end   -- the old route is in the old region's frame
   if M.signals then M.signals.clear() end
   S.location = nil
@@ -2768,7 +2779,7 @@ local function updateTiles()
         S.coll = S.coll or collision.new()
         M.farOwner = M.farOwner or {horizon = true}
         S.coll:track(M.farOwner, id, true, triangles)
-      end, on, holeR)
+      end, on, holeR, LIMIT.groundBuilt, S.stream and S.stream.tile or 500)
       if not okFar then result.farError = tostring(errFar) end
       LIMIT.releaseHeld()
       result.far = M.far.status()
@@ -3057,7 +3068,20 @@ function LIMIT.underHole(hole, x0, y0, size)
   if not hole then return false end
   local dx = math.max(x0, math.min(hole[1], x0 + size)) - hole[1]
   local dy = math.max(y0, math.min(hole[2], y0 + size)) - hole[2]
-  return dx * dx + dy * dy < hole[3] * hole[3]
+  if dx * dx + dy * dy < hole[3] * hole[3] then return true end
+  -- past the disc level 0 also leaves out the cells built when it was planned (far.lua cellsBuilt)
+  local cells = hole[5]
+  if not cells then return false end
+  local t = cells.t
+  for i = math.floor(x0 / t), math.floor((x0 + size - .01) / t) do
+    local col = cells.set[i]
+    if col then
+      for j = math.floor(y0 / t), math.floor((y0 + size - .01) / t) do
+        if col[j] then return true end
+      end
+    end
+  end
+  return false
 end
 
 -- the square lies under the hole in sight or under the one of the batch going in
@@ -4799,7 +4823,7 @@ local function drawLandingBar()
       im.PushStyleColor2(im.Col_Button, theme.green)
       im.PushStyleColor2(im.Col_ButtonHovered, theme.greenHover)
       im.PushStyleColor2(im.Col_ButtonActive, theme.greenActive)
-      if im.Button(L('Висадитися тут', 'Land here'), im.ImVec2(200, 30)) then land() end
+      if im.Button(L('Висадитися тут', 'Land here'), im.ImVec2(200, 30)) then land('Land here in the picker') end
       im.PopStyleColor(3)
       im.SameLine()
       -- while driving: the route to the point instead of a new landing (the driven region only)
@@ -4829,7 +4853,7 @@ local function drawLandingBar()
       end
       if S.liveArmed and native.at(S.marker.lat, S.marker.lon) then
         S.liveArmed = false
-        land()
+        land('a finished in-game download')
       end
     else
       im.TextColored(theme.warn, string.format(L('%.5f, %.5f - тут немає даних. Оберіть зелену зону або встановіть пакет.',
@@ -5166,7 +5190,7 @@ function LIMIT.worldApi()
     canLand = function(lat, lon) return NATIVE and native.at(lat, lon) or nil end,
     land = function(lat, lon)
       setMarker(lat, lon)
-      land()
+      land('Land here on the world map')
       S.bigMap = false
     end,
     canNavigate = function() return M.navigator ~= nil and S.state == 'driving' end,
@@ -5197,7 +5221,7 @@ function LIMIT.drawBigMap()
   if not S.big.onClick then
     S.big.onClick = function(lat, lon)
       goTo(lat, lon, S.big.zoom or 12)
-      land()
+      land('a click on the old big map')
       S.bigMap = false
     end
   end
@@ -5329,12 +5353,13 @@ local function inOurLevel()
   return f:find('/e2r_world/', 1, true) ~= nil
 end
 
-local function refreshCountries()
+local function refreshCountries(why)
   if not NATIVE then return end
   native.refresh()
   S.status, S.coverage, S.centredOnPackage = native.status(), nil, nil
   -- A removed/disabled pack must stop contributing geometry as well as map coverage.
   if S.stream then
+    if log then log('I', logTag, 'the world is dropped: ' .. tostring(why or 'mods changed')) end
     LIMIT.releaseHeld(true)
     for key, tile in pairs(S.tiles) do
       retireForest(tile)
@@ -5370,9 +5395,9 @@ local function refreshCountries()
   end
 end
 
-function M.onModManagerModsMounted() refreshCountries() end
-function M.onModActivated() refreshCountries() end
-function M.onModDeactivated() refreshCountries() end
+function M.onModManagerModsMounted() refreshCountries('mods mounted') end
+function M.onModActivated(mod) refreshCountries('mod activated ' .. tostring(type(mod) == 'table' and mod.modname or mod)) end
+function M.onModDeactivated(mod) refreshCountries('mod deactivated ' .. tostring(type(mod) == 'table' and mod.modname or mod)) end
 local function restorePackState()
   restoreSkyDriver()
   S.envAgain, S.exposurePending, S.exposureRetryAt = nil, nil, nil
@@ -5583,7 +5608,7 @@ local function runTest()
         table.insert(result.hops, {n = S.hop, lat = h[1], lon = h[2], from = S.state, at = S.now})
         S.pickerOpen = true
         goTo(h[1], h[2], 15)
-        land()
+        land('a test hop')
         saveResult()
       end
       return
@@ -5606,7 +5631,7 @@ local function runTest()
       shot('2-marker')
       S.liveArmed = false
       S.testLanded = true
-      land()
+      land('the test')
     end
   elseif S.state == 'driving' and not S.testDriving and S.now - S.phaseAt > 4 then
     local veh = getPlayerVehicle(0)

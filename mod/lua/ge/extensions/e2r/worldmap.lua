@@ -6,8 +6,12 @@
 -- cursor. A click only picks a point or a place; its card offers the route there and a landing,
 -- so a stray click never moves the car. The game pauses while the map is open (a layer switch).
 --
--- Every frame: the candidates are collected only when the view or the filters change, markers go
--- into reused arrays, the dots share one reused ImVec2, labels and cards are cached by point.
+-- Every frame: the markers are collected only when the zoom or the filters change or the view
+-- leaves the box they were collected for (the view and PAD of it again on each side), thinned
+-- to one a square of a grid fixed to the world (a drag never swaps the point of a square) and kept
+-- best first with their screen place; a frame only shifts them by the drag and draws at most
+-- MAX_DOTS or MAX_ICONS. Markers go into reused arrays, the dots share one reused ImVec2, labels
+-- and cards are cached by point.
 local M = {}
 local okFfi, ffi = pcall(require, 'ffi')
 local index = require('ge/extensions/e2r/poiindex')
@@ -29,8 +33,12 @@ M.index = index
 
 M.PANEL = 340              -- px: the side panel
 M.DOT_ZOOM = 10            -- below it the points are dots, from it icons
-M.DOT_CELL, M.ICON_CELL = 7, 24   -- px: one marker per square of this side
-M.MAX_DOTS, M.MAX_ICONS, M.MAX_LABELS = 3000, 320, 60
+M.DOT_CELL, M.ICON_CELL = 9, 24   -- px: one marker per square of this side
+-- markers drawn a frame at most: every dot is two engine calls, an icon several (3000 dots and
+-- 27-40 thousand candidates projected a frame made the zoomed-out map slow, 18.11)
+M.MAX_DOTS, M.MAX_ICONS, M.MAX_LABELS = 1200, 240, 60
+M.PAD = 0.5                -- the collected box: the view and this share of it again on each side
+M.SLICE = 0.002            -- s of collecting a frame (os.clock); the last markers stay meanwhile
 M.LABEL_ZOOM = 15          -- names next to icons from this zoom (or a category's labelZoom)
 
 local GROUP_ORDER = {'car', 'transport', 'stay', 'shop', 'money', 'health', 'sight', 'nature', 'water', 'civic'}
@@ -150,20 +158,88 @@ local function add(e, i, level)
   levelCount[level] = n
   bucketE[level][n], bucketI[level][n] = e, i
 end
-local cache = {}
-local function collect(z, w, s, e, n)
-  if cache.z == z and cache.w == w and cache.s == s and cache.e == e and cache.n == n and cache.key == enabledKey then return end
-  cache.z, cache.w, cache.s, cache.e, cache.n, cache.key = z, w, s, e, n, enabledKey
+-- The kept markers: two sets, the one drawn and the one being made. A set holds each marker's
+-- screen place when it was collected, where lat 0, lon 0 was then (refX, refY) and the zoom.
+local function newSet() return {n = 0, x = {}, y = {}, e = {}, i = {}, refX = 0, refY = 0} end
+local shown, making = newSet(), newSet()
+M.kept = shown
+M.collects = 0
+local job, target = nil, {}
+local occupied, stamp = {}, 0   -- one marker a square: square -> stamp of the collect that took it
+local LAT = 85.06
+
+-- Collect the box into a set and thin it to one marker a square of a grid fixed to the world
+-- (anchored at lat 0, lon 0, so a later collect keeps the same point of a square), best first:
+-- the buckets go by priority. pause() yields when the frame's slice is spent.
+local function build(set, z, w, s, e, n, screen, pause)
   for l = 1, LEVELS do levelCount[l] = 0 end
   local cell = z < M.DOT_ZOOM and M.DOT_CELL or M.ICON_CELL
   local px = index.GRID / 360 * 256 * 2 ^ z   -- an index cell on the screen
   local per = px <= cell and 1 or min(400, math.ceil((px / cell) ^ 2))
-  index.collect(w, s, e, n, per, enabled, add)
+  index.collect(w, s, e, n, per, enabled, add, pause)
+  local rx, ry = screen(0, 0)
+  local xa, ya = screen(n, w)
+  local xb, yb = screen(s, e)
+  local fx0, fy0 = floor((xa - rx) / cell), floor((ya - ry) / cell)
+  local nx, ny = floor((xb - rx) / cell) - fx0 + 1, floor((yb - ry) / cell) - fy0 + 1
+  stamp = stamp + 1
+  local X, Y, E, I, k = set.x, set.y, set.e, set.i, 0
+  for level = 1, LEVELS do
+    local bE, bI = bucketE[level], bucketI[level]
+    for j = 1, levelCount[level] do
+      local en, i = bE[j], bI[j]
+      local x, y = screen(en.lat[i], en.lon[i])
+      local fx, fy = floor((x - rx) / cell) - fx0, floor((y - ry) / cell) - fy0
+      -- a point of an index cell over the box's edge stays out: it is off the box
+      if fx >= 0 and fx < nx and fy >= 0 and fy < ny then
+        local key = fy * nx + fx + 1
+        if occupied[key] ~= stamp then
+          occupied[key], k = stamp, k + 1
+          X[k], Y[k], E[k], I[k] = x, y, en, i
+        end
+      end
+      if j % 512 == 0 then pause() end
+    end
+  end
+  for j = k + 1, set.n do E[j] = nil end
+  set.n, set.refX, set.refY, set.z = k, rx, ry, z
+end
+
+-- Keep the markers over the view: a new collect when the zoom or the filters change or the view
+-- leaves the box of the last one (the view and PAD of it on each side), a slice a frame; the
+-- markers shown stay until it is done. True when a collect is under way.
+local function collect(z, w, s, e, n, screen)
+  w, e, s, n = max(-180, w), min(180, e), max(-LAT, s), min(LAT, n)
+  local t = target
+  if not (t.z == z and t.key == enabledKey and w >= t.w and e <= t.e and s >= t.s and n <= t.n) then
+    local pw, ph = (e - w) * M.PAD, (n - s) * M.PAD
+    t.z, t.key = z, enabledKey
+    t.w, t.e, t.s, t.n = max(-180, w - pw), min(180, e + pw), max(-LAT, s - ph), min(LAT, n + ph)
+    local set, bw, bs, be, bn = making, t.w, t.s, t.e, t.n
+    job = coroutine.create(function(start)
+      local clock = os.clock
+      local function pause()
+        if clock() - start > M.SLICE then start = coroutine.yield() end
+      end
+      build(set, z, bw, bs, be, bn, screen, pause)
+    end)
+  end
+  if not job then return false end
+  local ok, err = coroutine.resume(job, os.clock())
+  if not ok then
+    job = nil
+    if log then log('W', 'e2r.worldmap', 'collecting the points failed: ' .. tostring(err)) end
+    return false
+  end
+  if coroutine.status(job) ~= 'dead' then return true end
+  job = nil
+  shown, making = making, shown
+  M.kept, M.collects = shown, M.collects + 1
+  return false
 end
 M.collect = collect
 M.levelCount = levelCount
 
-local occupied, stamp = {}, 0
 local drawnX, drawnY, drawnE, drawnI = {}, {}, {}, {}
 M.drawn = {n = 0, x = drawnX, y = drawnY, e = drawnE, i = drawnI}
 local colours, P             -- U32 colours made once; one ImVec2 for every dot
@@ -193,33 +269,34 @@ local function overlay(api, dl, screen, z, north, west, south, east, mouse, hove
   if not colours then makeColours(api.col) end
   if not P then P = im.ImVec2(0, 0) end
   refreshEnabled()
-  collect(z, west, south, east, north)
-  stamp = stamp + 1
+  collect(z, west, south, east, north, screen)
   local dots = z < M.DOT_ZOOM
-  local cell = dots and M.DOT_CELL or M.ICON_CELL
   local most = dots and M.MAX_DOTS or M.MAX_ICONS
   local white, n = colours.white, 0
   local x0, y0, x1, y1 = r0.x - 8, r0.y - 8, r1.x + 8, r1.y + 8
-  for level = 1, LEVELS do
-    local bE, bI = bucketE[level], bucketI[level]
-    for k = 1, levelCount[level] do
-      if n >= most then break end
-      local e, i = bE[k], bI[k]
-      local x, y = screen(e.lat[i], e.lon[i])
-      if x >= x0 and x <= x1 and y >= y0 and y <= y1 then
-        local key = floor(x / cell) * 65536 + floor(y / cell)
-        local st = occupied[key] ~= stamp and styleOf(e.cat[i])
-        if st then
-          occupied[key], n = stamp, n + 1
-          drawnX[n], drawnY[n], drawnE[n], drawnI[n] = x, y, e, i
-          local fill = colours.group[st.group] or colours.dark
-          if dots then
-            P.x, P.y = x, y
-            im.ImDrawList_AddCircleFilled(dl, P, 3.4, white, 8)
-            im.ImDrawList_AddCircleFilled(dl, P, 2.5, fill, 8)
-          else
-            pins.icon(im, dl, st, x, y, fill, white)
-          end
+  -- The shown markers moved by the drag since they were collected: lat 0, lon 0 moved as much
+  -- as every point. While a new zoom is collected the last zoom's markers scale round it (the
+  -- map's pixels double a zoom step) and a category just switched off is left out.
+  local set = shown
+  local rx, ry = screen(0, 0)
+  local f = set.z and 2 ^ (z - set.z) or 1
+  local X, Y, E, I, srx, sry = set.x, set.y, set.e, set.i, set.refX, set.refY
+  for k = 1, set.n do
+    if n >= most then break end
+    local x, y = rx + (X[k] - srx) * f, ry + (Y[k] - sry) * f
+    if x >= x0 and x <= x1 and y >= y0 and y <= y1 then
+      local e, i = E[k], I[k]
+      local st = enabled[e.cat[i]] and styleOf(e.cat[i])
+      if st then
+        n = n + 1
+        drawnX[n], drawnY[n], drawnE[n], drawnI[n] = x, y, e, i
+        local fill = colours.group[st.group] or colours.dark
+        if dots then
+          P.x, P.y = x, y
+          im.ImDrawList_AddCircleFilled(dl, P, 3.4, white, 8)
+          im.ImDrawList_AddCircleFilled(dl, P, 2.5, fill, 8)
+        else
+          pins.icon(im, dl, st, x, y, fill, white)
         end
       end
     end

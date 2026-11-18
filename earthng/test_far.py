@@ -184,6 +184,45 @@ class FarLevelTests(unittest.TestCase):
             elif d < 4600 + 1000:   # sunk, and bent from the planned horizon on
                 self.assertAlmostEqual(z, 100 - drop - float(self.far.curve(d, 4600)), delta=.01)
 
+    def test_level_zero_leaves_out_the_built_cells_past_its_disc(self):
+        # 18.11: at speed the tiles behind the car go, the disc shrank to them (~200 m), and level 0,
+        # sunk only 6 m, stood over every built tile ahead: flat planes across the road and a
+        # terraced wall. Past the disc it now leaves out the quads lying wholly on built cells.
+        lua = self.lua
+        cam = (150.0, -90.0)
+        lua.execute('ahead = function(i, j, x, y) return x > 0 end')
+        lua.execute(f'out, P = far.buildLevels(R, {{x = {cam[0]}, y = {cam[1]}, z = 102}}, 200, 1, 4600, ahead, 500)')
+        built = lua.globals().out[0]
+        px, py = float(built.pos[1]), float(built.pos[2])
+        ground = []
+        for b in range(1, len(built.bands) + 1):
+            band = built.bands[b]
+            for k in range(1, len(band.meshes) + 1):
+                m = band.meshes[k]
+                if str(m.material) != 'e2rfar_meadow':
+                    continue
+                ground += [(float(m.verts[i].x) + px, float(m.verts[i].y) + py, float(m.verts[i].z))
+                           for i in range(1, len(m.verts) + 1)]
+
+        def inside(x0, x1, y0, y1):
+            return [v for v in ground if x0 < v[0] < x1 and y0 < v[1] < y1 and v[2] > 90]
+        # built ground ahead, well inside the planned horizon: nothing of level 0 over it
+        self.assertEqual(inside(600, 3000, -2000, 2000), [])
+        # the cells still missing (behind): level 0 fills them up to its small disc
+        behind = inside(-3000, -600, -2000, 2000)
+        self.assertGreater(len(behind), 100)
+        # past the planned horizon it stays, sunk under the DEM horizon's own ground as before
+        self.assertGreater(len(inside(4800, 5600, -500, 500)), 0)
+        # cells are taken only wholly inside the planned radius
+        cells = lua.eval('far.cellsBuilt({x = 150, y = -90}, 4600, ahead, 500)')
+        for i in cells.set.keys():
+            for j in cells.set[i].keys():
+                x0, y0 = i * 500, j * 500
+                far_x = max(abs(x0 - cam[0]), abs(x0 + 500 - cam[0]))
+                far_y = max(abs(y0 - cam[1]), abs(y0 + 500 - cam[1]))
+                self.assertLessEqual(math.hypot(far_x, far_y), 4600)
+                self.assertGreaterEqual(x0, 0)
+
     def test_ground_reach_stops_at_the_first_missing_cell_with_data(self):
         lua = self.lua
         lua.execute('''

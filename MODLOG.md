@@ -2,6 +2,32 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-18: a smooth world map, level 0 off built tiles, landings named in the log
+
+- `worldmap.lua`: the markers are collected only when the zoom or the filters change or the view
+  leaves the collected box (the view and half of it again on each side). The collection is
+  sliced over frames (`SLICE` 2 ms; the last markers stay meanwhile), thinned to one per 9 px
+  (dots) or 24 px (icons) square of a grid fixed to the world, kept best first with their
+  screen place. A frame only shifts them and draws at most `MAX_DOTS` 1200 / `MAX_ICONS` 240 /
+  `MAX_LABELS` 60. `poiindex.collect` takes a `pause`. Bench on 1.08 M points (Ukraine, New
+  York, California, Moscow Oblast): zooming z2-z12 worst 3.4 ms, mean 0.6 ms; drags mean
+  0.1 ms. It was 3-5 ms static, 6-9 ms panning at z2-5, and 5-20 ms a recollect.
+- `far.lua`: level 0 also leaves out its quads lying wholly on built cells
+  (`cellsBuilt`, cells wholly inside the planned horizon, taken when a build starts and
+  carried as `circle[5]`). At 15 m/s and up the tiles behind the car unload, `groundReach`
+  stopped at them (~200 m), and level 0, sunk only 6 m, stood over every built tile ahead: flat
+  planes across the road and its stepped rim as a wall (user's screenshot). Now it fills only
+  the missing cells. `world.lua` `LIMIT.underHole` counts the cells too, so ground leaving a
+  cell level 0 left out is held until a batch covers it.
+- `world.lua`: every landing writes who asked (`landing at lat, lon asked by ...`, the state,
+  how far from the car), and a mods change that drops the world says so. The periodic "whole
+  world reloads" while driving of 18.11 were landings: in three sessions each one rewrote the
+  manifest's materials byte for byte, respawned the parked cars round a new spawn point, and
+  rebuilt the static collision from ~11k triangles. No streaming path drops every tile.
+- Tests: `test_world_map.py` (cap, a drag does not collect again, a sliced collect keeps the
+  last markers), `test_far.py` `test_level_zero_leaves_out_the_built_cells_past_its_disc`.
+- Not checked in game (the user's game was running).
+
 ## 2026-11-18: walkers off the medians, onto paths, and to benches and doors
 
 - `generator.lua` `WALK`: every nav segment carries `walk`, two strings (left and right in its
