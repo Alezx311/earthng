@@ -64,7 +64,9 @@
 
 **Далечінь (`far`, 13.11).** `earthng-mapbuilder far <pack.zip> --out out/far/<country>` пише на
 регіон растр далечіні (`.bin`, `pack/src/far.rs`) і карту кольору (`.color.dds`, шорсткість
-`_r.data.dds`, `pack/src/far_tex.rs`), 3,2–4,5 с на регіон. Подробиці — [FAR_VIEW.md](FAR_VIEW.md).
+`_r.data.dds`, `pack/src/far_tex.rs`), 1,4–12 с на регіон (карта 4096, Московська область:
+10 регіонів за 71 с). Збірка пака кличе його сама (`native_tool.far`, `build_country._add_far`)
+і кладе файли в `far/` пака. Подробиці — [FAR_VIEW.md](FAR_VIEW.md).
 
 ### Клітинки нативно
 

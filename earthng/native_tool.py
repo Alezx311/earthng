@@ -352,6 +352,33 @@ def routing(pack, emit=print, cancel=None):
                 for info in sorted(lines, key=lambda i: i['region'])]
 
 
+def far(pack, folder, emit=print, cancel=None):
+    """The far view of every region of a pack (earthng-mapbuilder far, docs/FAR_VIEW.md) into
+    folder: <region>.bin, <region>.color.dds and <region>_r.data.dds. Returns the region ids, or
+    None without the native tool (the far stage has no Python copy). Raises RuntimeError."""
+    import json
+    import subprocess
+    exe = tool()
+    if exe is None:
+        return None
+    regions = []
+    with subprocess.Popen([str(exe), 'far', str(pack), '--out', str(folder)], stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True, encoding='utf-8',
+                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)) as process:
+        for line in process.stdout:
+            info = json.loads(line)
+            regions.append(info['region'])
+            emit(f"far view {len(regions)}: {info['region']}, {info['cells']} cells, "
+                 f"{(info['bytes'] + info.get('texture', 0)) / 2**20:.1f} MB")
+            if cancel is not None and cancel.is_set():
+                process.kill()
+                raise InterruptedError('build stopped')
+        error = process.stderr.read()
+    if process.returncode:
+        raise RuntimeError(f'native far failed: {error.strip()[-2000:]}')
+    return sorted(regions)
+
+
 def map_source(pbf, emit=print):
     """What build_map.py's osmium pass reads, natively: (places, roads), places as
     [(lat, lon, [(key, value), ...])] and roads as [(rank, [(lon, lat), ...])] of roads with every

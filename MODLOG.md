@@ -2,6 +2,19 @@
 
 Newest first. How things work now: [docs/README.md](docs/README.md).
 
+## 2026-11-18: every pack carries its far view
+
+- `build_country.py` `_add_far` (after the routing): `native_tool.far` runs `earthng-mapbuilder
+  far` on the finished zip and writes `earthng/countries/<id>/far/<region>.bin`, `.color.dds` and
+  `_r.data.dds` into it, where `far.lua` looks first. The stage was run by hand, so the packs of
+  16-18.11 (Moscow Oblast, New York, California) had no far view and nothing stood past the DEM
+  horizon; only Ukraine's and Kyiv Oblast's lay in the planet. Without the native tool the pack
+  goes out without it and the build says so. EarthNG.exe builds through the same
+  `build_country`, so its packs get it too once the exe is rebuilt from a commit with it.
+- The installed Moscow Oblast, New York and California packs get theirs through the planet:
+  `out/far/<id>` (`build_mod.py` packs every folder there).
+- Tests: `test_native_tool.py` `PackFarTests`.
+
 ## 2026-11-18: a smooth world map, level 0 off built tiles, landings named in the log
 
 - `worldmap.lua`: the markers are collected only when the zoom or the filters change or the view

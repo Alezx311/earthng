@@ -268,6 +268,55 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertEqual(built, [('r1', expected)])
 
 
+class PackFarTests(unittest.TestCase):
+    """build_country._add_far: every pack carries its far view beside regions/ (18.11: Moscow
+    Oblast, New York and California went out without it, and nothing showed past the horizon)."""
+
+    def small_pack(self, tmp):
+        import zipfile
+        import country_format as binary
+        roads = [{'id': '1', 'width': 6.0, 'tags': {'highway': 'primary'}, 'nodes': ['1', '2'],
+                  'points': [[5, 5, 1.25], [600, 500, 1.25]]}]
+        cell = {'terrain': {'nx': 2, 'ny': 2, 'heights': [1., 2., 3., 4.]}, 'roads': roads}
+        pack = Path(tmp) / 'pack.zip'
+        prefix = 'earthng/countries/xx/regions/r1/'
+        with zipfile.ZipFile(pack, 'w', zipfile.ZIP_DEFLATED) as z:
+            z.writestr(prefix + 'manifest.json', json.dumps({'cellSize': 1000, 'blockCells': 8}))
+            payloads = {binary.slot(0, 0): binary.encode_cell(cell, (0, 0)),
+                        binary.slot(1, 0): binary.encode_cell(cell, (1000, 0))}
+            z.writestr(prefix + 'blocks/0_0.bin', binary.encode_block(payloads)[0])
+        return pack
+
+    @unittest.skipUnless(native_tool.tool(), 'native Map Builder not built (cargo build --release in rust/)')
+    def test_the_pack_gets_its_far_view_beside_its_regions(self):
+        import zipfile
+        import build_country
+        with tempfile.TemporaryDirectory() as tmp:
+            pack = self.small_pack(tmp)
+            lines = []
+            build_country._add_far(pack, lines.append)
+            with zipfile.ZipFile(pack) as z:
+                names = set(z.namelist())
+                far = z.read('earthng/countries/xx/far/r1.bin')
+                info = z.getinfo('earthng/countries/xx/far/r1.bin')
+        self.assertTrue(far.startswith(b'EGF1'))
+        self.assertIn('earthng/countries/xx/far/r1.color.dds', names)
+        self.assertIn('earthng/countries/xx/far/r1_r.data.dds', names)
+        self.assertEqual(info.date_time, (2020, 1, 1, 0, 0, 0))
+        self.assertTrue(any(line.startswith('far view 1: r1') for line in lines), lines)
+
+    def test_without_the_native_tool_the_pack_goes_out_as_it_is_and_says_so(self):
+        import zipfile
+        import build_country
+        with tempfile.TemporaryDirectory() as tmp, patch.object(native_tool, 'tool', lambda: None):
+            pack = self.small_pack(tmp)
+            before = pack.read_bytes()
+            lines = []
+            build_country._add_far(pack, lines.append)
+            self.assertEqual(pack.read_bytes(), before)
+        self.assertTrue(any('far view not built' in line for line in lines), lines)
+
+
 class FallbackTests(unittest.TestCase):
     def test_a_failed_native_cut_is_cut_again_in_python(self):
         import country_fetch

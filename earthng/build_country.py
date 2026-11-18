@@ -1204,6 +1204,7 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
             if map_data is not None and section is None:
                 _write_map(archive, map_data, f'earthng/countries/{country_id}/map')
         _add_routing(temporary, jobs, emit, cancel)
+        _add_far(temporary, emit, cancel)
         os.replace(temporary, target)
         shutil.rmtree(output / f'.{target.stem}.parts', ignore_errors=True)
     finally:
@@ -1249,6 +1250,45 @@ def _add_routing(pack, jobs, emit, cancel=None):
             info = zipfile.ZipInfo(f'earthng/countries/{country}/routing/{region}.bin', date_time=(2020, 1, 1, 0, 0, 0))
             info.compress_type, info.external_attr = zipfile.ZIP_DEFLATED, 0o600 << 16
             archive.writestr(info, data)
+
+
+FAR_SUFFIXES = ('.bin', '.color.dds', '_r.data.dds')
+
+
+def _add_far(pack, emit, cancel=None):
+    """The far view of every region (docs/FAR_VIEW.md) in the pack's own far/ folder beside
+    regions/, where far.lua looks first. The step stood apart (earthng-mapbuilder far by hand):
+    the packs of 16-18.11 (Moscow Oblast, New York, California) had none and nothing showed past
+    the DEM horizon; only Ukraine's and Kyiv Oblast's lay in the planet. Without the native tool
+    the pack goes out without them (there is no Python copy) and says so."""
+    import build_routing
+    import native_tool
+    with zipfile.ZipFile(pack) as archive:
+        regions = build_routing.regions_of(archive)
+    if not regions:
+        return
+    with tempfile.TemporaryDirectory(prefix='earthng-far-') as folder:
+        try:
+            built = native_tool.far(pack, folder, emit, cancel)
+        except (RuntimeError, OSError, ValueError) as exc:
+            emit(f'far view not built ({exc}); the pack has no far view')
+            return
+        if built is None:
+            emit('far view not built: no native Map Builder (cargo build --release in rust/)')
+            return
+        with zipfile.ZipFile(pack, 'a', zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+            for region in built:
+                if region not in regions:
+                    continue
+                root = regions[region][:-len(f'regions/{region}/')]
+                for suffix in FAR_SUFFIXES:
+                    path = Path(folder) / f'{region}{suffix}'
+                    if not path.is_file():
+                        continue   # a region without colour map (tex_step 0) has only its .bin
+                    # no clock in the pack: the same sources give the same bytes
+                    info = zipfile.ZipInfo(f'{root}far/{region}{suffix}', date_time=(2020, 1, 1, 0, 0, 0))
+                    info.compress_type, info.external_attr = zipfile.ZIP_DEFLATED, 0o600 << 16
+                    archive.writestr(info, path.read_bytes())
 
 
 def section_region(source, dem, work, core, region_id, outline=None, emit=print):

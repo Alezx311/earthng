@@ -124,10 +124,17 @@ class CountryTests(unittest.TestCase):
         result = self.build()
         with zipfile.ZipFile(result) as archive:
             names = archive.namelist()
-            self.assertTrue(all(name.startswith('earthng/countries/ua/') and name.endswith(('.json', '.bin'))
+            self.assertTrue(all(name.startswith('earthng/countries/ua/') and name.endswith(('.json', '.bin', '.dds'))
                                 for name in names if name != 'earthng/countries/ua/CREDITS.txt'))
             self.assertIn('earthng/countries/ua/CREDITS.txt', names)     # the data's credits travel along
-            self.assertEqual(len(names), 5)  # country, region, one block of two source cells, the credits, the routing graph
+            # the far view (build_country._add_far) comes only from the native Map Builder
+            far = sorted(n for n in names if n.startswith('earthng/countries/ua/far/'))
+            import native_tool
+            if native_tool.tool():
+                self.assertEqual(far, [f'earthng/countries/ua/far/test-region{s}'
+                                       for s in ('.bin', '.color.dds', '_r.data.dds')])
+            # country, region, one block of two source cells, the credits, the routing graph
+            self.assertEqual(len(names), 5 + len(far))
             index = json.loads(archive.read('earthng/countries/ua/manifest.json'))
             self.assertEqual(index['runtime'], 'native')
             self.assertEqual(index['sourceFormat'], country.FORMAT)
