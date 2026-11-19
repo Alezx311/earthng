@@ -26,6 +26,16 @@ of the following data and assets:
   (https://teeregister.mnt.ee/), open data listed as CC BY 4.0 on
   https://andmed.eesti.ee/ . Packs built with it may be redistributed with this credit.
 - Natural Earth: public-domain map data. https://www.naturalearthdata.com/about/terms-of-use/
+- The global photo overview uses NASA's **Blue Marble: Next Generation with Topography**,
+  July 2004 (Reto Stöckli, NASA Earth Observatory), reprojected to Web Mercator and reduced
+  for offline display. [Source imagery](https://science.nasa.gov/earth/earth-observatory/blue-marble-next-generation/base-topography/)
+- The Kyiv and San Francisco city sheets are cropped, reprojected, colour-stretched RGB
+  composites. © ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data
+  (2021) processed by ESA WorldCover consortium.
+  [Data and attribution](https://esa-worldcover.org/en/data-access) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+- Central San Francisco uses USDA National Agriculture Imagery Program orthophotography
+  from May 20, 2024, reprojected from tile `m_3712213_se_10_060_20240520`.
+  [Public-domain NAIP imagery](https://www.usgs.gov/national-map-supporting-themes)
 - The address plates' letters (`real/glyphs` in the planet's art) are rendered from Noto
   Sans Mono Bold, which BeamNG.drive ships in `ui/common/Noto_Sans_Mono`; the font itself
   is not copied. Copyright 2022 The Noto Project Authors, SIL Open Font License 1.1:

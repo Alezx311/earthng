@@ -53,6 +53,8 @@ def builder_files(files, start=('app_service', 'osm_tiles_country')):
                            and f'earthng/{m}.py' not in selected)
     # the planet's Lua, for country_fetch.refresh_planet from committed mod code
     selected.update(n for n in files if n.startswith('mod/'))
+    if 'earthng/area_plan.py' in files:
+        selected.add('earthng/area_land.wkb.gz')
     selected.update(('requirements-fast.txt', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'earthng/fast_tree_materials.json'))
     return {name: files[name] for name in sorted(selected)}
 
@@ -148,7 +150,7 @@ def prepare(planet, countries, out, ref='HEAD', release_url=RELEASE_URL, native=
         raise ValueError(f"the exe expects planet {info['planetVersion']}, {Path(planet).name} is {planet_version(planet)}")
     for path in [Path(planet), *map(Path, countries)]:
         shutil.copyfile(path, out / path.name)
-    for path in sorted([*out.glob('*.zip'), target]):
+    for path in sorted(p for p in out.iterdir() if p.is_file() and p.suffix in {'.zip', '.exe', '.json'}):
         with path.open('rb') as stream:
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
         print(f'{digest}  {path.name}')

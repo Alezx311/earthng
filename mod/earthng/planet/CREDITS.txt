@@ -3,6 +3,18 @@ borders, populated places and country names; 1:110m land as a fallback. Public d
 Source: https://github.com/nvkelso/natural-earth-vector/tree/master/geojson
 Terms: https://www.naturalearthdata.com/about/terms-of-use/
 
+Offline photo sheets (photos/):
+World overview: NASA Blue Marble: Next Generation with Topography (July 2004),
+Reto Stöckli / NASA Earth Observatory. Resampled to Web Mercator.
+https://science.nasa.gov/earth/earth-observatory/blue-marble-next-generation/base-topography/
+Kyiv and San Francisco: © ESA WorldCover project 2021 / Contains modified Copernicus
+Sentinel data (2021) processed by ESA WorldCover consortium. Colour-stretched,
+cropped and reprojected RGB median composite. CC BY 4.0.
+https://esa-worldcover.org/en/data-access · https://creativecommons.org/licenses/by/4.0/
+Central San Francisco: USDA NAIP aerial photography, May 20, 2024.
+Tile m_3712213_se_10_060_20240520, cropped and reprojected. Public domain.
+https://www.usgs.gov/national-map-supporting-themes
+
 Country source data: OpenStreetMap contributors, ODbL 1.0.
 https://www.openstreetmap.org/copyright
 Country packs must retain their source/date and attribution in the manifest.

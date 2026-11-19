@@ -9,6 +9,7 @@
 
 mod runtime;
 mod tiles;
+mod update;
 
 use std::borrow::Cow;
 use std::io::{BufRead, BufReader, Write};
@@ -34,6 +35,8 @@ enum UserEvent {
     Failed(String),
     /// a JSON line from the service, or an event of our own
     Message(String),
+    /// the new exe is staged: close this process so the helper can replace the file
+    Restart,
 }
 
 /// %LOCALAPPDATA%\EarthNG: runtime, data, caches and logs of the exe.
@@ -78,6 +81,9 @@ fn start_service(rt: &Runtime, proxy: EventLoopProxy<UserEvent>) -> Result<Servi
     if let Some(home) = &rt.home {
         std::fs::create_dir_all(home)?;
         command.env("EARTHNG_HOME", home);
+        if let Ok(exe) = std::env::current_exe() {
+            command.env("EARTHNG_EXE", &exe);
+        }
     }
     #[cfg(windows)]
     {
@@ -154,8 +160,31 @@ fn open_external(url: &str) {
     }
 }
 
+fn stop_service(service: &mut Option<Child>, service_in: &Mutex<Option<ChildStdin>>) {
+    service_in.lock().unwrap().take();
+    if let Some(mut child) = service.take() {
+        for _ in 0..30 {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--apply-update") {
+        std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
+        let pid: u32 = args.get(1).context("pid")?.parse().context("pid")?;
+        let sha = args.get(2).context("sha")?;
+        let dest = PathBuf::from(args.get(3).context("dest")?);
+        return update::apply(pid, sha, &dest);
+    }
     std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
+    update::cleanup();
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
     let icon = Icon::from_rgba(include_bytes!("../icon.rgba").to_vec(), 64, 64)?;
@@ -200,6 +229,17 @@ fn main() -> Result<()> {
                     Some("version") => {
                         let answer = json!({"id": message.get("id"), "ok": true, "version": VERSION});
                         let _ = ipc_proxy.send_event(UserEvent::Message(answer.to_string()));
+                    }
+                    Some("apply_update") => {
+                        let answer = match update::stage() {
+                            Ok(()) => json!({"id": message.get("id"), "ok": true, "restarting": true}),
+                            Err(err) => json!({"id": message.get("id"), "ok": false, "error": format!("{err:#}")}),
+                        };
+                        let restart = answer.get("ok").and_then(Value::as_bool) == Some(true);
+                        let _ = ipc_proxy.send_event(UserEvent::Message(answer.to_string()));
+                        if restart {
+                            let _ = ipc_proxy.send_event(UserEvent::Restart);
+                        }
                     }
                     _ => {}
                 }
@@ -250,18 +290,14 @@ fn main() -> Result<()> {
             Event::UserEvent(UserEvent::Message(line)) => {
                 let _ = webview.evaluate_script(&format!("window.earthng&&window.earthng.receive({line})"));
             }
+            Event::UserEvent(UserEvent::Restart) => {
+                // the helper waits until this process exits, then replaces EarthNG.exe
+                stop_service(&mut service, &service_in);
+                *control_flow = ControlFlow::Exit;
+            }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
                 // stdin closed: the service stops its job; the build's own processes end with it
-                service_in.lock().unwrap().take();
-                if let Some(mut child) = service.take() {
-                    for _ in 0..30 {
-                        if matches!(child.try_wait(), Ok(Some(_))) {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                    let _ = child.kill();
-                }
+                stop_service(&mut service, &service_in);
                 *control_flow = ControlFlow::Exit;
             }
             _ => {}

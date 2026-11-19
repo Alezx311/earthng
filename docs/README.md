@@ -1,60 +1,18 @@
-# Документи EarthNG
+# EarthNG documentation
 
-Стан на 2026-11-12: опубліковано 0.9.0 — планета і EarthNG.exe з 9c54127, перевірені в грі (полірування 0.8.7: без гальма збивання, пішоходи без першого ривка, без пауз збирача в їзді). 12.11 усі гілки злиті в `master` і видалені, а незавершені експерименти (ручні об'єкти `wip/manual-overrides`, стики хідників MaGE) відкинуто: працюємо в `master`.
-17.11 у `master`: машини потоку й пішоходи — копії в `DynamicShapeBatch` (`shapebatch.lua`, TSStatic у 0.39), узяті з гілки `codex/native-bridge-benchmark` без пулу Rust-потоків.
-Для гравця — кореневий [README](../README.md). Правила роботи в репозиторії — [AGENTS.md](../AGENTS.md).
+Start with the [player README](../README.md). Repository instructions are in [AGENTS.md](../AGENTS.md).
 
-## Довідка: як влаштовано зараз
-
-| Документ | Про що |
+| Guide | Topic |
 | --- | --- |
-| [NATIVE_MODS.md](NATIVE_MODS.md) | Планета і паки країн: розподіл, формат v2 (`EGB2`), збирання паків автором, перевірки; далі журнал генератора, трафіку й потоку машин |
-| [MAPBUILDER_APP.md](MAPBUILDER_APP.md) | EarthNG.exe: вбудований runtime, протокол сторінки й сервісу, Overpass і PBF Geofabrik як джерела тайлів, проєкт карти |
-| [MAPBUILDER_RS.md](MAPBUILDER_RS.md) | Нативні етапи збирача на Rust: що перенесено, заміри, правило «ті самі байти», як перевіряти |
-| [FAR_VIEW.md](FAR_VIEW.md) | Далечінь до 100 км: растр регіону, карта кольору (поля, ліси, міста, дороги), рантайм `far.lua` з кривиною Землі, ворота кадрів `pace.lua`, нарізка внутрішніх тайлів мультиполігонів (select 3) |
-| [MAP.md](MAP.md) | Офлайн-мапа віджета: пошук, оглядові дороги, дані `map/` у паках і планеті; карта світу на M з фільтрами точок і деталями OSM при наведенні (`poi_tags.tsv`) |
-| [NAVIGATION.md](NAVIGATION.md) | Рядок «вулиця, місто, регіон», сусідні вулиці перед перехрестям і з'їзди, граф маршрутів R4, маршрут до мітки |
-| [SIGNS.md](SIGNS.md) | Знаки й світлофори, що перемикаються, трафік гри на них, лівосторонній рух, знаки за країною (`signstyle.lua`) |
-| [VENUES.md](VENUES.md) | Сервіси біля дороги, вітрини, функціональні зони, частини будівель |
-| [RETAIL_DATA.md](RETAIL_DATA.md) | АЗС, мережі магазинів, McDonald's, Нова пошта: дані OSM, вивіски й логотипи |
-| [NATURE.md](NATURE.md) | Покриття, клімат і біоми, дерева в містах, трава й підлісок |
-| [VISUAL_1_0.md](VISUAL_1_0.md) | Вигляд паку «Реалістичний» до 1.0: зимове сонце рівня, один тон палітри (`fast_tone.py`), конкуренти, лабораторія вигляду, що лишилось |
-| [REAL_MAP_RULES.md](REAL_MAP_RULES.md) | Правила для реалістичної землі, доріг, узбіч і будівель; спостереження з офіційних і модових карт та межі паку `real` |
-| [SURFACES_PLAN.md](SURFACES_PLAN.md) | План поверхонь і рельєфу `real` після 17.11 (не реалізовано): ground model під колесами, межі покриттів і ліс, кювети й насипи, далекий контур, поверхні за трьома масштабами; порядок роботи за скілами `earthng-world`, `beamng-mods` і REAL_MAP_RULES |
-| [CITY_DETAIL.md](CITY_DETAIL.md) | Планувальник вуличних меблів, ліхтарів і дерев; двори; фасади Біличів; сховані спільні стіни й рамки вікон, підняті бордюри, тротуари поруч із замапленими лініями, парапети мостів (MaGE) |
-| [INGAME_UI.md](INGAME_UI.md) | Налаштування в інтерфейсі гри: реєстр опцій `options.lua` для віджета й UI-застосунку «EarthNG», протокол, як додати опцію, як відкрити |
-| [WORLD_EDITOR.md](WORLD_EDITOR.md) | Власні об'єкти через World Editor: Ctrl+S зберігає в шар EarthNG, формат, перевірка |
-| [PACK_DATA.md](PACK_DATA.md) | Що лежить у паках і що ще можна класти (A1–A14, B1–B8) |
-| [POI.md](POI.md) | Точки цікавості: хвиля 1 (вид `pin` з тегів OSM для всіх країн, значки мапи, предмети, вивіски з назвою), L3-ділянки (автосалон з машинами й прапорцями, стели з назвою, кишені місць відпочинку), більші літери написів, що OSM ще знає, що не виносимо через війну, наступні хвилі |
-| [GENERATION_INVENTORY.md](GENERATION_INVENTORY.md) | Перелік даних і правил генерації з типом об'єкта (достовірний, правдоподібний, імітація) |
-| [ESTONIA.md](ESTONIA.md) | Естонія: LiDAR 10 м, реєстр доріг, секції повітів (англійською) |
-| [READY_MAPS.md](READY_MAPS.md) | Посилання на готові паки на Google Drive (англійською) |
+| [READY_MAPS.md](READY_MAPS.md) | Ready-to-install country packs |
+| [MAP.md](MAP.md) | Offline map, world map and search |
+| [WORLD_EDITOR.md](WORLD_EDITOR.md) | Placing and saving custom objects in BeamNG |
+| [CROWDS_AND_PACKS.md](CROWDS_AND_PACKS.md) | Pedestrians and vehicle traffic |
+| [KNOCKDOWN.md](KNOCKDOWN.md) | Knockable street objects |
+| [ESTONIA.md](ESTONIA.md) | Estonian data sources and credits |
+| [RELEASE_CHECK.md](RELEASE_CHECK.md) | Release verification and performance |
+| [NATIVE_MODS.md](NATIVE_MODS.md) | Planet and country packs |
+| [MAPBUILDER_APP.md](MAPBUILDER_APP.md) | EarthNG.exe and the pack builder UI |
+| [MAPBUILDER_RS.md](MAPBUILDER_RS.md) | Native pack-building stages and parity checks |
 
-## Відкриті проблеми
-
-[GENERATION_GAPS.md](GENERATION_GAPS.md) — реєстр слабких місць генерації з симптомом, механізмом і випадком приймання. Нову знахідку дописувати туди.
-
-## Журнали й заміри
-
-Числа тут прив'язані до дати, версії гри й пака. Поточний бюджет брати з коду і свіжого заміру.
-
-| Документ | Що зафіксовано |
-| --- | --- |
-| [RELEASE_CHECK.md](RELEASE_CHECK.md) | Перевірка кожного релізу, від 0.4.0 до 0.8.2 (англійською) |
-| [PERFORMANCE.md](PERFORMANCE.md) | Факти про рушій, як міряти, заміри статтерів 18.10–5.11, висадка 82 → 34–38 с і розклад її фаз 10.11, EGB3 і рання висадка без виграшу 11.11, сміття генератора −33 % і висадка ~28,8 с 11.11, ривки в їзді від повного збирання рушія і темп збирача 12.11, EGB3 у їзді Мангеттеном без виграшу 17.11, потік і пішоходи в `DynamicShapeBatch`: кадр у їзді той самий, Lua дешевша 17.11 |
-| [STREET_PROPS.md](STREET_PROPS.md) | Експеримент «тисячі пропсів на тайл» через Forest, 22–23.10 |
-| [KNOCKDOWN.md](KNOCKDOWN.md) | Вуличні меблі, які машина збиває: Forest-елемент → TSStatic-уламок, кінематика в Lua без фізики рушія (`knock.lua`), таблиця мас, заміри, 11.11 |
-| [BILYCHI_EXPERIMENT.md](BILYCHI_EXPERIMENT.md) | Експеримент Біличів 1 × 1 км (29.10): джерела, вітрини, деталі; злито в `master` |
-| [KYIV_OBLAST_POLYGON.md](KYIV_OBLAST_POLYGON.md) | Тестовий пак Київської області й Києва: як повторити, заміри 29.10 і 10.11 |
-| [DETAIL_RUNTIME_2026-11-01.md](DETAIL_RUNTIME_2026-11-01.md) | Швидкісний replay центром Києва, 1.11 |
-| [STREAMING_250_2026-11-03.md](STREAMING_250_2026-11-03.md) | Стрімінг на 250 км/год: голі тайли під авто, 3.11 |
-| [PHOTOGRAMMETRY.md](PHOTOGRAMMETRY.md) | Фотограмметрія для тайлів: джерела й ліцензії (для Києва легального немає), де вона краща за генератор, що потрібно для прототипу, 10.11 |
-| [RUST_IN_MOD.md](RUST_IN_MOD.md) | Rust у моді: що дозволяє пісочниця Lua і CEF, формат клітинок EGB3 для `ffi.copy` (9.11 прототип, 11.11 у збирачі за прапорцем: у грі не швидше ні у висадці, ні в їзді — 17.11) |
-| [CROWDS_AND_PACKS.md](CROWDS_AND_PACKS.md) | Сотні машин і пішоходів у нативному моді: ціна скінінгових і статичних форм, пози замість скелета, розбір моду pedestrians032, власні процедурні пішоходи, фізичне тіло `e2r_ped` і підміна на нього перед ударом (`walkers.lua`, `pedhit.lua`), графи й попит із пака, етапи, 9.11; копії в `DynamicShapeBatch` 16–17.11 |
-| [../MODLOG.md](../MODLOG.md) | Журнал змін моду, новіші зверху (англійською) |
-
-Звіт сесії 11.11 (вікно віджета, налаштування в інтерфейсі гри, пішоходи до 1000, збивані об'єкти, відгук користувача після ручного сеансу) — [`reports/2026-11-11 Віджет, інтерфейс гри, пішоходи, збивання.md`](../reports/2026-11-11%20Віджет,%20інтерфейс%20гри,%20пішоходи,%20збивання.md).
-
-Дослідження в [`reports/`](../reports) (P0 горизонт, природа й рельєф, Building Grammar, 17–21.10) описують тодішній код. Частину їхніх задач уже зроблено: звіряти з поточним кодом.
-
-Нічні журнали 22–23.10 і 29.10, робочий журнал `feature/places` і перевірку Tk-вікна Map Builder прибрано 8.11: ці гілки злиті, а Tk-вікно замінив EarthNG.exe. Вони лишаються в історії Git (до `e70232b`).
+Internal design notes, experiments, historical reports and the generation gaps register are maintained in the EarthNG Obsidian vault. See [AGENTS.md](../AGENTS.md) for local paths and Graphify commands. The [pre-migration index](https://github.com/Alezx311/earthng/blob/d45f2d13264ef5460a0631abd125eff0ec8b986b/docs/README.md) links to the Git snapshots.

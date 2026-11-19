@@ -1,0 +1,30 @@
+[
+  {
+    "id": "sf-lombard-switchbacks",
+    "lat": 37.8021,
+    "lon": -122.4187,
+    "minZoom": 12,
+    "title": {"uk": "Серпантин Ломбард-стріт", "en": "Lombard Street switchbacks"},
+    "area": {"uk": "Рашен-Гілл · Сан-Франциско", "en": "Russian Hill · San Francisco"},
+    "summary": {
+      "uk": "Між Гайд-стріт і Лівенворт-стріт дорога вісім разів повертає на схилі одного кварталу. Знизу добре видно, як серпантин огинає садки між будинками.",
+      "en": "Between Hyde and Leavenworth, the road turns eight times as it descends a single block. From the bottom you can trace its course around the gardens between the houses."
+    },
+    "source": "San Francisco Travel",
+    "url": "https://www.sftravel.com/things-to-do/attractions/iconic-sf/lombard-street"
+  },
+  {
+    "id": "kyiv-saint-sophia",
+    "lat": 50.4529,
+    "lon": 30.5143,
+    "minZoom": 12,
+    "title": {"uk": "Софійський собор", "en": "Saint Sophia Cathedral"},
+    "area": {"uk": "Старий Київ · Київ", "en": "Old Kyiv · Kyiv"},
+    "summary": {
+      "uk": "Усередині собору збереглися мозаїки й фрески XI століття, зокрема постать Оранти в апсиді. Дзвіниця та монастирські будівлі навколо належать до пізнішого ансамблю українського бароко.",
+      "en": "Eleventh-century mosaics and frescoes survive inside the cathedral, including the Orans figure in the apse. The bell tower and monastic buildings around it belong to a later Ukrainian Baroque ensemble."
+    },
+    "source": "UNESCO",
+    "url": "https://whc.unesco.org/en/list/527/"
+  }
+]

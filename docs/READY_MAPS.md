@@ -1,17 +1,15 @@
 # Ready country maps
 
-Download a ready ZIP instead of generating a country. **Python and EarthNG.exe are not required to play.**
-
-**[Ukraine — 2.96 GB, 80 regions](https://drive.google.com/file/d/1W9C387RI-Tst6c3ZV2YwIEsZYE3QxtYr/view)** is the recommended large demo. Its current ZIP exceeds GitHub Releases' [2 GiB per-file limit](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#storage-and-bandwidth-quotas), so it is hosted on Google Drive.
+Each link below downloads a country or regional snapshot. To include data introduced
+by a newer release, build the area in [EarthNG.exe](../README.md#build-your-own-map-windows).
+You can also build a section along your next route and install it alongside existing coverage.
 
 1. Download **earthng_planet.zip** from the [current GitHub release](https://github.com/Alezx311/earthng/releases/tag/EarthNG).
 2. Download one or more country ZIPs below. Keep each country ZIP packed.
 3. Put the planet ZIP and country ZIPs in your BeamNG user folder's **mods** directory.
 4. Restart BeamNG and open **Freeroam → EarthNG - Planet**. Choose a point inside installed coverage.
 
-If Drive wraps several files in a new download ZIP, extract that outer wrapper first. The individual `earthng_<country>.zip` mods inside stay packed. Use the current planet from GitHub, even if the Drive folder also contains a planet ZIP.
-
-[Browse the complete collection](https://drive.google.com/drive/folders/1n3A-msXrJtuQ2qJKn7YqzCooLZyliKMy?usp=drive_link). These links were checked against the publicly visible folder on 2026-10-19. The packs are snapshots, not live OSM data; coverage and performance vary by location.
+On 19 November 2026 all 27 direct links below served a ZIP header without a Google sign-in.
 
 | Country pack | Download |
 | --- | --- |

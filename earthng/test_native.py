@@ -39,6 +39,25 @@ def geographic(x, y):
 
 
 class NativeTests(unittest.TestCase):
+    def test_style_switch_invalidates_prepared_tiles_and_rebuilds_with_new_style(self):
+        lua, mod, cv = self.make()
+        lat, lon = geographic(1750, 1750)
+        mod.land(cv(dict(seq=1, lat=lat, lon=lon)))
+        self.pump(mod)
+        self.assertTrue(set(mod.status().stream.ready.keys()))
+        self.assertTrue(lua.globals().lastRealStyle)
+        self.assertTrue(mod.setRealStyle(False))
+        self.assertFalse(set(mod.status().stream.ready.keys()))
+        self.assertFalse(mod.setRealStyle(False))
+        for _ in range(200):
+            mod.update(.016, 2)
+        self.assertFalse(lua.globals().lastRealStyle)
+        self.assertTrue(set(mod.status().stream.ready.keys()))
+        self.assertTrue(mod.setRealStyle(True))
+        for _ in range(200):
+            mod.update(.016, 2)
+        self.assertTrue(lua.globals().lastRealStyle)
+
     def test_quality_invalidates_prepared_density_but_distance_keeps_ready_tiles(self):
         _, mod, cv = self.make()
         lat, lon = geographic(1750, 1750)
@@ -94,6 +113,7 @@ class NativeTests(unittest.TestCase):
           buildCalls=0; fakeTriangles=0; fakeFarTriangles=0; fakeGrassChunks=false; seenManual={}; seenEditor={}
           stubGenerator={build=function(cells,i,j,options)
             buildCalls=buildCalls+1
+            lastRealStyle=options.realStyle
             if options.manualPlan then
               local t = options.tileSize
               local plan = options.manualPlan({i*t,j*t,(i+1)*t,(j+1)*t}, {}, {}, {items={}}, {})

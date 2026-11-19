@@ -283,7 +283,7 @@ end
 -- Every enabled point of the box, or the best `per` of each grid cell: add(e, i, level) for each.
 -- enabled: category number -> true; pause (optional) is called every few hundred cells, so a
 -- caller in a coroutine can spread a wide box over frames (worldmap.lua).
-function M.collect(w, s, e, n, per, enabled, add, pause)
+function M.collect(w, s, e, n, per, enabled, add, pause, pack)
   local G, C = M.GRID, M.COARSE
   local walked = 0
   w, e = math.max(-180, w), math.min(180, e)
@@ -291,7 +291,7 @@ function M.collect(w, s, e, n, per, enabled, add, pause)
   local cx0, cx1 = floor((w + 180) / G), floor((e + 180) / G)
   local qy0, qy1, qx0, qx1 = floor(cy0 / C), floor(cy1 / C), floor(cx0 / C), floor(cx1 / C)
   for _, en in ipairs(entries) do
-    local b = en.ready and en.box
+    local b = (not pack or en.c.id == pack) and en.ready and en.box
     if b and b.w <= e and b.e >= w and b.s <= n and b.n >= s then
       local coarse, first, count, order, cat = en.coarse, en.first, en.count, en.order, en.cat
       for qy = qy0, qy1 do
@@ -374,10 +374,10 @@ function M.details(e, i)
 end
 
 -- the indexed point at lat, lon of category cat (a search hit), or nil
-function M.find(lat, lon, cat)
+function M.find(lat, lon, cat, pack)
   local k, id = cellOf(lat, lon), CAT_ID[cat]
   for _, e in ipairs(entries) do
-    local f = e.ready and e.first and e.first[k]
+    local f = (not pack or e.c.id == pack) and e.ready and e.first and e.first[k]
     if f then
       for t = f, f + e.count[k] - 1 do
         local i = e.order[t]

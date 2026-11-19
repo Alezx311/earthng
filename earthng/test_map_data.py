@@ -39,6 +39,31 @@ class MapDataTests(unittest.TestCase):
         lua.globals().planet = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/planetMap.lua').read_text(encoding='utf8'))
         return lua
 
+    def test_guide_can_be_found_without_a_pack_and_keeps_its_anchor_on_resize(self):
+        guide = json.loads((ROOT / 'mod/earthng/planet/guide.json').read_text(encoding='utf8'))
+        self.assertEqual(len({a['id'] for a in guide}), len(guide))
+        lua = self.runtime({'/earthng/planet/guide.json': guide})
+        lua.execute('''
+          local hit = planet.search('Ломбард', 'uk', 1)[1]
+          assert(hit.article.id == 'sf-lombard-switchbacks')
+          assert(planet.search('Lombard', 'en', 1)[1].article.id == hit.article.id)
+          local view = {center = hit, zoom = 16}
+          local function merc(lat, lon) return lon * 10000, -lat * 10000 end
+          local function unmerc(x, y) return -y / 10000, x / 10000 end
+          local vec = function(x, y) return {x=x, y=y} end
+          local im = setmetatable({ImVec2=vec, GetFontSize=function() return 14 end,
+            CalcTextSize=function() return {x=140} end}, {__index=function() return function() end end})
+          local function draw(w, h, ox, oy)
+            planet.beginLabels(vec(ox,oy), vec(ox+w,oy+h))
+            local mouse = vec(ox+w/2+22, oy+h/2)
+            return planet.drawLabels(im, {}, vec(ox,oy), w,h,view,merc,unmerc,function() return 0 end,'uk',mouse)
+          end
+          for _, size in ipairs({{360,180,0,0}, {920,580,170,37}, {720,430,30,14}, {360,180,39,9}}) do
+            local p = draw(unpack(size))
+            assert(p and p.article.id == hit.article.id and p.lat == hit.lat and p.lon == hit.lon)
+          end
+        ''')
+
     def test_small_villages_countries_aliases_language_limits_and_unmount(self):
         root = '/earthng/planet/maps/demo/'
         places = [build_map.settlement(50.4, 30.2, {'place': 'village', 'name': 'Мала Долина', 'name:en': 'Mala Dolyna', 'alt_name': 'Долинка'}),
@@ -198,6 +223,31 @@ class MapDataTests(unittest.TestCase):
                          ['spring', 'metro', 'leisure_map'])
         self.assertEqual(cats("planet.searchPois('Хрещатик', 10)"), ['spring', 'metro', 'leisure_map'],
                          'no centre: by name, then south to north')
+
+    def test_pack_and_category_scope_applies_before_the_search_limit(self):
+        a, b = '/earthng/countries/one/map/', '/earthng/countries/two/map/'
+        files = {}
+        for root, en, lat in [(a, 'Hill One', 40), (b, 'Hill Two', 50)]:
+            files[root + 'index.json'] = {'version': 1, 'tiles': {}}
+            files[root + 'places.json'] = [[lat, 20, 12, en, 'Гірка', 0, 100, 'village']]
+        lua = self.runtime(files)
+        lua.globals().setOne = 'plaza\t40.000000\t20.000000\tcastle\tPlaza One\t\n'
+        lua.globals().setTwo = 'plaza\t50.000000\t20.000000\tshop_map\tPlaza Mart\t\n' \
+                               'plaza old\t50.001000\t20.000000\tcastle\tPlaza Old\t\n'
+        lua.execute('''
+          local old = FS.fileExists
+          FS.fileExists = function(self,p) return p:match('/pois.tsv$') or old(self,p) end
+          function readFile(p) return p:find('/one/',1,true) and setOne or setTwo end
+          local packs = {{id='one',title='One',available=true},{id='two',title='Two',available=true}}
+          catalog.step(packs); catalog.step(packs)
+          assert(#planet.packPlaces('two') == 1)
+          assert(planet.search('hill', 'en', 1, 'two')[1].name == 'Hill Two')
+          local hit = planet.searchPois('plaza',1,nil,'two',function(cat) return cat == 'castle' end)[1]
+          assert(hit.name == 'Plaza Old' and hit.pack == 'two')
+          catalog.step({packs[1]})
+          assert(#planet.packPlaces('two') == 0)
+          assert(#planet.searchPois('plaza',10,nil,'two') == 0)
+        ''')
 
     def test_native_reader_writes_what_osmium_wrote(self):
         import os

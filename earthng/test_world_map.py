@@ -194,6 +194,40 @@ class WorldMapTests(unittest.TestCase):
         pharmacy = [l[1] for l in self.worldmap.card(self.api(), self.lua.table_from({'e': e, 'i': 4})).values()]
         self.assertIn('osm.org/way/7', pharmacy)
 
+    def test_clicking_a_guide_label_opens_the_complete_article(self):
+        import json
+        article = json.loads((ROOT / 'mod/earthng/planet/guide.json').read_text(encoding='utf8'))[0]
+        api = self.api()
+        self.worldmap.draw(api)
+        place = self.lua.table_from({'name': article['title']['uk'], 'article': article}, recursive=True)
+        self.lua.eval('mapView').onClick(article['lat'], article['lon'], place)
+        lines = [l[1] for l in self.worldmap.card(api, self.worldmap.state.pick).values()]
+        self.assertEqual(lines[0], article['title']['uk'])
+        self.assertIn(article['summary']['uk'], lines)
+        self.assertIn('Джерело · ' + article['source'], lines)
+        self.assertIsNone(self.lua.eval('landed'))
+
+    def test_the_settlement_browser_pages_the_whole_pack(self):
+        self.lua.globals().api = self.api()
+        self.lua.execute('''
+          local pack = {id='ua', title='Україна', starts={}}
+          local packs, towns = {pack}, {}
+          for i = 1, 53 do towns[i] = {50, 30 + i/1000, 14, 'Town ' .. i, 'Місто ' .. i, 0, 0, 'town'} end
+          api.packs = function() return packs end
+          api.planetMap.lower = string.lower
+          api.planetMap.revision = function() return 1 end
+          api.planetMap.packPlaces = function(id) assert(id == 'ua'); return towns end
+          fakeIm.GetContentRegionAvailWidth = function() return 275 end
+          fakeIm.SmallButton = function(label) return label:find('##browseNext', 1, true) ~= nil end
+          fakeIm.Selectable1 = function(label) return label:find('##browseResult53', 1, true) ~= nil end
+          local browser = {pack='ua', category='towns'}
+          local view = {center={lat=50,lon=30}}
+          for _ = 1, 7 do worldmap.drawBrowser(api, view, browser, function(row) chosen=row end) end
+          assert(chosen.title == 'Місто 53')
+          assert(chosen.lon == towns[53][2])
+          assert(#browser.rows == 0, 'only visible pages of the catalog are materialized')
+        ''')
+
     def test_the_map_draws_icons_close_up_dots_afar_and_hovers(self):
         pois, tags = self.kyiv()
         self.add('Україна', pois, tags)
@@ -203,7 +237,7 @@ class WorldMapTests(unittest.TestCase):
         self.worldmap.draw(api)
         drawn = self.worldmap.drawn
         shown = lambda: sorted(drawn.i[k] for k in range(1, drawn.n + 1))
-        self.assertEqual(shown(), [1, 3, 6], 'one icon a square: the castle over the kiosk, the fuel over the pharmacy')
+        self.assertEqual(shown(), [1, 3], 'the castle and fuel station win their cells over the kiosk, pharmacy and café')
         self.assertEqual(self.worldmap.state.hoverI, 1, 'the castle under the cursor')
         self.assertIn('Замок', list(self.lua.eval('texts').values()), 'its name beside the icon and on the card')
         # the castle filtered out: the kiosk takes its square; the cafe off too

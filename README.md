@@ -17,34 +17,21 @@ route you to a marker.
 
 ## Install and play
 
-Choose your downloads from the [player release](https://github.com/Alezx311/earthng/releases/tag/EarthNG):
+1. Download and open **EarthNG.exe** from the [player release](https://github.com/Alezx311/earthng/releases/tag/EarthNG).
+2. Search for a city such as Miami and press Enter, draw a rectangle, or choose a route.
+   Press **Create the map**. The builder installs the planet and the selected area.
+3. Open **Freeroam → EarthNG - Planet** in BeamNG.drive. Pick a point inside the
+   installed coverage and land there.
 
-| Download | Purpose |
-| --- | --- |
-| **earthng_planet.zip** (~280 MB) | Required native mod. Put in BeamNG's `mods` folder, keep packed. |
-| **[earthng_ukraine.zip](https://drive.google.com/file/d/1W9C387RI-Tst6c3ZV2YwIEsZYE3QxtYr/view)** (2.96 GB, Google Drive) | Ready Ukraine map, 80 regions. Put beside the planet ZIP, keep packed. |
-| **EarthNG.exe** (~48 MB) | Optional: makes a map of any area you choose and installs it, together with the planet. No Python needed. |
-
-**To play the demo, download only the first two files. Python is not required.**
-
-**[Download more ready maps from Google Drive](https://drive.google.com/drive/folders/1n3A-msXrJtuQ2qJKn7YqzCooLZyliKMy?usp=drive_link)**
-or use the [individual map links](docs/READY_MAPS.md). No generation is needed.
-For a smaller first download, **earthng_albania.zip** (~226 MB) remains available
-in the GitHub release. Always use the current **planet ZIP from GitHub** with these
-country packs. If Drive wraps several downloads in an extra ZIP, extract that
-wrapper; keep each `earthng_<country>.zip` inside packed.
-
-1. Install **earthng_planet.zip** and at least one **earthng_<country>.zip** in the
-   `mods` directory of your BeamNG user folder. Keep the ZIPs packed.
-2. Start BeamNG.drive and open **Freeroam → EarthNG - Planet**.
-3. Pick a point inside an installed country's coverage and land there.
+For a ready-made map, install **earthng_planet.zip** from the same release and a country ZIP
+from the [direct map downloads](docs/READY_MAPS.md). Put both ZIPs, still packed, in
+the `mods` directory of your BeamNG user folder.
 
 The widget searches cities, villages and countries in local, Ukrainian and English
 names. Use Enter or click a result, scroll to zoom and drag to pan. Main-road
 overviews remain visible when zooming out, and BeamNG's stock minimap shows nearby
-generated roads even with traffic off. The planet carries detailed village and
-road overview data for Ukraine, Albania and Estonia; packs built by EarthNG.exe
-carry their own. See [map controls and data](docs/MAP.md).
+generated roads even with traffic off. Village and road overview detail depends on the
+data in the planet and installed packs. See [map controls and data](docs/MAP.md).
 
 **Place your own objects.** In an EarthNG world open the World Editor (F11), place
 stock meshes from the Asset Browser, move, rotate, scale, duplicate or delete them as
@@ -78,28 +65,40 @@ Windows 10 and 11 already have.
 
 1. The top of the window shows whether BeamNG's user folder was found (choose it in
    Settings if not) and whether the EarthNG mod is installed.
-2. **Choose an area**: search for a town or address (Enter), or press **Draw an area
-   on the map** and drag a rectangle. A town found by the search becomes the area.
+2. **Choose an area.** Search for a town or address and press Enter, select a whole
+   region, or draw a rectangle. For a road trip, mark the waypoints in order or
+   import a GPX track or GeoJSON LineString. Choose **1, 10 or 100 km on each side**.
+   Follow the bends of your intended drive when placing waypoints.
 3. Press **Create the map**. If `earthng_planet.zip` is missing or older than the
    packs need, it is downloaded from GitHub and installed first. Look, layers and
    project options are folded under the button.
 4. Watch the stages. When it says **The map is installed**, start BeamNG.drive and
    open **Freeroam → EarthNG - Planet**.
 
-The OSM data of a drawn area comes from the public Overpass API first, unless the
-country's Geofabrik file is small (up to 100 MB): that one is simply downloaded. When no
-Overpass server answers, or the area is too large for it, the window asks before
-downloading the smallest Geofabrik extract that covers the area and shows its size
-and the expected time. The extract is kept, so later maps in that region need no
-download, and finished tiles are reused either way. A town builds in a few
-minutes. Large countries can require many GB of source data and hours of processing;
-the estimate shown before building is a broad range. **Stop** cancels before the pack
-is installed, and building again continues where it stopped.
+The builder can fetch small selections from Overpass and uses regional Geofabrik
+extracts for larger areas. Check the source list before a long build. A route
+crossing several regions can require several downloads. The builder keeps source
+files and completed tiles for later selections. Large countries can take many GB
+and hours of processing.
+
+Save a frequently driven area as a project. When a major release adds map data,
+reopen the project and build it again. To extend your coverage, build an adjacent
+area or another route. EarthNG loads the installed sections together.
+
+**Updating.** EarthNG.exe checks the player release when it opens. If a newer build is
+published, choose **Update** in the window. That replaces `EarthNG.exe` and opens the
+window again. Maps you already built, downloaded country files and the mods in BeamNG
+stay where they are: this is not a clean reinstall, and you do not remove the old
+program first. The game mod still updates with the next map when the installed planet
+is older than the one the new program expects. Publish `EarthNG.json` from the release
+folder next to `EarthNG.exe`; the window reads it to know the version and the file hash.
 
 Console equivalent (also useful for Linux/macOS with a local Python environment):
 
 ```powershell
 .venv\Scripts\python.exe earthng/country_fetch.py build --place liechtenstein --mods "D:\BeamNG\current" --jobs 2
+.venv\Scripts\python.exe earthng/country_fetch.py build --box -80.32 25.68 -80.10 25.87 --mods "D:\BeamNG\current"
+.venv\Scripts\python.exe earthng/country_fetch.py build --route drive.geojson --width-km 10 --mods "D:\BeamNG\current"
 ```
 
 Estonia has its own notes and credits: [docs/ESTONIA.md](docs/ESTONIA.md).
@@ -169,12 +168,13 @@ prebuilt distributable art and offline basemap. Then run `Rebuild.bat`, or:
 Stage player downloads from committed source (excluding local uncommitted work):
 
 ```powershell
-.venv\Scripts\python.exe earthng/prepare_release.py --out out/release/player --planet out/mod/earthng_planet.zip --country out/country-setup/earthng_albania.zip
+.venv\Scripts\python.exe earthng/prepare_release.py --out out/release/player --planet out/mod/earthng_planet.zip
 ```
 
 Use an empty output directory. The script copies the native mod and any selected
-country pack, builds EarthNG.exe from the committed source, and prints SHA-256 sums
-for the release description. The exe's runtime follows local Python imports,
+country pack, builds EarthNG.exe from the committed source, writes `EarthNG.json`
+(version, size and sha256 of that exe, for the in-app update) and prints SHA-256 sums
+for the release description. Upload `EarthNG.json` with `EarthNG.exe`. The exe's runtime follows local Python imports,
 includes runtime resources and embeds a ready-pack catalog. Developer assets, tests and research notes are not player downloads.
 
 The basemap can regenerate from Natural Earth over the network. Rebuilding art

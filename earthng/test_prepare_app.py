@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
+import app_service
 import prepare_app
 import prepare_release
 
@@ -35,6 +36,11 @@ class PrepareAppTests(unittest.TestCase):
             self.assertEqual(size, len(payload))
             self.assertEqual(data[-56:-24], hashlib.sha256(payload).digest())
             self.assertEqual(digest, hashlib.sha256(payload).hexdigest())
+            manifest_path = prepare_app.write_app_manifest(out, {'version': '0.9.0', 'planetVersion': '0.9.0'})
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            self.assertEqual(manifest['schema'], app_service.APP_SCHEMA)
+            self.assertEqual(manifest['sha256'], hashlib.sha256(out.read_bytes()).hexdigest())
+            self.assertEqual((manifest['version'], manifest['size']), ('0.9.0', out.stat().st_size))
             start = len(data) - 56 - size
             self.assertEqual(data[:start], b'MZ window')
             with zipfile.ZipFile(io.BytesIO(data[start:start + size])) as archive:

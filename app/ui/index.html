@@ -26,6 +26,7 @@
       <ul id="search-results" hidden></ul>
     </div>
     <button id="tool-box" class="tool" data-i18n="tool.box"></button>
+    <button id="tool-route" class="tool" data-i18n="tool.route"></button>
     <button id="tool-edit" class="tool" data-i18n="tool.edit"></button>
   </div>
   <div class="legend" id="hint" data-i18n="hint.select"></div>
@@ -48,6 +49,21 @@
       <div id="recent"></div>
     </div>
 
+    <div class="card" id="card-route" hidden>
+      <h2 data-i18n="tool.route"></h2>
+      <p class="muted" data-i18n="route.instructions"></p>
+      <div class="actions"><button id="route-import" data-i18n="route.import"></button>
+        <button id="route-undo" data-i18n="route.undo"></button></div>
+      <input id="route-file" type="file" accept=".gpx,.geojson,.json" hidden>
+      <p class="small muted" id="route-count" aria-live="polite"></p>
+      <label class="field"><span data-i18n="route.width"></span><select id="route-width">
+        <option value="1">1 km</option><option value="10" selected>10 km</option><option value="100">100 km</option>
+      </select></label>
+      <p class="note bad" id="route-error" role="alert" hidden></p>
+      <div class="actions"><button id="route-use" class="primary" data-i18n="route.use"></button>
+        <button id="route-cancel" data-i18n="route.cancel"></button></div>
+    </div>
+
     <div class="card" id="card-area" hidden>
       <div class="row between">
         <div class="step"><span class="num">2</span><h2 id="area-title"></h2></div>
@@ -59,6 +75,7 @@
         <dt data-i18n="area.time"></dt><dd id="area-time">—</dd>
       </dl>
       <div id="area-notes"></div>
+      <button id="edit-route" class="link" data-i18n="route.change" hidden></button>
       <button class="primary big" id="build" data-i18n="area.build"></button>
 
       <details class="more" id="more-look">
@@ -98,6 +115,7 @@
         <div class="step"><span class="num">3</span><h2 id="build-title" data-i18n="build.title"></h2></div>
         <span class="muted" id="build-elapsed"></span>
       </div>
+      <p id="build-part" class="small muted" aria-live="polite" hidden></p>
       <div class="progress"><div id="progress-bar"></div></div>
       <ol id="stages" class="stages"></ol>
       <div id="build-error"></div>
@@ -157,7 +175,10 @@
       <h3 data-i18n="settings.data"></h3>
       <p class="muted small" id="home-path"></p>
       <button id="open-home" data-i18n="settings.openHome"></button>
+      <h3 data-i18n="settings.app"></h3>
+      <div id="settings-update"></div>
       <p class="muted small" id="about"></p>
+      <button id="check-update" data-i18n="update.check"></button>
     </div>
   </section>
 </aside>
@@ -172,6 +193,7 @@
 
 <script src="vendor/leaflet/leaflet.js"></script>
 <script src="i18n.js"></script>
+<script src="route.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

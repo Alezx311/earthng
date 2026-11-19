@@ -51,27 +51,39 @@ function mockService(m) {
       slot_labels: Object.fromEntries(Object.keys(slots).map(k => [k, k])),
       blocks: [{ id: 'general', title: 'General', look }, { id: 'postsoviet', title: 'Post-Soviet', look }],
       layers: ['buildings', 'water', 'cover', 'barriers', 'treeRows', 'stops'].map(id => ({ id, label: id, default: true })), recommended: look });
-    case 'places': return answer({ places: [{ id: 'ukraine', name: 'Ukraine', parent: 'Europe' }, { id: 'albania', name: 'Albania', parent: 'Europe' }] });
-    case 'geocode': return answer({ results: [{ name: 'Тирана, Albania', lat: 41.3275, lon: 19.8189, bounds: [19.75, 41.28, 19.88, 41.37], kind: 'city' }] });
-    case 'covering': return answer({ place: { id: 'ukraine', name: 'Ukraine', parent: 'Europe' }, km2: 120.4 });
+    case 'places': return answer({ places: [{ id: 'ukraine', name: 'Ukraine', parent: 'Europe' }, { id: 'us/florida', name: 'Florida', parent: 'United States' }] });
+    case 'geocode': return answer({ results: [{ name: 'Miami, Florida', lat: 25.77, lon: -80.19, bounds: [-80.32, 25.70, -80.12, 25.86], kind: 'city' }] });
+    case 'plan_area': {
+      const place = { id: 'us/florida', name: 'Florida', parent: 'United States' };
+      return answer({ place, sources: [place], km2: 120.4, uncovered_km2: 0, part_count: 1 });
+    }
     case 'estimate': return answer({ seconds: [30, 110, 12, 3, 20, 13, 1], stages: ['Planet', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'],
       reason: 'rough estimate', cached_tiles: false, cached_pbf: false, pbf_bytes: 54466814, planet: 'missing',
-      source: m.box ? 'overpass' : 'pbf', pbf_seconds: 40, ask_pbf: !m.box });
+      source: m.selection ? 'overpass' : 'pbf', pbf_seconds: 40, ask_pbf: !m.selection });
     case 'projects': return answer({ projects: [] });
-    case 'ready_packs': return answer({ packs: [{ id: 'albania', title: 'Albania', state: 'url' }] });
+    case 'ready_packs': return answer({ packs: [] });
     case 'install_ready_pack': {
       answer({ job: m.cmd });
-      setTimeout(() => window.earthng.receive({ event: 'done', job: m.cmd, result: 'complete', path: 'earthng_albania.zip' }), 800);
+      setTimeout(() => window.earthng.receive({ event: 'done', job: m.cmd, result: 'complete', path: `earthng_${m.pack}.zip` }), 800);
       return undefined;
     }
+    case 'app_update': return answer({ available: true, reason: 'newer', version: '0.10.0', current: '0.9.0', size: 52_000_000 });
+    case 'download_app': {
+      answer({ job: 'download_app' });
+      const send = (msg, ms) => setTimeout(() => window.earthng.receive(msg), ms);
+      send({ event: 'log', text: 'EarthNG.exe: 24 / 50 MB' }, 300);
+      send({ event: 'done', job: 'download_app', result: 'complete', version: '0.10.0' }, 700);
+      return undefined;
+    }
+    case 'apply_update': return answer({ restarting: true });
     case 'build': case 'install_planet': {   // a pretend job: stages one by one, then done
       answer({ job: m.cmd });
       const stages = m.cmd === 'build' ? ['Planet', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'] : ['Planet'];
       const send = (msg, ms) => setTimeout(() => window.earthng.receive(msg), ms);
-      if (m.cmd === 'build' && m.box && !m.allow_pbf) {      // Overpass busy: the page asks for the PBF
+      if (m.cmd === 'build' && m.selection && !m.allow_pbf) {      // Overpass busy: the page asks for the PBF
         send({ event: 'stage', name: 'Sources', seconds: null }, 300);
         send({ event: 'done', job: 'build', result: 'needs_pbf', reason: 'Overpass did not answer: overpass-api.de: HTTP Error 504: Gateway Timeout',
-          place: 'albania', name: 'Albania', pbf_bytes: 54466814, pbf_seconds: 40 }, 1200);
+          place: 'us/florida', name: 'Florida', pbf_bytes: 661385834, pbf_seconds: 200 }, 1200);
         return undefined;
       }
       stages.forEach((name, i) => {
@@ -79,7 +91,7 @@ function mockService(m) {
         send({ event: 'log', text: `${name}…` }, 350 + i * 700);
         send({ event: 'stage', name, seconds: 0.6 }, 900 + i * 700);
       });
-      send({ event: 'done', job: m.cmd, result: 'complete', path: 'C:\\Users\\you\\AppData\\Local\\BeamNG\\BeamNG.drive\\current\\mods\\earthng_albania.zip' }, 1000 + stages.length * 700);
+      send({ event: 'done', job: m.cmd, result: 'complete', path: 'earthng_us-florida.zip' }, 1000 + stages.length * 700);
       return undefined;
     }
     default: return answer({});
@@ -88,12 +100,13 @@ function mockService(m) {
 
 // ------------------------------------------------------------------ state
 const state = {
-  status: null, options: null, place: null, box: null, estimate: null,
+  status: null, options: null, place: null, selection: null, plan: null, estimate: null,
   look: null, include: null, edits: [], projectId: null, building: false, mode: null,
+  updating: false, updatePhase: null, updateHidden: false, updateManual: false,
 };
 
 // ------------------------------------------------------------------ map
-const map = L.map('map', { zoomControl: true, worldCopyJump: true }).setView([49.0, 31.0], 6);
+const map = L.map('map', { zoomControl: true, worldCopyJump: true, boxZoom: false }).setView([49.0, 31.0], 6);
 L.tileLayer(window.ipc ? 'tile/{z}/{x}/{y}.png' : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
 }).addTo(map);
@@ -104,36 +117,46 @@ const editLayer = L.layerGroup().addTo(map);
 
 function setMode(mode) {
   state.mode = state.mode === mode ? null : mode;
+  renderMode();
+}
+
+function renderMode() {
   $('tool-box').classList.toggle('on', state.mode === 'box');
   $('tool-edit').classList.toggle('on', state.mode === 'edit');
-  document.querySelector('.map-wrap').classList.toggle('drawing', state.mode === 'box');
-  $('hint').textContent = t(state.mode === 'box' ? 'hint.drawing' : state.mode === 'edit' ? 'hint.edit' : 'hint.select');
+  $('tool-route').classList.toggle('on', state.mode === 'route');
+  document.querySelector('.map-wrap').classList.toggle('drawing', state.mode === 'box' || state.mode === 'route');
+  $('hint').textContent = t(({ box: 'hint.drawing', edit: 'hint.edit', route: 'hint.route' })[state.mode] || 'hint.select');
   if (state.mode === 'box') map.dragging.disable(); else map.dragging.enable();
 }
 
-let dragStart = null;
+let dragStart = null, dragLayer = null;
 map.on('mousedown', e => {
-  if (state.building) return;
+  if (state.building || routeDraft) return;
   if (state.mode === 'box' || e.originalEvent.shiftKey) {
     map.dragging.disable();
     dragStart = e.latlng;
-    if (boxLayer) boxLayer.remove();
-    boxLayer = L.rectangle([dragStart, dragStart], { color: getComputedStyle(document.body).getPropertyValue('--box'), weight: 2 }).addTo(map);
+    dragLayer = L.rectangle([dragStart, dragStart], { color: getComputedStyle(document.body).getPropertyValue('--box'), weight: 2 }).addTo(map);
   }
 });
-map.on('mousemove', e => { if (dragStart) boxLayer.setBounds([dragStart, e.latlng]); });
+map.on('mousemove', e => { if (dragStart) dragLayer.setBounds([dragStart, e.latlng]); });
 map.on('mouseup', e => {
   if (!dragStart) return;
   const b = L.latLngBounds(dragStart, e.latlng);
   dragStart = null;
+  dragLayer.remove(); dragLayer = null;
   if (state.mode !== 'box') map.dragging.enable();
   if (Math.abs(b.getEast() - b.getWest()) < 1e-4 || Math.abs(b.getNorth() - b.getSouth()) < 1e-4) {
-    boxLayer.remove(); boxLayer = null; return;
+    return;
   }
   if (state.mode === 'box') setMode('box');
-  selectBox([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map(v => +v.toFixed(6)));
+  let west = b.getWest(), east = b.getEast();
+  if (east - west >= 360) { west = -180; east = 180; }
+  else { west = L.Util.wrapNum(west, [-180, 180]); east = L.Util.wrapNum(east, [-180, 180], true); }
+  clearArea();
+  selectArea({ box: [west, b.getSouth(), east, b.getNorth()].map(v => +v.toFixed(6)) });
 });
 map.on('click', e => {
+  if (routeDraft && !state.building) { addRoutePoint(e.latlng.lng, e.latlng.lat); return; }
   if (state.mode !== 'edit' || state.building) return;
   state.edits.push({ op: 'add', kind: 'point', lat: +e.latlng.lat.toFixed(7), lon: +e.latlng.lng.toFixed(7) });
   drawEdits();
@@ -151,14 +174,25 @@ function drawEdits() {
 
 // ------------------------------------------------------------------ selection
 const BIG_KM2 = 2500;
+let selectionVersion = 0, estimateVersion = 0;
 
-async function selectBox(box, name) {
-  state.box = box;
+function boxBounds([west, south, east, north]) {
+  return [[south, west], [north, east < west ? east + 360 : east]];
+}
+
+async function selectArea(selection, name) {
+  const version = ++selectionVersion;
+  state.selection = selection;
+  state.plan = null;
   state.areaName = name || null;
-  if (boxLayer) boxLayer.remove();
-  boxLayer = L.rectangle([[box[1], box[0]], [box[3], box[2]]], { color: getComputedStyle(document.body).getPropertyValue('--box'), weight: 2 }).addTo(map);
+  const style = { color: getComputedStyle(document.body).getPropertyValue('--box').trim(), weight: 2, interactive: false };
+  boxLayer?.remove(); boxLayer = null;
+  boundaryLayer?.remove(); boundaryLayer = null;
+  if (selection.box) boxLayer = L.rectangle(boxBounds(selection.box), style).addTo(map);
+  paintRoute(selection.route);
+  $('edit-route').hidden = !selection.route;
   showCard('area');
-  $('area-title').textContent = name || t('area.title');
+  $('area-title').textContent = areaName();
   $('area-km2').textContent = '…';
   $('area-source').textContent = '…';
   $('area-time').textContent = '…';
@@ -166,7 +200,24 @@ async function selectBox(box, name) {
   renderNotes();
   updateBuildButton();
   try {
-    const cover = await call('covering', { box });
+    const cover = await call('plan_area', { selection });
+    if (version !== selectionVersion) return;
+    state.plan = cover;
+    if (selection.route && cover.geojson) {
+      const geometry = cover.geojson;
+      const parts = geometry.type === 'MultiPolygon' ? geometry.coordinates.map(coordinates => ({ type: 'Polygon', coordinates })) : [geometry];
+      boxLayer = L.layerGroup().addTo(map);
+      for (const part of parts) {
+        const layer = L.geoJSON(part, { style, interactive: false });
+        const shift = 360 * Math.round((map.getCenter().lng - layer.getBounds().getCenter().lng) / 360);
+        if (!shift) layer.addTo(boxLayer);
+        else L.geoJSON(part, { style, interactive: false, coordsToLatLng: ([lon, lat]) => [lat, lon + shift] }).addTo(boxLayer);
+      }
+      paintRoute(selection.route);
+      if (cover.bounds && cover.bounds[2] - cover.bounds[0] < 180) {
+        map.fitBounds(boxBounds(cover.bounds), { padding: [40, 40] });
+      }
+    }
     state.km2 = cover.km2;
     $('area-km2').textContent = `${cover.km2.toLocaleString()} km²`;
     if (!cover.place) {
@@ -175,6 +226,7 @@ async function selectBox(box, name) {
       await choosePlace(cover.place, false);
     }
   } catch (err) {
+    if (version !== selectionVersion) return;
     $('area-source').textContent = err.message;
   }
   renderNotes();
@@ -182,31 +234,41 @@ async function selectBox(box, name) {
 }
 
 async function choosePlace(place, fit) {
+  const version = selectionVersion;
   state.place = place;
-  $('area-source').textContent = place.parent ? `${place.name} — ${place.parent}` : place.name;
-  if (!state.box) $('area-title').textContent = place.name;
+  $('area-source').textContent = sourceNames();
+  if (!state.selection) $('area-title').textContent = state.areaName || place.name;
   if (!$('project-title').value) $('project-title').value = areaName();
-  if (fit || !state.box) {
+  if (!state.selection) {
     call('boundary', { place: place.id }).then(r => {
+      if (version !== selectionVersion) return;
       if (boundaryLayer) boundaryLayer.remove();
       if (r.geojson) {
         boundaryLayer = L.geoJSON(r.geojson, { style: { color: '#888', weight: 1, fill: false, dashArray: '4 4' }, interactive: false }).addTo(map);
-        if (fit && !state.box) map.fitBounds(boundaryLayer.getBounds());
+        if (fit) map.fitBounds(boundaryLayer.getBounds());
       }
     }).catch(() => {});
   }
-  await loadOptions(place.id);
+  await loadOptions(place.id, version);
+  if (version !== selectionVersion) return;
   await refreshEstimate();
 }
 
 function areaName() {
-  return state.areaName || (state.place && state.place.name) || t('area.title');
+  return state.areaName || (state.selection?.route ? t('route.title', state.selection.width_km)
+    : !state.selection && state.place ? state.place.name : t('area.title'));
+}
+
+function sourceNames() {
+  return state.plan?.sources?.map(p => p.name).join(', ') || state.place?.name || '';
 }
 
 async function refreshEstimate() {
   if (!state.place) return;
+  const version = selectionVersion, request = ++estimateVersion;
   try {
-    const est = await call('estimate', { place: state.place.id, box: state.box, include: state.include });
+    const est = await call('estimate', { place: state.place.id, selection: state.selection, include: state.include });
+    if (version !== selectionVersion || request !== estimateVersion) return;
     state.estimate = est;
     const notes = [];
     if (est.cached_tiles) notes.push(t('area.cached'));
@@ -219,8 +281,9 @@ async function refreshEstimate() {
     } else {
       $('area-time').textContent = est.reason;
     }
-    $('area-source').textContent = `${state.place.parent ? `${state.place.name} — ${state.place.parent}` : state.place.name}` + (notes.length ? ` · ${notes.join(', ')}` : '');
+    $('area-source').textContent = sourceNames() + (notes.length ? ` · ${notes.join(', ')}` : '');
   } catch (err) {
+    if (version !== selectionVersion || request !== estimateVersion) return;
     $('area-time').textContent = err.message;
   }
   renderNotes();
@@ -235,6 +298,9 @@ function renderNotes() {
   if (planet === 'old') notes.push(['info', t('area.planetOld', s ? s.planet.version : '')]);
   else if (planet) notes.push(['info', t('area.planet')]);
   if (state.km2 > BIG_KM2) notes.push(['warn', t('area.big')]);
+  if (state.plan?.part_count > 1) notes.push(['info', t('area.parts', state.plan.part_count.toLocaleString())]);
+  if (state.plan?.uncovered_km2 >= 0.1) notes.push(['warn', t('area.uncovered',
+    state.plan.uncovered_km2.toLocaleString(undefined, { maximumFractionDigits: 1 }))]);
   $('area-notes').replaceChildren(...notes.map(([kind, text]) => el('p', { className: `note ${kind}`, textContent: text })));
 }
 
@@ -256,8 +322,13 @@ function duration(s) {
 }
 
 function clearArea() {
-  state.box = null; state.place = null; state.areaName = null; state.estimate = null; state.km2 = null;
+  ++selectionVersion;
+  if (routeDraft) cancelRoute();
+  state.selection = null; state.plan = null; state.place = null; state.areaName = null; state.estimate = null; state.km2 = null;
   state.projectId = null;
+  state.edits = []; drawEdits();
+  paintRoute(null);
+  $('edit-route').hidden = true;
   $('project-title').value = '';
   if (boxLayer) { boxLayer.remove(); boxLayer = null; }
   if (boundaryLayer) { boundaryLayer.remove(); boundaryLayer = null; }
@@ -266,8 +337,9 @@ function clearArea() {
 }
 
 // ------------------------------------------------------------------ options (look and layers)
-async function loadOptions(placeId) {
+async function loadOptions(placeId, version) {
   const opts = await call('options', { place: placeId });
+  if (version !== selectionVersion) return;
   state.options = opts;
   if (!state.look || state.lookFor !== placeId) { state.look = { ...opts.recommended }; state.lookFor = placeId; }
   if (!state.include) state.include = Object.fromEntries(opts.layers.map(l => [l.id, l.default]));
@@ -308,11 +380,12 @@ let job = null;            // {kind: 'build' | 'install_planet', name, stages, w
 
 function startProgress(kind, stages, weights) {
   // a drawn box has no name of its own: the region's name would mislead ("a point in Ukraine")
-  job = { kind, name: state.areaName || (state.box ? null : state.place && state.place.name), stages, weights: weights || stages.map(() => 1), done: new Set(), active: null };
+  job = { kind, name: state.areaName || (state.selection ? areaName() : state.place && state.place.name), stages, weights: weights || stages.map(() => 1), done: new Set(), active: null };
   showCard('build');
   $('build-title').textContent = t(kind === 'build' ? 'build.title' : kind === 'install_ready_pack' ? 'ready.installing' : 'build.planetTitle') + (kind === 'build' && job.name ? ` — ${job.name}` : '');
   $('stages').replaceChildren(...stages.map(name => el('li', { dataset: { stage: name } },
     el('span', { className: 'dot' }), el('span', { textContent: t(`stage.${name}`) }), el('span', { className: 't' }))));
+  $('build-part').hidden = true;
   $('log').textContent = '';
   $('log-box').open = false;
   $('build-error').replaceChildren();
@@ -330,7 +403,7 @@ function drawProgress() {
     if (job.done.has(name)) done += job.weights[i];
     else if (job.active === name) done += job.weights[i] / 3;
   });
-  $('progress-bar').style.width = `${Math.min(100, (100 * done) / total).toFixed(1)}%`;
+  $('progress-bar').style.width = `${Math.min(100, 100 * ((job.part || 1) - 1 + done / total) / (job.totalParts || 1)).toFixed(1)}%`;
 }
 
 // allowPbf: the user agreed to download the country's PBF. Without it a drawn area comes from
@@ -339,7 +412,7 @@ async function build(allowPbf = false) {
   if (!state.place) return;
   const est = state.estimate;
   if (!allowPbf && est && est.ask_pbf) {    // a large country file, known before trying: ask first
-    showPbfOffer({ lead: state.box ? 'pbf.bigLead' : 'pbf.wholeLead', name: state.place.name,
+    showPbfOffer({ lead: state.selection ? 'pbf.bigLead' : 'pbf.wholeLead', name: state.plan ? state.plan.sources.map(p => p.name).join(', ') : state.place.name,
       pbf_bytes: est.pbf_bytes, pbf_seconds: est.pbf_seconds });
     return;
   }
@@ -349,7 +422,7 @@ async function build(allowPbf = false) {
   job.allowPbf = allowPbf;
   jobStarted();
   try {
-    await call('build', { place: state.place.id, box: state.box, look: state.look, include: state.include, allow_pbf: allowPbf });
+    await call('build', { place: state.place.id, selection: state.selection, look: state.look, include: state.include, allow_pbf: allowPbf });
   } catch (err) {
     finishBuild('failed', err.message);
   }
@@ -365,7 +438,7 @@ function jobStarted() {
 function setBuilding(on) {
   state.building = on;
   $('st-task').textContent = on ? t('busy') : '';
-  $('tool-box').disabled = on;
+  for (const id of ['tool-box', 'tool-route', 'tool-edit']) $(id).disabled = on;
   updateBuildButton();
 }
 
@@ -477,11 +550,11 @@ function projectId(title) {
 }
 
 async function saveProject(quiet) {
-  if (!state.place && !state.box) return;
+  if (!state.place && !state.selection) return;
   const title = $('project-title').value.trim() || (state.place && state.place.name) || 'Map';
   state.projectId = state.projectId || projectId(title);
   const project = { schema: 'earthng-project-v1', id: state.projectId, title,
-    selection: { place: state.place && state.place.id, box: state.box },
+    selection: { place: state.place && state.place.id, ...state.selection },
     options: { look: state.look, include: state.include }, edits: state.edits };
   try {
     await call('project_save', { project });
@@ -508,13 +581,18 @@ async function openProject(name) {
   state.include = project.options && project.options.include || null;
   state.lookFor = project.selection.place;
   drawEdits();
-  if (project.selection.box) {
-    const b = project.selection.box;
-    map.fitBounds([[b[1], b[0]], [b[3], b[2]]], { padding: [40, 40] });
-    await selectBox(b, project.title);
-    $('project-title').value = project.title || project.id;
-    state.projectId = project.id;
+  if (project.selection.route || project.selection.box) {
+    const selection = project.selection.route
+      ? { route: project.selection.route, width_km: project.selection.width_km }
+      : { box: project.selection.box };
+    if (selection.box) map.fitBounds(boxBounds(selection.box), { padding: [40, 40] });
+    else map.fitBounds(L.latLngBounds(routeLatLngs(selection.route)), { padding: [40, 40] });
+    await selectArea(selection, project.title);
+  } else if (project.selection.place) {
+    await choosePlace({ id: project.selection.place, name: project.title }, true);
   }
+  $('project-title').value = project.title || project.id;
+  state.projectId = project.id;
 }
 
 // ------------------------------------------------------------------ status, settings
@@ -606,7 +684,9 @@ function geoItem(r, list) {
     $('search').value = head;
     const { box, km2 } = geoBox(r);
     map.fitBounds([[box[1], box[0]], [box[3], box[2]]], { padding: [40, 40] });
-    if (km2 <= 2500) selectBox(box, head);
+    if (routeDraft) { addRoutePoint(r.lon, r.lat); return; }
+    clearArea();
+    selectArea({ box }, head);
   };
   return li;
 }
@@ -649,7 +729,7 @@ document.addEventListener('click', e => { if (!e.target.closest('.search')) $('s
 
 // ------------------------------------------------------------------ layout
 function showCard(name) {
-  ['empty', 'area', 'pbf', 'build', 'done'].forEach(n => { $(`card-${n}`).hidden = n !== name; });
+  ['empty', 'area', 'route', 'pbf', 'build', 'done'].forEach(n => { $(`card-${n}`).hidden = n !== name; });
 }
 
 function showSection(name) {
@@ -674,14 +754,152 @@ function backFromJob() {
   showCard(back || (state.place ? 'area' : 'empty'));
 }
 
+// ------------------------------------------------------------------ app update
+let updateInfo = null;
+
+function updateErrorText(info) {
+  if (!info || !info.error) return '';
+  if (info.error === 'swap-failed' || info.error === 'start-failed') return t('update.swapFailed');
+  return `${t('update.failed')}: ${info.error}`;
+}
+
+function offerNodes(info, inset) {
+  const mb = Math.max(1, Math.round((info.size || 0) / 2 ** 20));
+  const go = el('button', { className: 'primary', textContent: t('update.go'), disabled: state.building && !state.updating });
+  go.onclick = startAppUpdate;
+  const later = el('button', { className: 'link', textContent: t('update.later') });
+  later.onclick = () => { state.updateHidden = true; $('banner').replaceChildren(); };
+  const kids = [
+    el('h4', { textContent: t('update.title', info.version || '') }),
+    el('p', { textContent: info.reason === 'rebuilt' ? t('update.rebuilt', mb) : t('update.body', mb) }),
+  ];
+  if (info.error) kids.push(el('p', { textContent: updateErrorText(info) }));
+  kids.push(el('div', { className: 'actions' }, go, later));
+  return el('div', { className: inset ? 'banner warn in-card' : 'banner warn' }, kids);
+}
+
+function progressNodes(inset) {
+  const cancel = el('button', { className: 'link', textContent: t('update.cancel') });
+  cancel.onclick = () => call('stop').catch(() => {});
+  return el('div', { className: inset ? 'banner warn in-card' : 'banner warn' }, [
+    el('h4', { textContent: t('update.downloading') }),
+    el('p', { className: 'update-progress', textContent: '' }),
+    el('div', { className: 'actions' }, cancel),
+  ]);
+}
+
+function restartNodes(inset) {
+  return el('div', { className: inset ? 'banner warn in-card' : 'banner warn' },
+    el('h4', { textContent: t('update.restarting') }));
+}
+
+function settingsUpdateNode() {
+  if (state.updatePhase === 'restart') return restartNodes(true);
+  if (state.updating) return progressNodes(true);
+  const info = updateInfo;
+  if (!info) return null;
+  if (info.reason === 'checkout') return el('p', { className: 'muted small', textContent: t('update.checkout') });
+  if (info.available) return offerNodes(info, true);
+  if (info.error) return el('p', { className: 'note bad', textContent: updateErrorText(info) });
+  if (state.updateManual && info.reason === 'offline') return el('p', { className: 'note bad', textContent: t('update.offline') });
+  if (state.updateManual && info.reason === 'current') return el('p', { className: 'muted small', textContent: t('update.current', info.current || '') });
+  return null;
+}
+
+function bannerUpdateNode() {
+  if (state.updatePhase === 'restart') return restartNodes(false);
+  if (state.updating) return progressNodes(false);
+  if (state.updateHidden) return null;
+  const info = updateInfo;
+  if (!info) return null;
+  if (info.available) return offerNodes(info, false);
+  if (info.error) return el('div', { className: 'banner bad' }, el('p', { textContent: updateErrorText(info) }));
+  if (state.updateManual && info.reason === 'offline') return el('div', { className: 'banner bad' }, el('p', { textContent: t('update.offline') }));
+  return null;
+}
+
+function renderUpdate() {
+  const settings = settingsUpdateNode();
+  const banner = bannerUpdateNode();
+  $('settings-update').replaceChildren(...(settings ? [settings] : []));
+  $('check-update').hidden = !!(updateInfo && updateInfo.reason === 'checkout');
+  if ($('banner').querySelector('.banner.bad') && !banner) return;   // a dead service stays on screen
+  $('banner').replaceChildren(...(banner ? [banner] : []));
+}
+
+async function checkAppUpdate(manual) {
+  state.updateManual = !!manual;
+  try {
+    updateInfo = await call('app_update');
+    if (updateInfo.available) state.updateHidden = false;
+    renderUpdate();
+  } catch (err) {
+    if (manual) {
+      updateInfo = { available: false, reason: 'offline', detail: err.message };
+      renderUpdate();
+    }
+  }
+}
+
+async function startAppUpdate() {
+  if (state.building) return;
+  state.updating = true;
+  state.updatePhase = 'download';
+  state.updateHidden = false;
+  setBuilding(true);
+  renderUpdate();
+  try {
+    await call('download_app');
+  } catch (err) {
+    state.updating = false;
+    state.updatePhase = null;
+    setBuilding(false);
+    updateInfo = Object.assign({}, updateInfo, { error: err.message });
+    renderUpdate();
+  }
+}
+
+function onAppDownloaded(message) {
+  if (message.result !== 'complete') {
+    state.updating = false;
+    state.updatePhase = null;
+    setBuilding(false);
+    const error = message.result === 'stopped' ? t('build.stopped') : (message.error || t('update.failed'));
+    updateInfo = Object.assign({}, updateInfo, { error });
+    renderUpdate();
+    return;
+  }
+  state.updatePhase = 'restart';
+  renderUpdate();
+  call('apply_update', {}, 'app').catch(err => {
+    state.updating = false;
+    state.updatePhase = null;
+    setBuilding(false);
+    updateInfo = Object.assign({}, updateInfo, { error: err.message });
+    renderUpdate();
+  });
+}
+
 // ------------------------------------------------------------------ events from the service
 listeners.push(message => {
-  if (message.event === 'log') appendLog(message.text);
+  if (message.event === 'log') {
+    appendLog(message.text);
+    if (state.updating) document.querySelectorAll('.update-progress').forEach(node => { node.textContent = message.text; });
+  } else if (message.event === 'done' && message.job === 'download_app') onAppDownloaded(message);
+  else if (message.event === 'part') {
+    $('build-part').hidden = false;
+    $('build-part').textContent = t('build.part', message.index, message.total, message.name);
+    if (job) { job.part = message.index; job.totalParts = message.total; job.done.clear(); job.active = null; }
+    document.querySelectorAll('#stages li').forEach(row => { row.classList.remove('done', 'active'); row.querySelector('.t').textContent = ''; });
+    drawProgress();
+  }
   else if (message.event === 'stage') onStage(message.name, message.seconds);
   else if (message.event === 'done' && message.result === 'needs_pbf') needsPbf(message);
   else if (message.event === 'done') finishBuild(message.result, message.error, message.path);
   else if (message.event === 'ready') refreshStatus().catch(() => {});
   else if (message.event === 'service_exit') {
+    state.updating = false;
+    state.updatePhase = null;
     setBuilding(false);
     $('banner').replaceChildren(el('div', { className: 'banner bad' }, el('p', { textContent: t('service.down') })));
   }
@@ -689,7 +907,14 @@ listeners.push(message => {
 
 // ------------------------------------------------------------------ wiring
 document.querySelectorAll('.rail-btn[data-section]').forEach(b => { b.onclick = () => showSection(b.dataset.section); });
-$('tool-box').onclick = () => setMode('box');
+$('tool-box').onclick = () => { if (routeDraft) cancelRoute(); setMode('box'); };
+$('tool-route').onclick = startRoute;
+$('edit-route').onclick = startRoute;
+$('route-import').onclick = () => $('route-file').click();
+$('route-file').onchange = e => { importRoute(e.target.files[0]); e.target.value = ''; };
+$('route-undo').onclick = () => { if (routeDraft) { routeDraft.points.pop(); refreshRouteDraft(); } };
+$('route-use').onclick = useRoute;
+$('route-cancel').onclick = cancelRoute;
 $('tool-edit').onclick = () => setMode('edit');
 $('empty-draw').onclick = () => { if (state.mode !== 'box') setMode('box'); };
 $('area-clear').onclick = clearArea;
@@ -705,11 +930,13 @@ $('launch-game').onclick = () => call('open_url', { url: 'steam://rungameid/2841
 $('done-another').onclick = () => { if (job && job.kind === 'install_ready_pack') showSection('ready'); else if (job && job.kind === 'install_planet') backFromJob(); else clearArea(); };
 $('open-home').onclick = () => call('open_folder', { which: 'home' }).catch(() => {});
 $('planet-install').onclick = installPlanet;
+$('check-update').onclick = () => checkAppUpdate(true);
 $('game-folders').onchange = e => setGameFolder(e.target.value);
 $('game-folder-set').onclick = () => setGameFolder($('game-folder').value.trim());
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
-  if (dragStart) { dragStart = null; if (boxLayer && !state.box) { boxLayer.remove(); boxLayer = null; } }
+  if (routeDraft) { cancelRoute(); return; }
+  if (dragStart) { dragStart = null; dragLayer?.remove(); dragLayer = null; }
   if (state.mode) setMode(state.mode);
 });
 $('lang').onclick = () => {
@@ -717,13 +944,14 @@ $('lang').onclick = () => {
   try { localStorage.setItem('lang', LANG); } catch (e) { /* storage off */ }
   $('lang').textContent = LANG === 'uk' ? 'УК' : 'EN';
   applyI18n(); renderOptions(); drawEdits(); setMode(state.mode); setMode(state.mode);
-  refreshStatus().catch(() => {}); renderRecent();
+  refreshStatus().catch(() => {}); renderRecent(); renderUpdate();
   if (!document.querySelector('[data-panel="ready"]').hidden) listReadyPacks();
-  if (state.box || state.place) $('area-title').textContent = areaName();
+  if (state.selection || state.place) $('area-title').textContent = areaName();
 };
 $('lang').textContent = LANG === 'uk' ? 'УК' : 'EN';
 applyI18n();
 drawEdits();
 showCard('empty');
 refreshStatus().catch(() => {});
+checkAppUpdate(false);
 renderRecent();

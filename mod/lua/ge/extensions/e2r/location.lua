@@ -443,7 +443,7 @@ end
 -- No inputs: it never takes the mouse from the game. One set of ImVec2 for the whole session
 -- (every one is an engine object).
 local look
-function M.draw(im, t, route)
+function M.draw(im, t, route, topOffset)
   if not t.main then return end
   local view = im.GetMainViewport()
   if not view then return end
@@ -459,7 +459,7 @@ function M.draw(im, t, route)
         + im.WindowFlags_NoFocusOnAppearing + im.WindowFlags_NoBringToFrontOnFocus + im.WindowFlags_AlwaysAutoResize + im.WindowFlags_NoDocking}
     look = v
   end
-  v.pos.x, v.pos.y = view.Pos.x + view.Size.x / 2, view.Pos.y + 10
+  v.pos.x, v.pos.y = view.Pos.x + view.Size.x / 2, view.Pos.y + 10 + (topOffset or 0)
   im.SetNextWindowPos(v.pos, im.Cond_Always, v.pivot)
   im.PushStyleColor2(im.Col_WindowBg, v.back)
   im.PushStyleVar1(im.StyleVar_WindowRounding, 10)

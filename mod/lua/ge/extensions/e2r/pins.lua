@@ -100,7 +100,7 @@ M.FAR = {peak = true, pass = true, viewpoint = true, castle = true, airfield = t
 
 local LEVELS = 8
 local MAX = 240          -- markers drawn at most
-local CELL = 18          -- px: one marker per CELL x CELL square
+local CELL = 48          -- world-anchored pixels, including breathing room around an icon
 local buckets, counts = {}, {}
 for k = 1, LEVELS do buckets[k], counts[k] = {}, 0 end
 local occupied = {}
@@ -257,7 +257,16 @@ end
 
 -- tiles: the streamed tiles (each with .brandPOIs); toGeo(x, y) -> lat, lon; screen(lat, lon) -> px;
 -- col(r, g, b, a) an ImGui colour; brands: generator BRANDS (key -> {cell, name, rgb})
-function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands)
+local function pinOrder(a, b)
+  if a.lat ~= b.lat then return a.lat > b.lat end
+  if a.lon ~= b.lon then return a.lon < b.lon end
+  if a.kind ~= b.kind then return a.kind < b.kind end
+  if a.cat ~= b.cat then return (a.cat or '') < (b.cat or '') end
+  if a.brand ~= b.brand then return (a.brand or '') < (b.brand or '') end
+  return (a.label or '') < (b.label or '')
+end
+
+function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands, layout)
   local north, south, east, west = box.n, box.s, box.e, box.w
   for k = 1, LEVELS do counts[k] = 0 end
   for _, tile in pairs(tiles) do
@@ -288,16 +297,27 @@ function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands)
   end
   for key in pairs(occupied) do occupied[key] = nil end
   local drawn, white, dark = 0, col(1, 1, 1), col(0.12, 0.12, 0.12)
+  local ox, oy = screen(0, 0)
+  local function labelAt(x, y, text)
+    local w = im.CalcTextSize(text).x
+    if not layout or layout.place(x - 2, y - 9, x + w + 3, y + 9) then
+      im.ImDrawList_AddRectFilled(dl, im.ImVec2(x - 2, y - 8), im.ImVec2(x + w + 2, y + 8), col(1, 1, 1, .9), 3)
+      im.ImDrawList_AddText1(dl, im.ImVec2(x, y - 7), dark, text)
+    end
+  end
   for level = 1, LEVELS do
     local bucket = buckets[level]
+    for i = #bucket, counts[level] + 1, -1 do bucket[i] = nil end
+    table.sort(bucket, pinOrder)
     for i = 1, counts[level] do
       if drawn >= MAX then return end
       local poi = bucket[i]
       local x, y = screen(poi.lat, poi.lon)
-      local key = math.floor(x / CELL) * 65536 + math.floor(y / CELL)
-      if not occupied[key] then
+      local key = math.floor((x - ox) / CELL) * 4194304 + math.floor((y - oy) / CELL)
+      local s = poi.kind == 'pin' and STYLE[poi.cat]
+      local half = s and s.text and math.max(8, textWidth(im, s.text) / 2 + 5) or 10
+      if not occupied[key] and (not layout or layout.place(x - half, y - 10, x + half, y + 10)) then
         occupied[key], drawn = true, drawn + 1
-        local s = poi.kind == 'pin' and STYLE[poi.cat]
         local brand = poi.brand and brands[poi.brand]
         if s then
           local g = GROUP[s.group]
@@ -307,7 +327,7 @@ function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands)
           local label = poi.label
           if s.group == 'nature' and poi.ele then label = label and (label .. ' ' .. poi.ele) or poi.ele end
           if label and z >= (s.labelZoom or 17) then
-            im.ImDrawList_AddText1(dl, im.ImVec2(x + half + 4, y - 7), dark, label)
+            labelAt(x + math.max(half + 5, 13), y, label)
           end
         else
           local rgb = poi.rgb or (brand and brand[3])
@@ -316,7 +336,7 @@ function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands)
           im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), 7, white)
           im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), 5.5, c)
           if z >= 17 and (poi.brand or poi.label) then
-            im.ImDrawList_AddText1(dl, im.ImVec2(x + 8, y - 7), dark, poi.label or (brand and brand[2] or poi.brand))
+            labelAt(x + 13, y, poi.label or (brand and brand[2] or poi.brand))
           end
         end
       end

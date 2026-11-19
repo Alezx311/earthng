@@ -45,8 +45,11 @@ function M.step(countries)
   if other and (not index or M.generation(other) > M.generation(index)) then root, index = planet, other end
   if not index then return end
   local places = read(root .. 'places.json') or {}
-  for _, p in ipairs(places) do p.context = c.title .. (p[10] and p[10] ~= '' and (' · ' .. p[10]) or '') end
-  catalogs[#catalogs + 1] = {root = root, index = index, places = places, title = c.title}
+  for _, p in ipairs(places) do
+    p.pack = c.id
+    p.context = c.title .. (p[10] and p[10] ~= '' and (' · ' .. p[10]) or '')
+  end
+  catalogs[#catalogs + 1] = {id = c.id, root = root, index = index, places = places, title = c.title}
   M.revision = M.revision + 1
 end
 
@@ -74,12 +77,13 @@ end
 -- the loaded sidecars, {root, title, index, places}, for the world map's point index (poiindex.lua)
 function M.catalogs() return catalogs end
 
-function M.searchPois(needle, limit, near)
+function M.searchPois(needle, limit, near, pack, accepts)
   local hits = {}
   if #needle < 3 then return hits end
   for _, c in ipairs(catalogs) do
-    local text, at = M.text(c, 'pois.tsv'), 1
-    while text and #hits < M.POI_SCAN do
+    local text, at = (not pack or c.id == pack) and M.text(c, 'pois.tsv'), 1
+    local matched = 0
+    while text and matched < M.POI_SCAN do
       local i = text:find(needle, at, true)
       if not i then break end
       local start = i
@@ -87,12 +91,13 @@ function M.searchPois(needle, limit, near)
       local stop = text:find('\n', i, true) or #text + 1
       local key, lat, lon, cat, name, en = text:sub(start, stop - 1):match('^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t?([^\t]*)$')
       local last = i + #needle - 1
-      if key and last <= start + #key - 1 then
+      if key and last <= start + #key - 1 and (not accepts or accepts(cat)) then
         -- the key holds every name of the point (' | ' between): exact or prefix of any one of them
         local head = i == start or text:sub(i - 3, i - 1) == ' | '
         local whole = head and (last == start + #key - 1 or text:sub(last + 1, last + 3) == ' | ')
         hits[#hits + 1] = {name = name, en = en ~= '' and en or nil, lat = tonumber(lat), lon = tonumber(lon), cat = cat,
-          context = c.title, score = whole and 0 or head and 1 or 2}
+          context = c.title, pack = c.id, score = whole and 0 or head and 1 or 2}
+        matched = matched + 1
       end
       at = stop + 1
     end
@@ -106,7 +111,8 @@ function M.searchPois(needle, limit, near)
     if a.far and a.far ~= b.far then return a.far < b.far end
     if a.name ~= b.name then return a.name < b.name end
     if a.lat ~= b.lat then return a.lat < b.lat end
-    return a.lon < b.lon
+    if a.lon ~= b.lon then return a.lon < b.lon end
+    return a.context < b.context
   end)
   local out = {}
   for k = 1, math.min(limit or 20, #hits) do out[k] = hits[k] end
@@ -119,6 +125,13 @@ function M.places()
     for _, p in ipairs(c.places) do result[#result + 1] = p end
   end
   return result
+end
+
+function M.packPlaces(id)
+  for _, c in ipairs(catalogs) do
+    if c.id == id then return c.places end
+  end
+  return {}
 end
 
 function M.roads(view, zoom)

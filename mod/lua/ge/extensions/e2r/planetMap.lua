@@ -14,9 +14,12 @@ M.SEA = {170 / 255, 211 / 255, 223 / 255}
 local index        -- {maxZoom, tiles = {['z/x/y'] = file}} or false
 local labels       -- {places, countries} with buckets
 local baseLabels, labelRevision = nil, -1
+local guide
 local tex, texN, frame, loads = {}, 0, 0, 0
 local coast
 local roadTex, roadFrame, roadRevision = {}, 0, -1
+local photoRoot = '/earthng/planet/photos/'
+local sheets, photoTex = nil, {}
 
 -- --- tiles ---------------------------------------------------------------------------------------
 local function loadIndex()
@@ -87,6 +90,60 @@ local function drawTiles(im, dl, r0, width, height, x0, y0, z, white)
   end
 end
 
+-- The offline photo sheets share the basemap's Web Mercator coordinates. Clip in
+-- world pixels first: even a deep zoom only submits a viewport-sized quad, and
+-- resizing a window changes the crop without moving or stretching the imagery.
+local function drawPhotos(im, dl, r0, width, height, x0, y0, z, col)
+  if not sheets then
+    sheets = {}
+    if FS:fileExists(photoRoot .. 'index.json') then
+      local ok, data = pcall(jsonReadFile, photoRoot .. 'index.json')
+      if ok and type(data) == 'table' then sheets = data end
+    end
+  end
+  local world, x1, y1 = 256 * 2 ^ z, x0 + width, y0 + height
+  local credits, lastCredit, reads = nil, nil, 0
+  for _, sheet in ipairs(sheets) do
+    if z >= sheet.minZoom and z <= sheet.maxZoom then
+      local b = sheet.box
+      local top, bottom = b[2] * world, b[4] * world
+      local cy0, cy1 = math.max(top, y0), math.min(bottom, y1)
+      if cy1 > cy0 then
+        for wrap = math.floor(x0 / world), math.floor(x1 / world) do
+          local left, right = (wrap + b[1]) * world, (wrap + b[3]) * world
+          local cx0, cx1 = math.max(left, x0), math.min(right, x1)
+          if cx1 > cx0 then
+            local t = photoTex[sheet.file]
+            if t == nil and reads < 2 then
+              reads = reads + 1
+              local ok, obj = pcall(imguiUtils.texObj, photoRoot .. sheet.file)
+              t = ok and obj or false
+              photoTex[sheet.file] = t
+            end
+            if t then
+              t.used = frame
+              local tint = col(1, 1, 1, z == 6 and .52 or .85)
+              im.ImDrawList_AddImage(dl, t.texId,
+                im.ImVec2(r0.x + cx0 - x0, r0.y + cy0 - y0), im.ImVec2(r0.x + cx1 - x0, r0.y + cy1 - y0),
+                im.ImVec2((cx0 - left) / (right - left), (cy0 - top) / (bottom - top)),
+                im.ImVec2((cx1 - left) / (right - left), (cy1 - top) / (bottom - top)), tint)
+              if lastCredit ~= sheet.credit then
+                credits = credits and credits .. ' / ' .. sheet.credit or sheet.credit
+                lastCredit = sheet.credit
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  -- Large sheets from a previous area should not stay resident for the whole drive.
+  for file, t in pairs(photoTex) do
+    if t and frame - t.used > 120 then photoTex[file] = nil end
+  end
+  return credits
+end
+
 -- --- the coastline fallback ------------------------------------------------------------------
 -- Rings as flat {lon, lat, ...} pieces with their bounds, prepared once.
 local CHUNK = 64
@@ -139,6 +196,14 @@ end
 local BUCKET = 5
 local function bucketKey(lat, lon) return math.floor(lat / BUCKET) * 1000 + math.floor(lon / BUCKET) end
 
+function M.articles()
+  if not guide then
+    local path = '/earthng/planet/guide.json'
+    guide = FS:fileExists(path) and jsonReadFile(path) or {}
+  end
+  return guide
+end
+
 local function loadLabels()
   if labels and labelRevision == catalog.revision then return labels end
   if not baseLabels and FS:fileExists(ROOT .. 'labels.json') then
@@ -148,9 +213,16 @@ local function loadLabels()
   baseLabels = baseLabels or {places = {}, countries = {}}
   local places, buckets = catalog.places(), {}
   for _, p in ipairs(baseLabels.places or {}) do places[#places + 1] = p end
+  for _, a in ipairs(M.articles()) do
+    places[#places + 1] = {a.lat, a.lon, a.minZoom, a.title.en, a.title.uk, 0, 0, 'article', article = a}
+  end
   table.sort(places, function(a, b)
     if a[3] ~= b[3] then return a[3] < b[3] end
-    return (a[7] or 0) > (b[7] or 0)
+    if (a[7] or 0) ~= (b[7] or 0) then return (a[7] or 0) > (b[7] or 0) end
+    if a[1] ~= b[1] then return a[1] < b[1] end
+    if a[2] ~= b[2] then return a[2] < b[2] end
+    if a[4] ~= b[4] then return a[4] < b[4] end
+    return (a.context or '') < (b.context or '')
   end)
   for k, p in ipairs(places) do
     p.order = k
@@ -205,15 +277,19 @@ end
 
 -- the named points of the packs (pois.tsv) whose name contains the text, any case; the nearest
 -- to `near` ({lat, lon}) first among equally good names
-function M.searchPois(text, limit, near) return catalog.searchPois(normalize(text), limit, near) end
+function M.searchPois(text, limit, near, pack, accepts)
+  return catalog.searchPois(normalize(text), limit, near, pack, accepts)
+end
+
+function M.packPlaces(id) return catalog.packPlaces(id) end
 
 -- places whose name contains the text (any case), the biggest first
 local lastQuery, lastFound
-function M.search(text, lang, limit)
+function M.search(text, lang, limit, pack, settlements)
   local l = loadLabels()
   local needle = normalize(text)
   if needle == '' then return {} end
-  local key = needle .. ':' .. tostring(lang) .. ':' .. tostring(limit) .. ':' .. labelRevision
+  local key = table.concat({needle, lang, tostring(limit), pack or '', tostring(settlements), labelRevision}, ':')
   if key == lastQuery then return lastFound end
   if not l.lowered then
     for _, list in ipairs({l.places, l.countries}) do
@@ -224,17 +300,18 @@ function M.search(text, lang, limit)
     l.lowered = true
   end
   local out = {}
-  for kind, list in ipairs({l.places, l.countries}) do
+  local places = pack and catalog.packPlaces(pack) or l.places
+  for kind, list in ipairs({places, not pack and not settlements and l.countries or {}}) do
     for _, p in ipairs(list) do
       local score
       for _, value in ipairs({p.uk, p.en, p.aliases}) do
         local at = value:find(needle, 1, true)
         if at then score = math.min(score or 3, value == needle and 0 or at == 1 and 1 or 2) end
       end
-      if score then
+      if score and (not settlements or not p.article) then
         out[#out + 1] = {name = lang == 'en' and p[4] or p[5], lat = p[1], lon = p[2], pop = p[7] or 0,
-          kind = kind == 2 and 'country' or p[8] or 'city', context = p.context, score = score,
-          zoom = kind == 2 and math.max(3, math.min(7, math.floor(p[3] + 2))) or p[8] == 'city' and 12 or 14}
+          kind = kind == 2 and 'country' or p[8] or 'city', context = p.context, score = score, article = p.article,
+          zoom = p.article and 16 or kind == 2 and math.max(3, math.min(7, math.floor(p[3] + 2))) or p[8] == 'city' and 12 or 14}
       end
     end
   end
@@ -331,8 +408,9 @@ function M.drawRoads(im, dl, bounds, zoom, screen, col)
   end
 end
 
-local placed = {}
+local placed, labelMin, labelMax = {}
 local function free(x0, y0, x1, y1)
+  if labelMin and (x0 < labelMin.x or y0 < labelMin.y or x1 > labelMax.x or y1 > labelMax.y) then return false end
   for _, r in ipairs(placed) do
     if x0 < r[3] and x1 > r[1] and y0 < r[4] and y1 > r[2] then return false end
   end
@@ -351,21 +429,55 @@ end
 function M.reserve(x0, y0, x1, y1) placed[#placed + 1] = {x0, y0, x1, y1} end
 -- takes the area when nothing placed covers it yet
 function M.place(x0, y0, x1, y1) return free(x0, y0, x1, y1) end
-function M.beginLabels() placed = {} end
+function M.beginLabels(r0, r1) placed, labelMin, labelMax = {}, r0, r1 end
 
--- Countries (to z7) and cities by Natural Earth's own min zoom, without overlaps.
--- Returns the hovered place {name, lat, lon} for a click to land at.
-function M.drawLabels(im, dl, r0, width, height, view, merc, unmerc, col, lang, mouse, maxLabels)
+-- A cell has the same winner wherever its pixels land in a window. Collect whole cells,
+-- including the neighbours of the visible area, and reuse the plan during a short pan.
+local function cityPlan(view, labels, z, x0, y0, width, height, merc, unmerc)
+  local cw, ch = 96, 36
+  local left, top = math.floor(x0 / cw) - 1, math.floor(y0 / ch) - 1
+  local right, bottom = math.floor((x0 + width) / cw) + 1, math.floor((y0 + height) / ch) + 1
+  local plan = view.cityPlan
+  if plan and plan.rev == labelRevision and plan.z == z and left >= plan.left and top >= plan.top
+    and right <= plan.right and bottom <= plan.bottom then return plan.list end
+  left, right, top, bottom = left - 2, right + 2, top - 2, bottom + 2
+  local north, west = unmerc(left * cw, top * ch, z)
+  local south, east = unmerc((right + 1) * cw, (bottom + 1) * ch, z)
+  local cells = {}
+  for bl = math.floor(south / BUCKET), math.floor(north / BUCKET) do
+    for bo = math.floor(math.max(-180, west) / BUCKET), math.floor(math.min(180, east) / BUCKET) do
+      for _, p in ipairs(labels.buckets[bl * 1000 + bo] or {}) do
+        if p[3] <= z + 0.6 and p[1] <= north and p[1] >= south and p[2] >= west and p[2] <= east then
+          local x, y = merc(p[1], p[2], z)
+          local key = math.floor(y / ch) * 2000000 + math.floor(x / cw)
+          local prev = cells[key]
+          if not prev or (p.article and not prev.p.article) or
+            ((not p.article) == (not prev.p.article) and p.order < prev.p.order) then
+            cells[key] = {p = p, x = x, y = y}
+          end
+        end
+      end
+    end
+  end
+  local list = {}
+  for _, v in pairs(cells) do list[#list + 1] = v end
+  table.sort(list, function(a, b)
+    if (not a.p.article) ~= (not b.p.article) then return a.p.article ~= nil end
+    return a.p.order < b.p.order
+  end)
+  view.cityPlan = {rev = labelRevision, z = z, left = left, top = top, right = right, bottom = bottom, list = list}
+  return list
+end
+
+function M.drawLabels(im, dl, r0, width, height, view, merc, unmerc, col, lang, mouse)
   local l = loadLabels()
-  if not l then return nil end
   local z = view.zoom
   local cx, cy = merc(view.center.lat, view.center.lon, z)
   local x0, y0 = cx - width / 2, cy - height / 2
   local name = lang == 'en' and 4 or 5
-  local white, ink, inkCountry = col(1, 1, 1, 0.9), col(0.2, 0.2, 0.22), col(0.42, 0.34, 0.47)
+  local white, ink, inkCountry = col(1, 1, 1, 0.95), col(.10, .17, .20), col(.25, .23, .34)
   local fontSize = im.GetFontSize() or 13
   local hovered
-  -- country names first: a city never covers its country's label
   if z <= 7 then
     for _, c in ipairs(l.countries) do
       if c[3] <= z + 1.5 then
@@ -380,41 +492,36 @@ function M.drawLabels(im, dl, r0, width, height, view, merc, unmerc, col, lang, 
       end
     end
   end
-  -- cities: the view's buckets, by Natural Earth's order (min zoom, then population)
-  local north, west = unmerc(x0, y0, z)
-  local south, east = unmerc(x0 + width, y0 + height, z)
-  local list = {}
-  for bl = math.floor(south / BUCKET), math.floor(north / BUCKET) do
-    for bo = math.floor(math.max(-180, west) / BUCKET), math.floor(math.min(180, east) / BUCKET) do
-      for _, p in ipairs(l.buckets[bl * 1000 + bo] or {}) do
-        if p[3] <= z + 0.6 and p[1] <= north and p[1] >= south and p[2] >= west and p[2] <= east then
-          list[#list + 1] = p
+  for _, v in ipairs(cityPlan(view, l, z, x0, y0, width, height, merc, unmerc)) do
+    local p = v.p
+    local x, y = r0.x + v.x - x0, r0.y + v.y - y0
+    if x >= r0.x and x < r0.x + width and y >= r0.y and y <= r0.y + height then
+      local text = p[name]
+      local tw, th = im.CalcTextSize(text).x, fontSize
+      local r = p.article and 5 or p[6] == 1 and 4 or 2.5
+      local lx, ly = x + (p.article and 17 or r + 6), y - th / 2
+      local named = lx + tw + 3 <= r0.x + width and ly >= r0.y + 2 and ly + th + 2 <= r0.y + height
+        and free(lx - 2, ly - 2, lx + tw + 3, ly + th + 2)
+      local dot = free(x - r - 1.5, y - r - 1.5, x + r + 1.5, y + r + 1.5)
+      if dot then
+        im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), r + 1.5, white)
+        if p[6] == 1 then
+          im.ImDrawList_AddCircle(dl, im.ImVec2(x, y), r, ink, 12, 1.5)
+        else
+          im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), r, p.article and col(.06, .40, .39) or ink)
         end
       end
-    end
-  end
-  table.sort(list, function(a, b) return a.order < b.order end)
-  local shown = 0
-  for _, p in ipairs(list) do
-    if shown >= (maxLabels or 60) then break end
-    local x, y = merc(p[1], p[2], z)
-    x, y = r0.x + x - x0, r0.y + y - y0
-    local text = p[name]
-    local tw, th = im.CalcTextSize(text).x, fontSize
-    local r = p[6] == 1 and 4 or 3
-    -- the name to the right of the dot
-    if free(x - r - 1, y - th / 2 - 1, x + r + 4 + tw + 1, y + th / 2 + 1) then
-      shown = shown + 1
-      if p[6] == 1 then
-        im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), r + 1.5, white)
-        im.ImDrawList_AddCircle(dl, im.ImVec2(x, y), r, ink, 12, 1.5)
-      else
-        im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), r + 1, white)
-        im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), r, col(0.35, 0.35, 0.38))
+      if named then
+        if p.article then
+          im.ImDrawList_AddRectFilled(dl, im.ImVec2(lx - 2, ly - 2), im.ImVec2(lx + tw + 3, ly + th + 2), col(.04, .24, .25, .94), 3)
+          im.ImDrawList_AddText1(dl, im.ImVec2(lx, ly), white, text)
+        else
+          haloText(im, dl, lx, ly, text, ink, white)
+        end
       end
-      haloText(im, dl, x + r + 4, y - th / 2, text, ink, white)
-      if mouse and mouse.x >= x - r - 2 and mouse.x <= x + r + 4 + tw and mouse.y >= y - th / 2 - 2 and mouse.y <= y + th / 2 + 2 then
-        hovered = {name = text, lat = p[1], lon = p[2]}
+      if mouse and (dot or named) and mouse.x >= (dot and x - r - 2 or lx - 2) and mouse.x <= (named and lx + tw or x + r + 2)
+        and mouse.y >= ly - 2 and mouse.y <= ly + th + 2 then
+        hovered = {name = text, lat = p[1], lon = p[2], article = p.article, context = p.context}
       end
     end
   end
@@ -434,6 +541,9 @@ function M.draw(im, dl, r0, width, height, view, merc, unmerc, col)
     local north = unmerc(x0, y0, view.zoom)
     local south = unmerc(x0, y0 + height, view.zoom)
     drawCoast(im, dl, r0, width, height, view, merc, col, x0, y0, north, south)
+  end
+  if view.photo ~= false then
+    return drawPhotos(im, dl, r0, width, height, x0, y0, view.zoom, col)
   end
 end
 

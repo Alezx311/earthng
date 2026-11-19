@@ -155,7 +155,7 @@ class WidgetTests(unittest.TestCase):
         other = shown(lua.table_from({'area': 'kyiv', 'packageBox': lua.table_from([30.2, 50.2, 30.8, 50.6])}))
         self.assertEqual(other.split(','), ['Оболонь', 'Поділ', 'Хрещатик', 'Печерськ', 'Голосіїв', 'Біличі', 'Ірпінь', 'Бровари'])
 
-    def native_widget(self, basemap=True):
+    def native_widget(self, basemap=True, browser=False):
         """world.lua in native mode with the real planetMap, a fake native and the built base map."""
         import json
         root = Path(__file__).resolve().parents[1]
@@ -168,6 +168,11 @@ class WidgetTests(unittest.TestCase):
         if basemap:
             files['/earthng/planet/basemap/index.json'] = found[-1] / 'index.json'
             files['/earthng/planet/basemap/labels.json'] = found[-1] / 'labels.json'
+        files['/earthng/planet/guide.json'] = root / 'mod/earthng/planet/guide.json'
+        files['/earthng/planet/coastline.json'] = root / 'mod/earthng/planet/coastline.json'
+        if browser:
+            for name in ('worldmap', 'poiindex'):
+                lua.globals()[name + '_src'] = (root / f'mod/lua/ge/extensions/e2r/{name}.lua').read_text(encoding='utf8')
 
         def read_json(path):
             return lua.table_from(json.loads(files[path].read_text(encoding='utf8')), recursive=True)
@@ -241,6 +246,8 @@ class WidgetTests(unittest.TestCase):
             if name == 'ge/extensions/e2r/routing' then return loadstring(routing_src)() end
             if name == 'ge/extensions/e2r/winguard' then return loadstring(winguard_src)() end
             if name == 'ge/extensions/e2r/pins' then return loadstring(pins_src)() end
+            if name == 'ge/extensions/e2r/worldmap' and worldmap_src then return loadstring(worldmap_src)() end
+            if name == 'ge/extensions/e2r/poiindex' and poiindex_src then return loadstring(poiindex_src)() end
             if name == 'bit' then return realRequire('bit') end
             if name == 'ui/imguiUtils' then return {texObj=function(path) return {texId=1, path=path} end} end
             if name == 'ffi' then return realRequire('ffi') end
@@ -294,6 +301,7 @@ class WidgetTests(unittest.TestCase):
           ui_imgui.Text = function(t) texts[#texts + 1] = t end
           ui_imgui.ImDrawList_AddLine = function() lines = lines + 1 end
           ui_imgui.IsItemHovered = function() return true end
+          ui_imgui.GetContentRegionAvail = function() return {x = 360, y = 300} end
           ui_imgui.GetMousePos = function() return {x = 180, y = 90} end   -- the minimap's centre
           ui_imgui.IsMouseClicked = function() return frame == 1 end
           ui_imgui.GetMouseDragDelta = function() return {x = 0, y = 0} end
@@ -340,6 +348,22 @@ class WidgetTests(unittest.TestCase):
         # the selected pack lists its own presets, which land at the place
         lua.execute("clicked='Stone Town##preset1'; draw()")
         self.assertAlmostEqual(lua.eval('S.marker.lat'), -6.163, places=3)
+
+    def test_shared_browser_selects_a_pack_and_lands_on_a_listed_start_only_by_request(self):
+        lua = self.native_widget(basemap=False, browser=True)
+        lua.execute('''
+          ui_imgui.BeginCombo = function(id) return id == drop end
+          drop, clicked = '##browsePack', 'Zanzibar##browse_zanzibar'
+          draw()
+          assert(S.pickerBrowser.pack == 'zanzibar')
+          assert(S.selectedPack == 'zanzibar')
+          assert(S.center.lon > 39)
+          assert(S.pickerBrowser.rows[1].title == 'Stone Town')
+          drop, clicked = nil, 'Stone Town##browseResult1'
+          draw()
+        ''')
+        self.assertAlmostEqual(lua.eval('S.marker.lat'), -6.163, places=3)
+        self.assertEqual(lua.eval('S.state'), 'pick')
 
     def test_search_finds_cities_in_any_case(self):
         lua = self.native_widget()

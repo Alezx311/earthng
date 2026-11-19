@@ -81,9 +81,11 @@ p { margin: 6px 0; }
 .actions .primary { flex: 1; }
 
 .banner { margin: 12px 16px 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface2); }
+.banner.in-card { margin: 10px 0 0; }
 .banner.warn { border-color: var(--warn); }
 .banner.bad { border-color: var(--danger); }
 .banner h4 { margin: 0 0 4px; font-size: 13.5px; }
+.banner p { margin: 0 0 6px; font-size: 12.5px; }
 .banner .actions { margin-top: 8px; }
 
 .stages { list-style: none; margin: 8px 0; padding: 0; }

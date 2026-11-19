@@ -103,7 +103,7 @@ def box(section, margin=MARGIN):
     """The section's lon/lat box grown by margin, checked against the region size limit."""
     import math
     w, s, e, n = section['box']
-    w, s, e, n = w - margin, s - margin, e + margin, n + margin
+    w, s, e, n = max(-180., w - margin), max(-90., s - margin), min(180., e + margin), min(90., n + margin)
     wide = (e - w) * 111.32 * math.cos(math.radians((s + n) / 2))
     tall = (n - s) * 110.57
     if max(wide, tall) > MAX_SPAN_KM:
@@ -115,4 +115,6 @@ def box(section, margin=MARGIN):
 def shape(section, margin=MARGIN):
     """The section's outline grown by margin (lon/lat): the cells it exports."""
     import shapely
-    return shapely.geometry.shape(section['geometry']).buffer(margin)
+    outline = shapely.geometry.shape(section['geometry'])
+    margin = section.get('margin', margin)
+    return outline.buffer(margin) if margin else outline

@@ -46,7 +46,7 @@ class BiomeTests(unittest.TestCase):
             module.present = True
         return lua, gen
 
-    def build(self, lua, gen, height=120, geo=True, lines=(), **extra):
+    def build(self, lua, gen, height=120, geo=True, lines=(), areas=(), **extra):
         def table(v):
             if isinstance(v, dict):
                 return lua.table_from({k: table(x) for k, x in v.items()})
@@ -56,7 +56,7 @@ class BiomeTests(unittest.TestCase):
         n = 41
         # a 25 m DEM, a gentle slope west to east plus the base height
         heights = [height + 20 + 0.02 * (k % n) * 25 for k in range(n * n)]
-        cells = [dict(roads=[], junctions=[], buildings=[], areas=[], lines=list(lines), points=[],
+        cells = [dict(roads=[], junctions=[], buildings=[], areas=list(areas), lines=list(lines), points=[],
                       terrain=dict(rect=[-250, -250, 750, 750], nx=n, ny=n, heights=heights))]
         options = dict(tileSize=500, seaLevel=20, latitude=45.5, maxTrees=2400, maxGrass=4000, maxRocks=120, **extra)
         if geo:
@@ -73,6 +73,25 @@ class BiomeTests(unittest.TestCase):
                 elif item.kind in ('water', 'ocean'):     # the sea's WaterBlocks / WaterPlane
                     ground[item.kind] += 1
         return ground, plants, scene
+
+    def test_mediterranean_park_lawn_is_real_only_and_avoids_paths(self):
+        climate(self.root, 8)
+        lua, gen = self.generator()
+        park = {'id': 'park', 'kind': 'park', 'rings': [[[0, 0], [500, 0], [500, 500], [0, 500]]]}
+        path = {'id': 'walk', 'kind': 'path', 'points': [[0, 250], [500, 250]],
+                'tags': {'highway': 'footway', 'width': '4'}}
+        def patches(**kwargs):
+            scene = self.build(lua, gen, areas=[park], lines=[path], propSpacing=0, **kwargs)[2]
+            return [i.grassPatch for i in scene['items'].values() if i.grassPatch]
+        real = patches(realStyle=True)
+        self.assertTrue(real)
+        self.assertFalse(patches(realStyle=False))
+        for p in real:
+            samples = [p.samples[n] for n in range(1, len(p.samples) + 1)]
+            for k in range(0, len(samples), 4):
+                index = int(samples[k]) % 16
+                y = p.y + (index // 4) * 2 + 1
+                self.assertGreaterEqual(abs(y - 250), 3.1)
 
     def test_temperate_climate_builds_exactly_what_the_generator_built_before(self):
         climate(self.root, 26)               # Dfb, Kyiv's

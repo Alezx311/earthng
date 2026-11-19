@@ -28,6 +28,7 @@ M.pinBox = {}
 -- the route to a point picked on the map (docs/NAVIGATION.md); on M for the same reason
 M.navigator = NATIVE and require('ge/extensions/e2r/navigator') or nil
 M.location = NATIVE and require('ge/extensions/e2r/location') or nil
+M.compass = NATIVE and require('ge/extensions/e2r/compass') or nil
 -- the world map on M: points of interest, filters, OSM facts on hover (worldmap.lua)
 M.worldmap = NATIVE and select(2, pcall(require, 'ge/extensions/e2r/worldmap')) or nil
 if type(M.worldmap) ~= 'table' then M.worldmap = nil end
@@ -392,6 +393,7 @@ local function land(why)
   if log then log('I', logTag, string.format('landing at %.5f, %.5f asked by %s (state %s%s)', S.marker.lat, S.marker.lon,
     tostring(why or '?'), tostring(S.state), away)) end
   if M.navigator then M.navigator.clear() end   -- the old route is in the old region's frame
+  if M.compass and M.compass.clear then M.compass.clear() end
   if M.signals then M.signals.clear() end
   S.location = nil
   S.landSeq = request({type = 'land', lat = S.marker.lat, lon = S.marker.lon})
@@ -864,11 +866,12 @@ local function spawnItem(it, group, pause, tile, layer)
     -- Real engine water: WaterBlock (lake) or River (channel). Look fields inline —
     -- this file is at LuaJIT's 200-local limit.
     local river = it.kind == 'river'
+    local sea = it.realWater and it.look == 'sea'
     local obj = createObject(river and 'River' or 'WaterBlock')
     if not obj then return end
     obj.canSave = false
     obj:setField('fullReflect', 0, 'false')
-    obj:setField('baseColor', 0, river and '28 52 56 255' or '20 64 72 255')
+    obj:setField('baseColor', 0, river and '28 52 56 255' or (sea and '18 48 52 255' or '20 64 72 255'))
     obj:setField('rippleTex', 0, '/core/art/water/ripple_nm.normal.dds')
     obj:setField('foamTex', 0, '/core/art/water/foam_b.color.dds')
     obj:setField('depthGradientTex', 0, river and '/core/art/water/river_depthcolor_ramp_b.png' or '/core/art/water/depthcolor_ramp_b.png')
@@ -877,13 +880,15 @@ local function spawnItem(it, group, pause, tile, layer)
     obj:setField('fresnelPower', 0, '10')
     obj:setField('specularPower', 0, '200')
     obj:setField('overallRippleMagnitude', 0, river and '0.35' or '0.28')
-    obj:setField('overallWaveMagnitude', 0, river and '0.04' or '0.08')
+    obj:setField('overallWaveMagnitude', 0, river and '0.04' or (sea and '0.05' or '0.08'))
     obj:setField('overallFoamOpacity', 0, river and '0.85' or '0.6')
     obj:setField('foamMaxDepth', 0, '0.55')
-    obj:setField('reflectivity', 0, '0.18')
+    obj:setField('reflectivity', 0, sea and '0.28' or '0.18')
     obj:setField('viscosity', 0, '0.001')
-    obj:setField('waterFogDensity', 0, river and '1.2' or '0.9')
-    obj:setField('depthGradientMax', 0, river and '6' or '12')
+    -- At Stow Lake and Ocean Beach 0.9 made shallow water a dark band; 0.3
+    -- keeps a depth tint while making the submerged shore visible.
+    obj:setField('waterFogDensity', 0, river and '1.2' or ((it.lakeFog or sea) and '0.3' or '0.9'))
+    obj:setField('depthGradientMax', 0, river and '6' or (sea and '80' or '12'))
     obj:setField('rippleDir', 0, '0 1'); obj:setField('rippleDir', 1, '0.707 0.707'); obj:setField('rippleDir', 2, '0.5 0.86')
     obj:setField('rippleSpeed', 0, river and '0.05' or '-0.015')
     obj:setField('rippleSpeed', 1, '0.015'); obj:setField('rippleSpeed', 2, '0.01')
@@ -3563,12 +3568,14 @@ local function reloadStep()
   if ms > (result.reloadStepMs or 0) then result.reloadStepMs = ms end
 end
 
+local applyTune
 local function applyPack(name)
   local pack = S.packs and S.packs[name]
   if not pack then return end
   -- the pack sets its own fog: the vista scales the new one (VISTA.apply)
   S.vistaApplied, S.vistaBase = nil, nil
   S.pack = name
+  if native and native.setRealStyle and native.setRealStyle(name == 'real') and applyTune then applyTune(true) end
   S.envAgain, S.exposurePending = nil, nil
   local timer = hptimer()
   -- a field the previous pack set and this one does not goes back to the material's own value
@@ -4137,8 +4144,8 @@ end
 local packsFrom, packs = nil, {}
 local function packInfo()
   local status = S.status
-  if status == packsFrom and status and status.countries == packs.countries then return packs end
-  packsFrom, packs = status, {countries = status and status.countries, byId = {}}
+  if status == packsFrom and packs.items and (not status or status.countries == packs.countries and status.regions == packs.regions) then return packs end
+  packsFrom, packs = status, {countries = status and status.countries, regions = status and status.regions, byId = {}, items = {}}
   for _, region in ipairs(status and status.regions or {}) do
     local p = packs.byId[region.country] or {regions = 0, presets = {}, sections = {}}
     packs.byId[region.country] = p
@@ -4158,6 +4165,23 @@ local function packInfo()
       local p = country and packs.byId[country.id]
       if p then p.presets[#p.presets + 1] = preset end
     end
+    for _, c in ipairs(packs.countries or {}) do
+      if c.available then
+        local entry = {id = c.id, title = c.title, landing = c.landing, starts = {}, country = c}
+        local function add(place)
+          for _, other in ipairs(entry.starts) do
+            if math.abs(place[2] - other[2]) < .00018 and math.abs(place[3] - other[3]) < .00018 then return end
+          end
+          entry.starts[#entry.starts + 1] = place
+        end
+        local p = packs.byId[c.id]
+        for _, place in ipairs(p and p.sections or {}) do add(place) end
+        for _, place in ipairs(p and p.presets or {}) do add(place) end
+        if c.landing then add({c.title, c.landing.lat, c.landing.lon}) end
+        packs.items[#packs.items + 1] = entry
+      end
+    end
+    table.sort(packs.items, function(a,b) return a.title < b.title or a.title == b.title and a.id < b.id end)
   end
   return packs
 end
@@ -4174,6 +4198,7 @@ end
 local function flyToPack(country, width, height)
   local p = packInfo().byId[country.id]
   S.selectedPack = country.id
+  if S.pickerBrowser then S.pickerBrowser.pack = country.id end
   if p and p.box then
     S.center = {lat = (p.box[2] + p.box[4]) / 2, lon = (p.box[1] + p.box[3]) / 2}
     S.zoom = fitZoom(p.box, width or S.mapW or W, height or S.mapH or H)
@@ -4237,8 +4262,12 @@ local function drawMap(width, height, view, pick)
   local north, west = unmerc(x0, y0, z)
   local south, east = unmerc(x0 + width, y0 + height, z)
   local missing = 0
+  local credit = '© OpenStreetMap contributors'
+  local photoSource
   if NATIVE then
-    planetMap.draw(im, dl, r0, width, height, view, merc, unmerc, col)
+    view.photo = S.mapPhoto ~= false
+    photoSource = planetMap.draw(im, dl, r0, width, height, view, merc, unmerc, col)
+    credit = (photoSource or 'Natural Earth') .. ' · ' .. credit
   else
     -- the wrapper's default tint (IM_COL32_WHITE) is not defined in the game: nil broke AddImage
     local white = col(1, 1, 1)
@@ -4272,7 +4301,7 @@ local function drawMap(width, height, view, pick)
   -- where a landing works: one even tint (pick only; the minimap stays clean)
   loadCoverage()
   if pick or not NATIVE or (view.world and view.coverage) then
-    local green = col(0.12, 0.62, 0.28, 0.2)
+    local green = col(0.12, 0.62, 0.28, 0.12)
     for _, c in ipairs(mergedCoverage(S.coverage)) do
       if c[3] >= west and c[1] <= east and c[4] >= south and c[2] <= north then
         -- whole pixels: neighbours share an edge exactly, no lighter seam between them
@@ -4295,13 +4324,18 @@ local function drawMap(width, height, view, pick)
     local maxRank = z >= 15 and 3 or z >= 13 and 2 or 1
     local casing, major, minor = col(0.75, 0.6, 0.35), col(0.99, 0.84, 0.55), col(1, 1, 1)
     local widthMajor = z >= 13 and 4 or 3
-    for _, lines in ipairs(native.mapRoads({w = west, s = south, e = east, n = north}, 3)) do
+    if photoSource then
+      casing, major, minor = col(.18, .15, .11, .65), col(1, .84, .54, .88), col(1, .98, .90, .52)
+      widthMajor = 2.5
+    end
+    for _, lines in ipairs(native.mapRoads({w = west, s = south, e = east, n = north}, 3, z)) do
       for pass = 1, 2 do
         for _, line in ipairs(lines) do
           local b = line.box
           if line.rank <= maxRank and (pass == 2 or line.rank == 1) and b[1] <= north and b[3] >= south and b[2] <= east and b[4] >= west then
             local g, px, py = line.geo, nil, nil
             local c, w = line.rank == 1 and major or minor, line.rank == 1 and widthMajor or (z >= 14 and 2.5 or 1.5)
+            if photoSource and line.rank ~= 1 then w = 1.25 end
             if pass == 1 then c, w = casing, widthMajor + 1.5 end
             for k = 1, #g - 1, 2 do
               local x, y = screen(g[k], g[k + 1])
@@ -4316,7 +4350,7 @@ local function drawMap(width, height, view, pick)
   if NATIVE and S.stream and z >= 12 then
     -- the loaded tiles' lanes: projected once per manifest, drawn only where the view is (all of
     -- them every frame, unculled, took 11 ms and 1 MB of garbage a frame in Stone Town)
-    local seen, lane = {}, col(0.4, 0.43, 0.45)
+    local seen, lane = {}, photoSource and col(.99, .94, .77, .72) or col(0.4, 0.43, 0.45)
     for _, tile in pairs(S.tiles) do
       for _, line in ipairs(navLines(tile.manifest)) do
         local b = line.box
@@ -4349,25 +4383,29 @@ local function drawMap(width, height, view, pick)
       end
     end
   end
-  -- Mark only loaded scenes, so the map and the generated world use the same OSM facts.
-  -- Bound both the draw count and crowding in dense streets; no per-frame world scan (pins.lua).
-  if NATIVE and S.stream and z >= 12 and not view.noPins then
-    local box = M.pinBox
-    box.n, box.s, box.e, box.w = north, south, east, west
-    M.pins.draw(im, dl, S.tiles, z, box, worldToGeo, screen, col, M.brandStyles)
-  end
   -- the route and its flag, over the streets and under the labels
   if M.navigator and S.state == 'driving' then
     M.navigator.draw(im, dl, z, r0.x - x0, r0.y - y0, merc, col, north, west, south, east)
   end
   -- the controls' corners and the pins keep the labels off
+  local creditWidth = im.CalcTextSize(credit).x + 10
+  local creditLabel = creditWidth + 140 > width and L('© Джерела', '© Sources') or credit
+  creditWidth = im.CalcTextSize(creditLabel).x + 10
+  local creditBottom = r1.y
   if NATIVE then
-    planetMap.beginLabels()
-    planetMap.reserve(r1.x - 44, r0.y, r1.x, r0.y + 120)
+    planetMap.beginLabels(r0, r1)
+    if hovered or not view.follow then planetMap.reserve(r1.x - 44, r0.y, r1.x, r0.y + (car and 106 or 72)) end
     planetMap.reserve(r0.x, r1.y - 26, r0.x + 140, r1.y)
+    planetMap.reserve(r1.x - creditWidth, creditBottom - 18, r1.x, creditBottom)
+    if car then
+      local x, y = screen(car.lat, car.lon)
+      planetMap.reserve(x - 13, y - 13, x + 13, y + 13)
+    end
+    if S.marker then
+      local x, y = screen(S.marker.lat, S.marker.lon)
+      planetMap.reserve(x - 9, y - 24, x + 9, y + 1)
+    end
   end
-  -- the world map's points over the streets, their names before the place names (worldmap.lua)
-  if view.overlay then view.overlay(dl, screen, z, north, west, south, east, mouse, hovered, r0, r1) end
   -- the installed packs as pins until their streets show: a click flies to the pack
   local pinHit
   if NATIVE and pick and z < 10 then
@@ -4402,9 +4440,16 @@ local function drawMap(width, height, view, pick)
   -- cities and countries
   local placeHit
   if NATIVE then
-    placeHit = planetMap.drawLabels(im, dl, r0, width, height, view, merc, unmerc, col, lang,
-      hovered and mouse or nil, (pick or view.world) and 70 or 25)
-    if not pick then placeHit = nil end
+    placeHit = planetMap.drawLabels(im, dl, r0, width, height, view, merc, unmerc, col, lang, hovered and mouse or nil)
+  end
+  -- World points and streamed pins share the space left by geographic names.
+  if view.overlay then view.overlay(dl, screen, z, north, west, south, east, mouse, hovered, r0, r1) end
+  -- Mark only loaded scenes, so the map and the generated world use the same OSM facts.
+  -- Bound both the draw count and crowding in dense streets; no per-frame world scan (pins.lua).
+  if NATIVE and S.stream and z >= 12 and not view.noPins then
+    local box = M.pinBox
+    box.n, box.s, box.e, box.w = north, south, east, west
+    M.pins.draw(im, dl, S.tiles, z, box, worldToGeo, screen, col, M.brandStyles, planetMap)
   end
   if S.marker then
     local mx, my = screen(S.marker.lat, S.marker.lon)
@@ -4451,10 +4496,12 @@ local function drawMap(width, height, view, pick)
     if cIn then zoomTo = z + 1 elseif cOut then zoomTo = z - 1 end
   end
   drawScale(dl, r0.x + 10, r1.y - 8, view.center.lat, z)
-  local credit = NATIVE and 'Natural Earth | (c) OpenStreetMap contributors' or '(c) OpenStreetMap'
-  local tw = im.CalcTextSize(credit).x
-  im.ImDrawList_AddRectFilled(dl, im.ImVec2(r1.x - tw - 8, r1.y - 18), r1, col(1, 1, 1, 0.75))
-  im.ImDrawList_AddText1(dl, im.ImVec2(r1.x - tw - 4, r1.y - 17), col(0.15, 0.15, 0.15), credit)
+  im.ImDrawList_AddRectFilled(dl, im.ImVec2(r1.x - creditWidth, creditBottom - 18), im.ImVec2(r1.x, creditBottom), col(.06, .12, .15, .84), 3)
+  im.ImDrawList_AddText1(dl, im.ImVec2(r1.x - creditWidth + 5, creditBottom - 17), col(.98, .99, 1), creditLabel)
+  if creditLabel ~= credit and hovered and mouse.x >= r1.x - creditWidth and mouse.y >= creditBottom - 18 then
+    im.SetTooltip(credit)
+    onControl = true
+  end
   -- what a click here would do
   if pick and hovered and not onControl and (pinHit or placeHit) then
     local tip = pinHit and (pinHit.title .. L(' - показати пакет', ' - show the pack')) or (placeHit.name .. L(' - поставити точку', ' - set the point'))
@@ -4510,7 +4557,8 @@ local function drawMap(width, height, view, pick)
         elseif placeHit then setMarker(placeHit.lat, placeHit.lon)
         else setMarker(unmerc(x0 + px, y0 + py, z)) end
       elseif view.onClick and view.dragMoved < 4 and hovered then
-        view.onClick(unmerc(x0 + px, y0 + py, z))
+        if view.world and placeHit then view.onClick(placeHit.lat, placeHit.lon, placeHit)
+        else view.onClick(unmerc(x0 + px, y0 + py, z)) end
       end
       view.dragging = false
     end
@@ -4637,6 +4685,7 @@ local function pushTheme()
       vars2 = {{im.StyleVar_WindowPadding, im.ImVec2(12, 10)}, {im.StyleVar_FramePadding, im.ImVec2(8, 5)},
         {im.StyleVar_ItemSpacing, im.ImVec2(8, 6)}},
       muted = c(0.62, 0.65, 0.70, 1), accent = c(0.45, 0.70, 1, 1), warn = c(1, 0.65, 0.3, 1),
+      selected = c(0.16, 0.36, 0.65, 1),
       green = c(0.13, 0.55, 0.30, 1), greenHover = c(0.16, 0.65, 0.36, 1), greenActive = c(0.10, 0.45, 0.25, 1)}
   end
   for _, p in ipairs(theme.colors) do im.PushStyleColor2(p[1], p[2]) end
@@ -4648,11 +4697,7 @@ local function popTheme()
   im.PopStyleVar(#theme.vars + #theme.vars2)
 end
 
--- the packs in the side list by part of the world (their landing point)
-local GROUP_ORDER = {'europe', 'america', 'south', 'africa', 'asia', 'oceania', 'other'}
-local GROUP_TITLE = {europe = {'Європа', 'Europe'}, america = {'Північна Америка', 'North America'},
-  south = {'Південна Америка', 'South America'}, africa = {'Африка', 'Africa'}, asia = {'Азія', 'Asia'},
-  oceania = {'Океанія', 'Oceania'}, other = {'Інші', 'Other'}}
+-- Packs by part of the world for the picker's initial camera.
 local function presetName(p) return lang == 'en' and p[5] or p[1] end
 local function packGroup(country)
   local l = country.landing
@@ -4663,9 +4708,6 @@ local function packGroup(country)
   if l.lon > 110 and l.lat < -10 then return 'oceania' end
   return 'asia'
 end
-
-local searchBuf = im.ArrayChar(192)
-local foundPlaces
 
 -- buttons that wrap to the next line when the row is full
 local function flowButtons(items, onClick)
@@ -4681,138 +4723,33 @@ local function flowButtons(items, onClick)
 end
 
 local function drawSidebar(mapW, mapH)
-  im.SetNextItemWidth(-36)
-  local submitted = im.InputTextWithHint('##search', L('Місто, село, країна...', 'City, village, country...'), searchBuf, 192, im.InputTextFlags_EnterReturnsTrue)
-  local searchActive = im.IsItemActive()
-  im.SameLine()
-  if im.Button('X##clearSearch') then ffi.fill(searchBuf, 192); foundPlaces = nil end
-  if im.IsItemHovered() then im.SetTooltip(L('Очистити пошук', 'Clear search')) end
-  local query = planetMap and planetMap.lower(ffi.string(searchBuf):gsub('^%s+', ''):gsub('%s+$', '')) or ''
-  if query ~= S.searchQuery then S.searchChoice, S.searchQuery = 1, query end
-  local countries = NATIVE and S.status and S.status.countries or {}
-  local info = packInfo()
-  im.BeginChild1('##searchResults', im.ImVec2(0, 0), false)
-  if query ~= '' then
-    local any = false
-    for _, country in ipairs(countries) do
-      if country.available and planetMap.lower(country.title):find(query, 1, true) then
-        if not any then im.TextColored(theme.muted, L('Пакети', 'Packs')); any = true end
-        if im.Selectable1(country.title .. '##found_' .. country.id, S.selectedPack == country.id) then flyToPack(country, mapW, mapH) end
-      end
-    end
-    -- the places of a query, with their pack check, once per query (native.at walks the boxes)
-    if not foundPlaces or foundPlaces.query ~= query or foundPlaces.status ~= S.status or foundPlaces.lang ~= lang or foundPlaces.revision ~= planetMap.revision() then
-      local places = {query = query, status = S.status, lang = lang, revision = planetMap.revision()}
-      for _, p in ipairs(PRESETS) do
-        local hit = planetMap.lower(p[1]):find(query, 1, true) or (p[5] and planetMap.lower(p[5]):find(query, 1, true))
-        if hit and (not NATIVE or native.at(p[2], p[3])) then
-          places[#places + 1] = {name = presetName(p), lat = p[2], lon = p[3], zoom = 15, covered = true}
-        end
-      end
-      for _, p in ipairs(planetMap and planetMap.search(query, lang, 25) or {}) do
-        p.covered = not NATIVE or native.at(p.lat, p.lon) ~= nil
-        places[#places + 1] = p
-      end
-      -- the packs' named points (pins.lua categories): a click flies there and sets the landing mark
-      places.pois = planetMap and planetMap.searchPois and planetMap.searchPois(query, 25, S.center) or {}
-      foundPlaces = places
-    end
-    local places = foundPlaces
-    if searchActive then
-      if im.IsKeyPressed(im.GetKeyIndex(im.Key_DownArrow)) then S.searchChoice = math.min(#places, S.searchChoice + 1) end
-      if im.IsKeyPressed(im.GetKeyIndex(im.Key_UpArrow)) then S.searchChoice = math.max(1, S.searchChoice - 1) end
-      if im.IsKeyPressed(im.GetKeyIndex(im.Key_Escape)) then ffi.fill(searchBuf, 192); foundPlaces = nil; return end
-    end
-    S.searchChoice = math.max(1, math.min(#places, S.searchChoice))
-    if #places > 0 then
-      im.Spacing()
-      im.TextColored(theme.muted, L('Місця', 'Places'))
-      for k, p in ipairs(places) do
-        local suffix = p.kind == 'country' and L(' · країна', ' · country') or p.covered and '' or L('  (немає пакета)', '  (no pack)')
-        if im.Selectable1(p.name .. suffix .. '##place' .. k, k == S.searchChoice) or (submitted and k == S.searchChoice) then
-          S.searchChoice = k
-          if p.kind == 'country' then
-            S.center, S.zoom = {lat = p.lat, lon = p.lon}, p.zoom
-            S.marker, S.selectedPack = nil, nil
-          else goTo(p.lat, p.lon, p.zoom or 12) end
-        end
-        if p.context then
-          local kind = p.kind == 'village' and L('село', 'village') or p.kind == 'hamlet' and L('хутір', 'hamlet')
-            or p.kind == 'town' and L('містечко', 'town') or p.kind == 'city' and L('місто', 'city') or L('район', 'district')
-          im.TextColored(theme.muted, kind .. ' · ' .. p.context)
-        end
-      end
-    end
-    if #places.pois > 0 then
-      im.Spacing()
-      im.TextColored(theme.muted, L('Точки', 'Points'))
-      for k, p in ipairs(places.pois) do
-        local names = M.pins and M.pins.NAMES[p.cat]
-        local label = lang == 'en' and p.en or p.name
-        if im.Selectable1(label .. '##poi' .. k, false) then goTo(p.lat, p.lon, 17) end
-        im.TextColored(theme.muted, (names and L(names[1], names[2]) or p.cat) .. ' · ' .. tostring(p.context))
-      end
-    end
-    if #places == 0 and #places.pois == 0 and not any then
-      im.TextColored(theme.muted, L('Нічого не знайдено', 'Nothing found'))
-      im.TextWrapped(L('Спробуйте місцеву або англійську назву. Села доступні з оновленими даними мапи.',
-        'Try a local or English name. Villages require updated map data.'))
-    end
-    im.EndChild()
+  if NATIVE and M.worldmap and M.worldmap.drawBrowser then
+    S.pickerBrowser = S.pickerBrowser or {pack = S.selectedPack}
+    local api = LIMIT.worldApi()
+    M.worldmap.index.step()
+    S.pickerApi = S.pickerApi or setmetatable({
+      selectPack = function(c)
+        if c then flyToPack(c.country, S.mapW, S.mapH) else S.selectedPack = nil end
+      end,
+    }, {__index = api})
+    M.worldmap.drawBrowser(S.pickerApi, S, S.pickerBrowser, function(p)
+      if p.kind == 'country' then
+        S.center, S.zoom = {lat = p.lat, lon = p.lon}, p.zoom
+        S.marker, S.selectedPack = nil, nil
+      else goTo(p.lat, p.lon, p.zoom) end
+    end)
     return
   end
   if NATIVE then
-    local available = 0
-    for _, country in ipairs(countries) do if country.available then available = available + 1 end end
-    im.TextColored(theme.muted, string.format(L('Встановлені пакети: %d', 'Installed packs: %d'), available))
-    if #countries == 0 then
-      im.TextWrapped(L('Пакетів країн немає. Додайте earthng_<країна>.zip до папки mods і ввімкніть його в менеджері модів.',
-        'No country packs installed. Add earthng_<country>.zip to your mods folder and enable it in the Mod Manager.'))
-    end
-    local groups = {}
-    for _, country in ipairs(countries) do
-      local g = packGroup(country)
-      groups[g] = groups[g] or {}
-      table.insert(groups[g], country)
-    end
-    for _, g in ipairs(GROUP_ORDER) do
-      local list = groups[g]
-      if list then
-        table.sort(list, function(a, b) return a.title < b.title end)
-        im.Spacing()
-        im.TextColored(theme.accent, L(GROUP_TITLE[g][1], GROUP_TITLE[g][2]))
-        im.Separator()
-        for _, country in ipairs(list) do
-          if country.available then
-            local selected = S.selectedPack == country.id
-            if im.Selectable1(country.title .. '##pack_' .. country.id, selected) then flyToPack(country, mapW, mapH) end
-            local p = info.byId[country.id]
-            if selected and p and #p.sections > 1 then
-              im.Indent(10)
-              im.TextColored(theme.muted, L('Частини пакета', 'Sections'))
-              flowButtons(p.sections, function(section) goTo(section[2], section[3], 13) end)
-              im.Unindent(10)
-              im.Spacing()
-            end
-            if selected and p and #p.presets > 0 then
-              im.Indent(10)
-              flowButtons(p.presets, function(preset) goTo(preset[2], preset[3], 15) end)
-              im.Unindent(10)
-              im.Spacing()
-            end
-          else
-            im.TextColored(theme.muted, country.title .. ': ' .. tostring(country.reason or L('недоступно', 'unavailable')))
-          end
-        end
-      end
+    for _, c in ipairs(packInfo().items) do
+      if im.Selectable1(c.title .. '##pack_' .. c.id, S.selectedPack == c.id) then flyToPack(c.country, mapW, mapH) end
+      if S.selectedPack == c.id then flowButtons(c.starts, function(p) goTo(p[2], p[3], 15) end) end
     end
   else
     local shown = {}
     for _, p in ipairs(PRESETS) do if presetInPackage(p) then shown[#shown + 1] = p end end
-    im.TextColored(theme.muted, L('Місця пакета', 'Places of the package'))
-    flowButtons(shown, function(preset) goTo(preset[2], preset[3], 15) end)
+    flowButtons(shown, function(p) goTo(p[2], p[3], 15) end)
   end
-  im.EndChild()
 end
 
 -- under the map: the point, the landing button, coordinates
@@ -4966,7 +4903,7 @@ local function ensureTune()
   for k, v in pairs(TUNE_DEFAULT) do S.tune[k] = v end
 end
 
-local function applyTune()
+applyTune = function(force)
   ensureTune()
   if not NATIVE or not native.setTune then return end
   local applied = native.setTune(S.tune)
@@ -4978,7 +4915,7 @@ local function applyTune()
     end
   end
   local base = S.appliedTune or TUNE_DEFAULT
-  local rebuild = false
+  local rebuild = force and true or false
   for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees','propSpacing'}) do
     if S.tune[key] ~= base[key] then rebuild = true end
   end
@@ -5185,6 +5122,13 @@ function LIMIT.worldApi()
     im = im, col = col, L = L, lang = function() return lang end, theme = function() return theme end,
     pushTheme = pushTheme, popTheme = popTheme, winguard = M.winguard, planetMap = planetMap,
     drawMap = function(w, h, view) drawMap(w, h, view) end,
+    packs = function() return packInfo().items end,
+    packAt = function(lat, lon)
+      local country = native.at(lat, lon)
+      return country and country.id
+    end,
+    photo = function() return S.mapPhoto ~= false end,
+    setPhoto = function(on) M.options.set('mapPhoto', on, 'map') end,
     car = carOnMap,
     start = function() return S.center, S.zoom end,
     canLand = function(lat, lon) return NATIVE and native.at(lat, lon) or nil end,
@@ -5208,6 +5152,7 @@ end
 
 function LIMIT.drawBigMap()
   if M.worldmap then
+    if NATIVE then planetMap.update(S.status and S.status.countries) end
     M.worldmap.draw(LIMIT.worldApi())
     return
   end
@@ -5230,10 +5175,26 @@ function LIMIT.drawBigMap()
   im.End()
 end
 
+function M.compassDraw()
+  if not M.compass or S.state ~= 'driving' or not getCameraQuat then return 0 end
+  local p = focus()
+  if not p then return 0 end
+  local lat, lon = native.toGeo(p.x, p.y)
+  if not lat then return 0 end
+  local direction = getCameraQuat() * vec3(0, 1, 0)
+  if direction.x*direction.x+direction.y*direction.y >= 1e-8 then
+    local a, b = native.toGeo(p.x+direction.x*100, p.y+direction.y*100)
+    if a then M.compassHeading = M.compass.bearing(lat, lon, a, b) end
+  end
+  M.compass.step(S.now, lat, lon, lang, S.tiles, native.toGeo)
+  return M.compass.draw(im, lat, lon, M.compassHeading or 0, S.marker, lang)
+end
+
 local function drawWindow()
   if test and test.clean then return end   -- a clean screen for recorded video
+  M.compassOffset = M.compassDraw()
   if M.location and S.location and S.state == 'driving' and not S.locationOff then
-    M.location.draw(im, S.location, M.navigator and M.navigator.lines(L))
+    M.location.draw(im, S.location, M.navigator and M.navigator.lines(L), M.compassOffset)
   end
   if NATIVE then planetMap.update(S.status and S.status.countries) end
   pushTheme()
@@ -5245,8 +5206,9 @@ local function drawWindow()
     return
   end
   if S.state == 'driving' and not S.pickerOpen then
-    im.SetNextWindowSize(im.ImVec2(392, 0), im.Cond_Always)
-    M.winguard.begin(im, 'EarthNG##mini', im.WindowFlags_NoCollapse + im.WindowFlags_AlwaysAutoResize)
+    im.SetNextWindowSize(im.ImVec2(392, 440), im.Cond_FirstUseEver)
+    im.SetNextWindowSizeConstraints(im.ImVec2(320, 260), im.ImVec2(8000, 8000))
+    M.winguard.begin(im, 'EarthNG##mini', im.WindowFlags_NoCollapse)
     if im.Button(L('Приховати', 'Hide')) then S.widgetHidden = true end
     im.SameLine()
     if im.Button(L('Обрати інше місце', 'Pick another place')) then S.pickerOpen = true; S.viewDirty = true end
@@ -5260,7 +5222,15 @@ local function drawWindow()
         if car and x then M.navigator.setDestination(x, y, lat, lon, car, lang) end
       end
     end
-    drawMap(360, 180, S.mini)
+    local avail = im.GetContentRegionAvail()
+    drawMap(avail.x, math.max(120, math.min(avail.x * .5, avail.y - 80)), S.mini)
+    if M.worldmap and M.worldmap.openSearch and im.Button(L('Знайти місце', 'Find a place') .. '##miniatlas') then
+      M.worldmap.openSearch()
+      S.bigMap = true
+    end
+    if M.worldmap and M.worldmap.openSearch and im.IsItemHovered() then
+      im.SetTooltip(L('Відкрити атлас · M', 'Open the atlas · M'))
+    end
     local routeLines = M.navigator and M.navigator.lines(L)
     if routeLines then
       im.TextColored(theme.green, routeLines[1])
@@ -5272,8 +5242,8 @@ local function drawWindow()
       if im.Button(L('До авто', 'To the car')) then S.mini.follow = true end
       im.SameLine()
     end
-    im.TextColored(theme.muted, M.navigator and L('Колесо - масштаб, перетягування - огляд, клік - маршрут',
-      'Wheel - zoom, drag - look around, click - route') or L('Колесо - масштаб, перетягування - огляд', 'Wheel - zoom, drag - look around'))
+    im.TextWrapped(M.navigator and L('Колесо змінює масштаб · Клік прокладає маршрут',
+      'Scroll to zoom · Click to route') or L('Колесо змінює масштаб', 'Scroll to zoom'))
     local st = S.status and S.status.stream
     local p, v = focus()
     if st and st.edgeKm and st.edgeKm < 3 then
@@ -6774,6 +6744,9 @@ function M.optionsBind()
     read = function() return S.parkedPick or (S.tune or TUNE_DEFAULT).parkedCars or 0 end,
     apply = function(v) S.parkedPick = v end}   -- updateParking applies and saves it
   -- interface and style
+  o.define{key = 'mapPhoto', kind = 'bool', group = 'view', default = true, path = {'mapPhoto'},
+    label = {uk = 'Фотопідкладка мапи', en = 'Map imagery'},
+    read = function() return S.mapPhoto ~= false end, apply = function(v) S.mapPhoto = v end}
   o.define{key = 'lang', kind = 'enum', group = 'view', label = {uk = 'Мова', en = 'Language'},
     values = {{value = 'uk', label = {uk = 'Українська', en = 'Українська'}}, {value = 'en', label = {uk = 'English', en = 'English'}}},
     read = function() return lang end, apply = function(v) setLang(v); S.viewDirty = true end}

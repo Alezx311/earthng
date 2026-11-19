@@ -138,13 +138,18 @@ def load_boundaries(root, refresh=False):
         temporary = path.with_suffix('.json.part')
         temporary.write_bytes(data)
         temporary.replace(path)
+    from shapely import make_valid
     from shapely.geometry import shape
     result = {}
     for feature in payload['features']:
         prop = feature.get('properties') or {}
         if feature.get('geometry') and prop.get('id'):
             geometry = shape(feature['geometry'])
-            if not geometry.is_empty and geometry.is_valid:
+            # Some published coastlines touch themselves (e.g. Kanto and Jiangsu).
+            # Keep their polygon coverage so a city there can use the regional extract.
+            if not geometry.is_valid:
+                geometry = make_valid(geometry)
+            if not geometry.is_empty and geometry.area:
                 result[prop['id']] = geometry
     return result
 

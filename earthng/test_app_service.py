@@ -1,4 +1,5 @@
 """EarthNG.exe backend: protocol, game folder, planet install, projects (no network)."""
+import hashlib
 import io
 import json
 import os
@@ -184,6 +185,21 @@ class ServiceTests(unittest.TestCase):
         with patch.object(app_service, 'build_info', return_value={'planetVersion': '0.7.0'}):
             self.assertEqual(self.service.planet_needed(), 'old')
 
+    def test_release_installs_its_adjacent_planet_without_network(self):
+        folder = self.root / 'release'
+        folder.mkdir()
+        exe = folder / 'EarthNG.exe'
+        exe.write_bytes(b'MZ test')
+        planet_zip(folder / app_service.PLANET, '1.0.0')
+        with patch.object(app_service, 'exe_path', return_value=exe), \
+                patch.object(app_service, 'build_info', return_value={'planetVersion': '1.0.0'}), \
+                patch.object(app_service.country_fetch, 'download', side_effect=AssertionError('network')):
+            self.service.fetch_planet(self.game, threading.Event())
+            self.assertIsNone(self.service.planet_needed())
+            planet_zip(folder / app_service.PLANET, '0.9.0')
+            with self.assertRaisesRegex(ValueError, 'needs 1.0.0'):
+                self.service.fetch_planet(self.game, threading.Event())
+
     def test_a_build_needs_a_game_folder(self):
         self.service.places = [{'id': 'albania', 'name': 'Albania', 'pbf': 'https://x/albania.osm.pbf'}]
         self.service.by_id = {'albania': self.service.places[0]}
@@ -278,6 +294,135 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(loaded['edits'], project['edits'])
         self.assertFalse(self.ask(cmd='project_save', project={**project, 'id': '../x'})['ok'])
         self.assertFalse(self.ask(cmd='project_load', name='..')['ok'])
+
+    def test_update_decision_is_newer_rebuilt_or_current(self):
+        remote = {'version': '0.9.0', 'sha256': 'ab' * 32}
+        self.assertEqual(app_service.app_update_decision('0.8.9', None, remote), 'newer')
+        self.assertEqual(app_service.app_update_decision('0.10.0', None, remote), 'current')
+        self.assertEqual(app_service.app_update_decision('0.9.0', 'ab' * 32, remote), 'current')
+        self.assertEqual(app_service.app_update_decision('0.9.0', 'cd' * 32, remote), 'rebuilt')
+        self.assertEqual(app_service.app_update_decision(None, None, remote), 'newer')
+        self.assertIsNone(app_service.version_key('0.9'))
+        with self.assertRaises(ValueError):
+            app_service.parse_app_manifest('{"schema": "earthng-app-v1", "version": "0.9.0", "sha256": "zz", "size": 10}')
+        parsed = app_service.parse_app_manifest(json.dumps({
+            'schema': 'earthng-app-v1', 'version': '0.9.1', 'sha256': 'ab' * 32, 'size': 50_000_000}))
+        self.assertEqual(parsed['version'], '0.9.1')
+
+    def test_a_checkout_does_not_offer_an_update(self):
+        updates = self.root / 'updates'
+        updates.mkdir()
+        (updates / 'error.txt').write_text('swap-failed', encoding='utf-8')
+        with patch.dict(os.environ, {'EARTHNG_EXE': '', 'EARTHNG_UPDATES': str(updates)}):
+            found = self.ask(cmd='app_update')
+            self.assertEqual((found['available'], found['reason'], found['error']), (False, 'checkout', 'swap-failed'))
+            self.assertFalse((updates / 'error.txt').exists())
+            self.assertIsNone(self.ask(cmd='app_update')['error'])
+            self.assertFalse(self.ask(cmd='download_app')['ok'])
+
+    def test_app_update_offers_a_newer_release_and_a_rebuilt_file(self):
+        exe = self.root / 'EarthNG.exe'
+        exe.write_bytes(b'MZinstalled')
+        updates = self.root / 'updates'
+        newer = {'version': '0.9.1', 'sha256': 'ab' * 32, 'size': 50_000_000}
+        with patch.dict(os.environ, {'EARTHNG_EXE': str(exe), 'EARTHNG_UPDATES': str(updates)}), \
+                patch.object(app_service, 'build_info', return_value={'version': '0.9.0'}), \
+                patch.object(app_service, 'fetch_app_manifest', return_value=newer):
+            found = self.ask(cmd='app_update')
+        self.assertEqual((found['available'], found['reason'], found['version']), (True, 'newer', '0.9.1'))
+        same = {'version': '0.9.0', 'sha256': 'cd' * 32, 'size': 50_000_000}
+        with patch.dict(os.environ, {'EARTHNG_EXE': str(exe), 'EARTHNG_UPDATES': str(updates)}), \
+                patch.object(app_service, 'build_info', return_value={'version': '0.9.0'}), \
+                patch.object(app_service, 'fetch_app_manifest', return_value=same):
+            rebuilt = self.ask(cmd='app_update')
+        self.assertEqual(rebuilt['reason'], 'rebuilt')
+        self.assertTrue(rebuilt['available'])
+
+    def test_download_app_keeps_a_file_only_when_its_hash_matches(self):
+        exe = self.root / 'installed.exe'
+        exe.write_bytes(b'MZold')
+        payload = b'MZ' + b'new-exe'
+        digest = hashlib.sha256(payload).hexdigest()
+        remote = {'version': '0.9.1', 'sha256': digest, 'size': len(payload)}
+        updates = self.root / 'updates'
+
+        def fake_download(url, dest, emit=print, cancel=None):
+            self.assertEqual(url, f'{app_service.RELEASE_URL}/{app_service.APP_EXE}')
+            Path(dest).parent.mkdir(parents=True, exist_ok=True)
+            Path(dest).write_bytes(payload)
+            return dest
+
+        env = {'EARTHNG_EXE': str(exe), 'EARTHNG_UPDATES': str(updates)}
+        with patch.dict(os.environ, env), \
+                patch.object(app_service, 'build_info', return_value={'version': '0.9.0'}), \
+                patch.object(app_service, 'fetch_app_manifest', return_value=remote), \
+                patch.object(app_service.country_fetch, 'download', side_effect=fake_download):
+            self.assertTrue(self.ask(cmd='download_app')['ok'])
+            done = self.wait_done()
+        self.assertEqual(done['result'], 'complete', done)
+        self.assertEqual(done['sha256'], digest)
+        self.assertEqual((updates / 'EarthNG.exe').read_bytes(), payload)
+        sidecar = json.loads((updates / 'EarthNG.json').read_text(encoding='utf-8'))
+        self.assertEqual(sidecar['sha256'], digest)
+
+        def wrong(url, dest, emit=print, cancel=None):
+            Path(dest).parent.mkdir(parents=True, exist_ok=True)
+            Path(dest).write_bytes(b'MZnope')
+            return dest
+
+        bad = dict(remote, sha256='ab' * 32, size=len(b'MZnope'))
+        with patch.dict(os.environ, env), \
+                patch.object(app_service, 'build_info', return_value={'version': '0.9.0'}), \
+                patch.object(app_service, 'fetch_app_manifest', return_value=bad), \
+                patch.object(app_service.country_fetch, 'download', side_effect=wrong):
+            self.assertTrue(self.ask(cmd='download_app')['ok'])
+            failed = self.wait_done()
+        self.assertEqual(failed['result'], 'failed', failed)
+        self.assertIn('does not match', failed['error'])
+        self.assertFalse((updates / 'EarthNG.exe').exists())
+
+    def test_update_manifest_is_read_from_github_and_a_missing_one_is_absent(self):
+        import io as bytes_io
+        import urllib.error
+        body = json.dumps({'schema': 'earthng-app-v1', 'version': '0.9.1', 'sha256': 'ab' * 32,
+                           'size': 50_000_000}).encode()
+
+        class Response(bytes_io.BytesIO):
+            def __init__(self, payload, url):
+                super().__init__(payload)
+                self.url = url
+
+            def geturl(self):
+                return self.url
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def urlopen(request, timeout, context):
+            self.assertEqual(request.full_url, f'{app_service.RELEASE_URL}/{app_service.APP_MANIFEST}')
+            self.assertIn('EarthNG.exe', request.get_header('User-agent'))
+            return Response(body, 'https://release-assets.githubusercontent.com/earthng')
+
+        with patch('urllib.request.urlopen', urlopen):
+            found = app_service.fetch_app_manifest()
+        self.assertEqual(found['version'], '0.9.1')
+
+        def missing(request, timeout, context):
+            raise urllib.error.HTTPError(request.full_url, 404, 'missing', None, None)
+
+        with patch('urllib.request.urlopen', missing):
+            self.assertIsNone(app_service.fetch_app_manifest())
+
+        def redirected(request, timeout, context):
+            return Response(body, 'https://evil.example/EarthNG.json')
+
+        with patch('urllib.request.urlopen', redirected):
+            with self.assertRaisesRegex(ValueError, 'unexpected update host'):
+                app_service.fetch_app_manifest()
+        self.assertFalse(app_service.allowed_release_url('http://github.com/Alezx311/earthng/EarthNG.json'))
 
 
 class ProcessTests(unittest.TestCase):

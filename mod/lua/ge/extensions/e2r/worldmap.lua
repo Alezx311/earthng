@@ -32,18 +32,18 @@ end
 M.index = index
 
 M.PANEL = 340              -- px: the side panel
-M.DOT_ZOOM = 10            -- below it the points are dots, from it icons
-M.DOT_CELL, M.ICON_CELL = 9, 24   -- px: one marker per square of this side
+M.DOT_ZOOM = 15            -- city services become pictograms at street scale
+M.DOT_CELL, M.ICON_CELL = 52, 78
 -- markers drawn a frame at most: every dot is two engine calls, an icon several (3000 dots and
 -- 27-40 thousand candidates projected a frame made the zoomed-out map slow, 18.11)
-M.MAX_DOTS, M.MAX_ICONS, M.MAX_LABELS = 1200, 240, 60
+M.MAX_DOTS, M.MAX_ICONS, M.MAX_LABELS = 360, 180, 32
 M.PAD = 0.5                -- the collected box: the view and this share of it again on each side
 M.SLICE = 0.002            -- s of collecting a frame (os.clock); the last markers stay meanwhile
 M.LABEL_ZOOM = 15          -- names next to icons from this zoom (or a category's labelZoom)
 
 local GROUP_ORDER = {'car', 'transport', 'stay', 'shop', 'money', 'health', 'sight', 'nature', 'water', 'civic'}
 local GROUP_NAMES = {
-  car = {'Авто', 'Car'}, transport = {'Транспорт', 'Transport'}, stay = {'Ночівля', 'Stay'},
+  car = {'Авто й пальне', 'Driving and fuel'}, transport = {'Транспорт', 'Transport'}, stay = {'Ночівля', 'Stay'},
   shop = {'Магазини та їжа', 'Shops and food'}, money = {'Гроші', 'Money'}, health = {'Здоров\'я', 'Health'},
   sight = {'Пам\'ятки', 'Sights'}, nature = {'Природа', 'Nature'}, water = {'Вода', 'Water'}, civic = {'Громада', 'Civic'},
 }
@@ -72,8 +72,12 @@ local KIND_KEYS = {'amenity', 'shop', 'tourism', 'leisure', 'historic', 'natural
   'office', 'craft', 'healthcare', 'sport'}
 M.DETAIL = DETAIL
 
-local S = {off = {}, open = {}, ptr = {}, coverage = true, points = true, pause = true, filterRev = 0}
+local S = {off = {}, open = {}, ptr = {}, browser = {}, coverage = false, points = true, pause = true, filterRev = 0}
 M.state = S
+
+function M.openSearch()
+  S.panel, S.browser.focus = 'places', true
+end
 
 -- a category's look: its STYLE (pins.lua), a finer kind with its own shape or letters
 local styles = {}
@@ -108,13 +112,15 @@ M.catName = catName
 -- the categories shown: number -> true, rebuilt when a filter, the index or its categories change
 local enabled, enabledKey = {}, nil
 local function refreshEnabled()
-  local key = S.filterRev * 1e6 + index.revision * 1e3 + #index.CATS + (S.points and 0 or .5)
+  local category, pack = S.browser.category or 'all', S.browser.pack
+  local key = table.concat({S.filterRev, index.revision, #index.CATS, S.points and 1 or 0, category, pack or ''}, ':')
   if key == enabledKey then return end
   enabledKey = key
   for k in pairs(enabled) do enabled[k] = nil end
   if not S.points then return end
   for id, name in ipairs(index.CATS) do
-    if styleOf(id) and not S.off[name] then enabled[id] = true end
+    local style = styleOf(id)
+    if style and not S.off[name] and (category == 'all' or category == 'poi' or style.group == category) then enabled[id] = true end
   end
 end
 
@@ -176,7 +182,7 @@ local function build(set, z, w, s, e, n, screen, pause)
   local cell = z < M.DOT_ZOOM and M.DOT_CELL or M.ICON_CELL
   local px = index.GRID / 360 * 256 * 2 ^ z   -- an index cell on the screen
   local per = px <= cell and 1 or min(400, math.ceil((px / cell) ^ 2))
-  index.collect(w, s, e, n, per, enabled, add, pause)
+  index.collect(w, s, e, n, per, enabled, add, pause, S.browser.pack)
   local rx, ry = screen(0, 0)
   local xa, ya = screen(n, w)
   local xb, yb = screen(s, e)
@@ -269,7 +275,7 @@ local function overlay(api, dl, screen, z, north, west, south, east, mouse, hove
   if not colours then makeColours(api.col) end
   if not P then P = im.ImVec2(0, 0) end
   refreshEnabled()
-  collect(z, west, south, east, north, screen)
+  if z >= 6 and S.points then collect(z, west, south, east, north, screen) end
   local dots = z < M.DOT_ZOOM
   local most = dots and M.MAX_DOTS or M.MAX_ICONS
   local white, n = colours.white, 0
@@ -281,20 +287,21 @@ local function overlay(api, dl, screen, z, north, west, south, east, mouse, hove
   local rx, ry = screen(0, 0)
   local f = set.z and 2 ^ (z - set.z) or 1
   local X, Y, E, I, srx, sry = set.x, set.y, set.e, set.i, set.refX, set.refY
-  for k = 1, set.n do
+  for k = 1, (z >= 6 and S.points) and set.n or 0 do
     if n >= most then break end
     local x, y = rx + (X[k] - srx) * f, ry + (Y[k] - sry) * f
     if x >= x0 and x <= x1 and y >= y0 and y <= y1 then
       local e, i = E[k], I[k]
-      local st = enabled[e.cat[i]] and styleOf(e.cat[i])
-      if st then
+      local st = enabled[e.cat[i]] and (not S.browser.pack or e.c.id == S.browser.pack) and styleOf(e.cat[i])
+      local half = dots and 4 or st and st.text and max(9, textWidth(im, st.text) / 2 + 5) or 9
+      if st and api.planetMap.place(x - half, y - (dots and 4 or 9), x + half, y + (dots and 4 or 9)) then
         n = n + 1
         drawnX[n], drawnY[n], drawnE[n], drawnI[n] = x, y, e, i
         local fill = colours.group[st.group] or colours.dark
         if dots then
           P.x, P.y = x, y
-          im.ImDrawList_AddCircleFilled(dl, P, 3.4, white, 8)
-          im.ImDrawList_AddCircleFilled(dl, P, 2.5, fill, 8)
+          im.ImDrawList_AddCircleFilled(dl, P, 3.8, white, 12)
+          im.ImDrawList_AddCircleFilled(dl, P, 2.6, fill, 12)
         else
           pins.icon(im, dl, st, x, y, fill, white)
         end
@@ -312,15 +319,13 @@ local function overlay(api, dl, screen, z, north, west, south, east, mouse, hove
       if z >= min(M.LABEL_ZOOM, st.labelZoom or M.LABEL_ZOOM) then
         local name = index.name(e, i, lang)
         if name ~= '' then
-          local x, y, w = drawnX[k], drawnY[k], textWidth(im, name)
+          local x, y, w = drawnX[k] + (st.text and max(0, textWidth(im, st.text) / 2 - 3) or 0), drawnY[k], textWidth(im, name)
           if api.planetMap.place(x + 10, y - 8, x + 16 + w, y + 8) then
             labels = labels + 1
             im.ImDrawList_AddRectFilled(dl, im.ImVec2(x + 10, y - 8), im.ImVec2(x + 16 + w, y + 8), colours.halo, 4)
             im.ImDrawList_AddText1(dl, im.ImVec2(x + 13, y - 7), colours.dark, name)
           end
         end
-      else
-        api.planetMap.reserve(drawnX[k] - 9, drawnY[k] - 9, drawnX[k] + 9, drawnY[k] + 9)
       end
     end
   end
@@ -378,7 +383,13 @@ function M.card(api, p)
     title, cat = index.name(e, i, api.lang()), index.category(e, i)
   end
   line(title ~= '' and title or catName(cat, L), 'title')
-  local where = e and e.title or p.context
+  if p.article then
+    local a = p.article
+    line(L(a.area.uk, a.area.en), 'muted')
+    out[#out + 1] = {L(a.summary.uk, a.summary.en), 'text'}
+    line(L('Джерело · ', 'Source · ') .. a.source, 'muted')
+  end
+  local where = e and e.title or (not p.article and p.context or nil)
   if cat or where then line((cat and catName(cat, L) or '') .. (cat and where and ' · ' or '') .. (where or ''), 'muted') end
   local details = e and index.details(e, i)
   if details then
@@ -429,8 +440,10 @@ local function hoverCard(api)
   if not e then return nil end
   if S.cardE ~= e or S.cardI ~= i or S.cardLang ~= api.lang() then
     S.cardE, S.cardI, S.cardLang = e, i, api.lang()
-    S.card = M.card(api, {e = e, i = i})
-    S.card[#S.card + 1] = {api.L('Клік - вибрати', 'Click - pick'), 'muted'}
+    local name = index.name(e, i, api.lang())
+    local category = catName(index.category(e, i), api.L)
+    S.card = {{cut(name ~= '' and name or category, 64), 'title'},
+      {name ~= '' and category or e.title, 'muted'}}
   end
   return S.card
 end
@@ -477,35 +490,252 @@ local function pickPoint(view, p, zoom)
   view.follow = false
 end
 
-local function drawSearch(api, view)
-  local im, L, lang = api.im, api.L, api.lang()
-  S.buf = S.buf or im.ArrayChar(128)
-  if im.PushItemWidth then im.PushItemWidth(-1) end
-  im.InputTextWithHint('##worldsearch', L('Пошук: місто, вулиця, заклад...', 'Search: city, street, venue...'), S.buf, 128)
-  if im.PopItemWidth then im.PopItemWidth() end
-  S.typing = im.IsItemActive and im.IsItemActive() or false
-  local query = bufText(S.buf):gsub('^%s+', ''):gsub('%s+$', '')
-  if query ~= S.query then S.query, S.found = query, nil end
-  if #query < 2 then return end
-  if not S.found and api.planetMap then
-    S.found = {places = api.planetMap.search(query, lang, 6) or {},
-      pois = #query >= 3 and api.planetMap.searchPois and api.planetMap.searchPois(query, 10, view.center) or {}}
+local SEARCH_LIMIT, PAGE_SIZE = 48, 8
+local BROWSE_KINDS = {
+  all = {'Усі категорії', 'All categories'}, start = {'Стартові місця', 'Starting points'},
+  towns = {'Міста й села', 'Towns and villages'}, guide = {'Путівник', 'Field guide'},
+  poi = {'Точки інтересу', 'Points of interest'},
+}
+
+local function nearby(near, pack, group, lang)
+  local active = {}
+  for id in ipairs(index.CATS) do
+    local style = styleOf(id)
+    if style and (group == 'poi' or style.group == group) then active[id] = true end
   end
-  local found = S.found or {places = {}, pois = {}}
-  for k, p in ipairs(found.places) do
-    if im.Selectable1(p.name .. (p.context and ('  · ' .. p.context) or '') .. '##wp' .. k, false) then
-      pickPoint(view, {lat = p.lat, lon = p.lon, title = p.name, context = p.context}, p.zoom or 12)
+  local around, radius = {}, .22   -- about 25 km
+  local cos = max(.2, math.cos(math.rad(near.lat)))
+  index.collect(near.lon - radius / cos, near.lat - radius, near.lon + radius / cos, near.lat + radius,
+    24, active, function(e, i)
+      local lat, lon = index.position(e, i)
+      local d = (lat - near.lat)^2 + ((lon - near.lon) * cos)^2
+      if d <= radius^2 then around[#around + 1] = {e = e, i = i, lat = lat, lon = lon, d = d} end
+    end, nil, pack)
+  table.sort(around, function(a, b)
+    if a.d ~= b.d then return a.d < b.d end
+    if a.e.title ~= b.e.title then return a.e.title < b.e.title end
+    return a.i < b.i
+  end)
+  for k = #around, SEARCH_LIMIT + 1, -1 do around[k] = nil end
+  for _, p in ipairs(around) do
+    p.title, p.context = index.name(p.e, p.i, lang), p.e.title
+    p.cat, p.zoom = index.category(p.e, p.i), 16
+  end
+  return around
+end
+
+local function townRow(p, lang)
+  return {title = lang == 'en' and p[4] or p[5], context = p.context, kind = p[8],
+    lat = p[1], lon = p[2], zoom = 14}
+end
+
+local function browseResults(api, query, category, pack, packs, near)
+  local map, lang, L = api.planetMap, api.lang(), api.L
+  local rows = {}
+  local needle = map.lower(query)
+  local function matches(name) return name and map.lower(name):find(needle, 1, true) end
+  if category == 'all' or category == 'start' then
+    for _, c in ipairs(packs) do
+      if not pack or c.id == pack then
+        for _, p in ipairs(c.starts) do
+          if matches(p[1]) or matches(p[5]) or matches(c.title) then
+            rows[#rows + 1] = {title = lang == 'en' and (p[5] or p[1]) or p[1],
+              lat = p[2], lon = p[3], context = c.title, kind = 'start', zoom = 15}
+          end
+        end
+      end
     end
   end
-  for k, p in ipairs(found.pois) do
-    local label = (lang == 'en' and p.en or p.name) .. '  · ' .. catName(p.cat, L)
-    if im.Selectable1(label .. '##wq' .. k, false) then
-      local e, i = index.find(p.lat, p.lon, p.cat)
-      pickPoint(view, e and {e = e, i = i, lat = p.lat, lon = p.lon} or
-        {lat = p.lat, lon = p.lon, title = lang == 'en' and p.en or p.name, cat = p.cat, context = p.context}, 17)
+  if not pack and (category == 'guide' or category == 'all' and query == '') then
+    for _, a in ipairs(map.articles()) do
+      if matches(a.title.en) or matches(a.title.uk) or matches(a.area.en) or matches(a.area.uk) then
+        rows[#rows + 1] = {title = L(a.title.uk, a.title.en), context = L(a.area.uk, a.area.en),
+          lat = a.lat, lon = a.lon, article = a, zoom = 16}
+      end
     end
   end
-  if #found.places == 0 and #found.pois == 0 then im.TextColored(api.theme().muted, L('Нічого не знайдено', 'Nothing found')) end
+  if category == 'all' or category == 'towns' then
+    if query == '' and pack then
+      local towns = map.packPlaces(pack)
+      if category == 'towns' then return rows, towns end
+      for k = 1, min(SEARCH_LIMIT, #towns) do
+        rows[#rows + 1] = townRow(towns[k], lang)
+      end
+    elseif query ~= '' then
+      for _, p in ipairs(map.search(query, lang, SEARCH_LIMIT, pack, category == 'towns')) do
+        rows[#rows + 1] = {title = p.name, lat = p.lat, lon = p.lon, context = p.context,
+          kind = p.kind, article = p.article, zoom = p.zoom}
+      end
+    end
+  end
+  if category == 'poi' or GROUP_NAMES[category] or category == 'all' and query ~= '' then
+    local points
+    if query == '' then
+      points = nearby(near, pack, category, lang)
+    else
+      local accepts
+      if GROUP_NAMES[category] then
+        accepts = function(cat)
+          local style = pins.STYLE[cat]
+          return style and style.group == category
+        end
+      end
+      points = map.searchPois(query, SEARCH_LIMIT, near, pack, accepts)
+      for _, p in ipairs(points) do
+        p.e, p.i = index.find(p.lat, p.lon, p.cat, p.pack)
+        p.title, p.zoom = lang == 'en' and (p.en or p.name) or p.name, 17
+        if p.e then p.cat = index.category(p.e, p.i) end
+      end
+    end
+    for _, p in ipairs(points) do rows[#rows + 1] = p end
+  end
+  return rows
+end
+
+local function fitText(im, text, width)
+  if im.CalcTextSize(text).x <= width then return text end
+  local n = #text
+  repeat
+    n = n - 1
+    while n > 0 and text:byte(n + 1) >= 128 and text:byte(n + 1) < 192 do n = n - 1 end
+    local short = text:sub(1, n) .. '…'
+    if im.CalcTextSize(short).x <= width then return short end
+  until n == 0
+  return ''
+end
+
+-- Used by the landing picker and atlas. Each keeps its own query, scope and list position.
+function M.drawBrowser(api, view, browser, choose)
+  local im, L, map = api.im, api.L, api.planetMap
+  local packs = api.packs()
+  local pack
+  for _, c in ipairs(packs) do if c.id == browser.pack then pack = c; break end end
+  browser.pack = pack and pack.id
+  browser.category = browser.category or 'all'
+  local function title(pair) return L(pair[1], pair[2]) end
+  if browser.category == 'guide' and pack then browser.category = 'all' end
+  local filter = browser.category
+  local packLabel = L('Усі пакети', 'All packs')
+  im.SetNextItemWidth(-1)
+  if im.BeginCombo('##browsePack', pack and pack.title or packLabel) then
+    if im.Selectable1(packLabel, not pack) then
+      browser.pack = nil
+      if api.selectPack and pack then api.selectPack(nil) end
+    end
+    for _, c in ipairs(packs) do
+      if im.Selectable1(c.title .. '##browse_' .. c.id, pack == c) then
+        browser.pack = c.id
+        if api.selectPack and pack ~= c then api.selectPack(c) end
+      end
+    end
+    im.EndCombo()
+  end
+  im.SetNextItemWidth(-1)
+  if im.BeginCombo('##browseCategory', title(BROWSE_KINDS[filter] or GROUP_NAMES[filter])) then
+    local function option(key, names)
+      if im.Selectable1(title(names) .. '##category_' .. key, filter == key) then browser.category = key end
+    end
+    for _, key in ipairs({'all', 'start', 'towns', 'guide', 'poi'}) do
+      if key ~= 'guide' or not browser.pack then option(key, BROWSE_KINDS[key]) end
+    end
+    for _, key in ipairs(GROUP_ORDER) do option(key, GROUP_NAMES[key]) end
+    im.EndCombo()
+  end
+  if browser.category == 'guide' and browser.pack then browser.category = 'all' end
+  browser.buf = browser.buf or im.ArrayChar(128)
+  im.SetNextItemWidth(-38)
+  if browser.focus then im.SetKeyboardFocusHere(0); browser.focus = false end
+  local wasTyping = browser.typing
+  local submitted = im.InputTextWithHint('##browseSearch', L('Місто, пам’ятка, заклад…', 'Town, landmark, venue…'),
+    browser.buf, 128, im.InputTextFlags_EnterReturnsTrue)
+  browser.typing = im.IsItemActive()
+  im.SameLine()
+  if im.Button('×##browseClear') then clearBuf(browser.buf) end
+  if im.IsItemHovered() then im.SetTooltip(L('Очистити пошук', 'Clear search')) end
+  local query = bufText(browser.buf):gsub('^%s+', ''):gsub('%s+$', '')
+  if (browser.typing or wasTyping) and im.IsKeyPressed(im.GetKeyIndex(im.Key_Escape))
+    and (query ~= '' or browser.query and browser.query ~= '') then
+    clearBuf(browser.buf)
+    query, browser.escaped = '', true
+  end
+  local scoped
+  for _, c in ipairs(packs) do if c.id == browser.pack then scoped = c; break end end
+  local localList = query == '' and (browser.category == 'poi' or GROUP_NAMES[browser.category])
+  if localList then
+    if im.SmallButton(L('Оновити місця поблизу', 'Refresh nearby places')) then browser.key = nil end
+    if im.IsItemHovered() then
+      im.SetTooltip(L('До 25 км від центра мапи або старту пакета', 'Within 25 km of the map centre or pack start'))
+    end
+  end
+  local _, letters = query:gsub('[^\128-\191]', '')
+  if letters == 1 then
+    im.TextWrapped(L('Введіть щонайменше дві літери.', 'Enter at least two characters.'))
+    return
+  end
+  local key = table.concat({query, browser.category, browser.pack or '', api.lang(), map.revision(), index.revision}, '\0')
+  if key ~= browser.key or packs ~= browser.packs then
+    local near = view.center
+    if scoped and scoped.landing and (not api.packAt or api.packAt(near.lat, near.lon) ~= scoped.id) then near = scoped.landing end
+    local same = query == browser.query and browser.lastPack == browser.pack and browser.lastCategory == browser.category
+    browser.key, browser.packs, browser.query = key, packs, query
+    browser.lastPack, browser.lastCategory = browser.pack, browser.category
+    browser.rows, browser.towns = browseResults(api, query, browser.category, browser.pack, packs, near)
+    browser.townRows = {}
+    if not same then browser.row = 1 end
+  end
+  local rows = browser.rows
+  local count = browser.towns and #browser.towns or #rows
+  if count == 0 then
+    local stats = index.stats()
+    if localList and stats.done < stats.total then im.TextWrapped(L('Завантажуємо місця з паків…', 'Reading places from packs…'))
+    elseif query ~= '' then im.TextWrapped(L('Нічого не знайдено в поточному пакеті й категорії.', 'No matches for these filters.'))
+    elseif localList then im.TextWrapped(L('Поруч немає місць цієї категорії.', 'There are no nearby places in this category.'))
+    elseif not scoped and browser.category == 'towns' then im.TextWrapped(L('Оберіть пакет або введіть назву.', 'Choose a pack or enter a name.'))
+    elseif #packs == 0 then im.TextWrapped(L('Встановіть пак місцевості, щоб побачити його місця.', 'Install a region pack to browse its places.'))
+    else im.TextWrapped(L('У цьому пакеті немає списку для цієї категорії.', 'This pack has no list for this category.')) end
+    return
+  end
+  local row = max(1, min(count, browser.row or 1))
+  if browser.typing then
+    if im.IsKeyPressed(im.GetKeyIndex(im.Key_DownArrow)) then row = min(count, row + 1) end
+    if im.IsKeyPressed(im.GetKeyIndex(im.Key_UpArrow)) then row = max(1, row - 1) end
+  end
+  local page = floor((row - 1) / PAGE_SIZE)
+  if browser.page ~= page then browser.page, browser.townRows = page, {} end
+  local width = im.GetContentRegionAvailWidth() - 12
+  local fontsize = im.GetFontSize()
+  for i = page * PAGE_SIZE + 1, min(count, (page + 1) * PAGE_SIZE) do
+    local p = rows[i] or browser.townRows[i]
+    if not p then
+      p = townRow(browser.towns[i], api.lang())
+      browser.townRows[i] = p
+    end
+    if not p.caption or p.width ~= width or p.fontsize ~= fontsize then
+      local meta = p.cat and catName(p.cat, L) or p.kind == 'start' and browser.category ~= 'start' and L('Старт', 'Start') or
+        p.article and browser.category ~= 'guide' and L('Путівник', 'Field guide') or nil
+      local context = p.context
+      if scoped and context then
+        local prefix = scoped.title .. ' · '
+        if context == scoped.title then context = nil
+        elseif context:sub(1, #prefix) == prefix then context = context:sub(#prefix + 1) end
+      end
+      if meta then context = context and meta .. ' · ' .. context or meta end
+      p.caption, p.subtitle = fitText(im, p.title, width), context and fitText(im, context, width)
+      p.width, p.fontsize = width, fontsize
+    end
+    local clicked = im.Selectable1(p.caption .. '##browseResult' .. i, i == row)
+    if p.caption ~= p.title and im.IsItemHovered() then im.SetTooltip(p.title) end
+    if p.subtitle then im.TextColored(api.theme().muted, p.subtitle) end
+    if clicked or submitted and i == row then browser.row = i; choose(p); return end
+  end
+  if count > PAGE_SIZE then
+    if im.SmallButton(L('‹ Назад', '‹ Previous') .. '##browsePrev') then row = max(1, (page - 1) * PAGE_SIZE + 1) end
+    im.SameLine()
+    im.Text(string.format('%d / %d', page + 1, math.ceil(count / PAGE_SIZE)))
+    im.SameLine()
+    if im.SmallButton(L('Далі ›', 'Next ›') .. '##browseNext') then row = min(page + 1, floor((count - 1) / PAGE_SIZE)) * PAGE_SIZE + 1 end
+  end
+  browser.row = row
 end
 
 local function drawFilters(api)
@@ -568,6 +798,7 @@ local function drawPick(api, view)
   local p = S.pick
   if not p then return end
   if S.pickCard ~= p or S.pickLang ~= api.lang() then
+    if p.article then p.title = api.L(p.article.title.uk, p.article.title.en) end
     S.pickCard, S.pickLang, S.pickLines = p, api.lang(), M.card(api, p)
   end
   im.Separator()
@@ -575,6 +806,9 @@ local function drawPick(api, view)
     if k == 1 then im.TextColored(theme.accent, l[1])
     elseif l[2] == 'muted' then im.TextColored(theme.muted, l[1])
     else im.TextWrapped(l[1]) end
+  end
+  if p.article and im.SetClipboardText and im.SmallButton(L('Копіювати посилання', 'Copy source link')) then
+    im.SetClipboardText(p.article.url)
   end
   local lat, lon = p.lat, p.lon
   if p.e then lat, lon = index.position(p.e, p.i) end
@@ -584,7 +818,6 @@ local function drawPick(api, view)
   if S.navFailed == p then im.TextColored(theme.warn, L('Маршрут лише в межах поточного пакета', 'Routes stay within the current pack')) end
   local country = api.canLand(lat, lon)
   if country then
-    if api.canNavigate() then im.SameLine() end
     if im.Button(L('Висадитися тут', 'Land here') .. '##wland', im.ImVec2(150, 0)) then api.land(lat, lon) end
   end
   if im.Button(L('Показати', 'Show') .. '##wshow', im.ImVec2(100, 0)) then
@@ -592,42 +825,59 @@ local function drawPick(api, view)
     view.zoom = max(view.zoom, 16)
   end
   im.SameLine()
-  if im.Button(L('Скинути', 'Clear') .. '##wclear', im.ImVec2(100, 0)) then S.pick = nil end
+  if im.Button(L('Скинути вибір', 'Clear selection') .. '##wclear') then S.pick, S.panel = nil, 'places' end
 end
 
 local function drawPanel(api, view, width, height)
   local im, L, theme = api.im, api.L, api.theme()
   im.BeginChild1('##worldside', im.ImVec2(width, height), true)
-  im.TextColored(theme.accent, L('Карта світу', 'World map'))
-  im.SameLine()
-  im.TextColored(theme.muted, L('  M - закрити', '  M - close'))
-  drawSearch(api, view)
-  im.Separator()
+  if S.panel ~= S.lastPanel then im.SetScrollY(0); S.lastPanel = S.panel end
+  im.TextColored(theme.accent, L('Атлас Землі', 'Earth atlas'))
   local car = api.car()
-  if car and im.Button(L('До авто', 'To the car') .. '##wcar', im.ImVec2(100, 0)) then
-    view.center, view.zoom, view.follow = {lat = car.lat, lon = car.lon}, max(view.zoom, 14), false
+  if car and im.Button(L('До авто', 'To the car') .. '##wcar') then
+    view.center, view.zoom, view.follow = {lat = car.lat, lon = car.lon}, 15, false
   end
   if car then im.SameLine() end
-  if im.Button(L('Весь світ', 'Whole world') .. '##wworld', im.ImVec2(100, 0)) then
+  if im.Button(L('Весь світ', 'Whole world') .. '##wworld') then
     view.center, view.zoom, view.follow = {lat = 30, lon = 15}, 2, false
   end
-  if im.Checkbox(L('Точки інтересу', 'Points of interest') .. '##wpts', ptr(im, 'points', S.points)) then
-    S.points = S.ptr.points[0] and true or false
-  end
-  if im.Checkbox(L('Де можна висадитися', 'Where you can land') .. '##wcov', ptr(im, 'coverage', S.coverage)) then
-    S.coverage = S.ptr.coverage[0] and true or false
-  end
-  if im.Checkbox(L('Пауза, поки відкрита карта', 'Pause while the map is open') .. '##wpause', ptr(im, 'pause', S.pause)) then
-    S.pause = S.ptr.pause[0] and true or false
-    M.setPause(S.pause)
-  end
+  im.SameLine()
+  if im.Button(L('Закрити', 'Close') .. '##wclose') then api.close() end
   im.Separator()
-  drawPick(api, view)
-  if S.pick then im.Separator() end
-  drawFilters(api)
-  im.Spacing()
-  im.TextColored(theme.muted, L('Колесо - масштаб, перетягування - огляд, клік - вибрати точку; C - до авто, Esc - закрити',
-    'Wheel - zoom, drag - pan, click - pick a point; C - to the car, Esc - close'))
+  local function tab(id, label)
+    local active = theme.selected and (S.panel or 'places') == id
+    if active then im.PushStyleColor2(im.Col_Button, theme.selected) end
+    if im.Button(label .. '##w' .. id) then S.panel = id end
+    if active then im.PopStyleColor() end
+  end
+  tab('places', L('Місця', 'Places'))
+  if S.pick then
+    im.SameLine()
+    tab('card', L('Картка', 'Place card'))
+  end
+  im.SameLine()
+  tab('layers', L('Шари', 'Layers'))
+  im.Separator()
+  if S.panel == 'card' and S.pick then
+    drawPick(api, view)
+  elseif S.panel == 'layers' then
+    if api.photo and im.Checkbox(L('Фотопідкладка', 'Map imagery') .. '##wphoto', ptr(im, 'photo', api.photo())) then
+      api.setPhoto(S.ptr.photo[0])
+    end
+    if im.Checkbox(L('Точки інтересу', 'Points of interest') .. '##wpts', ptr(im, 'points', S.points)) then
+      S.points = S.ptr.points[0] and true or false
+    end
+    if im.Checkbox(L('Де можна висадитися', 'Where you can land') .. '##wcov', ptr(im, 'coverage', S.coverage)) then
+      S.coverage = S.ptr.coverage[0] and true or false
+    end
+    if im.Checkbox(L('Пауза, поки відкрита мапа', 'Pause while the map is open') .. '##wpause', ptr(im, 'pause', S.pause)) then
+      S.pause = S.ptr.pause[0] and true or false
+      M.setPause(S.pause)
+    end
+    if S.points and im.CollapsingHeader1(L('Категорії позначок', 'Marker categories') .. '##wfilter') then drawFilters(api) end
+  elseif api.packs then
+    M.drawBrowser(api, view, S.browser, function(p) pickPoint(view, p, p.zoom); S.panel = 'card' end)
+  end
   im.EndChild()
 end
 
@@ -666,8 +916,11 @@ function M.draw(api)
     local center, zoom = api.start()
     view = {center = {lat = center.lat, lon = center.lon}, zoom = zoom or 12, follow = false, world = true}
     view.overlay = function(...) overlay(api, ...) end
-    view.onClick = function(lat, lon)
-      if S.hoverE then
+    view.onClick = function(lat, lon, place)
+      S.panel = 'card'
+      if place then
+        S.pick = {lat = lat, lon = lon, title = place.name, article = place.article, context = place.context}
+      elseif S.hoverE then
         local plat, plon = index.position(S.hoverE, S.hoverI)
         S.pick = {e = S.hoverE, i = S.hoverI, lat = plat, lon = plon}
       else
@@ -694,7 +947,7 @@ function M.draw(api)
   local flags = im.WindowFlags_NoTitleBar + im.WindowFlags_NoResize + im.WindowFlags_NoMove + im.WindowFlags_NoCollapse
   api.winguard.begin(im, 'EarthNG##worldmap', flags)
   local avail = im.GetContentRegionAvail()
-  local panel = min(M.PANEL, max(220, avail.x * .3))
+  local panel = min(M.PANEL, max(260, avail.x * .32))
   drawPanel(api, view, panel, avail.y)
   im.SameLine()
   im.BeginGroup()
@@ -709,8 +962,10 @@ function M.draw(api)
   end
   -- keys: Esc clears the search first, then shuts; C - to the car; PageUp/PageDown - zoom
   local typing = io.WantTextInput
-  if im.IsKeyPressed(im.GetKeyIndex(im.Key_Escape)) then
-    if typing and S.query and S.query ~= '' then clearBuf(S.buf) else api.close() end
+  if S.browser.escaped then
+    S.browser.escaped = false
+  elseif im.IsKeyPressed(im.GetKeyIndex(im.Key_Escape)) then
+    api.close()
   elseif not typing then
     local car = api.car()
     if car and im.Key_C and im.IsKeyPressed(im.GetKeyIndex(im.Key_C)) then

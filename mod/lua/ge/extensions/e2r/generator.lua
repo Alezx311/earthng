@@ -81,9 +81,31 @@ function WATER.classOf(area, box)
   if long > 150 and long > short * WATER.riverMinAspect then return 'river' end
   return 'lake'
 end
-function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, level, inside, boundsOf, pause, blocked)
+-- A compact lake can use all of its available DEM, rather than a different set of
+-- samples in each visible tile. Never use samples outside its polygon: an adjacent
+-- lower valley or the sea is not the level of this lake.
+function WATER.lakeLevel(area, box, demAt, inside)
+  local dx, dy = box[3] - box[1], box[4] - box[2]
+  if dx <= 0 or dy <= 0 or dx > 600 or dy > 600 then return nil end
+  local nx, ny = math.max(1, math.ceil(dx / 10)), math.max(1, math.ceil(dy / 10))
+  local zs = {}
+  for iy = 0, ny - 1 do
+    for ix = 0, nx - 1 do
+      local x, y = box[1] + (ix + .5) * dx / nx, box[2] + (iy + .5) * dy / ny
+      if inside(area.rings, x, y) then
+        local z = demAt(x, y)
+        if z == nil then return nil end
+        zs[#zs + 1] = z
+      end
+    end
+  end
+  if #zs == 0 then return nil end
+  table.sort(zs)
+  return zs[math.ceil(#zs * .5)] + WATER.above
+end
+function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, level, inside, boundsOf, pause, blocked, lakeLevels, realStyle, asphaltBins)
   local n = 0
-  local function block(x0, y0, x1, y1, z, depth, look)
+  local function block(x0, y0, x1, y1, z, depth, look, lakeFog)
     local w, l = x1 - x0, y1 - y0
     if w < 1 or l < 1 then return end
     n = n + 1
@@ -92,7 +114,8 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
       pos = {(x0 + x1) * .5, (y0 + y1) * .5, z}, scale = {w, l, depth},
       -- Small clipped slivers can be narrower than the normal grid; passing a larger
       -- cell makes the engine clamp it after the WaterBlock has been registered.
-      look = look or 'lake', grid = math.min(distant and WATER.gridFar or WATER.gridNear, w, l),
+      look = look or 'lake', realWater = realStyle, lakeFog = lakeFog,
+      grid = math.min(distant and WATER.gridFar or WATER.gridNear, w, l),
       decor = true, layer = 'scene'}
   end
   -- An infinite WaterPlane cannot be clipped around low roads or terrain, and a single coastal
@@ -107,7 +130,13 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
     -- shoreline to 160,000 cells on a tile the player cannot reach.
     local seaCell = distant and math.max(WATER.coverCell, (rect[3] - rect[1]) / 50) or WATER.coverCell
     local cover = WATER.cover(rings, rect[1], rect[2], rect[3], rect[4], seaCell,
-      blocked and function(a, b, c, d) return blocked(a, b, c, d, sea) end, pause)
+      function(a, b, c, d)
+        if realStyle and not distant then
+          local z = demAt((a + c) * .5, (b + d) * .5)
+          if z and z >= sea then return true end
+        end
+        return blocked and blocked(a, b, c, d, sea)
+      end, pause, asphaltBins, sea)
     for _, r in ipairs(cover) do block(r[1], r[2], r[3], r[4], sea, WATER.seaDepth, 'sea') end
     pause()
   end
@@ -131,31 +160,49 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
             end
           end
         end
+        if zN == 0 and realStyle then
+          -- A small crescent can miss the 25 m samples and its box centre.
+          local nx, ny = math.max(1, math.ceil((x1-x0)/5)), math.max(1, math.ceil((y1-y0)/5))
+          for iy = 0, ny - 1 do
+            for ix = 0, nx - 1 do
+              local sx, sy = x0 + (ix+.5)*(x1-x0)/nx, y0 + (iy+.5)*(y1-y0)/ny
+              if inside(area.rings, sx, sy) then
+                local z = demAt(sx, sy)
+                if z then zN = 1; zs[1] = z; break end
+              end
+            end
+            if zN > 0 then break end
+          end
+        end
         if zN == 0 then
           local cx, cy = (x0 + x1) * .5, (y0 + y1) * .5
           if inside(area.rings, cx, cy) then zN = 1; zs[1] = level(cx, cy, demAt(cx, cy) or 0, demAt) end
         end
         if zN > 0 then
           table.sort(zs)
-          local surface = zs[math.ceil(zN * .5)] + WATER.above
+          local surface = (lakeLevels and lakeLevels[area]) or (zs[math.ceil(zN * .5)] + WATER.above)
           -- a River for a narrow channel; a wide river (its centre line would span the islands
           -- and both arms, the Dnipro) and a lake are blocks over their wet rows
-          local nodes = class == 'river' and WATER.riverNodes(area.rings, rect, x0, y0, x1, y1, surface, demAt, level, inside)
+          local nodes = class == 'river' and (not realStyle or #area.rings == 1)
+            and WATER.riverNodes(area.rings, rect, x0, y0, x1, y1, surface, demAt, level, inside, realStyle)
           local narrow = nodes and #nodes >= 2
           for _, node in ipairs(narrow and nodes or NONE) do
             if node[4] > WATER.riverMaxW then narrow = false; break end
           end
           -- A River cannot have holes cut around roads. If any covered cell intersects a road
           -- at or below the water, use the same clipped blocks as a wide water body instead.
-          local cover, clipped = WATER.cover(area.rings, x0, y0, x1, y1, WATER.coverCell,
-            blocked and function(a, b, c, d) return blocked(a, b, c, d, surface) end, pause)
-          if narrow and blocked then
+          local coverCell = realStyle and class == 'lake' and math.max(box[3]-box[1], box[4]-box[2]) <= 200 and 5 or WATER.coverCell
+          local cover, clipped = WATER.cover(area.rings, x0, y0, x1, y1, coverCell,
+            blocked and function(a, b, c, d) return blocked(a, b, c, d, surface) end, pause, asphaltBins, surface, realStyle)
+          if narrow and (blocked or asphaltBins) then
             local high = surface
             for _, node in ipairs(nodes) do high = math.max(high, node[3]) end
             -- A River spline can reach beyond its mapped bank. Use clipped blocks whenever a
             -- low road is near its bounds, even if the sampled wet cells did not touch it.
-            if blocked(x0 - WATER.coverCell, y0 - WATER.coverCell,
-                x1 + WATER.coverCell, y1 + WATER.coverCell, high) then clipped = true end
+            local pad = asphaltBins and WATER.riverMaxW / 2 or WATER.coverCell
+            if asphaltBins then
+              clipped = clipped or #WATER.asphaltSpans(asphaltBins, x0-pad, y0-pad, x1+pad, y1+pad, high) > 0
+            elseif blocked(x0-pad, y0-pad, x1+pad, y1+pad, high) then clipped = true end
           end
           if narrow and not clipped then
             n = n + 1
@@ -164,7 +211,8 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
               nodes = nodes, look = 'river', decor = true, layer = 'scene'}
           else
             for _, r in ipairs(cover) do
-              block(r[1], r[2], r[3], r[4], surface, WATER.lakeDepth, 'lake')
+              block(r[1], r[2], r[3], r[4], surface, WATER.lakeDepth, 'lake',
+                realStyle and class == 'lake' and math.max(box[3]-box[1], box[4]-box[2]) <= 600)
             end
           end
         end
@@ -179,17 +227,16 @@ end
 -- rings (even-odd: an island stays dry) on three scanlines across the row, so a block reaches a
 -- little onto the bank (under it where the bank rises) rather than leaving the carved bed bare;
 -- runs that repeat on the next row grow one block.
-function WATER.cover(rings, x0, y0, x1, y1, cell, blocked, pause)
+function WATER.cover(rings, x0, y0, x1, y1, cell, blocked, pause, asphaltBins, surface, trimBanks)
   local nx = math.max(1, math.ceil((x1 - x0) / cell - 1e-6))
   local ny = math.max(1, math.ceil((y1 - y0) / cell - 1e-6))
   local w, h = (x1 - x0) / nx, (y1 - y0) / ny
   local xs = {}
-  local function mark(y, wet)
+  local function mark(y, runs)
     local n = 0
     for _, ring in ipairs(rings) do
-      local m = #ring
-      for k = 1, m do
-        local a, b = ring[k], ring[k % m + 1]
+      for k = 1, #ring do
+        local a, b = ring[k], ring[k % #ring + 1]
         if (a[2] > y) ~= (b[2] > y) then
           n = n + 1
           xs[n] = a[1] + (y - a[2]) * (b[1] - a[1]) / (b[2] - a[2])
@@ -201,46 +248,72 @@ function WATER.cover(rings, x0, y0, x1, y1, cell, blocked, pause)
     for k = 1, n - 1, 2 do
       local a, b = math.max(xs[k], x0), math.min(xs[k + 1], x1)
       if b > a then
-        for c = math.max(0, math.floor((a - x0) / w)), math.min(nx - 1, math.ceil((b - x0) / w) - 1) do wet[c] = true end
+        if not trimBanks then
+          a = x0 + math.max(0, floor((a - x0) / w)) * w
+          b = x0 + math.min(nx, math.ceil((b - x0) / w)) * w
+        end
+        runs[#runs + 1] = {a, b}
       end
     end
   end
   local blocks, open, clipped = {}, {}, false
-  for r = 0, ny do
-    local runs = {}
-    if r < ny then
-      local wet = {}
-      mark(y0 + (r + .02) * h, wet); mark(y0 + (r + .5) * h, wet); mark(y0 + (r + .98) * h, wet)
-      if blocked then
-        for c = 0, nx - 1 do
-          if wet[c] and blocked(x0 + c * w, y0 + r * h, x0 + (c + 1) * w, y0 + (r + 1) * h) then
-            wet[c], clipped = nil, true
-          end
-        end
+  local function byStart(a, b) return a[1] < b[1] end
+  for r = 0, ny - 1 do
+    local rowY, nextY = y0 + r * h, y0 + (r + 1) * h
+    local wet, keep = {}, {}
+    mark(rowY + .02 * h, wet)
+    mark(rowY + .5 * h, wet)
+    mark(rowY + .98 * h, wet)
+    table.sort(wet, byStart)
+    -- Unite the three scans, retaining sub-cell islands and the actual X of a quay.
+    local count = 0
+    for _, span in ipairs(wet) do
+      if count > 0 and span[1] <= wet[count][2] then
+        wet[count][2] = math.max(wet[count][2], span[2])
+      else
+        count = count + 1
+        wet[count] = span
       end
-      local c = 0
-      while c < nx do
-        if wet[c] then
-          local start = c
-          while c < nx and wet[c] do c = c + 1 end
-          runs[#runs + 1] = start * 65536 + c
-        else
-          c = c + 1
+    end
+    local dry = asphaltBins and count > 0 and WATER.asphaltSpans(asphaltBins, x0, rowY, x1, nextY, surface) or {}
+    if blocked then
+      -- The sea DEM and the legacy road mask are sampled on whole grid cells.
+      for i = 1, count do
+        local first = math.max(0, floor((wet[i][1] - x0) / w + 1e-6))
+        local last = math.min(nx, math.ceil((wet[i][2] - x0) / w - 1e-6))
+        for c = first, last - 1 do
+          local a, b = x0 + c * w, x0 + (c + 1) * w
+          if blocked(a, rowY, b, nextY) then dry[#dry + 1] = {a, b} end
         end
       end
     end
-    local keep = {}
-    for _, key in ipairs(runs) do
-      local b = open[key]
-      if b then b[4] = r + 1; open[key] = nil else b = {math.floor(key / 65536), r, key % 65536, r + 1} end
-      keep[key] = b
+    table.sort(dry, byStart)
+    local function emit(a, b)
+      if b <= a then return end
+      local block = open[a]
+      if block and block[3] == b then
+        block[4] = nextY
+      else
+        block = {a, rowY, b, nextY}
+        blocks[#blocks + 1] = block
+      end
+      keep[a] = block
     end
-    for _, b in pairs(open) do blocks[#blocks + 1] = b end
+    for i = 1, count do
+      local a, b = wet[i][1], wet[i][2]
+      for _, span in ipairs(dry) do
+        if span[1] >= b then break end
+        if span[2] > a then
+          emit(a, math.min(b, span[1]))
+          a, clipped = math.max(a, span[2]), true
+          if a >= b then break end
+        end
+      end
+      emit(a, b)
+    end
     open = keep
     if pause and r % 4 == 0 then pause() end
   end
-  table.sort(blocks, function(a, b) return a[2] < b[2] or (a[2] == b[2] and a[1] < b[1]) end)
-  for k, b in ipairs(blocks) do blocks[k] = {x0 + b[1] * w, y0 + b[2] * h, x0 + b[3] * w, y0 + b[4] * h} end
   return blocks, clipped
 end
 -- Conservative intersection of an expanded road centreline with a water cell. The slab test
@@ -278,7 +351,7 @@ function WATER.roadBlocked(bins, x0, y0, x1, y1, surface, lift)
   return false
 end
 -- Centre line of a river polygon: samples along the long axis, width from the wet cross-section.
-function WATER.riverNodes(rings, rect, x0, y0, x1, y1, surface, demAt, level, inside)
+function WATER.riverNodes(rings, rect, x0, y0, x1, y1, surface, demAt, level, inside, realStyle)
   local dx, dy = x1 - x0, y1 - y0
   local alongX = dx >= dy
   local len = alongX and dx or dy
@@ -286,32 +359,43 @@ function WATER.riverNodes(rings, rect, x0, y0, x1, y1, surface, demAt, level, in
   local step = math.min(WATER.riverStep, len / 3)
   local nodes, n = {}, 0
   local function cross(s)
-    local ax = alongX and (x0 + s) or ((x0 + x1) * .5)
-    local ay = alongX and ((y0 + y1) * .5) or (y0 + s)
+    -- The upper tile edge and polygon boundary are half-open for containment.
+    -- Sample just inside, but place the end node exactly on the shared edge.
+    local query = realStyle and math.max(.001, math.min(len - .001, s)) or s
+    local ax = alongX and (x0 + query) or ((x0 + x1) * .5)
+    local ay = alongX and ((y0 + y1) * .5) or (y0 + query)
     local nx, ny = alongX and 0 or 1, alongX and 1 or 0
-    local lo, hi = nil, nil
+    local lo, hi, leftBank = nil, nil, false
     local reach = alongX and dy or dx
     for t = -reach, reach, 2 do
       local x, y = ax + nx * t, ay + ny * t
       if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and inside(rings, x, y) then
+        if realStyle and leftBank then return false end
         if not lo or t < lo then lo = t end
         if not hi or t > hi then hi = t end
+      elseif lo then
+        leftBank = true
       end
     end
     if not lo then return nil end
     local cx, cy = ax + nx * (lo + hi) * .5, ay + ny * (lo + hi) * .5
+    if alongX then cx = x0 + s else cy = y0 + s end
     local width = math.max(4, math.min(400, (hi - lo) + 4))
     local z = surface
     local bed = level(cx, cy, demAt(cx, cy) or surface, demAt)
     if bed then z = math.max(surface - 0.5, bed + WATER.above) end
     return {cx, cy, z, width, WATER.riverDepth}
   end
+  local gap = false
   for s = 0, len, step do
     local node = cross(s)
+    if node == false or (realStyle and node and gap) then return nil end
     if node then n = n + 1; nodes[n] = node end
+    if not node and n > 0 then gap = true end
   end
   if n >= 2 and (alongX and nodes[n][1] or nodes[n][2]) < (alongX and x1 or y1) - 1 then
     local last = cross(len)
+    if last == false or (realStyle and last and gap) then return nil end
     if last then n = n + 1; nodes[n] = last end
   end
   return n >= 2 and nodes or nil
@@ -1049,6 +1133,46 @@ local function clip(poly, rect)
   return output
 end
 
+-- X intervals taken by actual pavement across a horizontal band of water. The strip
+-- mitres, junction fans and turning circles all extend beyond a buffered centreline.
+-- Clip each road triangle in XY and at the water height so a sloping deck keeps
+-- water beneath its high end. Leave a small clearance for waves and rounded vertices.
+function WATER.asphaltSpans(bins, x0, y0, x1, y1, surface)
+  local margin, high = .35, surface + .25
+  local box = {x0 - margin, y0 - margin, x1 + margin, y1 + margin}
+  local spans, seen = {}, {}
+  local function visit(entry)
+    if seen[entry] or entry.waterTunnel then return end
+    seen[entry] = true
+    local bounds, poly = entry.bounds, entry.poly
+    if bounds[3] < box[1] or bounds[1] > box[3] or bounds[4] < box[2] or bounds[2] > box[4] then return end
+    for i = 2, #poly - 1 do
+      local a, b, c = poly[1], poly[i], poly[i+1]
+      if math.min(a[3], b[3], c[3]) <= high then
+        local points = clip({a, b, c}, box)
+        local lo, hi = math.huge, -math.huge
+        local prev = points[#points]
+        for _, p in ipairs(points) do
+          if p[3] <= high then lo, hi = math.min(lo, p[1]), math.max(hi, p[1]) end
+          if (prev[3] <= high) ~= (p[3] <= high) then
+            local x = prev[1] + (p[1] - prev[1]) * (high - prev[3]) / (p[3] - prev[3])
+            lo, hi = math.min(lo, x), math.max(hi, x)
+          end
+          prev = p
+        end
+        if lo <= hi then spans[#spans + 1] = {lo - margin, hi + margin} end
+      end
+    end
+  end
+  for by = floor(box[2] / ABIN), floor(box[4] / ABIN) do
+    for bx = floor(box[1] / ABIN), floor(box[3] / ABIN) do
+      for _, entry in ipairs(bins[(bx + 32768) * 65536 + by + 32768] or NONE) do visit(entry) end
+    end
+  end
+  for _, entry in ipairs(bins.waterDecks or NONE) do visit(entry) end
+  return spans
+end
+
 -- The part of a polyline from distance a after its start to distance b before its end (z and
 -- any other coordinates interpolated); {} when nothing is left.
 local function trimLine(points, a, b)
@@ -1694,6 +1818,12 @@ function ROADS.wet(x, y)
   end
   return false
 end
+function ROADS.waterAt(x, y)
+  for _, water in ipairs(ROADS.waters) do
+    local b = water.bounds
+    if x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] and inside(water.rings, x, y) then return water end
+  end
+end
 -- The height of the water at a point of it, base there: the DEM's 30 m blur climbs a quay from
 -- inside the river (the Seine stood at 48 m with 56 m by its banks), so the lowest ground round the
 -- point counts. 38 m: a tile has its cells 40 m past its edge, neighbours agree on what they see.
@@ -1955,12 +2085,105 @@ function ROADS.curbSlab(polygon, material, pieces, quad, faces, height, onAsphal
   return tiny
 end
 
+-- The free space over a drivable surface. Use the actual asphalt triangles, including
+-- their grade and mitred corners. XY tests alone remove the crossbeams high over a bridge.
+function ROADS.clearanceVolumes(bins, bounds, rect, low, high, decksOnly)
+  local volumes, seen = {}, {}
+  for by = math.floor(math.max(bounds[2], rect[2]) / ABIN), math.floor(math.min(bounds[4], rect[4]) / ABIN) do
+    for bx = math.floor(math.max(bounds[1], rect[1]) / ABIN), math.floor(math.min(bounds[3], rect[3]) / ABIN) do
+      for _, entry in ipairs(bins[(bx + 32768) * 65536 + by + 32768] or NONE) do
+        if not seen[entry] and (not decksOnly or entry.deck) and boundsTouch(bounds, entry.bounds)
+            and not (entry.road and ROADS.foot(entry.road.tags)) then
+          seen[entry] = true
+          local a = entry.poly[1]
+          for i = 2, #entry.poly - 1 do
+            local b, c = entry.poly[i], entry.poly[i + 1]
+            local bx, by, bz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+            local cx, cy, cz = c[1] - a[1], c[2] - a[2], c[3] - a[3]
+            local det = bx * cy - by * cx
+            if math.abs(det) > EPS and math.min(a[3], b[3], c[3]) - .25 < high
+                and math.max(a[3], b[3], c[3]) + ROADS.portal.head > low then
+              local gx, gy = (bz * cy - cz * by) / det, (bx * cz - cx * bz) / det
+              local offset = a[3] - gx * a[1] - gy * a[2]
+              local planes = {{-gx, -gy, 1, .25 - offset}, {gx, gy, -1, offset + ROADS.portal.head}}
+              local corners, sign = {a, b, c}, det > 0 and 1 or -1
+              for k, p in ipairs(corners) do
+                local q = corners[k % 3 + 1]
+                local nx, ny = (p[2] - q[2]) * sign, (q[1] - p[1]) * sign
+                planes[#planes + 1] = {nx, ny, 0, -nx * p[1] - ny * p[2]}
+              end
+              volumes[#volumes + 1] = planes
+            end
+          end
+        end
+      end
+    end
+  end
+  return volumes
+end
+
+-- Intersect a face with the clearance volume. Save the pieces outside when drawing a
+-- mapped tower. For a solid pier use its bottom footprint and height: its top must reach
+-- the lower plane and its bottom must lie below the upper plane.
+function ROADS.cutVolume(poly, planes, outside, height)
+  local rest = poly
+  for k, plane in ipairs(planes) do
+    local inside, off = {}, outside and {}
+    local a = rest[#rest]
+    local d = plane[4] + (k == 1 and height or 0)
+    local da = plane[1]*a[1] + plane[2]*a[2] + plane[3]*a[3] + d
+    for _, b in ipairs(rest) do
+      local db = plane[1]*b[1] + plane[2]*b[2] + plane[3]*b[3] + d
+      if (da >= 0) ~= (db >= 0) then
+        local p = lerp(a, b, da / (da - db))
+        inside[#inside + 1] = p
+        if off then off[#off + 1] = p end
+      end
+      if db >= 0 then inside[#inside + 1] = b elseif off then off[#off + 1] = b end
+      a, da = b, db
+    end
+    if #inside < 3 then return false end
+    if off and #off >= 3 then outside[#outside + 1] = off end
+    rest = inside
+  end
+  return true
+end
+
+function ROADS.clearTower(scene, bins, rings, rect, span)
+  local volumes = ROADS.clearanceVolumes(bins, ringBounds(rings), rect, span.bottom, span.top, true)
+  if #volumes == 0 then return scene end
+  local function polygon(material, poly, up)
+    local pieces = {poly}
+    for _, volume in ipairs(volumes) do
+      local nextPieces = {}
+      for _, piece in ipairs(pieces) do
+        local outside = {}
+        if ROADS.cutVolume(piece, volume, outside, 0) then
+          for _, part in ipairs(outside) do nextPieces[#nextPieces + 1] = part end
+        else
+          nextPieces[#nextPieces + 1] = piece
+        end
+      end
+      pieces = nextPieces
+    end
+    for _, piece in ipairs(pieces) do scene.polygon(material, piece, up) end
+  end
+  return {hooks = scene.hooks, polygon = polygon,
+    triangle = function(kind, a, b, c, up) polygon(kind, {a, b, c}, up) end}
+end
+
 -- A box's four sides round (x, y): `across` half width along the normal of (tx, ty), `along`
 -- half length along it, from zb up to zt. Its top and bottom are never seen.
-function ROADS.box(face, material, x, y, tx, ty, across, along, zb, zt, repeatU)
+function ROADS.box(face, material, x, y, tx, ty, across, along, zb, zt, repeatU, clearance)
   local nx, ny = -ty, tx
   local function c(sa, sb, z, u, v)
     return {x + nx * across * sa + tx * along * sb, y + ny * across * sa + ty * along * sb, z, u, v}
+  end
+  if clearance and clearance.asphaltBins then
+    local foot = {c(-1, -1, zb), c(-1, 1, zb), c(1, 1, zb), c(1, -1, zb)}
+    for _, volume in ipairs(ROADS.clearanceVolumes(clearance.asphaltBins, ringBounds({foot}), clearance.rect, zb, zt)) do
+      if ROADS.cutVolume(foot, volume, nil, zt - zb) then return end
+    end
   end
   local h, wa, wb = (zt - zb) / repeatU, 2 * across / repeatU, 2 * along / repeatU
   for _, s in ipairs({1, -1}) do
@@ -2384,7 +2607,7 @@ function ROADS.substructure(ctx)
               if clear and roadUnder(x - ty * across * f, y + tx * across * f) then clear = false end
             end
             if clear then
-              ROADS.box(face, 'fence_wall', x, y, tx, ty, across, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU)
+              ROADS.box(face, 'fence_wall', x, y, tx, ty, across, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU, ctx)
             end
           end
         end
@@ -2395,7 +2618,7 @@ function ROADS.substructure(ctx)
           local x, y, z, tx, ty, k = at(e == 1 and first + pier.thick / 2 or dist[n] - pier.thick / 2)
           local zg = ground(x, y)
           if owns(x, y) and z - zg > .1 then
-            ROADS.box(face, 'fence_wall', x, y, tx, ty, wide(k) + deck.thick, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU)
+            ROADS.box(face, 'fence_wall', x, y, tx, ty, wide(k) + deck.thick, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU, ctx)
           end
         end
       end
@@ -2537,6 +2760,7 @@ function ROADS.unitedDecks(ctx)
           local quad = {corner(a, a.left, 0), corner(a, a.right, 0), corner(b, b.right, 0), corner(b, b.left, 0)}
           if BOX.touch(rect, quad, 0) then
             ctx.roads.polygon(host.material, quad, 'flat')
+            if ctx.waterDecks then ctx.waterDecks[#ctx.waterDecks+1] = {poly = quad, bounds = ringBounds({quad})} end
             ctx.face({corner(a, a.left, -depth, u0, 0), corner(b, b.left, -depth, u1, 0),
               corner(b, b.right, -depth, u1, (a.left - a.right) / deck.repeatU),
               corner(a, a.right, -depth, u0, (a.left - a.right) / deck.repeatU)}, 0, 0, -1)
@@ -2625,7 +2849,7 @@ function ROADS.unitedDecks(ctx)
             local zg = ctx.ground(x, y)
             local clear = z - zg >= pier.gap and not blocked(x, y, sample.tx, sample.ty, across)
             if clear then
-              ROADS.box(ctx.face, 'fence_wall', x, y, sample.tx, sample.ty, across, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU)
+              ROADS.box(ctx.face, 'fence_wall', x, y, sample.tx, sample.ty, across, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU, ctx)
             end
           end
         end
@@ -2642,7 +2866,7 @@ function ROADS.unitedDecks(ctx)
           local z = sample.z + lift - depth
           local zg = ctx.ground(x, y)
           if owns(x, y) and z - zg > .1 then
-            ROADS.box(ctx.face, 'fence_wall', x, y, sample.tx, sample.ty, across, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU)
+            ROADS.box(ctx.face, 'fence_wall', x, y, sample.tx, sample.ty, across, pier.thick / 2, zg - pier.sink, z + .05, deck.repeatU, ctx)
           end
         end
       end
@@ -11250,7 +11474,7 @@ end
 -- grade. Roads that share a node are the ramps, not the road underneath: they are not a second
 -- carriageway to clear. Each build copies the points first, so a tile that shares the source
 -- cell still starts from the same heights.
-local function liftDecks(roads, pause)
+local function liftDecks(roads, pause, realStyle)
   local bridges = false
   for _, road in ipairs(roads or {}) do
     if ROADS.bridge((road.tags) or {}) then bridges = true break end
@@ -11499,7 +11723,7 @@ local function liftDecks(roads, pause)
   -- soffits and the two profiles drift by a few centimetres, which reads as a ridge.
   -- Same deck level, nearly parallel, a stable gap of at most 12 m: one group. A ramp
   -- whose separation changes, or a deck stacked a few metres above, stays its own span.
-  local function project(m, x, y)
+  local function project(m, x, y, includeEnds)
     local best, bestD
     local pts, dist = m.points, m.dist
     for i = 2, #pts do
@@ -11508,6 +11732,7 @@ local function liftDecks(roads, pause)
       local l2 = dx * dx + dy * dy
       if l2 > EPS then
         local t = ((x - a[1]) * dx + (y - a[2]) * dy) / l2
+        if includeEnds then t = math.max(0, math.min(1, t)) end
         if t >= 0 and t <= 1 then
           local qx, qy = a[1] + dx * t, a[2] + dy * t
           local ddx, ddy = x - qx, y - qy
@@ -11541,6 +11766,23 @@ local function liftDecks(roads, pause)
     if l < 1 then return nil end
     return dx / l, dy / l
   end
+  -- Opposing one-way carriageways on the same named bridge can inherit profiles from
+  -- different DEM samples. On the Golden Gate the lateral step grows from 2 cm to 5.35 m.
+  -- Require a lateral offset as well: two decks directly above one another stay separate.
+  local function sameSpan(a, b)
+    if not realStyle or a.level ~= b.level or a.tags.highway ~= b.tags.highway then return false end
+    if not a.tags['bridge:name'] or a.tags['bridge:name'] ~= b.tags['bridge:name'] then return false end
+    local ax, ay = chord(a)
+    local bx, by = chord(b)
+    local oneA, revA = ROADS.oneway(a.tags)
+    local oneB, revB = ROADS.oneway(b.tags)
+    return ax and bx and oneA and oneB and (ax * bx + ay * by) * (revA == revB and 1 or -1) < -.9
+  end
+  local function levelMatch(a, b, hit, z, paired)
+    local width = (a.width + b.width) / 2
+    local sideBySide = paired and hit[4] >= width * .4 and hit[4] <= width * 1.25
+    return math.abs(z - hit[3]) < (sideBySide and DECK_CLEAR.gap or 1.5)
+  end
   local function parallel(a, b)
     if a.level <= 0 or a.level ~= b.level or #a.points < 2 or #b.points < 2 then return false end
     local ax, ay = chord(a)
@@ -11550,13 +11792,13 @@ local function liftDecks(roads, pause)
     local long = short == a and b or a
     local length = short.dist[#short.dist]
     if length < 30 then return false end
-    local count = math.max(2, math.floor(length / 25))
+    local count, paired = math.max(2, math.floor(length / 25)), sameSpan(short, long)
     local n, s0, s1, near, far = 0, length, 0, math.huge, 0
     for i = 0, count do
       local s = length * i / count
       local x, y, z = pointAt(short, s)
       local hit = project(long, x, y)
-      if hit and hit[4] - short.width / 2 - long.width / 2 <= 12 and math.abs(z - hit[3]) < 1.5 then
+      if hit and hit[4] - short.width / 2 - long.width / 2 <= 12 and levelMatch(short, long, hit, z, paired) then
         n = n + 1
         if s < s0 then s0 = s end
         if s > s1 then s1 = s end
@@ -11611,10 +11853,11 @@ local function liftDecks(roads, pause)
           for _, j in ipairs(list) do
             if j ~= i then
               local other = meta[j]
+              local paired = sameSpan(m, other)
               for k, p in ipairs(m.points) do
-                local hit = project(other, p[1], p[2])
+                local hit = project(other, p[1], p[2], paired)
                 if hit and hit[4] - m.width / 2 - other.width / 2 <= 12 and hit[3] > want[k]
-                    and math.abs(p[3] - hit[3]) < 1.5 then
+                    and levelMatch(m, other, hit, p[3], paired) then
                   want[k] = hit[3]
                 end
               end
@@ -11811,7 +12054,26 @@ local function build(cells, i, j, options)
     for _, road in ipairs(lists.roads) do
       if not ROADS.foot(road.tags or NONE) then carried[#carried + 1] = road end
     end
-    ROADS.liftDecks(carried, pause)
+    -- The regional source cells are cached across tiles and art packs. Keep the
+    -- real-only profile and the grade corrections on its approaches local to this build.
+    if options.realStyle ~= false then
+      for _, road in ipairs(carried) do
+        if ROADS.bridge(road.tags or NONE) and (road.tags or NONE)['bridge:name'] then
+          local own = {}
+          for k, v in pairs(lists) do own[k] = v end
+          own.roads, carried = {}, {}
+          for k, source in ipairs(lists.roads) do
+            local r = {}
+            for key, value in pairs(source) do r[key] = value end
+            own.roads[k] = r
+            if not ROADS.foot(r.tags or NONE) then carried[#carried + 1] = r end
+          end
+          lists = own
+          break
+        end
+      end
+    end
+    ROADS.liftDecks(carried, pause, options.realStyle ~= false)
   end
   local roads, scene = collector(rect, key, 'road', pause), collector(rect, key, layerName, pause, distant and MIXED_TRIS or nil)
   -- Verges can share the ground material but stand above the terrain lattice. Keep
@@ -11997,8 +12259,25 @@ local function build(cells, i, j, options)
   -- DEM has it unless a road runs on it: quays on both banks of a 60 m arm of the Seine lifted the
   -- river 4 m, over the deck of Pont Saint-Louis.
   ROADS.waters = {}
+  ROADS.waters.levels = {}
   for _, area in ipairs(lists.areas) do
-    if area.kind == 'water' then ROADS.waters[#ROADS.waters + 1] = {rings = area.rings, bounds = ringBounds(area.rings)} end
+    if area.kind == 'water' then
+      local bounds = ringBounds(area.rings)
+      local surface
+      if options.realStyle ~= false and not distant and WATER.classOf(area, bounds) == 'lake' then
+        -- OSM ele is in metres above sea level; the pack's seaLevel is that
+        -- datum in game coordinates. It remains identical when the country
+        -- builder clips one lake into several independently loaded cells.
+        local elevation = tonumber((area.tags or NONE).ele)
+        if elevation and elevation == elevation and math.abs(elevation) < 12000 and type(options.seaLevel) == 'number' then
+          surface = options.seaLevel + elevation + WATER.above
+        else
+          surface = WATER.lakeLevel(area, bounds, demAt, inside)
+        end
+        ROADS.waters.levels[area] = surface
+      end
+      ROADS.waters[#ROADS.waters + 1] = {rings = area.rings, bounds = bounds, surface = surface}
+    end
   end
   local heightOperations = 0
   local span = math.max(1, tune.pullZero - tune.pullFull)
@@ -12027,7 +12306,16 @@ local function build(cells, i, j, options)
     end
     -- wet bed is carved under the WaterBlock / River surface so depth fog has volume
     -- (second value: the nearest road edge's distance, -1 on the bed: RELIEF leaves it)
-    if near > tune.shoulder and ROADS.wet(x, y) then return ROADS.level(x, y, base, demAt) - WATER.carve, -1 end
+    if near > tune.shoulder then
+      local water = ROADS.waterAt(x, y)
+      if water then
+        -- A compact lake's datum already uses only wet samples. Looking outside
+        -- it again could dig its bed down to a nearby, lower valley or the sea.
+        local bed = water.surface and (math.min(base, water.surface) - WATER.carve)
+          or (ROADS.level(x, y, base, demAt) - WATER.carve)
+        return bed, -1
+      end
+    end
     if sa > 0 then return base + (sz / sa - base) * pull, near end
     return base, near
   end
@@ -12315,9 +12603,10 @@ local function build(cells, i, j, options)
     for k = 1, #poly do local p, q = poly[k], poly[k % #poly + 1]; s = s + p[1] * q[2] - q[1] * p[2] end
     return s
   end
-  local function addAsphalt(poly, road, index, deck)
+  local function addAsphalt(poly, road, index, deck, waterTunnel)
     local box = ringBounds({poly})
-    local entry = {poly = poly, bounds = box, road = road, index = index, deck = deck, ccw = area2(poly) > 0}
+    local entry = {poly = poly, bounds = box, road = road, index = index, deck = deck, ccw = area2(poly) > 0,
+      waterTunnel = waterTunnel}
     asphalt[#asphalt + 1] = entry
     for by = math.floor(box[2] / ABIN), math.floor(box[4] / ABIN) do
       for bx = math.floor(box[1] / ABIN), math.floor(box[3] / ABIN) do
@@ -12507,6 +12796,7 @@ local function build(cells, i, j, options)
         -- the fan's material: the one most of its mouths have (a roundabout's entry keeps the
         -- ring's), on a tie the more important road's
         local corners, raised, votes, material, top = {}, false, {}, nil, -1
+        local allTunnel = true
         for _, m in ipairs(list) do
           local mat = roadMaterial(m.road.tags or NONE)
           local vote = votes[mat] or {n = 0, rank = -1}
@@ -12527,6 +12817,7 @@ local function build(cells, i, j, options)
           corners[#corners + 1] = {p[1] + nx, p[2] + ny, p[3] or 0}
           corners[#corners + 1] = {p[1] - nx, p[2] - ny, p[3] or 0}
           if ROADS.bridge(m.road.tags or NONE) then raised = true end
+          if not ROADS.tunnel(m.road.tags or NONE) then allTunnel = false end
         end
         if bulb then
           local dx, dy = into(first)
@@ -12537,7 +12828,7 @@ local function build(cells, i, j, options)
         for _, c in ipairs(corners) do angle[c] = math.atan2(c[2] - node[2], c[1] - node[1]) end
         table.sort(corners, function(a, b) return angle[a] < angle[b] end)
         stars[#stars + 1] = {node = {node[1], node[2]}, height = node[3] or 0, rings = {corners}, raised = raised,
-          material = material}
+          material = material, waterTunnel = allTunnel}
       end
     end
     lists.signMouths, lists.signOrder = mouths, order   -- SIGNS.plan, in the scene
@@ -12812,9 +13103,12 @@ local function build(cells, i, j, options)
         end
       end
     end
-    ROADS.unitedDecks({strips = strips, rect = rect, ground = ground, face = face, roads = roads,
-      lift = lift, pause = pause, sidewalk = tune.sidewalk, onOther = onOtherSurface})
-    ROADS.substructure({strips = strips, rect = rect, ground = ground, face = face, pause = pause, sidewalk = tune.sidewalk})
+    asphaltBins.waterDecks = options.realStyle ~= false and {} or nil
+    ROADS.unitedDecks({strips = strips, rect = rect, ground = ground, face = face, roads = roads, waterDecks = asphaltBins.waterDecks,
+      lift = lift, pause = pause, sidewalk = tune.sidewalk, onOther = onOtherSurface,
+      asphaltBins = options.realStyle ~= false and asphaltBins})
+    ROADS.substructure({strips = strips, rect = rect, ground = ground, face = face, pause = pause, sidewalk = tune.sidewalk,
+      asphaltBins = options.realStyle ~= false and asphaltBins})
     ROADS.portals({strips = strips, rect = rect, face = face, pause = pause})
     ROADS.embankmentRails({strips = strips, rect = rect, dem = #terrain > 0 and demAt or nil, face = face, pause = pause, sidewalk = tune.sidewalk,
       crowded = function(x, y, road, clear)
@@ -12972,7 +13266,7 @@ local function build(cells, i, j, options)
       local touches = BOX.touch(rect, ring, 0)
       for k = 1, #corners do
         local tri = {{cx, cy, centre}, corners[k], corners[k % #corners + 1]}
-        addAsphalt(tri, nil, nil)
+        addAsphalt(tri, nil, nil, nil, junction.waterTunnel)
         if (visualRoads or farRoads) and touches then emitSurface(junction.material or minorRoad, tri) end
       end
       -- round a ground-level star (fast.junction_verge): a sidewalk ring when a street with
@@ -13653,7 +13947,9 @@ local function build(cells, i, j, options)
   if sea and seaAll then seaQuads = {rect} end
   -- WaterBlocks for the sea and OSM lakes (not the old e2rf_water mesh sheet)
   WATER.fill(scene, key, rect, sea, seaQuads, lists.areas, distant, demAt, ROADS.level, inside, ringBounds, pause,
-    function(x0, y0, x1, y1, z) return WATER.roadBlocked(segmentBins, x0, y0, x1, y1, z, lift) end)
+    (distant or options.realStyle == false) and function(x0, y0, x1, y1, z)
+      return WATER.roadBlocked(segmentBins, x0, y0, x1, y1, z, lift)
+    end, ROADS.waters.levels, options.realStyle ~= false, visualRoads and options.realStyle ~= false and asphaltBins)
   mark('groundsea')
   for _, area in ipairs(distant and NONE or lists.areas) do
     local kind = area.kind
@@ -14160,6 +14456,25 @@ local function build(cells, i, j, options)
       end
       span.hiddenWalls = nil
       local footprint, h, base, height, lifted, bottom = span.footprint, span.h, span.base, span.height, span.lifted, span.bottom
+      -- Extend grounded walls below the surface actually drawn, including road shaping.
+      -- Preserve the datum, roof and explicitly elevated building parts.
+      if options.realStyle ~= false and not lifted then
+        for _, ring in ipairs(rings) do
+          for k, a in ipairs(ring) do
+            local b = ring[k % #ring + 1]
+            local n = math.max(1, math.ceil(math.sqrt((b[1]-a[1])^2 + (b[2]-a[2])^2) / 8))
+            for j = 0, n do
+              local t = j / n
+              local z = heightAt(a[1] + (b[1]-a[1])*t, a[2] + (b[2]-a[2])*t)
+              if z then bottom = math.min(bottom, z - .3) end
+            end
+          end
+        end
+      end
+      -- The Golden Gate's mapped crossbeam is at ground + 50 m while the two packed
+      -- carriageways pass at different heights. Cut its visible shell and collision together.
+      local scene = options.realStyle ~= false and (tags['bridge:support'] or tags['tower:type'] == 'bridge' or tags.e2r_part)
+        and ROADS.clearTower(scene, asphaltBins, rings, rect, span) or scene
       local top, kind = base + height, BLD.wallMaterial(building, look, height, footprint)
       -- building=roof stands open on columns (BLD.shopCanopy); a canopy over pumps clears a
       -- lorry unless OSM gives its height
@@ -15184,6 +15499,18 @@ local function build(cells, i, j, options)
     -- tile, a quarter of a central Kyiv tile's time. A wider wall reads them all, as before.
     -- (one table: build() is at LuaJIT's 200 locals)
     local BIN = {blockPad = 5, segmentPad = 4, blockers = {}, segments = {}}
+    -- The furniture reservation contains props, not the paths themselves, and may be
+    -- absent when furniture is disabled. Keep pedestrian paths clear independently.
+    BIN.paths = {}
+    if options.realStyle ~= false then
+      for _, line in ipairs(lists.lines) do
+        local tags, points = line.tags or NONE, line.points or NONE
+        if line.kind == 'path' and tags.area ~= 'yes' and pathOnGround(tags) then
+          local radius = (tonumber(tags.width) or 2) / 2 + 1.1
+          for k = 1, #points - 1 do YARD.reserve(BIN.paths, points[k], points[k + 1], radius) end
+        end
+      end
+    end
     for _, blocker in ipairs(blockers) do
       local b = blocker.bounds
       for gx = floor((math.max(b[1], rect[1] - 50) - BIN.blockPad) / 50), floor((math.min(b[3], rect[3] + 50) + BIN.blockPad) / 50) do
@@ -15215,6 +15542,7 @@ local function build(cells, i, j, options)
     local function blocked(x, y, pad, wall, paved)
       pad, wall = pad or 3.5, wall or 0
       if scene.streetReservations and VEG.streetBlocked(scene.streetReservations, x, y) then return true end
+      if VEG.streetBlocked(BIN.paths, x, y) then return true end
       local bin = (floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768
       local inRect = x >= rect[1] - 50 and x <= rect[3] + 50 and y >= rect[2] - 50 and y <= rect[4] + 50
       local nearby
@@ -15921,8 +16249,8 @@ local function build(cells, i, j, options)
         local p = bio.at(x, y)
         if not p then return true end
         local g = p.group
-        if g ~= 'temperate' and g ~= 'boreal' and g ~= 'rainforest' then return false end
-        return rawHeight(x, y) - bio.sea < bio.treeline(p) - 80
+        if g ~= 'temperate' and g ~= 'boreal' and g ~= 'rainforest' and not (options.realStyle ~= false and g == 'mediterranean') then return false end
+        return rawHeight(x, y) - bio.sea < bio.treeline(p) - 80, g
       end
       local shapes = {VEG.grass[1], VEG.grass[2], VEG.grass[3]}
       local mesh = VEG.grassMesh
@@ -15930,12 +16258,17 @@ local function build(cells, i, j, options)
       local bottoms = {mesh[shapes[1]].bottom, mesh[shapes[2]].bottom, mesh[shapes[3]].bottom}
       local x0, y0 = floor(rect[1] / cell) * cell, floor(rect[2] / cell) * cell
       local function makePatch(ox, oy)
-          if ox >= rect[1] and ox < rect[3] and oy >= rect[2] and oy < rect[4] and climate(ox + 4, oy + 4) then
+          local allowed, climateGroup = climate(ox + 4, oy + 4)
+          if ox >= rect[1] and ox < rect[3] and oy >= rect[2] and oy < rect[4] and allowed then
             local samples, anchor, dryAny = {}, nil, false
             for sy = 0, 3 do
               for sx = 0, 3 do
                 local x, y = ox + sx * step + 1, oy + sy * step + 1
                 local wild = x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and lawnAt(x, y)
+                if wild and climateGroup == 'mediterranean' then
+                  local kind = coverAt(x, y)
+                  if kind ~= 'park' and kind ~= 'residential' then wild = false end
+                end
                 if wild then
                   -- the land under it (VEG.land): no grass on bare loam, thin on dry ground and
                   -- where loam shows through, tall in the lush hollows (detail.lua reads the flags).

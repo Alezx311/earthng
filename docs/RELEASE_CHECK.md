@@ -4,6 +4,26 @@ Newest first. Each entry records what was checked before a release and what was 
 in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
 `MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
 
+## 1.0.0 candidate for the full installation cycle (2026-11-19)
+
+The candidate includes large-area and route-corridor builds, project route persistence,
+the in-app updater, world-map photos and guide cards, terrain/water/building fixes,
+and the compact compass with nearby landmarks and the selected destination.
+Internal working documents and benchmark history have moved to the Obsidian knowledge base.
+
+The app and planet are both version 1.0.0. Keep EarthNG.exe and earthng_planet.zip in
+the same folder for this candidate. The app installs that local planet, checking its version,
+so a fresh installation uses this candidate before GitHub's rolling release is updated.
+The user's full installation and map-building cycle is the next acceptance check.
+Python discover ran 1118 tests successfully (one skipped). Rust release tests passed (42 tests). The planet ZIP passed its
+CRC check and its 39 Lua modules match the source, with English selected for packaging.
+
+Development checks include the Miami corridor build with routing and far view,
+browser route import/save/reload/build checks, and the compass in BeamNG 0.40.5 at
+Times Square (40.755766, -73.986298), real/50, Normal 1280x720. On 436 stationary
+frames after indexing, compass step averaged 0.0311 ms and drawing 0.2007 ms.
+This measures the HUD cost at that place.
+
 ## 0.9.0, rebuilt before publishing (2026-11-12): planet and EarthNG.exe from 9c54127
 
 The 0.9.0 below was not published. It was rebuilt with the collector fix merged into
@@ -494,9 +514,9 @@ buildings, terrain and vegetation render; no claim of photorealistic city fideli
 The LuaJIT-only benchmark (25 near/far tiles, 1800 simulated frames, 4 ms update
 budget) measured mean **5.77 ms**, p99 **21.81 ms**, max **58.99 ms**, landing ready
 at simulated frame **931**. It excludes rendering, physics and BeamNG object creation,
-and is not an FPS estimate. Reports: [default](benchmarks/2026-10-18-nyc-default.json),
-[Potato](benchmarks/2026-10-18-nyc-potato.json),
-[LuaJIT](benchmarks/2026-10-18-nyc-luajit.json).
+and is not an FPS estimate. Reports: [default](https://github.com/Alezx311/earthng/blob/d45f2d13264ef5460a0631abd125eff0ec8b986b/docs/benchmarks/2026-10-18-nyc-default.json),
+[Potato](https://github.com/Alezx311/earthng/blob/d45f2d13264ef5460a0631abd125eff0ec8b986b/docs/benchmarks/2026-10-18-nyc-potato.json),
+[LuaJIT](https://github.com/Alezx311/earthng/blob/d45f2d13264ef5460a0631abd125eff0ec8b986b/docs/benchmarks/2026-10-18-nyc-luajit.json).
 
 ### Removed / retained
 

@@ -5,7 +5,8 @@
 The runtime ZIP holds the embedded CPython (python.org's embeddable package), the packages of
 requirements-fast.txt as wheels for it, the pipeline files the service imports (from a committed
 snapshot, like prepare_release.py), mod/, the native tools and app/ui. The exe unpacks it once
-per version into %LOCALAPPDATA%\\EarthNG\\runtime. Never publishes anything.
+per version into %LOCALAPPDATA%\\EarthNG\\runtime. Also writes EarthNG.json beside the exe (version,
+sha256, size) for the in-app update. Never publishes anything.
 """
 import argparse
 import hashlib
@@ -123,6 +124,21 @@ def append_runtime(exe, payload, target):
     return digest.hex()
 
 
+def write_app_manifest(target, info):
+    """EarthNG.json next to a built exe: what app_service.app_update compares and download_app checks."""
+    digest = hashlib.sha256()
+    size = 0
+    with Path(target).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b''):
+            digest.update(chunk)
+            size += len(chunk)
+    manifest = {'schema': 'earthng-app-v1', 'version': info['version'], 'sha256': digest.hexdigest(),
+                'size': size, 'planetVersion': info.get('planetVersion')}
+    path = Path(target).with_name('EarthNG.json')
+    path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+    return path
+
+
 def build(out, ref='HEAD', native=True, extra=None):
     """out/EarthNG.exe from the snapshot ref: the window built by cargo, the runtime appended."""
     info, files = runtime_files(ref, native, extra)
@@ -134,6 +150,7 @@ def build(out, ref='HEAD', native=True, extra=None):
     payload = build_runtime_zip(files, embedded_python(), site_packages(requirements))
     target = Path(out) / 'EarthNG.exe'
     digest = append_runtime(ROOT / 'rust' / 'target' / 'release' / 'EarthNG.exe', payload, target)
+    write_app_manifest(target, info)
     print(f"EarthNG.exe {info['version']} ({info['sourceCommit'][:7]}, planet {info['planetVersion']}): "
           f"{target.stat().st_size / 2**20:.1f} MB, runtime {len(payload) / 2**20:.1f} MB, sha256 {digest[:16]}")
     return target, info, digest

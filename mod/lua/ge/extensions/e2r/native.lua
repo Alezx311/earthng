@@ -823,6 +823,23 @@ end
 -- Shared quality policy; fresh profiles start at Balanced, saved settings win.
 local quality = require('ge/extensions/e2r/quality')
 local pendingTune = quality.preset(50)
+local realStyle = true
+local unload
+
+function M.setRealStyle(value)
+  local nextValue = value ~= false
+  if realStyle == nextValue then return false end
+  realStyle = nextValue
+  if active and active.work and not active.workHorizon then
+    active.work, active.workKey, state.stream.building = nil, nil, 0
+  end
+  if active then
+    local keys = {}
+    for key in pairs(active.tiles) do keys[#keys + 1] = key end
+    for _, key in ipairs(keys) do unload(key); unload(key, 'far') end
+  end
+  return true
+end
 
 local function clampTune(tune)
   return quality.clamp(tune)
@@ -1324,7 +1341,7 @@ local function buildTile(key, wanted)
       terrainStep = wanted.vista and 100 or nil,
       farStep = 100, adaptiveFar = not wanted.horizon, horizonStep = wanted.step or 100,
       latitude = r.data.geo and r.data.geo[4], geo = r.data.geo, nature = r.data.nature,
-      look = r.data.look, country = r.country and r.country.id,
+      look = r.data.look, country = r.country and r.country.id, realStyle = realStyle,
       leftHand = generator.keepsLeft and generator.keepsLeft(r.country and r.country.id, r.data.look) or nil,
       seaLevel = finite(r.data.seaLevel) and r.data.seaLevel or nil,
       maxTrees = tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = tune.maxGrass,
@@ -1836,7 +1853,7 @@ end
 
 -- Resident GPU meshes have gone. Removing the corresponding ready bit makes the
 -- next visit rebuild from the compact source cells instead of reusing empty data.
-local function unload(key, layer)
+unload = function(key, layer)
   if not active or (layer ~= nil and layer ~= 'road' and layer ~= 'scene' and layer ~= 'far' and layer ~= 'horizon') then return false end
   local entry, st = layerEntry(key), state.stream
   local farOnly = layer == 'far'
@@ -1960,7 +1977,7 @@ local function mapBlock(r, key, block)
   return lines
 end
 
-local function mapRoads(view, budgetMs)
+local function mapRoads(view, budgetMs, zoom)
   ensure()
   if type(view) ~= 'table' or not finite(view.w) or not finite(view.s) or not finite(view.e) or not finite(view.n) then return {} end
   local wanted, out, listed = {}, {}, regions
@@ -1981,17 +1998,30 @@ local function mapRoads(view, budgetMs)
       end
       local size = blocksOf(r.data) * r.data.cellSize
       local bi0, bj0, bi1, bj1 = math.floor(x0 / size), math.floor(y0 / size), math.floor(x1 / size), math.floor(y1 / size)
+      local cx, cy = (x0 + x1) / (2 * size), (y0 + y1) / (2 * size)
+      -- At street zoom a wider window exposes more blocks. Keep the streets in its centre
+      -- even when the newly visible outskirts would exceed the decode budget.
+      if zoom and zoom >= 11 then
+        bi0, bi1 = math.max(bi0, math.floor(cx) - 6), math.min(bi1, math.floor(cx) + 6)
+        bj0, bj1 = math.max(bj0, math.floor(cy) - 6), math.min(bj1, math.floor(cy) + 6)
+      end
       if (bi1 - bi0 + 1) * (bj1 - bj0 + 1) <= MAP_BLOCKS * 4 then
         for bj = bj0, bj1 do
           for bi = bi0, bi1 do
             local key = keyOf(bi, bj)
-            if r.data.blocks[key] then wanted[#wanted + 1] = {r = r, key = key, id = r.descriptor.id .. ':' .. key} end
+            if r.data.blocks[key] then
+              wanted[#wanted + 1] = {r = r, key = key, id = r.descriptor.id .. ':' .. key, d = (bi + .5 - cx)^2 + (bj + .5 - cy)^2}
+            end
           end
         end
       end
     end
   end
-  if #wanted > MAP_BLOCKS then return out end -- zoomed too far out for streets
+  if #wanted > MAP_BLOCKS then
+    if not zoom or zoom < 11 then return out end
+    table.sort(wanted, function(a,b) return a.d < b.d or (a.d == b.d and a.id < b.id) end)
+    for i = #wanted, MAP_BLOCKS + 1, -1 do wanted[i] = nil end
+  end
   mapClock = mapClock + 1
   local missing
   for _, w in ipairs(wanted) do

@@ -7,11 +7,15 @@ A request is {"id": n, "cmd": "...", ...}; its answer {"id": n, "ok": true, ...}
 and reports with events: {"event": "log", "text"}, {"event": "stage", "name", "seconds"},
 {"event": "done", "job", "result", "path"?, "error"?}. One job runs at a time.
 
+`download_app` fetches a newer EarthNG.exe into %LOCALAPPDATA%\\EarthNG\\updates. The window then
+replaces its own file and starts again. Maps, downloads and installed mods stay.
+
 Data (PBF, tiles, DEM, packs, projects) live in EARTHNG_HOME, not beside the code: the exe's code
 folder is replaced with each version. Without EARTHNG_HOME a checkout keeps using itself.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,11 +32,16 @@ sys.path.insert(0, str(HERE))
 ROOT = HERE.parent
 
 import builder_estimate as timing  # noqa: E402
+import area_plan  # noqa: E402
+import selection_build  # noqa: E402
 import country_fetch  # noqa: E402
 import looks  # noqa: E402
 import places  # noqa: E402
 
 RELEASE_URL = 'https://github.com/Alezx311/earthng/releases/download/EarthNG'
+APP_MANIFEST = 'EarthNG.json'   # published beside EarthNG.exe: version, sha256 and size of that file
+APP_EXE = 'EarthNG.exe'
+APP_SCHEMA = 'earthng-app-v1'
 PLANET_STAGE = 'Planet'         # first build stage when the planet is missing or older than the packs
 PLANET_SECONDS = 90             # ~270 MB from GitHub (97 s on 8.11)
 PLANET = 'earthng_planet.zip'
@@ -51,7 +60,123 @@ def build_info():
         return {}
 
 
-NETWORK = {'geocode'}
+def version_key(text):
+    """(major, minor, patch) for a release version, or None."""
+    if not isinstance(text, str) or not re.fullmatch(r'\d+\.\d+\.\d+', text):
+        return None
+    return tuple(int(part) for part in text.split('.'))
+
+
+def app_update_decision(current, local_sha, remote):
+    """'newer' when the release version is higher, 'rebuilt' when the same version was published
+    again (a different sha256), otherwise 'current'. local_sha is required to notice a rebuild;
+    a missing local version is treated as older than any release."""
+    remote_key = version_key(remote.get('version'))
+    if remote_key is None:
+        raise ValueError('bad update version')
+    local_key = version_key(current) if current else None
+    if local_key is None or remote_key > local_key:
+        return 'newer'
+    if remote_key == local_key and local_sha and local_sha.lower() != remote['sha256']:
+        return 'rebuilt'
+    return 'current'
+
+
+def exe_path():
+    """The installed EarthNG.exe. Set only for a release build (rust/crates/app); a checkout has none."""
+    raw = os.environ.get('EARTHNG_EXE')
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.is_file() else None
+
+
+def updates_dir():
+    override = os.environ.get('EARTHNG_UPDATES')
+    if override:
+        return Path(override)
+    base = Path(os.environ.get('LOCALAPPDATA') or Path.home())
+    return base / 'EarthNG' / 'updates'
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def parse_app_manifest(text):
+    """EarthNG.json from the player release: the bytes of EarthNG.exe, not a URL to trust."""
+    info = json.loads(text)
+    if not isinstance(info, dict) or info.get('schema') != APP_SCHEMA:
+        raise ValueError('unexpected update manifest')
+    version = info.get('version')
+    sha = info.get('sha256')
+    size = info.get('size')
+    if version_key(version) is None:
+        raise ValueError('bad update version')
+    if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{64}', sha):
+        raise ValueError('bad update sha256')
+    if isinstance(size, float) and size.is_integer():
+        size = int(size)
+    if not isinstance(size, int) or not 1_000_000 <= size <= 500_000_000:
+        raise ValueError('bad update size')
+    parsed = {'version': version, 'sha256': sha, 'size': size}
+    planet = info.get('planetVersion')
+    if isinstance(planet, str):
+        parsed['planetVersion'] = planet
+    return parsed
+
+
+def allowed_release_url(url):
+    from urllib.parse import urlsplit
+    parts = urlsplit(url)
+    host = (parts.hostname or '').lower()
+    return parts.scheme == 'https' and (host == 'github.com' or host.endswith('.githubusercontent.com'))
+
+
+def release_file_url(name):
+    if name not in (APP_MANIFEST, APP_EXE):
+        raise ValueError(name)
+    return f'{RELEASE_URL}/{name}'
+
+
+def fetch_app_manifest(url=None):
+    """The release's EarthNG.json, or None when this release has not published one (HTTP 404)."""
+    import urllib.error
+    import urllib.request
+    import tls
+    url = url or release_file_url(APP_MANIFEST)
+    if not allowed_release_url(url):
+        raise ValueError('the update manifest is downloaded over https only')
+    request = urllib.request.Request(url, headers={'User-Agent': f'{places.USER_AGENT} EarthNG.exe', 'Accept': 'application/json'})
+    try:
+        with urllib.request.urlopen(request, timeout=20, context=tls.context()) as response:
+            final = response.geturl()
+            if not allowed_release_url(final):
+                raise ValueError('unexpected update host')
+            payload = response.read(1 << 20)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    return parse_app_manifest(payload.decode('utf-8-sig'))
+
+
+def consume_update_error():
+    """A note left by the replacer when the file could not be swapped; shown once."""
+    path = updates_dir() / 'error.txt'
+    try:
+        text = path.read_text(encoding='utf-8').strip()
+        path.unlink()
+    except OSError:
+        return None
+    return text or None
+
+
+NETWORK = {'geocode', 'app_update'}
 
 
 class Service:
@@ -63,6 +188,7 @@ class Service:
         self.cancel = None
         self.places = None
         self.boundaries = None
+        self.last_selection = None
         self.geocode_lock = threading.Lock()
         self.geocoded = 0.0
         self.settings_path = self.root / 'app_settings.json'
@@ -118,8 +244,12 @@ class Service:
             started = time.monotonic()
             done = {'event': 'done', 'job': name}
             try:
-                path = target(cancel)
-                done.update(result='complete', path=str(path) if path else None)
+                outcome = target(cancel)
+                if isinstance(outcome, dict):
+                    done.update(result='complete')
+                    done.update({k: v for k, v in outcome.items() if k in ('path', 'sha256', 'version')})
+                else:
+                    done.update(result='complete', path=str(outcome) if outcome else None)
             except country_fetch.NeedsPbf as exc:
                 # not a failure: the page asks whether to download the country's PBF
                 done.update(result='needs_pbf', reason=exc.reason, **getattr(exc, 'offer', {}))
@@ -214,6 +344,16 @@ class Service:
     def fetch_planet(self, mods, cancel, url=None):
         """Download earthng_planet.zip from the release (a complete earlier download is reused when
         it still matches the server's size) and install it into <user folder>/mods."""
+        program = exe_path()
+        local = program.with_name(PLANET) if program and url is None else None
+        if local and local.is_file():
+            with zipfile.ZipFile(local) as archive:
+                manifest = json.loads(archive.read('earthng/planet/manifest.json'))
+            expected = build_info().get('planetVersion')
+            if expected and manifest.get('version') != expected:
+                raise ValueError(f"The planet beside EarthNG.exe is {manifest.get('version')}; this build needs {expected}.")
+            self.log(f'Installing {PLANET} from {local.parent}')
+            return install_planet(local, mods, cancel)
         url = url or f'{RELEASE_URL}/{PLANET}'
         if not url.startswith('https://'):
             raise ValueError('the planet is downloaded over https only')
@@ -237,6 +377,67 @@ class Service:
                 raise ValueError(f'{mods} is not a BeamNG user folder (it has no mods folder or settings)')
             return self.fetch_planet(mods, cancel, url)
         return self.start_job('install_planet', target)
+
+    def cmd_app_update(self):
+        """Whether the published EarthNG.exe is newer than this one. A checkout reports 'checkout'
+        and does not call GitHub: replacing rust/target is not an install."""
+        current = build_info().get('version')
+        report = {'current': current, 'available': False, 'error': consume_update_error()}
+        if exe_path() is None:
+            report['reason'] = 'checkout'
+            return report
+        try:
+            remote = fetch_app_manifest()
+        except (OSError, ValueError) as exc:
+            report['reason'] = 'offline'
+            report['detail'] = str(exc) or type(exc).__name__
+            return report
+        if remote is None:
+            report['reason'] = 'no-manifest'
+            return report
+        local_sha = file_sha256(exe_path()) if version_key(current) == version_key(remote['version']) else None
+        reason = app_update_decision(current, local_sha, remote)
+        report.update(version=remote['version'], size=remote['size'], reason=reason,
+                      available=reason in ('newer', 'rebuilt'))
+        return report
+
+    def cmd_download_app(self):
+        """Download EarthNG.exe from the player release, check its size and sha256, and leave
+        EarthNG.json beside it for the window to swap in."""
+        if exe_path() is None:
+            raise ValueError('updates apply to the installed EarthNG.exe')
+
+        def target(cancel):
+            remote = fetch_app_manifest()
+            if remote is None:
+                raise ValueError('this release has no update manifest')
+            current = build_info().get('version')
+            installed = exe_path()
+            local_sha = file_sha256(installed) if version_key(current) == version_key(remote['version']) else None
+            if app_update_decision(current, local_sha, remote) == 'current':
+                raise ValueError('this EarthNG is already current')
+            folder = updates_dir()
+            folder.mkdir(parents=True, exist_ok=True)
+            country_fetch.ensure_space(folder, remote['size'] + 2**26, 'Updating EarthNG')
+            dest = folder / APP_EXE
+            self.log(f"Downloading {APP_EXE} {remote['version']} from GitHub Releases")
+            country_fetch.download(release_file_url(APP_EXE), dest, self.log, cancel)
+            if dest.stat().st_size != remote['size']:
+                dest.unlink(missing_ok=True)
+                raise ValueError(f"downloaded size does not match the release ({remote['size']} bytes)")
+            digest = file_sha256(dest)
+            if digest != remote['sha256']:
+                dest.unlink(missing_ok=True)
+                raise ValueError('downloaded file does not match the release')
+            with dest.open('rb') as stream:
+                if stream.read(2) != b'MZ':
+                    dest.unlink(missing_ok=True)
+                    raise ValueError('downloaded file is not a Windows program')
+            sidecar = {'schema': APP_SCHEMA, 'version': remote['version'], 'sha256': digest, 'size': remote['size']}
+            (folder / APP_MANIFEST).write_text(json.dumps(sidecar, indent=2) + '\n', encoding='utf-8')
+            self.log(f"Downloaded {APP_EXE} {remote['version']}")
+            return {'path': str(dest), 'version': remote['version'], 'sha256': digest}
+        return self.start_job('download_app', target)
 
     def cmd_stop(self):
         if self.cancel is not None:
@@ -349,6 +550,28 @@ class Service:
                           'parent': places.parent_name(place, self.by_id)} if place else None,
                 'km2': round(timing.area_km2(box), 1)}
 
+    def selection_plan(self, selection):
+        if not isinstance(selection, dict):
+            raise ValueError('Select a rectangle or a route.')
+        key = json.dumps(selection, sort_keys=True)
+        if self.last_selection and self.last_selection[0] == key:
+            return self.last_selection[1]
+        self.ensure_places()
+        plan = area_plan.plan(self.ensure_boundaries(), self.by_id, box=selection.get('box'),
+                              route=selection.get('route'), width_km=selection.get('width_km', 10))
+        if not plan['parts']:
+            raise ValueError('No regional source covers this selection.')
+        self.last_selection = (key, plan)
+        return plan
+
+    def cmd_plan_area(self, selection):
+        plan = self.selection_plan(selection)
+        ids = dict.fromkeys(part['place'] for part in plan['parts'])
+        sources = [{'id': k, 'name': self.by_id[k]['name'],
+                    'parent': places.parent_name(self.by_id[k], self.by_id)} for k in ids]
+        return {k: plan[k] for k in ('km2', 'uncovered_km2', 'geojson', 'bounds')} | {
+            'place': sources[0], 'sources': sources, 'part_count': len(plan['parts'])}
+
     def cmd_options(self, place=None):
         self.ensure_places()
         recommended = looks.recommended(place, self.by_id) if place in self.by_id else looks.canonical({'block': 'general'})
@@ -358,7 +581,9 @@ class Service:
                 'layers': [{'id': k, 'label': label, 'default': default} for k, label, default in looks.LAYERS],
                 'recommended': recommended}
 
-    def cmd_estimate(self, place, box=None, include=None):
+    def cmd_estimate(self, place=None, box=None, include=None, selection=None):
+        if selection is not None:
+            return self.selection_estimate(self.selection_plan(selection), looks.canonical_include(include or {}))
         self.ensure_places()
         if place not in self.by_id:
             raise ValueError(f'unknown place: {place}')
@@ -387,6 +612,49 @@ class Service:
                 # the page asks before a large country file is downloaded; a small one just comes
                 'ask_pbf': source == 'pbf' and not cached_pbf and not country_fetch.small_pbf(size)}
 
+    def selection_estimate(self, plan, include):
+        import sections
+        from concurrent.futures import ThreadPoolExecutor
+        parts = plan['parts']
+        ids = list(dict.fromkeys(part['place'] for part in parts))
+        sizes, local = {}, {}
+        for key in ids:
+            pbf = country_fetch.pbf_path(self.root, places.slug(key))
+            local[key] = pbf.is_file()
+            sizes[key] = pbf.stat().st_size if local[key] else None
+        missing = [k for k in ids if not local[k]]
+        # A world selection remains usable without querying hundreds of remote file sizes.
+        if 0 < len(missing) <= 12:
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                sizes.update(zip(missing, pool.map(lambda k: country_fetch.pbf_size(self.by_id[k], 5), missing)))
+        totals = [0.0] * len(timing.STAGES)
+        modes, downloads = set(), set()
+        known = True
+        for part in parts:
+            key = part['place']
+            box = sections.box(part['section'])
+            cached = country_fetch.tiles_current(country_fetch.tiles_dir(self.root, places.slug(key), box), box)
+            mode = self.source_of(box, local[key], cached, sizes[key]) if len(parts) == 1 else ('tiles' if cached else 'pbf')
+            modes.add(mode)
+            times, _ = timing.estimate(sizes[key], box, include, local[key] or key in downloads, cached,
+                                       overpass=country_fetch.overpass_km2(box) if mode == 'overpass' else None)
+            if mode == 'pbf' and not local[key]:
+                downloads.add(key)
+            if times:
+                totals = [a + b for a, b in zip(totals, times)]
+            else:
+                known = False
+        stages = list(timing.STAGES)
+        planet = self.planet_needed()
+        if planet:
+            stages.insert(0, PLANET_STAGE)
+            totals.insert(0, PLANET_SECONDS)
+        size = sum(sizes[k] for k in downloads) if all(sizes[k] for k in downloads) else None
+        return {'seconds': [round(v) for v in totals] if known else None, 'stages': stages, 'planet': planet,
+                'reason': '—', 'pbf_bytes': size, 'cached_pbf': all(local.values()), 'cached_tiles': modes == {'tiles'},
+                'source': 'pbf' if 'pbf' in modes else next(iter(modes)), 'pbf_seconds': None,
+                'ask_pbf': any(not country_fetch.small_pbf(sizes[k]) for k in downloads)}
+
     @staticmethod
     def source_of(box, cached_pbf, cached_tiles, size=None):
         """Where a build's OSM data comes from (country_fetch.tile_source): 'tiles' already cut,
@@ -406,10 +674,13 @@ class Service:
         return round(times[0] + times[1]) if times else None
 
     # ------------------------------------------------------------------ build
-    def cmd_build(self, place, box=None, look=None, include=None, project=None, allow_pbf=False):
+    def cmd_build(self, place=None, box=None, look=None, include=None, project=None, allow_pbf=False, selection=None):
         """allow_pbf: the user agreed to download the country's PBF. Without it a selection comes
         from Overpass, and a done event with result 'needs_pbf' asks for that agreement."""
         self.ensure_places()
+        plan = self.selection_plan(selection) if selection is not None else None
+        if plan:
+            place = plan['parts'][0]['place']
         if place not in self.by_id:
             raise ValueError(f'unknown place: {place}')
         box = timing.validate_box([float(v) for v in box]) if box else None
@@ -436,6 +707,21 @@ class Service:
                 start = time.monotonic()
                 self.fetch_planet(Path(mods), cancel)
                 progress(PLANET_STAGE, time.monotonic() - start)
+            if plan:
+                def part(i, total, name):
+                    self.send({'event': 'part', 'index': i, 'total': total, 'name': name})
+                if len(plan['parts']) > 1 and not allow_pbf:
+                    estimate = self.selection_estimate(plan, include or {})
+                    if estimate['ask_pbf']:
+                        offer = country_fetch.NeedsPbf('Regional source files are needed for this selection.')
+                        offer.offer = {'name': ', '.join(self.by_id[k]['name'] for k in
+                                                         dict.fromkeys(p['place'] for p in plan['parts'])),
+                                       'pbf_bytes': estimate['pbf_bytes']}
+                        raise offer
+                paths = selection_build.build(plan, self.by_id, mods, self.root, look=look, include=include,
+                                              allow_pbf=allow_pbf or len(plan['parts']) > 1,
+                                              emit=self.log, cancel=cancel, progress=progress, on_part=part)
+                return paths[0] if len(paths) == 1 else paths[0].parent
             self.log(f"Building {chosen['name']}" + (f' {box}' if box else ''))
             try:
                 return country_fetch.build_place(chosen, mods, root=self.root, look=look, include=include, box=box,
@@ -494,8 +780,17 @@ def check_project(project):
     selection = project.get('selection') or {}
     if not isinstance(selection, dict):
         raise ValueError('selection must be an object')
-    if selection.get('box') is not None:
-        selection['box'] = timing.validate_box([float(v) for v in selection['box']])
+    if selection.get('route') is not None:
+        if selection.get('box') is not None:
+            raise ValueError('Select a rectangle or a route, not both.')
+        selection['route'], selection['width_km'] = area_plan.validate_route(selection['route'], selection.get('width_km', 10))
+    elif selection.get('box') is not None:
+        box = [float(v) for v in selection['box']]
+        if len(box) == 4 and box[0] > box[2]:
+            timing.validate_box([box[2], box[1], box[0], box[3]])
+            selection['box'] = box
+        else:
+            selection['box'] = timing.validate_box(box)
     if not isinstance(project.get('edits', []), list):
         raise ValueError('edits must be a list')
     project.setdefault('edits', [])

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "app-ui",
+      "runtimeExecutable": "C:\\js\\EarthNG\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", "C:\\js\\EarthNG\\app\\ui"],
+      "port": 8765
+    }
+  ]
+}

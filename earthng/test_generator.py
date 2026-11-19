@@ -2089,6 +2089,26 @@ class GeneratorTests(unittest.TestCase):
             self.assertTrue(roof)
             self.assertTrue(all(abs(p[2] - 112) < 1e-8 for tri in roof for p in tri))
 
+    def test_real_foundation_reaches_drawn_ground_without_lowering_roof_or_lifted_parts(self):
+        house = {'id': 'slope', 'height': 12, 'tags': {'building:material': 'brick'},
+                 'rings': [[[100, 100, 100], [140, 100, 100], [140, 140, 100], [100, 140, 100]]]}
+        cell = {'buildings': [house], 'terrain': {'rect': [0, 0, 500, 500],
+                'nx': 2, 'ny': 2, 'heights': [90] * 4}}
+        def extents(real, raised=False):
+            b = dict(house, minHeight=5) if raised else house
+            scene = self.build([dict(cell, buildings=[b])], realStyle=real, terrainStep=100)[1]
+            verts = [v.z + item.pos[3] for item, mesh in self.meshes(scene)
+                     if mesh.material.startswith(('e2rf_wall_brk_', 'e2rf_plinth'))
+                     for v in mesh.verts.values()]
+            roof = [p[2] for tri in self.triangles(scene, 'e2rf_roof') for p in tri]
+            return min(verts), max(roof)
+        old, roof = extents(False)
+        new, new_roof = extents(True)
+        self.assertGreater(old, 99)
+        self.assertLess(new, 90)
+        self.assertEqual(roof, new_roof)
+        self.assertGreaterEqual(extents(True, raised=True)[0], 105)
+
     def test_dashed_marks_keep_source_phase_and_match_across_tile_border(self):
         source = [{'roads': [{'id': 'marked', 'width': 6, 'points': [[0, 10, 5], [100, 10, 5]],
                               'tags': {'highway': 'residential', 'lanes': '2', 'sidewalk': 'no'}}]}]
@@ -2818,6 +2838,54 @@ class GeneratorTests(unittest.TestCase):
     def water_items(self, manifest):
         return [it for it in manifest['items'].values() if it.kind in ('water', 'river', 'ocean')]
 
+    def test_small_concave_pond_is_not_lost_when_its_box_centre_is_dry(self):
+        pond = {'id': 'crescent', 'kind': 'water', 'tags': {'water': 'pond'},
+                'rings': [[[101, 101], [121, 101], [121, 106], [106, 106],
+                           [106, 121], [101, 121]]]}
+        scene = self.build([{'areas': [pond]}], maxTrees=0, maxGrass=0)[1]
+        self.assertTrue(self.water_items(scene))
+
+    def test_compact_lake_uses_one_level_across_tiles_and_cuts_its_bed(self):
+        lake = {'id': 'lake', 'kind': 'water', 'tags': {'water': 'lake'},
+                'rings': [[[400, 100], [600, 100], [600, 300], [400, 300]]]}
+        grid = {'rect': [0, 0, 1000, 500], 'nx': 3, 'ny': 2,
+                'heights': [10, 20, 30, 10, 20, 30]}
+        cells = [{'areas': [lake], 'terrain': grid}]
+        scenes = [self.build(cells, i, 0, maxTrees=0, maxGrass=0) for i in (0, 1)]
+        levels = [[it.pos[3] for it in self.water_items(scene) if it.kind == 'water']
+                  for _, scene, *_ in scenes]
+        self.assertTrue(all(levels))
+        self.assertAlmostEqual(min(levels[0]), max(levels[1]))
+        for road, scene, *_ in scenes:
+            surface = self.water_items(scene)[0].pos[3]
+            bed = [p[2] for t in self.triangles(road, 'e2rf_bare_ground') for p in t
+                   if 425 <= p[0] <= 575 and 125 <= p[1] <= 275]
+            self.assertTrue(bed)
+            self.assertLess(max(bed), surface)
+
+    def test_tagged_lake_elevation_survives_country_cell_clipping(self):
+        grid = {'rect': [0, 0, 1000, 500], 'nx': 3, 'ny': 2,
+                'heights': [100, 108, 114, 100, 108, 114]}
+        def fragment(x0, x1):
+            return {'id': '25817:0', 'kind': 'water', 'tags': {'water': 'lake', 'ele': '87'},
+                    'rings': [[[x0, 100], [x1, 100], [x1, 300], [x0, 300]]]}
+        levels = []
+        for i, lake in enumerate((fragment(400, 550), fragment(450, 600))):
+            scene = self.build([{'areas': [lake], 'terrain': grid}], i, 0,
+                               seaLevel=20, maxTrees=0, maxGrass=0)[1]
+            levels.extend(it.pos[3] for it in self.water_items(scene) if it.look == 'lake')
+        self.assertTrue(levels)
+        self.assertTrue(all(abs(z - 107.3) < 1e-6 for z in levels), levels)
+
+    def test_lake_fog_adjustment_is_limited_to_real_style(self):
+        lake = {'id': 'lake', 'kind': 'water', 'tags': {'water': 'lake'},
+                'rings': [[[100, 100], [200, 100], [200, 200], [100, 200]]]}
+        for real, expected in ((True, True), (False, False)):
+            scene = self.build([{'areas': [lake]}], realStyle=real, maxTrees=0, maxGrass=0)[1]
+            blocks = [it for it in self.water_items(scene) if it.kind == 'water']
+            self.assertTrue(blocks)
+            self.assertTrue(all(bool(it.lakeFog) == expected for it in blocks))
+
     def test_water_grid_does_not_exceed_small_block_dimensions(self):
         water = {'id': 'pond', 'kind': 'water', 'tags': {'water': 'pond'},
                  'rings': [[[100, 100], [102.3, 100], [102.3, 102.3], [100, 102.3]]]}
@@ -2934,6 +3002,47 @@ class GeneratorTests(unittest.TestCase):
         self.assertFalse(any(it.kind == 'river' for it in items))
         self.assertFalse(any(abs(250-it.pos[1]) < it.scale[1]/2 and abs(250-it.pos[2]) < it.scale[2]/2 for it in items))
 
+    def test_water_stops_at_the_asphalt_of_a_turning_circle(self):
+        grid = {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [10] * 4}
+        street = {'id': 'r', 'nodes': ['a', 'b'], 'width': 7, 'tags': {'highway': 'residential'},
+                  'points': [[0, 250, 10], [250, 250, 10]]}
+        bulb = {'id': 'b', 'kind': 'turning_circle', 'pos': [250, 250, 10]}
+        pond = {'id': 'p', 'kind': 'water', 'tags': {'water': 'pond'},
+                'rings': [[[255, 240], [275, 240], [275, 260], [255, 260]]]}
+        cell = {'terrain': grid, 'roads': [street], 'points': [bulb], 'areas': [pond]}
+        for real in (True, False):
+            road, scene = self.build([cell], realStyle=real, maxTrees=0, maxGrass=0)[:2]
+            asphalt = list(self.triangles(road, 'e2rf_road'))
+            self.assertIsNotNone(self.surface_at(asphalt, 255.5, 249))
+            def wet(x):
+                return any(abs(x - it.pos[1]) < it.scale[1]/2 and abs(249 - it.pos[2]) < it.scale[2]/2
+                           for it in self.water_items(scene))
+            self.assertEqual(wet(255.5), not real)
+            self.assertTrue(wet(258), 'water remains close to the round asphalt edge')
+
+    def test_narrow_river_keeps_a_subcell_island_dry(self):
+        river = {'id': 'canal', 'kind': 'water', 'tags': {'water': 'canal'},
+                 'rings': [[[0, 200], [500, 200], [500, 260], [0, 260]],
+                           [[242, 215], [246, 215], [246, 245], [242, 245]]]}
+        items = self.water_items(self.build([{'areas': [river]}], maxTrees=0, maxGrass=0)[1])
+        self.assertTrue(items)
+        self.assertTrue(all(it.kind == 'water' for it in items))
+        def wet(x):
+            return any(abs(x-it.pos[1]) < it.scale[1]/2 and abs(231-it.pos[2]) < it.scale[2]/2 for it in items)
+        self.assertFalse(wet(244))
+        self.assertTrue(wet(240) and wet(248))
+
+    def test_river_nodes_meet_at_the_shared_tile_edge(self):
+        river = {'id': 'canal', 'kind': 'water', 'tags': {'water': 'canal'},
+                 'rings': [[[0, 100], [1000, 100], [1000, 160], [0, 160]]]}
+        rivers = []
+        for tile in (0, 1):
+            scene = self.build([{'areas': [river]}], tile, 0, maxTrees=0, maxGrass=0)[1]
+            item, = [it for it in self.water_items(scene) if it.kind == 'river']
+            rivers.append(self.plain(item.nodes))
+        self.assertEqual(rivers[0][-1], rivers[1][0])
+        self.assertEqual(rivers[0][-1][0], 500)
+
     def test_water_in_a_neighbour_tile_avoids_a_road_across_the_edge(self):
         grid = {'rect': [0, 0, 1000, 500], 'nx': 2, 'ny': 2, 'heights': [10] * 4}
         water = {'id': 'lake', 'kind': 'water', 'tags': {'water': 'lake'},
@@ -2989,6 +3098,18 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(wet(ordinary, 250, 220))
         self.assertTrue(wet(water({'bridge': 'yes'}, 20), 250, 250))
         self.assertTrue(wet(water({'tunnel': 'yes'}, 5), 250, 250))
+
+    def test_real_sea_cover_follows_dem_inside_coarse_coastal_quad(self):
+        grid = {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2,
+                'heights': [0, 10, 0, 10]}
+        scene = self.build([{'terrain': grid}], seaLevel=5, terrainStep=100,
+                           maxTrees=0, maxGrass=0)[1]
+        blocks = [it for it in self.water_items(scene) if it.kind == 'water' and it.look == 'sea']
+        def wet(x):
+            return any(abs(x-it.pos[1]) < it.scale[1]/2 and abs(250-it.pos[2]) < it.scale[2]/2
+                       for it in blocks)
+        self.assertTrue(wet(230))
+        self.assertFalse(wet(280))
 
     def corners(self, manifest, material=None):
         found = []

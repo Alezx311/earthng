@@ -66,7 +66,7 @@
 регіон растр далечіні (`.bin`, `pack/src/far.rs`) і карту кольору (`.color.dds`, шорсткість
 `_r.data.dds`, `pack/src/far_tex.rs`), 1,4–12 с на регіон (карта 4096, Московська область:
 10 регіонів за 71 с). Збірка пака кличе його сама (`native_tool.far`, `build_country._add_far`)
-і кладе файли в `far/` пака. Подробиці — [FAR_VIEW.md](FAR_VIEW.md).
+і кладе файли в `far/` пака. Подробиці — [FAR_VIEW.md](https://github.com/Alezx311/earthng/blob/d45f2d13264ef5460a0631abd125eff0ec8b986b/docs/FAR_VIEW.md).
 
 ### Клітинки нативно
 

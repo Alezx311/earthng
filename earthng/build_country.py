@@ -840,8 +840,16 @@ def _region_begin(country_id, region, bbox, emit, landcover=(), include=None, ca
                     continue
                 if store.covered(rect):
                     blocks.setdefault((i // binary.BLOCK, j // binary.BLOCK), []).append((i, j))
+        if isinstance(region, dict) and region.get('shapeHalo'):
+            # A one-kilometre corridor can be narrower than the required 3 x 3
+            # startup neighbourhood. Keep one surrounding source cell for terrain.
+            selected = {cell for cells in blocks.values() for cell in cells}
+            for i, j in sorted({(i+a, j+b) for i, j in selected
+                                for a in (-1, 0, 1) for b in (-1, 0, 1)} - selected):
+                if store.covered([i*CELL, j*CELL, (i+1)*CELL, (j+1)*CELL]):
+                    blocks.setdefault((i // binary.BLOCK, j // binary.BLOCK), []).append((i, j))
         if not blocks:
-            raise ValueError(f'{region_id}: export contains no fully covered source cells')
+            raise EmptySelection(f'{region_id}: export contains no fully covered source cells')
         total = sum(len(v) for v in blocks.values())
         emit(f'export {region_id}: {total} cells in {len(blocks)} blocks')
         if _stopped(cancel):
@@ -935,7 +943,7 @@ def _region_end(archive, ctx, emit, cover_meta=None, vegetation=None, look=None,
                 coverage.append(box)
         landing = _landing(present, roads, frame, core)
         if not coverage or (landing is None and core is not None):
-            raise ValueError(f'{region_id}: no landable cells (roads with a complete neighbourhood) in its core')
+            raise EmptySelection(f'{region_id}: no landable cells (roads with a complete neighbourhood) in its core')
         lon, lat = frame.geographic([0., 1., 0.], [0., 0., 1.])
         geo = [0., 0., float(lon[0]), float(lat[0]), float(lon[1]-lon[0]),
                float(lon[2]-lon[0]), float(lat[1]-lat[0]), float(lat[2]-lat[0])]
@@ -1291,11 +1299,20 @@ def _add_far(pack, emit, cancel=None):
                     archive.writestr(info, path.read_bytes())
 
 
+class EmptySelection(ValueError):
+    """The source has no drivable coverage in this part of the requested area."""
+
+
 def section_region(source, dem, work, core, region_id, outline=None, emit=print):
     """One region answering landings in core (a section's lon/lat box), however many tiles it
     holds; outline (lon/lat shape) limits the cells it exports."""
     window = [core[0]-PAD[0], core[1]-PAD[1], core[2]+PAD[0], core[3]+PAD[1]]
-    directory, _ = sources.prepare(source, Path(work) / 'fast-index', dem, emit=emit, box=window)
+    try:
+        directory, _ = sources.prepare(source, Path(work) / 'fast-index', dem, emit=emit, box=window)
+    except ValueError as exc:
+        if str(exc).startswith('no_osm:'):
+            raise EmptySelection(str(exc)) from exc
+        raise
     region = {'dir': directory, 'core': list(core), 'id': region_id}
     if outline is not None:
         region['shape'] = outline
@@ -1390,6 +1407,8 @@ def _index_box(source, work, dem, core, emit=None):
 def _region_record(region):
     """The index job's JSON. A section outline is GeoJSON; a grid region has none."""
     record = {'dir': str(region['dir']), 'core': region.get('core'), 'id': region.get('id')}
+    if region.get('shapeHalo'):
+        record['shapeHalo'] = True
     outline = region.get('shape')
     if outline is not None:
         record['shape'] = shapely.geometry.mapping(outline)
@@ -1418,6 +1437,8 @@ def run_job(path):
             import sections
             regions = [section_region(job['sources'], job['dem'], job['work'], spec['box'], spec['id'],
                                       sections.shape(spec))]
+            if spec.get('margin') == 0:
+                regions[0]['shapeHalo'] = True
         else:
             regions = grid_regions(job['sources'], job['dem'], job['work'])
         destination.write_text(json.dumps([_region_record(region) for region in regions]), encoding='utf-8')
@@ -1473,6 +1494,8 @@ def main():
     if args.job:
         try:
             run_job(args.job)
+        except EmptySelection as exc:
+            parser.exit(3, str(exc) + '\n')
         except (ValueError, OSError) as exc:
             parser.error(str(exc))
         return

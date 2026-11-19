@@ -697,8 +697,16 @@ class GeofabrikSource:
         except (OSError, ValueError):
             size = None
         if size:
-            share = 1 if self.box is None else 0.3       # a selection keeps part of the country
-            ensure_space(self.root / 'data', int(size * SPACE_PER_PBF_BYTE * share), f"Building {self.place['name']}")
+            if self.box is None:
+                needed = size * SPACE_PER_PBF_BYTE
+            else:
+                # Only the source download is country-sized. Export and installation
+                # check the actual selected data on their destination volumes later.
+                needed = 0 if self.pbf.is_file() else size
+            ensure_space(self.root / 'data', needed, f"Building {self.place['name']}")
+        if self.pbf.is_file() and self.box is not None:
+            emit(f'Reusing local source snapshot {self.pbf.name}')
+            return
         download(self.place['pbf'], self.pbf, emit, cancel)
 
     def cut(self, jobs=None, emit=print, cancel=None):
@@ -741,7 +749,10 @@ def overpass_box(box):
     """The box asked from Overpass: the selection's cells with their buffer, as a cut keeps them."""
     import osm_tiles
     region = osm_tiles.region(box)
-    return osm_tiles.package_of(sorted(osm_tiles.region_keys(region)), region)
+    # The two outside cells determine the buffered extent, even for a whole continent.
+    w, s, e, n = region
+    return [round(w - osm_tiles.BUFFER, 6), round(s - osm_tiles.BUFFER, 6),
+            round(e + osm_tiles.BUFFER, 6), round(n + osm_tiles.BUFFER, 6)]
 
 
 def overpass_km2(box):
@@ -1046,8 +1057,7 @@ def _build_rest(place, mods, root, look, include, jobs, landing, emit, cancel, s
         index_job = {'command': 'index', 'sources': str(tiles), 'dem': str(dem),
                      'work': str(work), 'result': str(regions_path)}
         if section is not None:
-            index_job['section'] = {'id': section['id'], 'box': section['box'],
-                                    'geometry': section['geometry']}
+            index_job['section'] = section
         run_build_job(index_job, emit, cancel)
         regions = json.loads(regions_path.read_text(encoding='utf-8'))
     out = Path(root) / 'out' / 'country-setup'
@@ -1116,6 +1126,10 @@ def forget_old_index(work, key, regions, emit=print):
     temporary.replace(record)
 
 
+class EmptySelection(ValueError):
+    """One planned section contains no drivable source cells."""
+
+
 def run_build_job(job, emit=print, cancel=None):
     """Index or export in a normal python.exe, not in the Map Builder window.
 
@@ -1127,7 +1141,12 @@ def run_build_job(job, emit=print, cancel=None):
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{job['command']}-job.json"
     path.write_text(json.dumps(job), encoding='utf-8')
-    run_step([_python(), str(HERE / 'build_country.py'), '--job', str(path)], emit, cancel)
+    try:
+        run_step([_python(), str(HERE / 'build_country.py'), '--job', str(path)], emit, cancel)
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 3 and job.get('section'):
+            raise EmptySelection(f"No drivable cells in {job['section']['id']}") from exc
+        raise
 
 
 class _Either:
@@ -1279,6 +1298,9 @@ def main():
     parser.add_argument('--mods', type=Path, default=default_mods())
     parser.add_argument('--zip', type=Path)
     parser.add_argument('--box', type=float, nargs=4, metavar=('W', 'S', 'E', 'N'))
+    parser.add_argument('--route', type=Path, help='GeoJSON LineString or Feature containing the route (lon, lat)')
+    parser.add_argument('--width-km', type=int, choices=(1, 10, 100), default=10,
+                        help='distance built on each side of the route')
     parser.add_argument('--jobs', type=int, default=0)
     parser.add_argument('--block', default='')
     parser.add_argument('--landing', type=float, nargs=2, metavar=('LAT', 'LON'))
@@ -1307,10 +1329,31 @@ def main():
             parser.error('install needs --place and --zip')
         print(install_zip(args.zip, args.mods, places.slug(args.place), args.section))
         return
-    if not args.place:
+    planned = args.command == 'build' and (args.route is not None or (args.box and not args.place))
+    if args.route and (args.command != 'build' or args.place or args.box):
+        parser.error('--route selects its own source regions; use it with build and without --place or --box')
+    if planned and (args.section or args.local_dem or args.road_register or args.landing):
+        parser.error('section, local DEM, road register and explicit landing options need a named extract')
+    if not args.place and not planned:
         parser.error(f'{args.command} needs --place')
     index = places.by_id(places.load_index(ROOT, args.refresh_index))
-    place = index.get(args.place)
+    plan = None
+    if planned:
+        import area_plan
+        import selection_build
+        route = None
+        if args.route:
+            geometry = json.loads(args.route.read_text(encoding='utf-8-sig'))
+            if geometry.get('type') == 'Feature':
+                geometry = geometry.get('geometry') or {}
+            if geometry.get('type') != 'LineString':
+                parser.error('--route needs one continuous GeoJSON LineString')
+            route = [p[:2] for p in geometry['coordinates']]
+        plan = area_plan.plan(places.load_boundaries(ROOT), index, box=args.box, route=route, width_km=args.width_km)
+        if not plan['parts']:
+            parser.error('no regional source covers this selection')
+        print(f"{len(plan['parts'])} sections; {plan['uncovered_km2']:.1f} km² outside source coverage")
+    place = index.get(plan['parts'][0]['place'] if plan else args.place)
     if place is None:
         parser.error(f'unknown extract {args.place}')
     section = None
@@ -1340,6 +1383,13 @@ def main():
         if chosen:
             base[slot] = chosen
     include = {key: not getattr(args, f'no_{key}') for key, _label, _default in looks.LAYERS}
+    if plan:
+        custom = args.block or any(getattr(args, slot) for slot in looks.SLOTS)
+        paths = selection_build.build(plan, index, args.mods, ROOT, look=looks.canonical(base) if custom else None,
+                                      include=include, jobs=args.jobs or None, allow_pbf=True)
+        for path in paths:
+            print(path)
+        return
     built = build_place(place, args.mods, look=looks.canonical(base), include=include,
                         box=args.box, jobs=args.jobs or None, by_id=index,
                         landing=tuple(args.landing) if args.landing else None,
