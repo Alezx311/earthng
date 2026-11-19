@@ -37,7 +37,11 @@ impl Runtime {
             .find(|p| p.join("earthng").join("app_service.py").is_file())
             .map(Path::to_path_buf)
             .context("no runtime in this exe and no EarthNG checkout above it")?;
-        let python = [root.join("python").join("python.exe"), root.join(".venv").join("Scripts").join("python.exe")]
+        let python = [
+            root.join("python").join("python.exe"),
+            root.join(".venv").join("Scripts").join("python.exe"),
+            root.join(".venv").join("bin").join("python"),
+        ]
             .into_iter()
             .find(|p| p.is_file())
             .context("the checkout has no .venv (py -3.13 -m venv .venv, then pip install -r requirements-fast.txt)")?;
