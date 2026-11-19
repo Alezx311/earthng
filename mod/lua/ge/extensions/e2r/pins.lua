@@ -266,7 +266,7 @@ local function pinOrder(a, b)
   return (a.label or '') < (b.label or '')
 end
 
-function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands, layout)
+function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands, layout, accepts)
   local north, south, east, west = box.n, box.s, box.e, box.w
   for k = 1, LEVELS do counts[k] = 0 end
   for _, tile in pairs(tiles) do
@@ -279,7 +279,8 @@ function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands, layout)
           if poi.lat == nil then poi.lat = false end
         end
         local lat, lon = poi.lat, poi.lon
-        if lat and lat <= north and lat >= south and lon >= west and lon <= east then
+        if lat and lat <= north and lat >= south and lon >= west and lon <= east
+          and (not accepts or accepts(poi)) then
           local level
           if poi.kind == 'pin' then
             local s = STYLE[poi.cat]

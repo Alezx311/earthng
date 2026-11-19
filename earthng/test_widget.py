@@ -269,6 +269,34 @@ class WidgetTests(unittest.TestCase):
           S.status=status; S.coverage=status.coverage; S.state='pick'; S.now=10''')
         return lua
 
+    def test_expanding_the_widget_keeps_the_current_place_and_zoom(self):
+        lua = self.native_widget(basemap=False)
+        lua.execute('''
+          S.state='driving'
+          getPlayerVehicle=function() return nil end
+          S.center={lat=0,lon=0}; S.zoom=9
+          S.mini={center={lat=25.78,lon=-80.22},zoom=17,follow=false}
+          clicked='Обрати інше місце'
+          draw()
+          assert(S.pickerOpen and S.zoom==17)
+          assert(S.center.lat==25.78 and S.center.lon==-80.22)
+          assert(S.center ~= S.mini.center)
+        ''')
+
+    def test_streamed_pins_draw_on_small_expanded_and_world_maps(self):
+        lua = self.native_widget(basemap=False)
+        lua.execute('''
+          S.state='pick'; S.stream={}
+          S.tiles={one={manifest={},brandPOIs={{kind='pin',cat='parking',lat=25.78,lon=-80.22}}}}
+          local im=ui_imgui
+          pinsDrawn=0
+          im.ImDrawList_AddText1=function(_,_,_,text) if text=='P' then pinsDrawn=pinsDrawn+1 end end
+          for _,size in ipairs({{360,180},{920,580},{1200,800}}) do
+            drawMap(size[1],size[2],{center={lat=25.78,lon=-80.22},zoom=17,world=size[1]==1200})
+          end
+          assert(pinsDrawn==3, 'a pin survives expanding the viewport')
+        ''')
+
     def test_minimap_click_routes_there_and_draws_the_line(self):
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import routing_format

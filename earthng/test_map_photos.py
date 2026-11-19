@@ -19,7 +19,7 @@ class MapPhotoTests(unittest.TestCase):
         self.lua.execute('''
             FS = {fileExists=function(_, p) return p:match('/index.json$') ~= nil end}
             function jsonReadFile(p) return p:match('/photos/') and sheets or {tiles={}} end
-            function require() return {texObj=function(p) return {texId=p} end} end
+            function require() return {texObj=function(p) return {texId=p} end, step=function() end} end
             local function vec(x,y) return {x=x, y=y} end
             im = {ImVec2=vec, ImDrawList_AddRectFilled=function() end,
                   ImDrawList_AddImage=function(_,file,a,b,uv0,uv1) drawn[file]={a,b,uv0,uv1} end}
@@ -68,3 +68,25 @@ class MapPhotoTests(unittest.TestCase):
                 if image.mode == 'RGBA':
                     self.assertLess(image.getpixel((0, 0))[3], 10)
                     self.assertEqual(image.getpixel((image.width // 2, image.height // 2))[3], 255)
+
+    def test_country_and_section_images_are_mounted_and_removed_with_the_pack(self):
+        self.lua.execute('''
+          local roots = {
+            ['/earthng/countries/new/photos/index.json'] = {{file='country.png', box={.27,.42,.28,.43},
+              minZoom=6,maxZoom=18,credit='Country imagery'}},
+            ['/earthng/countries/new/sections/area/photos/index.json'] = {{file='section.png',box={.277,.425,.279,.427},
+              minZoom=6,maxZoom=18,credit='Section imagery'}}}
+          local exists, read = FS.fileExists, jsonReadFile
+          FS.fileExists = function(self,p) return roots[p] ~= nil or exists(self,p) end
+          jsonReadFile = function(p) return roots[p] or read(p) end
+          local countries={{id='new',title='New place',available=true,regions={{id='area',section=true}}}}
+          planet.update(countries)
+          -- Miami: both country and county imagery have no hard-coded city dependency.
+          credit=render(25.78,-80.22,15,920,580,true)
+          assert(drawn['/earthng/countries/new/photos/country.png'])
+          assert(drawn['/earthng/countries/new/sections/area/photos/section.png'])
+          assert(credit:find('Section imagery',1,true))
+          planet.update({})
+          render(25.78,-80.22,15,920,580,true)
+          assert(not next(drawn))
+        ''')

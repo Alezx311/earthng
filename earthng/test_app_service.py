@@ -200,6 +200,22 @@ class ServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'needs 1.0.0'):
                 self.service.fetch_planet(self.game, threading.Event())
 
+    def test_single_file_release_installs_bundled_planet_before_an_old_sidecar(self):
+        runtime = self.root / 'runtime'
+        runtime.mkdir()
+        planet_zip(runtime / app_service.PLANET, '1.0.0')
+        folder = self.root / 'download'
+        folder.mkdir()
+        exe = folder / 'EarthNG.exe'
+        exe.write_bytes(b'MZ test')
+        planet_zip(folder / app_service.PLANET, '0.9.0')
+        with patch.object(app_service, 'ROOT', runtime), \
+                patch.object(app_service, 'exe_path', return_value=exe), \
+                patch.object(app_service, 'build_info', return_value={'planetVersion': '1.0.0'}), \
+                patch.object(app_service.country_fetch, 'download', side_effect=AssertionError('network')):
+            self.service.fetch_planet(self.game, threading.Event())
+            self.assertIsNone(self.service.planet_needed())
+
     def test_a_build_needs_a_game_folder(self):
         self.service.places = [{'id': 'albania', 'name': 'Albania', 'pbf': 'https://x/albania.osm.pbf'}]
         self.service.by_id = {'albania': self.service.places[0]}

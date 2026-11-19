@@ -29,9 +29,11 @@ of the following data and assets:
 - The global photo overview uses NASA's **Blue Marble: Next Generation with Topography**,
   July 2004 (Reto Stöckli, NASA Earth Observatory), reprojected to Web Mercator and reduced
   for offline display. [Source imagery](https://science.nasa.gov/earth/earth-observatory/blue-marble-next-generation/base-topography/)
-- The Kyiv and San Francisco city sheets are cropped, reprojected, colour-stretched RGB
+- The Kyiv and San Francisco city sheets and Map Builder's offline area imagery are RGB
   composites. © ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data
   (2021) processed by ESA WorldCover consortium.
+  Area imagery is obtained from Terrascope's WMS true-colour 2021 composite, reprojected
+  to Web Mercator and encoded as mipmapped DXT5 sheets; no imagery service is used in game.
   [Data and attribution](https://esa-worldcover.org/en/data-access) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 - Central San Francisco uses USDA National Agriculture Imagery Program orthophotography
   from May 20, 2024, reprojected from tile `m_3712213_se_10_060_20240520`.

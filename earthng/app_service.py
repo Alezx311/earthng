@@ -342,16 +342,18 @@ class Service:
         return None
 
     def fetch_planet(self, mods, cancel, url=None):
-        """Download earthng_planet.zip from the release (a complete earlier download is reused when
-        it still matches the server's size) and install it into <user folder>/mods."""
+        """Install the bundled or adjacent planet, otherwise download it from the release."""
         program = exe_path()
-        local = program.with_name(PLANET) if program and url is None else None
-        if local and local.is_file():
+        candidates = [ROOT / PLANET]
+        if program:
+            candidates.append(program.with_name(PLANET))
+        local = next((path for path in candidates if path.is_file()), None) if url is None else None
+        if local:
             with zipfile.ZipFile(local) as archive:
                 manifest = json.loads(archive.read('earthng/planet/manifest.json'))
             expected = build_info().get('planetVersion')
             if expected and manifest.get('version') != expected:
-                raise ValueError(f"The planet beside EarthNG.exe is {manifest.get('version')}; this build needs {expected}.")
+                raise ValueError(f"The local planet is {manifest.get('version')}; this build needs {expected}.")
             self.log(f'Installing {PLANET} from {local.parent}')
             return install_planet(local, mods, cancel)
         url = url or f'{RELEASE_URL}/{PLANET}'

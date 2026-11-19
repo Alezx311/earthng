@@ -174,6 +174,38 @@ class WorldMapTests(unittest.TestCase):
             close = function() closed = true end}
         end''')(self.lua.table_from(car) if car else None)
 
+    def test_remote_index_does_not_hide_streamed_pins_and_filters_still_apply(self):
+        pois, tags = self.kyiv()
+        self.add('Україна', pois, tags)
+        self.build()
+        self.worldmap.draw(self.api())
+        view = self.lua.eval('mapView')
+        self.assertFalse(view.noPins, 'Kyiv data must not hide pins in a section without a sidecar')
+        pin = self.lua.table_from({'cat': 'parking'})
+        self.assertTrue(view.acceptPin(pin))
+        self.worldmap.state.off.parking = True
+        self.assertFalse(view.acceptPin(pin))
+
+        self.worldmap.state.off.parking = None
+        cafe = self.lua.table_from({'cat': 'food', 'lat': 50.442, 'lon': 30.512})
+        self.assertTrue(view.acceptPin(cafe))
+        self.worldmap.state.off['food/cafe'] = True
+        self.assertFalse(view.acceptPin(cafe), 'a disabled finer kind must not reappear as a streamed broad category')
+        self.worldmap.state.points = False
+        self.worldmap.draw(self.api())
+        self.assertTrue(view.noPins)
+        self.assertFalse(view.acceptPin(pin))
+
+    def test_fullscreen_map_follows_main_viewport_desktop_origin(self):
+        self.lua.execute('''
+          fakeIm.GetMainViewport=function() return {Pos={x=480,y=258},Size={x=1600,y=900}} end
+          fakeIm.SetNextWindowPos=function(p) nextPos=p end
+          fakeIm.SetNextWindowSize=function(p) nextSize=p end
+        ''')
+        self.worldmap.draw(self.api())
+        self.assertEqual((self.lua.globals().nextPos.x, self.lua.globals().nextPos.y), (480, 258))
+        self.assertEqual((self.lua.globals().nextSize.x, self.lua.globals().nextSize.y), (1600, 900))
+
     def test_the_card_tells_the_osm_facts(self):
         pois, tags = self.kyiv()
         self.add('Україна', pois, tags)

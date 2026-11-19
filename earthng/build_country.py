@@ -1044,7 +1044,8 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
 
 
 def build_country(country_id, title, version, regions, out, bbox=None, emit=print, jobs=1, landing=None, landcover=(), vegetation=None,
-                  look=None, include=None, cancel=None, map_data=None, section=None, credits=(), experiments=None):
+                  look=None, include=None, cancel=None, map_data=None, section=None, credits=(), experiments=None,
+                  photo_index=None):
     """Stream source blocks to ZIP64 and atomically replace the completed archive.
     section: {'id', 'title'}: one region, written as a section of the country
     (earthng_<country>_<section>.zip with sections/<id>/section.json and no country manifest),
@@ -1189,6 +1190,10 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
             if include:
                 manifest['include'] = include
             manifest['credits'] = [*CREDITS, *(credits or ())]
+            if photo_index is not None:
+                import build_area_photos
+                manifest['credits'].append({'source': build_area_photos.ATTRIBUTION,
+                    'license': 'CC-BY-4.0', 'url': 'https://esa-worldcover.org/en/data-access'})
             # the register's places in this pack, for missions and the map (docs/VENUES.md)
             places = venues.catalogue(manifest['coverage'])
             if places:
@@ -1211,6 +1216,8 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
             # the offline map is the country's: a section's zip leaves it to the country pack
             if map_data is not None and section is None:
                 _write_map(archive, map_data, f'earthng/countries/{country_id}/map')
+            if photo_index is not None:
+                build_area_photos.write_archive(archive, photo_index, folder + '/photos')
         _add_routing(temporary, jobs, emit, cancel)
         _add_far(temporary, emit, cancel)
         os.replace(temporary, target)
@@ -1457,6 +1464,7 @@ def run_job(path):
                 [_revive_region(region) for region in job['regions']], job['out'],
                 jobs=job.get('jobs') or 1, landing=job.get('landing'), look=job.get('look'),
                 include=job.get('include'), map_data=job.get('map_data'), section=job.get('section'),
+                photo_index=job.get('photo_index'),
                 credits=job.get('credits') or (), experiments=job.get('experiments'))
         finally:
             fast_style.POIS = previous_pois

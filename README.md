@@ -17,15 +17,15 @@ route you to a marker.
 
 ## Install and play
 
-1. Download and open **EarthNG.exe** from the [player release](https://github.com/Alezx311/earthng/releases/tag/EarthNG).
+1. Download and open **EarthNG.exe** from the [player release](https://github.com/Alezx311/earthng/releases/tag/v1.0.0).
 2. Search for a city such as Miami and press Enter, draw a rectangle, or choose a route.
    Press **Create the map**. The builder installs the planet and the selected area.
 3. Open **Freeroam → EarthNG - Planet** in BeamNG.drive. Pick a point inside the
    installed coverage and land there.
 
-For a ready-made map, install **earthng_planet.zip** from the same release and a country ZIP
-from the [direct map downloads](docs/READY_MAPS.md). Put both ZIPs, still packed, in
-the `mods` directory of your BeamNG user folder.
+EarthNG 1.0 includes the planet inside **EarthNG.exe**. Try generating a map of any
+place on Earth: your hometown, a favourite road, or somewhere you have always wanted
+to drive. Existing country packs can also be used alongside the installed planet.
 
 The widget searches cities, villages and countries in local, Ukrainian and English
 names. Use Enter or click a result, scroll to zoom and drag to pan. Main-road
@@ -52,12 +52,12 @@ be used as native country packs.
 
 Release files belong in [GitHub Releases](https://github.com/Alezx311/earthng/releases),
 not in Git. See [release verification](docs/RELEASE_CHECK.md) for the tested build
-and performance limits. This is an experimental first release: OSM completeness,
+and performance limits. OSM completeness,
 terrain detail and performance vary between places.
 
 ## Build your own map (Windows)
 
-Download **[EarthNG.exe](https://github.com/Alezx311/earthng/releases/download/EarthNG/EarthNG.exe)**
+Download **[EarthNG.exe](https://github.com/Alezx311/earthng/releases/download/v1.0.0/EarthNG.exe)**
 and run it. It needs nothing else: Python and the build tools are inside, unpacked
 once to `%LOCALAPPDATA%\EarthNG\runtime`. Downloaded data and built packs live in
 `%LOCALAPPDATA%\EarthNG\data`. The window uses Microsoft Edge WebView2, which
@@ -70,7 +70,7 @@ Windows 10 and 11 already have.
    import a GPX track or GeoJSON LineString. Choose **1, 10 or 100 km on each side**.
    Follow the bends of your intended drive when placing waypoints.
 3. Press **Create the map**. If `earthng_planet.zip` is missing or older than the
-   packs need, it is downloaded from GitHub and installed first. Look, layers and
+   packs need, it is installed from the bundled planet first. Look, layers and
    project options are folded under the button.
 4. Watch the stages. When it says **The map is installed**, start BeamNG.drive and
    open **Freeroam → EarthNG - Planet**.

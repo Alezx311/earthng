@@ -90,6 +90,24 @@ class CountryTests(unittest.TestCase):
             region = manifests[0].split('/')[4]
             self.assertTrue(archive.read(f'earthng/countries/ua/routing/{region}.bin'))
 
+    def test_imagery_is_packaged_in_both_country_and_section_roots(self):
+        import build_area_photos
+        image_dir = self.root / 'imagery'
+        image_dir.mkdir()
+        index = image_dir / 'selection.json'
+        index.write_text(json.dumps([{'file': 'sheet.dds', 'box': [0, 0, 1, 1],
+                                     'minZoom': 6, 'maxZoom': 18, 'credit': build_area_photos.CREDIT}]))
+        (image_dir / 'sheet.dds').write_bytes(b'DDS test sheet')
+        for section in (None, {'id': 'test-region', 'title': 'Area'}):
+            with patch.object(sources, 'Store', return_value=self.store):
+                result = country.build_country('ua', 'Україна', '1', [self.region], self.root / 'mods',
+                    bbox=(-1000, 0, 2000, 1000), emit=lambda _: None, section=section, photo_index=index)
+            root = 'earthng/countries/ua' + ('/sections/test-region' if section else '')
+            with zipfile.ZipFile(result) as archive:
+                self.assertEqual(archive.read(root + '/photos/sheet.dds'), b'DDS test sheet')
+                self.assertEqual(json.loads(archive.read(root + '/photos/index.json'))[0]['file'], 'sheet.dds')
+                self.assertIn(b'CC-BY-4.0', archive.read(root + '/CREDITS.txt'))
+
     def test_a_section_zip_holds_one_region_and_no_country_manifest(self):
         import shapely
         region = {'dir': self.region, 'core': None, 'id': 'kyiv'}

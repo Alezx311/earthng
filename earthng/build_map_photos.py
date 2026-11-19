@@ -8,7 +8,6 @@ import io
 import json
 import math
 from pathlib import Path
-import struct
 from urllib.request import urlopen
 
 import numpy as np
@@ -18,6 +17,7 @@ from rasterio.enums import Resampling
 from rasterio.transform import from_bounds
 from rasterio.vrt import WarpedVRT
 import build_basemap
+from map_photo_codec import save_photo
 
 
 OUT = Path(__file__).resolve().parents[1] / 'mod/earthng/planet/photos'
@@ -81,27 +81,6 @@ def blue_marble():
             sheets.append(dict(file=name, box=[p / size for p in box], minZoom=4, maxZoom=6,
                                credit='NASA Blue Marble'))
     return sheets
-
-
-def save_photo(image, path):
-    """A GPU-ready DXT5 sheet. Keep its soft alpha border and all mip levels."""
-    lod = image
-    levels = []
-    while True:
-        buf = io.BytesIO()
-        lod.save(buf, 'DDS', pixel_format='DXT5')
-        encoded = buf.getvalue()
-        if not levels:
-            header = bytearray(encoded[:128])
-        levels.append(encoded[128:])
-        if lod.size == (1, 1):
-            break
-        lod = lod.resize((max(1, lod.width // 2), max(1, lod.height // 2)), Image.Resampling.BOX)
-    flags = struct.unpack_from('<I', header, 8)[0]
-    struct.pack_into('<I', header, 8, flags | 0x20000)  # DDSD_MIPMAPCOUNT
-    struct.pack_into('<I', header, 28, len(levels))
-    struct.pack_into('<I', header, 108, 0x401008)       # texture, complex, mipmap
-    path.write_bytes(header + b''.join(levels))
 
 
 def city(name, lon, lat, span, size, min_zoom, source, credit):

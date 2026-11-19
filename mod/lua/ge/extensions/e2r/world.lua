@@ -4449,7 +4449,7 @@ local function drawMap(width, height, view, pick)
   if NATIVE and S.stream and z >= 12 and not view.noPins then
     local box = M.pinBox
     box.n, box.s, box.e, box.w = north, south, east, west
-    M.pins.draw(im, dl, S.tiles, z, box, worldToGeo, screen, col, M.brandStyles, planetMap)
+    M.pins.draw(im, dl, S.tiles, z, box, worldToGeo, screen, col, M.brandStyles, planetMap, view.acceptPin)
   end
   if S.marker then
     local mx, my = screen(S.marker.lat, S.marker.lon)
@@ -5130,7 +5130,10 @@ function LIMIT.worldApi()
     photo = function() return S.mapPhoto ~= false end,
     setPhoto = function(on) M.options.set('mapPhoto', on, 'map') end,
     car = carOnMap,
-    start = function() return S.center, S.zoom end,
+    start = function()
+      local view = (S.state == 'driving' and S.mini) or S
+      return view.center, view.zoom
+    end,
     canLand = function(lat, lon) return NATIVE and native.at(lat, lon) or nil end,
     land = function(lat, lon)
       setMarker(lat, lon)
@@ -5158,7 +5161,10 @@ function LIMIT.drawBigMap()
   end
   local io = im.GetIO()
   local w, h = io.DisplaySize.x, io.DisplaySize.y
-  im.SetNextWindowPos(im.ImVec2(0, 0), im.Cond_Always)
+  local viewport = im.GetMainViewport and im.GetMainViewport()
+  local origin = viewport and viewport.Pos
+  if viewport and viewport.Size.x > 0 and viewport.Size.y > 0 then w, h = viewport.Size.x, viewport.Size.y end
+  im.SetNextWindowPos(im.ImVec2(origin and origin.x or 0, origin and origin.y or 0), im.Cond_Always)
   im.SetNextWindowSize(im.ImVec2(w, h), im.Cond_Always)
   local flags = im.WindowFlags_NoTitleBar + im.WindowFlags_NoResize + im.WindowFlags_NoMove + im.WindowFlags_NoCollapse
   M.winguard.begin(im, 'EarthNG##bigmap', flags)
@@ -5211,7 +5217,12 @@ local function drawWindow()
     M.winguard.begin(im, 'EarthNG##mini', im.WindowFlags_NoCollapse)
     if im.Button(L('Приховати', 'Hide')) then S.widgetHidden = true end
     im.SameLine()
-    if im.Button(L('Обрати інше місце', 'Pick another place')) then S.pickerOpen = true; S.viewDirty = true end
+    if im.Button(L('Обрати інше місце', 'Pick another place')) then
+      local mini = S.mini
+      local at = mini and mini.follow and carOnMap() or mini and mini.center
+      if at then S.center, S.zoom = {lat = at.lat, lon = at.lon}, mini.zoom end
+      S.pickerOpen, S.viewDirty = true, true
+    end
     drawLangButton()
     -- the mini map follows the car (an arrow along the heading); a drag frees it
     S.mini = S.mini or {center = {lat = S.center.lat, lon = S.center.lon}, zoom = 15, follow = true}

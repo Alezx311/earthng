@@ -904,18 +904,37 @@ function M.closed()
   end
 end
 
+-- Streamed scenes can carry points even when this area has no map sidecar. Keep
+-- them as a fallback under the atlas filters; the shared layout removes duplicates.
+local function acceptsPin(poi)
+  if not S.points then return false end
+  local cat = poi.cat or (poi.kind == 'fuel' and 'service_map' or 'shop_map')
+  local style = pins and pins.STYLE[cat]
+  if poi.lat and poi.lon and poi.mapCategoryRevision ~= index.revision then
+    local e, i = index.find(poi.lat, poi.lon, cat)
+    poi.mapCategory = e and index.category(e, i) or cat
+    poi.mapCategoryRevision = index.revision
+  end
+  local category = S.browser.category or 'all'
+  return style and not S.off[cat] and not S.off[poi.mapCategory or cat]
+    and (not S.browser.pack or (S.packAt and S.packAt(poi.lat, poi.lon) == S.browser.pack))
+    and (category == 'all' or category == 'poi' or style.group == category)
+end
+
 -- --- the screen -----------------------------------------------------------------------------
 -- api (world.lua LIMIT.worldApi): im, col, L, lang(), theme(), pushTheme, popTheme, winguard,
 -- planetMap, drawMap(w, h, view), car(), start() -> center, zoom, canLand(lat, lon) -> pack or nil,
 -- land(lat, lon), canNavigate(), navigate(lat, lon) -> true when routed, close()
 function M.draw(api)
   local im = api.im
+  S.packAt = api.packAt
   index.step()
   local view = S.view
   if not view then
     local center, zoom = api.start()
     view = {center = {lat = center.lat, lon = center.lon}, zoom = zoom or 12, follow = false, world = true}
     view.overlay = function(...) overlay(api, ...) end
+    view.acceptPin = acceptsPin
     view.onClick = function(lat, lon, place)
       S.panel = 'card'
       if place then
@@ -930,19 +949,25 @@ function M.draw(api)
     S.view = view
   end
   view.coverage = S.coverage
-  view.noPins = index.stats().points > 0
+  view.noPins = not S.points
   if not S.shown then
     S.shown = true
     -- the car's place when the map opens while driving
     local car = api.car()
-    if car then view.center, view.zoom = {lat = car.lat, lon = car.lon}, max(view.zoom, 13) end
+    if car then
+      local _, zoom = api.start()
+      view.center, view.zoom = {lat = car.lat, lon = car.lon}, max(view.zoom, zoom or 13, 13)
+    end
     if S.pause then M.setPause(true) end
   end
   if not colours then makeColours(api.col) end
   local io = im.GetIO()
   local w, h = io.DisplaySize.x, io.DisplaySize.y
+  local viewport = im.GetMainViewport and im.GetMainViewport()
+  local origin = viewport and viewport.Pos
+  if viewport and viewport.Size.x > 0 and viewport.Size.y > 0 then w, h = viewport.Size.x, viewport.Size.y end
   api.pushTheme()
-  im.SetNextWindowPos(im.ImVec2(0, 0), im.Cond_Always)
+  im.SetNextWindowPos(im.ImVec2(origin and origin.x or 0, origin and origin.y or 0), im.Cond_Always)
   im.SetNextWindowSize(im.ImVec2(w, h), im.Cond_Always)
   local flags = im.WindowFlags_NoTitleBar + im.WindowFlags_NoResize + im.WindowFlags_NoMove + im.WindowFlags_NoCollapse
   api.winguard.begin(im, 'EarthNG##worldmap', flags)

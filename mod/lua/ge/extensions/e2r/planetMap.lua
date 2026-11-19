@@ -20,6 +20,7 @@ local coast
 local roadTex, roadFrame, roadRevision = {}, 0, -1
 local photoRoot = '/earthng/planet/photos/'
 local sheets, photoTex = nil, {}
+local packSheets, photoSignature = {}, ''
 
 -- --- tiles ---------------------------------------------------------------------------------------
 local function loadIndex()
@@ -103,22 +104,24 @@ local function drawPhotos(im, dl, r0, width, height, x0, y0, z, col)
   end
   local world, x1, y1 = 256 * 2 ^ z, x0 + width, y0 + height
   local credits, lastCredit, reads = nil, nil, 0
-  for _, sheet in ipairs(sheets) do
+  for k = 1, #sheets + #packSheets do
+    local sheet = k <= #sheets and sheets[k] or packSheets[k - #sheets]
     if z >= sheet.minZoom and z <= sheet.maxZoom then
       local b = sheet.box
       local top, bottom = b[2] * world, b[4] * world
       local cy0, cy1 = math.max(top, y0), math.min(bottom, y1)
-      if cy1 > cy0 then
+      if cy1 > cy0 and bottom - top >= 2 and (b[3] - b[1]) * world >= 2 then
         for wrap = math.floor(x0 / world), math.floor(x1 / world) do
           local left, right = (wrap + b[1]) * world, (wrap + b[3]) * world
           local cx0, cx1 = math.max(left, x0), math.min(right, x1)
           if cx1 > cx0 then
-            local t = photoTex[sheet.file]
+            local path = (sheet.root or photoRoot) .. sheet.file
+            local t = photoTex[path]
             if t == nil and reads < 2 then
               reads = reads + 1
-              local ok, obj = pcall(imguiUtils.texObj, photoRoot .. sheet.file)
+              local ok, obj = pcall(imguiUtils.texObj, path)
               t = ok and obj or false
-              photoTex[sheet.file] = t
+              photoTex[path] = t
             end
             if t then
               t.used = frame
@@ -235,7 +238,44 @@ local function loadLabels()
   return labels
 end
 
-function M.update(countries) catalog.step(countries) end
+function M.update(countries)
+  catalog.step(countries)
+  local roots = {}
+  for _, c in ipairs(countries or {}) do
+    if c.available then
+      local root = '/earthng/countries/' .. c.id .. '/'
+      roots[#roots + 1] = root .. 'photos/'
+      for _, r in ipairs(c.regions or {}) do
+        if r.section then roots[#roots + 1] = root .. 'sections/' .. r.id .. '/photos/' end
+      end
+    end
+  end
+  table.sort(roots)
+  local signature = table.concat(roots, '|')
+  if signature == photoSignature then return end
+  photoSignature, packSheets, photoTex = signature, {}, {}
+  for _, root in ipairs(roots) do
+    if FS:fileExists(root .. 'index.json') then
+      local ok, data = pcall(jsonReadFile, root .. 'index.json')
+      if ok and type(data) == 'table' then
+        for _, sheet in ipairs(data) do
+          if type(sheet) == 'table' and type(sheet.file) == 'string' and not sheet.file:find('[/\\]')
+            and type(sheet.box) == 'table' and #sheet.box == 4 and type(sheet.minZoom) == 'number'
+            and type(sheet.maxZoom) == 'number' then
+            sheet.root = root
+            packSheets[#packSheets + 1] = sheet
+          end
+        end
+      end
+    end
+  end
+  -- Coarse coverage first; a rebuilt county takes precedence over a country sheet.
+  table.sort(packSheets, function(a, b)
+    local aw, bw = a.box[3] - a.box[1], b.box[3] - b.box[1]
+    if aw ~= bw then return aw > bw end
+    return a.root .. a.file < b.root .. b.file
+  end)
+end
 
 -- the settlements for the line of where the car is, indexed once for each set of labels
 local settlements, settlementsOf

@@ -1077,6 +1077,9 @@ def _build_rest(place, mods, root, look, include, jobs, landing, emit, cancel, s
     part = f"_{section['id']}" if section else ''
     emit(f"building earthng_{slug_id}{part}.zip, block {look['block']}")
     with stage('Export'):
+        import build_area_photos
+        photo_box = section['box'] if section is not None else index['package_box']
+        photo_index = build_area_photos.build(photo_box, Path(root) / 'data' / 'map-imagery', emit, cancel)
         # the pack is about the size of its source tiles (Ukraine: 3.3 GB from 3.6), and the finished
         # regions it resumes from take as much again until it is complete
         ensure_space(out, 2 * sum(t.get('bytes', 0) for t in index.get('tiles', {}).values()) + 2**28, 'The export')
@@ -1088,6 +1091,7 @@ def _build_rest(place, mods, root, look, include, jobs, landing, emit, cancel, s
                        # Same mapped POIs and runtime details as the Kyiv oblast experiment.
                        'rich_data': True, 'experiments': {'detail': True, 'shopfront': True},
                        'map_data': None if map_data is None else str(map_data),
+                       'photo_index': str(photo_index),
                        'work': str(work), 'result': str(export_path), 'credits': credits,
                        'section': None if section is None else {'id': section['id'], 'title': section['name']}},
                       emit, cancel)

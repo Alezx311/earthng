@@ -93,7 +93,7 @@ def app_version(source):
     return re.search(r'^version = "([^"]+)"', text, re.M).group(1)
 
 
-def build_runtime_zip(files, python_zip, packages):
+def build_runtime_zip(files, python_zip, packages, planet=None):
     out = io.BytesIO()
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         with zipfile.ZipFile(python_zip) as embedded:
@@ -109,6 +109,9 @@ def build_runtime_zip(files, python_zip, packages):
                 archive.write(path, f'python/Lib/site-packages/{rel}')
         for name, data in sorted(files.items()):
             archive.writestr(name, data)
+        if planet is not None:
+            # The planet is already compressed; keep the single-file release fast to unpack.
+            archive.write(planet, 'earthng_planet.zip', compress_type=zipfile.ZIP_STORED)
     return out.getvalue()
 
 
@@ -139,15 +142,19 @@ def write_app_manifest(target, info):
     return path
 
 
-def build(out, ref='HEAD', native=True, extra=None):
+def build(out, ref='HEAD', native=True, extra=None, planet=None):
     """out/EarthNG.exe from the snapshot ref: the window built by cargo, the runtime appended."""
     info, files = runtime_files(ref, native, extra)
+    if planet is not None:
+        prepare_release.check_planet(planet)
+        if prepare_release.planet_version(planet) != info['planetVersion']:
+            raise ValueError('bundled planet version must match the app runtime')
     cargo = prepare_release._cargo()
     if cargo is None:
         raise SystemExit('cargo not found (https://rustup.rs)')
     subprocess.run([cargo, 'build', '--release', '--locked', '-p', 'app'], cwd=ROOT / 'rust', check=True)
     requirements = (ROOT / 'requirements-fast.txt').read_text(encoding='utf-8')
-    payload = build_runtime_zip(files, embedded_python(), site_packages(requirements))
+    payload = build_runtime_zip(files, embedded_python(), site_packages(requirements), planet=planet)
     target = Path(out) / 'EarthNG.exe'
     digest = append_runtime(ROOT / 'rust' / 'target' / 'release' / 'EarthNG.exe', payload, target)
     write_app_manifest(target, info)
@@ -161,8 +168,9 @@ def main():
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--ref', default='HEAD', help='committed source snapshot of the pipeline')
     p.add_argument('--no-native', action='store_true', help='leave out bin/ (every step in Python)')
+    p.add_argument('--planet', type=Path, help='bundle the planet ZIP for a self-contained exe')
     a = p.parse_args()
-    target, _, _ = build(a.out, a.ref, native=not a.no_native)
+    target, _, _ = build(a.out, a.ref, native=not a.no_native, planet=a.planet)
     print(f'Output: {target.resolve()}')
 
 

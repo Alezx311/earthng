@@ -46,6 +46,22 @@ class PrepareAppTests(unittest.TestCase):
             with zipfile.ZipFile(io.BytesIO(data[start:start + size])) as archive:
                 self.assertEqual(archive.read('earthng/app_service.py'), b'x')
 
+    def test_single_file_runtime_preserves_the_bundled_planet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            embedded = root / 'python.zip'
+            with zipfile.ZipFile(embedded, 'w') as archive:
+                archive.writestr('python313._pth', 'old')
+            packages = root / 'packages'
+            packages.mkdir()
+            planet = root / 'planet.zip'
+            with zipfile.ZipFile(planet, 'w') as archive:
+                archive.writestr('earthng/planet/manifest.json', '{}')
+            payload = prepare_app.build_runtime_zip({'BUILD_INFO.json': b'{}'}, embedded, packages, planet)
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                self.assertEqual(archive.read('earthng_planet.zip'), planet.read_bytes())
+                self.assertEqual(archive.getinfo('earthng_planet.zip').compress_type, zipfile.ZIP_STORED)
+
     def test_embedded_python_finds_the_pipeline_and_its_packages(self):
         lines = prepare_app.PTH.splitlines()
         self.assertIn('Lib\\site-packages', lines)
@@ -64,12 +80,13 @@ class PrepareAppTests(unittest.TestCase):
 
 
     def test_runtime_has_every_script_the_pipeline_starts(self):
-        names = subprocess.check_output(['git', 'ls-files'], cwd=ROOT, text=True).splitlines()
+        names = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard'],
+                                        cwd=ROOT, text=True).splitlines()
         files = {n: (ROOT / n).read_bytes() for n in names if (ROOT / n).is_file()}
         selected = prepare_release.builder_files(files)
         # country_fetch starts these by file name; build_country also needs the modules it imports.
         for module in ('app_service', 'osm_tiles_country', 'build_map', 'build_country', 'country_format',
-                       'landcover', 'native_tool'):
+                       'landcover', 'native_tool', 'build_area_photos', 'map_photo_codec'):
             self.assertIn(f'earthng/{module}.py', selected)
         # Every 'name.py' a bundled module mentions must be bundled too, or the build stops mid-way.
         for name, data in selected.items():

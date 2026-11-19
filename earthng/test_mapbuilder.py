@@ -179,6 +179,12 @@ class AssemblyTests(unittest.TestCase):
 
 
 class BuildLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        import build_area_photos
+        photos = patch.object(build_area_photos, 'build', return_value=Path('offline-photo-index.json'))
+        self.photo_build = photos.start()
+        self.addCleanup(photos.stop)
+
     def test_map_cache_is_reused_for_a_snapshot_and_separated_for_an_updated_pbf(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -229,7 +235,8 @@ class BuildLifecycleTests(unittest.TestCase):
             root = Path(tmp)
             tiles = country_fetch.tiles_dir(root, 'test', None)
             tiles.mkdir(parents=True)
-            (tiles / 'index.json').write_text(json.dumps({'select': osm_select.VERSION, 'region': [0, 0, 1, 1]}))
+            (tiles / 'index.json').write_text(json.dumps({'select': osm_select.VERSION, 'region': [0, 0, 1, 1],
+                                                       'package_box': [0, 0, 1, 1]}))
             events = []
             commands = []
             jobs = []
@@ -261,6 +268,8 @@ class BuildLifecycleTests(unittest.TestCase):
             self.assertTrue(all(seconds >= 0 for _, seconds in events if seconds is not None))
             export = next(job for job in jobs if job['command'] == 'export')
             self.assertTrue(export['rich_data'])
+            self.assertEqual(export['photo_index'], 'offline-photo-index.json')
+            self.photo_build.assert_called_once()
             self.assertEqual(export['experiments'], {'detail': True, 'shopfront': True})
 
     def test_the_export_job_credits_the_register_and_the_burnt_lidar(self):
