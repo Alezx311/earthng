@@ -474,7 +474,7 @@ def pbf_path(root, slug_id):
 def _python():
     """Interpreter that can import osmium. This checkout only."""
     try:
-        from osmium_compat import osmium  # noqa: F401
+        import osmium  # noqa: F401
         executable = Path(sys.executable)
         return str(executable.with_name('python.exe') if executable.name.lower() == 'pythonw.exe' else executable)
     except ImportError:
