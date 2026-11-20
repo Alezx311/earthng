@@ -9,7 +9,7 @@ import json
 import sys
 import time
 
-import osmium
+from osmium_compat import osmium
 
 KEYS = ('amenity', 'shop', 'tourism', 'leisure', 'historic', 'man_made', 'sport', 'office', 'craft',
         'healthcare', 'emergency', 'railway', 'public_transport', 'aeroway', 'natural', 'waterway',

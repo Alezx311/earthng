@@ -104,7 +104,7 @@ class PrepareAppTests(unittest.TestCase):
         selected = prepare_release.builder_files(files)
         # country_fetch starts these by file name; build_country also needs the modules it imports.
         for module in ('app_service', 'osm_tiles_country', 'build_map', 'build_country', 'country_format',
-                       'landcover', 'native_tool', 'build_area_photos', 'map_photo_codec'):
+                       'landcover', 'native_tool', 'build_area_photos', 'map_photo_codec', 'osmium_compat'):
             self.assertIn(f'earthng/{module}.py', selected)
         # Every 'name.py' a bundled module mentions must be bundled too, or the build stops mid-way.
         for name, data in selected.items():

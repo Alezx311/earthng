@@ -309,7 +309,7 @@ def _coastlines(store, box):
     tiles = getattr(store, 'source_index', {}).get('tiles')
     if not tiles or not hasattr(store, 'meta'):
         return [geometry for _fid, kind, _data, geometry in _scenery(store, box) if kind == 'coastline']
-    import osmium
+    from osmium_compat import osmium
     # Every tile of an island holds the island's whole coastline, and a worker visits hundreds of
     # tiles: each way is kept once, as an array (16 bytes a vertex, not ~110 in a list of tuples),
     # and a tile only remembers which ways it holds.

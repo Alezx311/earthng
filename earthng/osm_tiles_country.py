@@ -24,7 +24,7 @@ import shutil
 import sys
 import time
 
-import osmium
+from osmium_compat import osmium
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import osm_tiles  # noqa: E402

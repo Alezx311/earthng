@@ -46,7 +46,7 @@ def source_pbf(source, emit=print):
 
 
 def check_extent(pbf, box, emit=print):
-    import osmium
+    from osmium_compat import osmium
     header = osmium.io.Reader(str(pbf), osmium.osm.osm_entity_bits.NOTHING).header().box()
     if not header.valid():
         return

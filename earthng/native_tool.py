@@ -549,7 +549,7 @@ def scene_areas(pbf):
     a mark that create_multipolygon raised. One osmium pass with the area callback only."""
     import json
     import struct
-    import osmium
+    from osmium_compat import osmium
     factory = osmium.geom.WKBFactory()
     out = []
 

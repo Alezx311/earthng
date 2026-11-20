@@ -317,7 +317,7 @@ def _without_mapped(piece, mapped):
 
 def _osm_rails(path):
     """OSM barrier=guard_rail ways of one tile as [(lon, lat), ...]."""
-    import osmium
+    from osmium_compat import osmium
     rails = []
 
     class Reader(osmium.SimpleHandler):
@@ -370,7 +370,7 @@ def plan(tiles, layers):
 def _write_tile(src, dst, updates, rails):
     """src copied to dst with the tag updates on its ways and the rails (with their nodes) added
     after its own nodes and ways; ids of the rails stay above every OSM id, in order."""
-    import osmium
+    from osmium_compat import osmium
     from osmium.osm import mutable
     counts = {'nodes': 0, 'ways': 0, 'relations': 0}
     part = Path(str(dst) + '.part')

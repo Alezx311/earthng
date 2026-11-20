@@ -12,7 +12,7 @@ from pathlib import Path
 import shutil
 import tempfile
 
-import osmium
+from osmium_compat import osmium
 from shapely.geometry import LineString
 from PIL import Image, ImageDraw
 

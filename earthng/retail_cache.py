@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import time
 
-import osmium
+from osmium_compat import osmium
 import retail
 
 

@@ -384,7 +384,7 @@ def read_ways(path, sha256):
     """The ways of one source tile the height solve needs: drivable ones and foot bridges, both
     {way id: (tags, [(node, lon, lat), ...])}, and the closed man_made=bridge outlines
     {way id: [(lon, lat), ...]}."""
-    import osmium
+    from osmium_compat import osmium
     if hashlib.sha256(Path(path).read_bytes()).hexdigest() != sha256:
         raise ValueError(f'OSM checksum mismatch: {path}')
     roads, feet, decks = {}, {}, {}
@@ -783,7 +783,7 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
     A large package is indexed as a window round point (the landing). cancelled() is asked
     between the stages: a window of a big city takes minutes, and the single preparer must not
     finish it for a landing the player has already left (the next landing waited behind it)."""
-    import osmium
+    from osmium_compat import osmium
     started = time.perf_counter()
     def check():
         if cancelled and cancelled():
@@ -1048,7 +1048,7 @@ class Store:
 
         This work is timed in scene jobs, never hidden in a prebuilt city asset.
         """
-        import osmium
+        from osmium_compat import osmium
         import osm_tiles
         bbox=self.frame.geo_bbox(rect)
         hit=osm_tiles.tile_for(self.source_index,bbox)
@@ -1116,7 +1116,7 @@ class Store:
 
     def build_scene(self, entry):
         """Records (fid, kind, {'tags'}, local geometry) of one raw OSM tile, sorted by fid."""
-        import osmium
+        from osmium_compat import osmium
         found={}; lines={}; retail_areas={}; pin_areas={}; marks=[]; factory=osmium.geom.WKBFactory()
         import fast_style
         import retail

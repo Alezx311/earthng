@@ -405,7 +405,7 @@ def tiles_from_cover(root, slug_id, box, tiles, emit=print):
 def cut_region(pbf, box):
     """The region a cut keeps for a selection (osm_tiles.region): the selection grown to whole
     cells, clipped to the extract's own box (the PBF header)."""
-    import osmium
+    from osmium_compat import osmium
     import osm_tiles
     header = osmium.io.Reader(str(pbf), osmium.osm.osm_entity_bits.NOTHING).header().box()
     extract = [header.bottom_left.lon, header.bottom_left.lat, header.top_right.lon, header.top_right.lat] if header.valid() else None
@@ -474,7 +474,7 @@ def pbf_path(root, slug_id):
 def _python():
     """Interpreter that can import osmium. This checkout only."""
     try:
-        import osmium  # noqa: F401
+        from osmium_compat import osmium  # noqa: F401
         executable = Path(sys.executable)
         return str(executable.with_name('python.exe') if executable.name.lower() == 'pythonw.exe' else executable)
     except ImportError:
@@ -862,7 +862,7 @@ def overpass_fetch(url, box, dest, wait=OVERPASS_WAIT, emit=print, cancel=None):
 def osm_xml_to_pbf(xml, pbf, box):
     """Overpass XML as a PBF whose header box is the area fetched: the cut clips its region to it
     (cut_region) exactly as to a Geofabrik extract's own box."""
-    import osmium
+    from osmium_compat import osmium
     pbf = Path(pbf)
     part = pbf.with_name(pbf.name + '.part')
     part.unlink(missing_ok=True)

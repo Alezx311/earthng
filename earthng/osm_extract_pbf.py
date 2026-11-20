@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 import time
 
-import osmium
+from osmium_compat import osmium
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from osm_select import drop_incomplete, landmark_category, poi  # noqa: E402

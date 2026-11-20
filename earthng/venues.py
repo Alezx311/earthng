@@ -100,7 +100,7 @@ def metres(a, b):
 def scan(pbf, rows, kind):
     """(places, addressed, named) from the PBF: settlements of the register's names, objects at
     a register's house number on a street of its words, and objects named as the type."""
-    import osmium
+    from osmium_compat import osmium
     spec = TYPES[kind]
     names = {fold(r['settlement']) for r in rows if r['settlement']}
     houses = {}

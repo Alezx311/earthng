@@ -33,7 +33,7 @@ def section_id(name, english=None, osm=None):
 def scan(pbf, levels=LEVELS):
     """Every boundary=administrative area of the levels in the extract: [{id, name, level, box,
     geometry (GeoJSON, lon/lat)}], sorted by id."""
-    import osmium
+    from osmium_compat import osmium
     import osmium.geom
     import shapely
     from shapely import wkb
