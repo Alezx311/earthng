@@ -39,11 +39,52 @@ class MapDataTests(unittest.TestCase):
         lua.globals().planet = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/planetMap.lua').read_text(encoding='utf8'))
         return lua
 
-    def test_guide_can_be_found_without_a_pack_and_keeps_its_anchor_on_resize(self):
-        guide = json.loads((ROOT / 'mod/earthng/planet/guide.json').read_text(encoding='utf8'))
-        self.assertEqual(len({a['id'] for a in guide}), len(guide))
-        lua = self.runtime({'/earthng/planet/guide.json': guide})
+    def test_section_maps_work_without_a_parent_pack_and_unmount_independently(self):
+        root = '/earthng/countries/demo/sections/area/map/'
+        files = {root + 'index.json': {'version': 1, 'tiles': {}},
+                 root + 'places.json': [[50, 30, 9, 'Section town', 'Місто секції', 0, 0]]}
+        lua = self.runtime(files)
         lua.execute('''
+          local countries={{id='demo',title='Demo',available=true,regions={{id='area',section=true}}}}
+          for i=1,3 do planet.update(countries) end
+          assert(#catalog.catalogs()==1)
+          assert(catalog.catalogs()[1].root=='/earthng/countries/demo/sections/area/map/')
+          assert(planet.search('Section town','en',1,'demo')[1].name=='Section town')
+          assert(#planet.packPlaces('demo')==1)
+          planet.update({{id='demo',title='Demo',available=true,regions={}}})
+          assert(#planet.packPlaces('demo')==0)
+        ''')
+
+    def test_section_map_subset_keeps_local_data_and_aligned_poi_facts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'source'
+            source.mkdir()
+            tiles = {'near': {'zoom': 11, 'box': [0, 0, 1, 1], 'file': 'near.json'},
+                     'far': {'zoom': 11, 'box': [30, 50, 31, 51], 'file': 'far.json'}}
+            for name in ('near.json', 'far.json', 'near.png', 'far.png'):
+                (source / name).write_bytes(b'fixture')
+            build_map.encode(source / 'index.json', {'version': 1, 'tiles': tiles,
+                'raster': {'6/32/31': 'near.png', '6/0/0': 'far.png'}, 'sourceStamp': [3]})
+            build_map.encode(source / 'places.json', [[.5, .5, 9, 'Near'], [50, 30, 9, 'Far']])
+            (source / 'pois.tsv').write_text('a\t.4\t.4\tcafe\tA\nafar\t50\t30\tcafe\tFar\nz\t.6\t.6\tcafe\tZ\n')
+            (source / 'poi_tags.tsv').write_text('{"id":1}\n{"id":2}\n{"id":3}\n')
+            result = build_map.subset(source, root / 'cut', [[.1, .1, .9, .9]])
+            index = json.loads((result / 'index.json').read_text())
+            self.assertEqual(set(index['tiles']), {'near'})
+            self.assertEqual(index['raster'], {'6/32/31': 'near.png'})
+            self.assertEqual((index['places'], index['pois'], index['poiTags']), (1, 2, 2))
+            self.assertEqual((result / 'poi_tags.tsv').read_text(), '{"id":1}\n{"id":3}\n')
+            self.assertEqual({p.name for p in result.iterdir()},
+                {'index.json', 'places.json', 'pois.tsv', 'poi_tags.tsv', 'near.json', 'near.png'})
+
+    def test_pack_guide_keeps_its_anchor_on_resize_and_unmounts(self):
+        guide = json.loads((ROOT / 'earthng/fixtures/map_guide.json').read_text(encoding='utf8'))
+        self.assertEqual(len({a['id'] for a in guide}), len(guide))
+        lua = self.runtime({'/earthng/countries/demo/guide.json': guide})
+        lua.execute('''
+          assert(#planet.search('Ломбард', 'uk', 1) == 0)
+          planet.update({{id='demo',title='Demo',available=true}})
           local hit = planet.search('Ломбард', 'uk', 1)[1]
           assert(hit.article.id == 'sf-lombard-switchbacks')
           assert(planet.search('Lombard', 'en', 1)[1].article.id == hit.article.id)
@@ -62,10 +103,12 @@ class MapDataTests(unittest.TestCase):
             local p = draw(unpack(size))
             assert(p and p.article.id == hit.article.id and p.lat == hit.lat and p.lon == hit.lon)
           end
+          planet.update({})
+          assert(#planet.search('Ломбард', 'uk', 1) == 0)
         ''')
 
     def test_small_villages_countries_aliases_language_limits_and_unmount(self):
-        root = '/earthng/planet/maps/demo/'
+        root = '/earthng/countries/demo/map/'
         places = [build_map.settlement(50.4, 30.2, {'place': 'village', 'name': 'Мала Долина', 'name:en': 'Mala Dolyna', 'alt_name': 'Долинка'}),
                   build_map.settlement(50.5, 30.3, {'place': 'town', 'name': 'Мала Долина Велика', 'population': '100000'})]
         lua = self.runtime({root + 'index.json': {'version': 1, 'tiles': {}}, root + 'places.json': places,
@@ -81,7 +124,7 @@ class MapDataTests(unittest.TestCase):
         self.assertEqual(len(lua.eval("planet.search('Долинка', 'uk', 9)")), 0)
 
     def test_overview_levels_and_cache_invalidation(self):
-        root = '/earthng/planet/maps/demo/'
+        root = '/earthng/countries/demo/map/'
         tiles, files = {}, {}
         for key, box, z, line in build_map.road_tiles([(30, 50), (30.3, 50.1)], 1):
             tiles[key] = {'zoom': z, 'box': box, 'file': key + '.json'}
@@ -173,9 +216,7 @@ class MapDataTests(unittest.TestCase):
             self.assertEqual(index['poiTags'], index['pois'])
             self.assertEqual(index['sourceStamp'][0], 3)
 
-    def test_a_newer_planet_sidecar_serves_an_older_pack(self):
-        """The planet's maps/<id>/ of a newer generation (points, their facts) wins over the pack's
-        own older map/; of the same generation the pack's own stays first."""
+    def test_pack_map_is_authoritative_even_with_a_newer_legacy_planet_sidecar(self):
         country, planet = '/earthng/countries/ua/map/', '/earthng/planet/maps/ua/'
         def roots(country_gen, planet_gen):
             files = {}
@@ -186,10 +227,10 @@ class MapDataTests(unittest.TestCase):
             lua = self.runtime(files)
             lua.execute("catalog.step({{id='ua', title='Україна', available=true}})")
             return [c.root for c in lua.eval('catalog.catalogs()').values()]
-        self.assertEqual(roots(1, 3), [planet])
+        self.assertEqual(roots(1, 3), [country])
         self.assertEqual(roots(3, 3), [country])
         self.assertEqual(roots(3, 1), [country])
-        self.assertEqual(roots(None, 1), [planet])
+        self.assertEqual(roots(None, 1), [])
         self.assertEqual(roots(1, None), [country])
 
     def test_the_search_finds_points_by_any_name_exact_first(self):
@@ -286,7 +327,7 @@ class MapDataTests(unittest.TestCase):
             self.assertEqual(json.loads((outputs[1] / 'index.json').read_text())['roads'], 2)
 
     def test_overview_reuses_engine_points_and_pans_without_distortion(self):
-        root = '/earthng/planet/maps/demo/'
+        root = '/earthng/countries/demo/map/'
         lua = self.runtime({root + 'index.json': {'version': 1, 'tiles': {
             '6_7_12': {'zoom': 6, 'box': [28, 48, 32, 52], 'file': '6_7_12.json'}}},
             root + 'places.json': [], root + '6_7_12.json': [{'rank': 1, 'box': [50, 30, 50.1, 30.1], 'geo': [50, 30, 50.1, 30.1]}]})

@@ -108,6 +108,21 @@ class CountryTests(unittest.TestCase):
                 self.assertEqual(json.loads(archive.read(root + '/photos/index.json'))[0]['file'], 'sheet.dds')
                 self.assertIn(b'CC-BY-4.0', archive.read(root + '/CREDITS.txt'))
 
+    def test_sections_carry_their_own_map_without_a_country_zip(self):
+        data = self.root / 'map'
+        data.mkdir()
+        (data / 'index.json').write_text(json.dumps({'version': 1, 'tiles': {}}))
+        (data / 'places.json').write_text('[]')
+        with patch.object(sources, 'Store', return_value=self.store):
+            result = country.build_country('ua', 'Ukraine', '1', [self.region], self.root / 'mods',
+                bbox=(-1000, 0, 2000, 1000), emit=lambda _: None, map_data=data,
+                section={'id': 'test-region', 'title': 'Area'})
+        with zipfile.ZipFile(result) as archive:
+            root = 'earthng/countries/ua/sections/test-region/'
+            self.assertIn(root + 'map/index.json', archive.namelist())
+            self.assertIn(root + 'map/places.json', archive.namelist())
+            self.assertFalse(any(n.startswith('earthng/planet/') for n in archive.namelist()))
+
     def test_a_section_zip_holds_one_region_and_no_country_manifest(self):
         import shapely
         region = {'dir': self.region, 'core': None, 'id': 'kyiv'}

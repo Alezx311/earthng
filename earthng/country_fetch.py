@@ -1014,9 +1014,7 @@ def _build_place(place, mods, root=ROOT, look=None, include=None, box=None, jobs
         index = json.loads((tiles / 'index.json').read_text(encoding='utf-8'))
         map_data = tiles / 'map'
         map_job = None
-        if section is not None:
-            map_data = None       # the offline map is the country's: the country pack carries it
-        elif not (map_data / 'index.json').is_file():
+        if not (map_data / 'index.json').is_file():
             if pbf.is_file():
                 # It reads only the PBF: it runs beside the elevation and the index (Ukraine's
                 # 90 s were waited for after a city's 40 s index), and the export waits for it.
@@ -1090,6 +1088,7 @@ def _build_rest(place, mods, root, look, include, jobs, landing, emit, cancel, s
                        'look': look, 'include': include,
                        # Same mapped POIs and runtime details as the Kyiv oblast experiment.
                        'rich_data': True, 'experiments': {'detail': True, 'shopfront': True},
+                       'require_far': True,
                        'map_data': None if map_data is None else str(map_data),
                        'photo_index': str(photo_index),
                        'work': str(work), 'result': str(export_path), 'credits': credits,

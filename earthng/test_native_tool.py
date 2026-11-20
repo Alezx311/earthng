@@ -316,6 +316,19 @@ class PackFarTests(unittest.TestCase):
             self.assertEqual(pack.read_bytes(), before)
         self.assertTrue(any('far view not built' in line for line in lines), lines)
 
+    def test_player_builds_refuse_a_missing_or_incomplete_far_view(self):
+        import build_country
+        with tempfile.TemporaryDirectory() as tmp:
+            pack = self.small_pack(tmp)
+            before = pack.read_bytes()
+            with patch.object(native_tool, 'far', return_value=None):
+                with self.assertRaisesRegex(RuntimeError, 'requires the native Map Builder'):
+                    build_country._add_far(pack, lambda _: None, required=True)
+            with patch.object(native_tool, 'far', return_value=['r1']):
+                with self.assertRaisesRegex(RuntimeError, 'incomplete'):
+                    build_country._add_far(pack, lambda _: None, required=True)
+            self.assertEqual(pack.read_bytes(), before)
+
 
 class FallbackTests(unittest.TestCase):
     def test_a_failed_native_cut_is_cut_again_in_python(self):

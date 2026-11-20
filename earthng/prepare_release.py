@@ -114,6 +114,21 @@ def check_planet(planet):
             raise ValueError('release requires the native planet')
         if any(name.startswith(('content/', 'python/')) for name in archive.namelist()):
             raise ValueError('unexpected game/runtime files in planet')
+        if any(name.startswith(('earthng/countries/', 'earthng/planet/maps/', 'earthng/planet/far/'))
+               or name == 'earthng/planet/guide.json' for name in archive.namelist()):
+            raise ValueError('regional data belongs in country/section packs, not the shared planet')
+        photos = 'earthng/planet/photos/index.json'
+        expected_photos = {photos}
+        for sheet in json.loads(archive.read(photos)) if photos in archive.namelist() else ():
+            if sheet['maxZoom'] > 6:
+                raise ValueError('regional imagery belongs in country/section packs, not the shared planet')
+            expected_photos.add('earthng/planet/photos/' + sheet['file'])
+        if any(n.startswith('earthng/planet/photos/') and not n.endswith('/') and n not in expected_photos
+               for n in archive.namelist()):
+            raise ValueError('unlisted imagery in the shared planet')
+        missing = expected_photos - set(archive.namelist()) - {photos}
+        if missing:
+            raise ValueError('missing shared imagery: ' + ', '.join(sorted(missing)))
 
 
 def ready_packs(countries, release_url=RELEASE_URL):
@@ -145,7 +160,8 @@ def prepare(planet, countries, out, ref='HEAD', release_url=RELEASE_URL, native=
     packs = ready_packs(countries, release_url)
     out.mkdir(parents=True, exist_ok=True)
     target, info, _ = prepare_app.build(out, ref, native,
-                                        extra={'earthng/ready_packs.json': json.dumps(packs, indent=2).encode('utf-8')})
+                                        extra={'earthng/ready_packs.json': json.dumps(packs, indent=2).encode('utf-8')},
+                                        planet=planet)
     if info['planetVersion'] != planet_version(planet):
         raise ValueError(f"the exe expects planet {info['planetVersion']}, {Path(planet).name} is {planet_version(planet)}")
     for path in [Path(planet), *map(Path, countries)]:

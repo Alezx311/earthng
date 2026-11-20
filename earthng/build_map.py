@@ -1,8 +1,7 @@
 """Offline settlement and point search and road overviews from an OSM PBF.
 
 python earthng/build_map.py --pbf data/pbf/albania.osm.pbf --out out/map-data/albania
-The directory can ship in a country at map/, or in the planet at maps/<country id>/.
-Existing country packs therefore need no geometry rebuild to gain map detail.
+The directory ships in a country or section at map/. The shared planet has no regional data.
 """
 import argparse
 from collections import defaultdict
@@ -10,6 +9,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import tempfile
 
 import osmium
@@ -352,6 +352,72 @@ def build(pbf, out, emit=print):
         encode(root / 'index.json', raster_overviews(root, index))
         root.replace(out)
     emit(f'Map: {len(places)} settlements, {len(pois)} points, {road_count} roads, {len(tiles)} overview tiles')
+    return out
+
+
+def subset(directory, out, coverage):
+    """A section's own map, cut from the reusable source map without scanning its PBF again.
+
+    Keep overlapping road tiles, local settlements and aligned POI/fact rows. This avoids
+    copying a whole country's map into every independently installable section.
+    """
+    directory, out = Path(directory), Path(out)
+    out.mkdir(parents=True)
+    west = min(b[0] for b in coverage)
+    south = min(b[1] for b in coverage)
+    east = max(b[2] for b in coverage)
+    north = max(b[3] for b in coverage)
+
+    def contains(lat, lon):
+        return south <= float(lat) <= north and west <= float(lon) <= east
+
+    def overlaps(box):
+        w, s, e, n = box
+        return w <= east and e >= west and s <= north and n >= south
+
+    index = json.loads((directory / 'index.json').read_text(encoding='utf8'))
+    index['coverage'] = [[west, south, east, north]]
+    index['tiles'] = {key: t for key, t in index['tiles'].items() if overlaps(t['box'])}
+    files = {t['file'] for t in index['tiles'].values()}
+    raster = {}
+    for key, filename in index.get('raster', {}).items():
+        z, x, y = map(int, key.split('/'))
+        size = 2 ** z
+        lat = lambda v: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * v / size))))
+        if overlaps([x / size * 360 - 180, lat(y + 1), (x + 1) / size * 360 - 180, lat(y)]):
+            raster[key] = filename
+            files.add(filename)
+    if 'raster' in index:
+        index['raster'] = raster
+    for filename in sorted(files):
+        if Path(filename).name != filename or filename in ('.', '..'):
+            raise ValueError(f'Invalid map tile filename: {filename}')
+        shutil.copyfile(directory / filename, out / filename)
+    places = json.loads((directory / 'places.json').read_text(encoding='utf8'))
+    places = [p for p in places if contains(p[0], p[1])]
+    encode(out / 'places.json', places)
+    index['places'] = len(places)
+    poi_file, tags_file = directory / 'pois.tsv', directory / 'poi_tags.tsv'
+    if poi_file.exists():
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            pois = stack.enter_context(poi_file.open(encoding='utf8'))
+            tags = stack.enter_context(tags_file.open(encoding='utf8')) if tags_file.exists() else None
+            dest = stack.enter_context((out / 'pois.tsv').open('w', encoding='utf8', newline='\n'))
+            facts = stack.enter_context((out / 'poi_tags.tsv').open('w', encoding='utf8', newline='\n')) if tags else None
+            count = 0
+            for row in pois:
+                detail = next(tags, '') if tags else None
+                fields = row.rstrip('\n').split('\t')
+                if len(fields) >= 3 and contains(fields[1], fields[2]):
+                    dest.write(row)
+                    if facts:
+                        facts.write(detail)
+                    count += 1
+            index['pois'] = count
+            if tags:
+                index['poiTags'] = count
+    encode(out / 'index.json', index)
     return out
 
 

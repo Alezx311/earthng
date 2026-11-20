@@ -18,6 +18,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PrepareAppTests(unittest.TestCase):
+    def test_release_staging_bundles_the_planet_in_the_exe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            planet = root / 'earthng_planet.zip'
+            with zipfile.ZipFile(planet, 'w') as archive:
+                archive.writestr('earthng/planet/manifest.json',
+                    json.dumps({'runtime': 'lua', 'version': '1.0.1'}))
+            out = root / 'release'
+
+            def build(target, ref, native, **kw):
+                self.assertEqual(kw['planet'], planet)
+                exe = target / 'EarthNG.exe'
+                exe.write_bytes(b'candidate')
+                return exe, {'planetVersion': '1.0.1', 'sourceCommit': 'test'}, ''
+
+            with patch.object(prepare_app, 'build', side_effect=build):
+                prepare_release.prepare(planet, [], out)
+
     def test_trailer_matches_rust_runtime(self):
         # rust/crates/app/src/runtime.rs: [zip][sha256: 32][len: u64 LE][MAGIC: 16]
         with tempfile.TemporaryDirectory() as tmp:

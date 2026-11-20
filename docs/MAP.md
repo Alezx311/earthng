@@ -66,9 +66,9 @@ pauses while it is open (a switch in the panel; a game the player paused stays p
 - **Field guide.** Open **Find a place** from the minimap or press **M**. Select the
   **Field guide** category with all packs selected, click a teal map label, or search for its Ukrainian or English
   title. Each article includes a description and a source you can copy. To contribute
-  an entry, add a record to `mod/earthng/planet/guide.json`. Give it a unique stable
+  an entry, add a record to `guide.json` in the country or section pack root. Give it a unique stable
   `id`, coordinates, `minZoom`, Ukrainian and English `title`, `area` and `summary`,
-  and a `source` name and `url`. The planet build includes the catalog automatically.
+  and a `source` name and `url`. The game reads the catalog while its regional pack is mounted.
 - **Click.** It only picks: a point, or a plain spot on the map. The card in the panel offers
   "Navigate here" (driving, within the current pack), "Land here" (where a pack covers it),
   "Show" and "Clear". A stray click never moves the car.
@@ -108,16 +108,15 @@ Generate map detail independently of world geometry:
 
 The output directory name must be the installed country's manifest ID. A matching
 source fingerprint reuses completed output. For a changed source use a fresh
-output directory. Planet builds embed completed `out/map-data/<id>/` directories.
+output directory. Planet builds never embed regional map caches.
 Country builds can supply `map_data=` to `build_country`; spot and EarthNG.exe
 pipelines do this automatically. Code-only planet refresh does not create data.
 
-Country sidecars live under `earthng/countries/<id>/map/`; planet fallback sidecars
-live under `earthng/planet/maps/<id>/`. Each has `index.json`, `places.json` and
-road tiles. Only mounted, available countries contribute their sidecars. The country's
-own sidecar takes priority over the planet fallback, unless the planet's is of a newer
-generation (its `sourceStamp[0]`, `build_map.py` GENERATION): then an older pack gains
-the points and their facts from the planet without a rebuild. OSM data remains ODbL,
+Country sidecars live under `earthng/countries/<id>/map/`; standalone sections use
+`earthng/countries/<id>/sections/<section>/map/`. Each has `index.json`, `places.json`,
+points and road tiles. A section gets a local subset of the reusable source map.
+Only mounted, available packs contribute their sidecars. The planet has no regional
+fallback: rebuild older packs to add missing map data. OSM data remains ODbL,
 credited in the map and index; there are no BeamNG assets in these files.
 
 Tests: `test_map_data.py` covers PBF extraction, villages, aliases, country search,

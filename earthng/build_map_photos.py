@@ -2,32 +2,21 @@
 
 Normal planet builds package the prepared sheets and need no imagery service.
 Each sheet stores its bounds in normalized Web Mercator coordinates (northwest
-origin). Add a sheet and credit here to extend the atlas to another place.
+origin). Regional imagery is built by build_area_photos into country/section ZIPs.
 """
 import io
 import json
-import math
 from pathlib import Path
 from urllib.request import urlopen
 
 import numpy as np
 from PIL import Image, ImageDraw
-import rasterio
-from rasterio.enums import Resampling
-from rasterio.transform import from_bounds
-from rasterio.vrt import WarpedVRT
 import build_basemap
-from map_photo_codec import save_photo
 
 
 OUT = Path(__file__).resolve().parents[1] / 'mod/earthng/planet/photos'
 NASA = ('https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/'
         'bmng-topography/july/world.topo.200407.3x5400x2700.jpg')
-WORLD_COVER = ('https://esa-worldcover-s2.s3.eu-central-1.amazonaws.com/rgbnir/2021/'
-               '{lat}/ESA_WorldCover_10m_2021_v200_{tile}_S2RGBNIR.tif')
-NAIP = ('https://naipeuwest.blob.core.windows.net/naip/v002/ca/2024/ca_060cm_2024/'
-        '37122/m_3712213_se_10_060_20240520.tif')
-ORIGIN = math.pi * 6378137  # half the width of EPSG:3857, metres
 
 
 def with_boundaries(image, boundaries):
@@ -83,42 +72,9 @@ def blue_marble():
     return sheets
 
 
-def city(name, lon, lat, span, size, min_zoom, source, credit):
-    """A square of EPSG:3857 from an orthorectified source, with a soft edge."""
-    x = lon * ORIGIN / 180
-    y = math.asinh(math.tan(math.radians(lat))) * ORIGIN / math.pi
-    w, s, e, n = x - span / 2, y - span / 2, x + span / 2, y + span / 2
-    transform = from_bounds(w, s, e, n, size, size)
-    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN='EMPTY_DIR'), rasterio.open(source) as src:
-        with WarpedVRT(src, crs='EPSG:3857', transform=transform, width=size, height=size,
-                       resampling=Resampling.bilinear) as vrt:
-            rgb = vrt.read([1, 2, 3]).transpose(1, 2, 0)
-    valid = rgb.any(axis=2)
-    if rgb.dtype == np.uint16:
-        # Sentinel optical reflectance is scaled by 10,000. A fixed display
-        # stretch preserves differences between tiles and lifts dark vegetation.
-        rgb = (255 * np.clip(rgb / 3100, 0, 1) ** .68).astype('uint8')
-    edge = np.arange(size) + .5
-    edge = np.minimum(edge, size - edge)
-    fade = np.minimum(1, np.minimum(edge[:, None], edge[None, :]) / (size * .055))
-    rgba = Image.fromarray(np.dstack((rgb, (valid * fade * 255).astype('uint8'))))
-    filename = name + '.dds'
-    save_photo(rgba, OUT / filename)
-    box = [(w + ORIGIN) / (2 * ORIGIN), (ORIGIN - n) / (2 * ORIGIN),
-           (e + ORIGIN) / (2 * ORIGIN), (ORIGIN - s) / (2 * ORIGIN)]
-    return dict(file=filename, box=box, minZoom=min_zoom, maxZoom=18, credit=credit)
-
-
 def build():
     OUT.mkdir(parents=True, exist_ok=True)
     sheets = blue_marble()
-    for name, lon, lat, span, size, tile in [
-        ('kyiv', 30.51, 50.45, 43000, 2048, 'N50E030'),
-        ('san-francisco', -122.435, 37.765, 22000, 1024, 'N37W123'),
-    ]:
-        sheets.append(city(name, lon, lat, span, size, 8,
-                           WORLD_COVER.format(lat=tile[:3], tile=tile), 'ESA WorldCover 2021'))
-    sheets.append(city('russian-hill', -122.416, 37.793, 5200, 2048, 12, NAIP, 'USDA NAIP 2024'))
     (OUT / 'index.json').write_text(json.dumps(sheets, indent=2) + '\n', encoding='utf8')
 
 

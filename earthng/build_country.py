@@ -1045,7 +1045,7 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
 
 def build_country(country_id, title, version, regions, out, bbox=None, emit=print, jobs=1, landing=None, landcover=(), vegetation=None,
                   look=None, include=None, cancel=None, map_data=None, section=None, credits=(), experiments=None,
-                  photo_index=None):
+                  photo_index=None, require_far=False):
     """Stream source blocks to ZIP64 and atomically replace the completed archive.
     section: {'id', 'title'}: one region, written as a section of the country
     (earthng_<country>_<section>.zip with sections/<id>/section.json and no country manifest),
@@ -1213,13 +1213,19 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
             _write(archive, f'{folder}/CREDITS.txt', _credits_text(label, manifest['credits']))
             if places:
                 _write_json(archive, f'{folder}/venues.json', places)
-            # the offline map is the country's: a section's zip leaves it to the country pack
-            if map_data is not None and section is None:
-                _write_map(archive, map_data, f'earthng/countries/{country_id}/map')
+            # Sections must work on their own, without a parent country or planet sidecar.
+            if map_data is not None:
+                if section is not None:
+                    import build_map
+                    with tempfile.TemporaryDirectory(prefix='earthng-section-map-') as map_work:
+                        selected = build_map.subset(map_data, Path(map_work) / 'map', manifest['coverage'])
+                        _write_map(archive, selected, f'{folder}/map')
+                else:
+                    _write_map(archive, map_data, f'{folder}/map')
             if photo_index is not None:
                 build_area_photos.write_archive(archive, photo_index, folder + '/photos')
         _add_routing(temporary, jobs, emit, cancel)
-        _add_far(temporary, emit, cancel)
+        _add_far(temporary, emit, cancel, required=require_far)
         os.replace(temporary, target)
         shutil.rmtree(output / f'.{target.stem}.parts', ignore_errors=True)
     finally:
@@ -1270,12 +1276,10 @@ def _add_routing(pack, jobs, emit, cancel=None):
 FAR_SUFFIXES = ('.bin', '.color.dds', '_r.data.dds')
 
 
-def _add_far(pack, emit, cancel=None):
+def _add_far(pack, emit, cancel=None, required=False):
     """The far view of every region (docs/FAR_VIEW.md) in the pack's own far/ folder beside
-    regions/, where far.lua looks first. The step stood apart (earthng-mapbuilder far by hand):
-    the packs of 16-18.11 (Moscow Oblast, New York, California) had none and nothing showed past
-    the DEM horizon; only Ukraine's and Kyiv Oblast's lay in the planet. Without the native tool
-    the pack goes out without them (there is no Python copy) and says so."""
+    regions/. Player builds require it: the shared planet has no regional fallback.
+    Developer exports can explicitly keep the Python-only path (there is no Python far stage)."""
     import build_routing
     import native_tool
     with zipfile.ZipFile(pack) as archive:
@@ -1286,11 +1290,21 @@ def _add_far(pack, emit, cancel=None):
         try:
             built = native_tool.far(pack, folder, emit, cancel)
         except (RuntimeError, OSError, ValueError) as exc:
+            if required:
+                raise RuntimeError(f'Could not build the regional far view: {exc}') from exc
             emit(f'far view not built ({exc}); the pack has no far view')
             return
         if built is None:
+            if required:
+                raise RuntimeError('The regional far view requires the native Map Builder. '
+                                   'Use the complete EarthNG.exe and enable native tools.')
             emit('far view not built: no native Map Builder (cargo build --release in rust/)')
             return
+        if required:
+            missing = [region + suffix for region in regions for suffix in FAR_SUFFIXES
+                       if region not in built or not (Path(folder) / (region + suffix)).is_file()]
+            if missing:
+                raise RuntimeError('Regional far view is incomplete: ' + ', '.join(missing))
         with zipfile.ZipFile(pack, 'a', zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
             for region in built:
                 if region not in regions:
@@ -1464,7 +1478,7 @@ def run_job(path):
                 [_revive_region(region) for region in job['regions']], job['out'],
                 jobs=job.get('jobs') or 1, landing=job.get('landing'), look=job.get('look'),
                 include=job.get('include'), map_data=job.get('map_data'), section=job.get('section'),
-                photo_index=job.get('photo_index'),
+                photo_index=job.get('photo_index'), require_far=job.get('require_far', False),
                 credits=job.get('credits') or (), experiments=job.get('experiments'))
         finally:
             fast_style.POIS = previous_pois

@@ -168,7 +168,6 @@ class WidgetTests(unittest.TestCase):
         if basemap:
             files['/earthng/planet/basemap/index.json'] = found[-1] / 'index.json'
             files['/earthng/planet/basemap/labels.json'] = found[-1] / 'labels.json'
-        files['/earthng/planet/guide.json'] = root / 'mod/earthng/planet/guide.json'
         files['/earthng/planet/coastline.json'] = root / 'mod/earthng/planet/coastline.json'
         if browser:
             for name in ('worldmap', 'poiindex'):

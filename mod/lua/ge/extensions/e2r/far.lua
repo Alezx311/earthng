@@ -209,17 +209,15 @@ local function parse(data, region, pause)
   return R
 end
 
--- where a region's far raster lives: in its own pack, or the planet's copy for an older pack
+-- Each region owns its far raster, including regions installed as standalone sections.
 local function rasterPaths(r)
   local manifest = r.descriptor and r.descriptor.manifest
   local id = r.descriptor and r.descriptor.id
-  local country = r.country and r.country.id
   local out = {}
   if type(manifest) == 'string' and id then
     local root = manifest:match('^(.*)/regions/[^/]+/manifest%.json$')
     if root then out[#out + 1] = root .. '/far/' .. id .. '.bin' end
   end
-  if country and id then out[#out + 1] = '/earthng/planet/far/' .. country .. '/' .. id .. '.bin' end
   return out
 end
 

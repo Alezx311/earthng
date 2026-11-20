@@ -228,7 +228,7 @@ class WorldMapTests(unittest.TestCase):
 
     def test_clicking_a_guide_label_opens_the_complete_article(self):
         import json
-        article = json.loads((ROOT / 'mod/earthng/planet/guide.json').read_text(encoding='utf8'))[0]
+        article = json.loads((ROOT / 'earthng/fixtures/map_guide.json').read_text(encoding='utf8'))[0]
         api = self.api()
         self.worldmap.draw(api)
         place = self.lua.table_from({'name': article['title']['uk'], 'article': article}, recursive=True)

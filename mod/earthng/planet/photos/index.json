@@ -202,41 +202,5 @@
     "minZoom": 4,
     "maxZoom": 6,
     "credit": "NASA Blue Marble"
-  },
-  {
-    "file": "kyiv.dds",
-    "box": [
-      0.584213506149762,
-      0.33665444757115154,
-      0.5852864938502381,
-      0.33772743527162763
-    ],
-    "minZoom": 8,
-    "maxZoom": 18,
-    "credit": "ESA WorldCover 2021"
-  },
-  {
-    "file": "san-francisco.dds",
-    "box": [
-      0.1596282925520746,
-      0.38628124064546504,
-      0.16017726300348098,
-      0.38683021109687143
-    ],
-    "minZoom": 8,
-    "maxZoom": 18,
-    "credit": "ESA WorldCover 2021"
-  },
-  {
-    "file": "russian-hill.dds",
-    "box": [
-      0.15989067722948028,
-      0.3863924419443696,
-      0.16002043388163087,
-      0.3865221985965202
-    ],
-    "minZoom": 12,
-    "maxZoom": 18,
-    "credit": "USDA NAIP 2024"
   }
 ]

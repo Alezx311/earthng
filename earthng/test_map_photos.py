@@ -38,14 +38,25 @@ class MapPhotoTests(unittest.TestCase):
         self.render = self.lua.globals().render
 
     def test_local_images_stay_georeferenced_after_resize(self):
-        for filename, lat, lon, credit in [('russian-hill.dds', 37.8021, -122.4187, 'USDA NAIP'),
-                                           ('kyiv.dds', 50.4529, 30.5143, 'ESA WorldCover')]:
-            box = next(s['box'] for s in self.sheets if s['file'] == filename)
+        for lat, lon in [(37.8021, -122.4187), (50.4529, 30.5143)]:
+            filename, credit = 'selection.dds', 'Regional imagery'
             x = (lon + 180) / 360
             y = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2
+            box = [x - .001, y - .001, x + .001, y + .001]
+            self.lua.globals().localSheets = self.lua.table_from([
+                {'file': filename, 'box': box, 'minZoom': 8, 'maxZoom': 18, 'credit': credit}], recursive=True)
+            self.lua.execute('''
+              local read = jsonReadFile
+              jsonReadFile = function(p)
+                if p == '/earthng/countries/demo/photos/index.json' then return localSheets end
+                return read(p)
+              end
+              planet.update({})
+              planet.update({{id='demo',title='Demo',available=true}})
+            ''')
             for w, h in [(360, 180), (920, 580)]:
                 self.assertIn(credit, self.render(lat, lon, 16, w, h, True))
-                quad = self.lua.globals().drawn[ROOT + filename]
+                quad = self.lua.globals().drawn['/earthng/countries/demo/photos/' + filename]
                 a, b, uv0, uv1 = (quad[i] for i in range(1, 5))
                 u = uv0.x + (w / 2 + 10 - a.x) / (b.x - a.x) * (uv1.x - uv0.x)
                 v = uv0.y + (h / 2 + 20 - a.y) / (b.y - a.y) * (uv1.y - uv0.y)

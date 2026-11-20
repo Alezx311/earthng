@@ -268,6 +268,7 @@ class BuildLifecycleTests(unittest.TestCase):
             self.assertTrue(all(seconds >= 0 for _, seconds in events if seconds is not None))
             export = next(job for job in jobs if job['command'] == 'export')
             self.assertTrue(export['rich_data'])
+            self.assertTrue(export['require_far'])
             self.assertEqual(export['photo_index'], 'offline-photo-index.json')
             self.photo_build.assert_called_once()
             self.assertEqual(export['experiments'], {'detail': True, 'shopfront': True})

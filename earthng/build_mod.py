@@ -171,6 +171,8 @@ def build(out, lang='en'):
             if not src.is_file():
                 continue
             name = src.relative_to(MOD).as_posix()
+            if name.startswith(('earthng/countries/', 'earthng/planet/maps/', 'earthng/planet/far/')) or name == 'earthng/planet/guide.json':
+                raise ValueError(f'Regional data belongs in country/section packs: {name}')
             if name == WORLD_LUA:
                 text = src.read_text(encoding='utf8')
                 line = "local LANG = 'uk'"
@@ -183,7 +185,7 @@ def build(out, lang='en'):
         for name, data in level_files(lang).items():
             z.writestr(name, data)
         z.writestr('earthng/planet/manifest.json', json.dumps({
-            'schemaVersion': 1, 'kind': 'earthng-planet', 'version': '1.0.0', 'natureVersion': 1,
+            'schemaVersion': 1, 'kind': 'earthng-planet', 'version': '1.0.1', 'natureVersion': 1,
             'countrySchemaVersion': 1, 'runtime': 'lua',
         }))
         import fast_art
@@ -208,19 +210,10 @@ def build(out, lang='en'):
             if src.is_file() and src.suffix in ('.png', '.json'):
                 z.write(src, 'earthng/planet/basemap/' + src.relative_to(base).as_posix(),
                         compress_type=zipfile.ZIP_STORED if src.suffix == '.png' else zipfile.ZIP_DEFLATED)
-        # Optional map-only updates for existing country packs (no geometry rebuild).
-        import build_map
-        for directory in sorted((HERE.parent / 'out/map-data').glob('*')):
-            if directory.is_dir() and (directory / 'index.json').is_file():
-                build_map.write_archive(z, directory, 'earthng/planet/maps/' + directory.name)
-        # Far-view rasters already built for a pack (earthng-mapbuilder far): one folder per
-        # country id, <region>.bin and its colour map <region>.dds inside. The game reads them
-        # from the planet when the pack itself has none yet.
-        far_root = HERE.parent / 'out' / 'far'
-        if far_root.is_dir():
-            for directory in sorted(path for path in far_root.iterdir() if path.is_dir()):
-                for src in sorted([*directory.glob('*.bin'), *directory.glob('*.dds')]):
-                    z.write(src, f'earthng/planet/far/{directory.name}/{src.name}')
+        # Regional maps, imagery and far rasters belong to their country/section ZIPs.
+        # In particular, a developer's out/ must never become a planet dependency.
+    import prepare_release
+    prepare_release.check_planet(temporary)
     temporary.replace(path)
     return path
 

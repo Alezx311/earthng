@@ -1,5 +1,4 @@
--- Optional OSM map sidecars, independent of generated driving geometry. A refreshed planet
--- can supply maps/<country>/ for old country ZIPs; new country ZIPs carry their own map/.
+-- OSM map sidecars belong to country and section ZIPs, alongside their driving data.
 local M = {revision = 0}
 local signature, pending, catalogs, cache, clock = '', {}, {}, {}, 0
 local function read(path)
@@ -14,18 +13,19 @@ end
 function M.usable(index)
   return type(index) == 'table' and index.version == 1 and type(index.tiles) == 'table' and index or nil
 end
--- what a sidecar holds: the first number of its source stamp (build_map.py GENERATION)
-function M.generation(index)
-  local stamp = index.sourceStamp
-  return type(stamp) == 'table' and tonumber(stamp[1]) or 0
-end
-
 function M.step(countries)
   local ids, current = {}, {}
   for _, c in ipairs(countries or {}) do
     if c.available then
-      ids[#ids + 1] = c.id .. ':' .. tostring(c.version) .. ':' .. c.title
-      current[#current + 1] = c
+      local function add(root, title)
+        ids[#ids + 1] = root .. ':' .. tostring(c.version) .. ':' .. title
+        current[#current + 1] = {id=c.id, title=title, root=root}
+      end
+      local root = '/earthng/countries/' .. c.id .. '/'
+      add(root .. 'map/', c.title)
+      for _, r in ipairs(c.regions or {}) do
+        if r.section then add(root .. 'sections/' .. r.id .. '/map/', r.title or c.title) end
+      end
     end
   end
   table.sort(ids)
@@ -37,12 +37,8 @@ function M.step(countries)
   -- At most one country's index/settlements per frame; no geometry decoding or network.
   local c = table.remove(pending, 1)
   if not c then return end
-  -- the pack's own sidecar, or the planet's when that one is of a newer generation (build_map.py
-  -- GENERATION 2 added the points, 3 their OSM facts): an older pack gains them without a rebuild
-  local root, planet = '/earthng/countries/' .. c.id .. '/map/', '/earthng/planet/maps/' .. c.id .. '/'
+  local root = c.root
   local index = FS:fileExists(root .. 'index.json') and M.usable(read(root .. 'index.json')) or nil
-  local other = FS:fileExists(planet .. 'index.json') and M.usable(read(planet .. 'index.json')) or nil
-  if other and (not index or M.generation(other) > M.generation(index)) then root, index = planet, other end
   if not index then return end
   local places = read(root .. 'places.json') or {}
   for _, p in ipairs(places) do
@@ -128,10 +124,13 @@ function M.places()
 end
 
 function M.packPlaces(id)
+  local result = {}
   for _, c in ipairs(catalogs) do
-    if c.id == id then return c.places end
+    if c.id == id then
+      for _, p in ipairs(c.places) do result[#result + 1] = p end
+    end
   end
-  return {}
+  return result
 end
 
 function M.roads(view, zoom)

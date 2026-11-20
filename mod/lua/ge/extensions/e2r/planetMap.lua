@@ -200,11 +200,7 @@ local BUCKET = 5
 local function bucketKey(lat, lon) return math.floor(lat / BUCKET) * 1000 + math.floor(lon / BUCKET) end
 
 function M.articles()
-  if not guide then
-    local path = '/earthng/planet/guide.json'
-    guide = FS:fileExists(path) and jsonReadFile(path) or {}
-  end
-  return guide
+  return guide or {}
 end
 
 local function loadLabels()
@@ -244,17 +240,30 @@ function M.update(countries)
   for _, c in ipairs(countries or {}) do
     if c.available then
       local root = '/earthng/countries/' .. c.id .. '/'
-      roots[#roots + 1] = root .. 'photos/'
+      roots[#roots + 1] = root
       for _, r in ipairs(c.regions or {}) do
-        if r.section then roots[#roots + 1] = root .. 'sections/' .. r.id .. '/photos/' end
+        if r.section then roots[#roots + 1] = root .. 'sections/' .. r.id .. '/' end
       end
     end
   end
   table.sort(roots)
   local signature = table.concat(roots, '|')
   if signature == photoSignature then return end
-  photoSignature, packSheets, photoTex = signature, {}, {}
-  for _, root in ipairs(roots) do
+  photoSignature, packSheets, photoTex, guide = signature, {}, {}, {}
+  labels, labelRevision = nil, nil
+  for _, packRoot in ipairs(roots) do
+    if FS:fileExists(packRoot .. 'guide.json') then
+      local ok, data = pcall(jsonReadFile, packRoot .. 'guide.json')
+      if ok and type(data) == 'table' then
+        for _, article in ipairs(data) do
+          if type(article) == 'table' and type(article.lat) == 'number' and type(article.lon) == 'number'
+            and type(article.minZoom) == 'number' and type(article.title) == 'table' then
+            guide[#guide + 1] = article
+          end
+        end
+      end
+    end
+    local root = packRoot .. 'photos/'
     if FS:fileExists(root .. 'index.json') then
       local ok, data = pcall(jsonReadFile, root .. 'index.json')
       if ok and type(data) == 'table' then
