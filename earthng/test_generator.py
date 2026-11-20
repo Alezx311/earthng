@@ -478,7 +478,8 @@ class GeneratorTests(unittest.TestCase):
                 p[1] = 252
         road = {'id': 'b', 'nodes': ['a', 'c'], 'width': 8, 'points': pts,
                 'tags': {'highway': 'trunk', 'bridge': 'yes', 'layer': '1', 'sidewalk': 'no'}}
-        asphalt = list(self.triangles(self.build([{'roads': [road]}])[0], 'e2rf_road_major'))
+        # the surveyed chords (tune.smooth = 0): this checks the corner as mapped; test_smooth_roads has the arcs
+        asphalt = list(self.triangles(self.build([{'roads': [road]}], tune={'smooth': 0})[0], 'e2rf_road_major'))
         edge = [p[1] for t in asphalt for p in t if 190 < p[0] < 210]
         self.assertTrue(edge)
         # a 2 m spike would put the edge at 256; two capped pulls bring it to about 255
@@ -832,7 +833,8 @@ class GeneratorTests(unittest.TestCase):
         # the road it guards, 1 m inside its bend
         road = {'id': 'r', 'nodes': ['a', 'b'], 'width': 6, 'points': [[100, 96, 0], [204, 96, 0], [204, 200, 0]],
                 'tags': {'highway': 'residential', 'sidewalk': 'no'}}
-        scene = self.build([{'roads': [road], 'lines': [rail]}])[1]
+        # the surveyed chords (tune.smooth = 0): this checks the corner as mapped; test_smooth_roads has the arcs
+        scene = self.build([{'roads': [road], 'lines': [rail]}], tune={'smooth': 0})[1]
         metal = [p for t in self.triangles(scene, 'e2rf_clad_metal') for p in t]
         self.assertTrue(metal)
         # the beam cuts the 90 degree corner on an arc (6 m legs): never near the bare vertex
@@ -1044,7 +1046,8 @@ class GeneratorTests(unittest.TestCase):
         terrain = {'rect': [0, 0, 500, 500], 'nx': 2, 'ny': 2, 'heights': [20] * 4}
 
         def apron(roads, radius=15):
-            road = self.build([{'roads': roads, 'terrain': terrain}])[0]
+            # the surveyed 24-gon (tune.smooth = 0): the arcs run inside its nodes, 13 cm here
+            road = self.build([{'roads': roads, 'terrain': terrain}], tune={'smooth': 0})[0]
             return [t for t in self.triangles(road, 'e2rf_paved')
                     if all(math.hypot(p[0] - 250, p[1] - 250) < radius for p in t)]
         small = apron(ring(15))
@@ -1196,7 +1199,8 @@ class GeneratorTests(unittest.TestCase):
                   'points': line(300, 250, 500, 250, 10)},
                  {'id': 'e', 'nodes': ['n', 'b'], 'width': 7, 'tags': {'highway': 'tertiary', 'sidewalk': 'no'},
                   'points': line(500, 250, bend[0], bend[1], 10)}]
-        manifest = self.build([{'roads': roads}], i=0)[0]
+        # the surveyed chords (tune.smooth = 0): this checks the corner as mapped; test_smooth_roads has the arcs
+        manifest = self.build([{'roads': roads}], i=0, tune={'smooth': 0})[0]
         asphalt = list(self.triangles(manifest, 'e2rf_road'))
         ux, uy = math.cos(math.radians(30)), math.sin(math.radians(30))
         for x in [490 + k * .5 for k in range(21)]:

@@ -41,7 +41,9 @@ local FINE_DEM = {grid = 12.5, pullFull = 3, pullZero = 15}
 -- through options.tune. Metres.
 local TUNE = {roadLift = ROAD_LIFT, groundDrop = .25, pullFull = 12, pullZero = 70, shoulder = 3, margin = .12,
   terrainStep = 25, sidewalk = 2, curb = .25, vergeCut = 1, vergeSink = 0, pressEven = 1, mitre = 2,
-  simplifyXY = 0, simplifyZ = .02, fenceStep = 4, wallThick = .2, fenceThick = .08}
+  simplifyXY = 0, simplifyZ = .02, fenceStep = 4, wallThick = .2, fenceThick = .08,
+  -- 1: plan corners of a road become arcs (ROADS.smoothRoads); 0: the surveyed chords as they are
+  smooth = 1}
 -- Covers that take a whole ground triangle over (lower rank wins where they overlap).
 local CLAIM = {paved = 1, ballast = 1, water = 2, glacier = 3, bare_rock = 4, scree = 5, beach = 6,
   wetland = 7, orchard = 8, vineyard = 9, farmland = 10, meadow = 11, heath = 12,
@@ -3387,7 +3389,9 @@ function DETAIL.paint(ctx)
   for index, road in ipairs(ctx.roads) do
     local points = road.points or NONE
     if #points >= 2 then
-      for k, p in ipairs(points) do
+      -- a curved road (ROADS.smoothRoads) is matched on its surveyed line: an arc of a sharp
+      -- corner runs metres off the node the detail was mapped on
+      for k, p in ipairs(road.surveyed or points) do
         if boundsTouch(rect, {p[1], p[2], p[1], p[2]}, 20) then
           local key = (floor(p[1]) + 65536) * 131072 + floor(p[2]) + 65536
           local bin = vertices[key] or {}
@@ -3422,7 +3426,7 @@ function DETAIL.paint(ctx)
       for dx = -1, 1 do
         for dy = -1, 1 do
           for _, v in ipairs(vertices[(floor(p[1]) + dx + 65536) * 131072 + floor(p[2]) + dy + 65536] or NONE) do
-            local q = v[1].points[v[2]]
+            local q = (v[1].surveyed or v[1].points)[v[2]]
             local d = (q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2
             if d < DETAIL.near ^ 2 and (not found or d < found[3]) then found = {v[1], v[2], d} end
           end
@@ -3436,6 +3440,8 @@ function DETAIL.paint(ctx)
           dist[i] = dist[i - 1] + math.sqrt((points[i][1] - points[i - 1][1]) ^ 2 + (points[i][2] - points[i - 1][2]) ^ 2)
         end
         local length, s = dist[#points], dist[k]
+        -- found on the surveyed line: its place on the drawn arcs is their nearest point
+        if road.surveyed then s = ROADS.stationOf(points, dist, p) end
         local width = math.max(.5, math.min(80, road.width or 7))
         local left, right = ROADS.shoulder(rtags)
         if width - left - right < 3 then left, right = 0, 0 end
@@ -12025,6 +12031,258 @@ BLD.pitchedRoof, BLD.footprintFrame = pitchedRoof, footprintFrame
 ROADS.trimLine, ROADS.simplify, ROADS.densifyWear = trimLine, simplify, densifyWear
 ROADS.liftDecks, ROADS.walkSides = liftDecks, walkSides
 
+-- Plan curves (exp/hyperreal). OSM maps a bend as a chain of straight chords, and drawn as they
+-- are the kerbs, lines and sidewalks break at every node: 41 breaks of 2 degrees or more per km
+-- of road in the Bern pack, 28 of them over 5 degrees. Each plan corner becomes a quadratic arc
+-- that leaves its chord t before the corner and joins the next chord t after it:
+--   t <= half of either chord, so neighbouring arcs meet and never overlap, and <= reach;
+--   t <= the larger of R tan(turn / 2) (a sharp corner takes its class's radius) and the run
+--        that moves the road `cut` metres off its node (a gentle kink: a wide arc on the survey).
+-- Heights are the pack's profile read at the same chainage, and the profile's knots on a
+-- straight chord stay. A node where two ways run on with no junction is rounded across both:
+-- each takes its half of one arc and both end on the arc's middle. The line moves only within
+-- `reach` of a node, so two tiles that hold different parts of the network agree wherever
+-- either one draws (cellformat keeps a road 120 m past its tile).
+-- A surveyed vertex inside an arc keeps a vertex of its own on the arc: a crossing, a stop line
+-- or a signal is found by the road vertex within DETAIL.near (.5 m) of its node, so `cut` stays
+-- under that.
+-- step: degrees of turn per piece; plan: metres a knot may stand off its chord and still be a
+-- profile knot; spike: a turn past this many degrees is survey noise and stays as mapped;
+-- keep: metres of chord round a surveyed vertex's own arc vertex with no other piece end.
+ROADS.SMOOTH = {step = 4, cut = .45, reach = 30, plan = .1, minTurn = 1, spike = 150, piece = .5, keep = .3,
+  radius = {motorway = 60, trunk = 45, primary = 30, secondary = 20, tertiary = 14, unclassified = 10,
+    residential = 8, living_street = 6, service = 5, track = 5}}
+-- Metres along a polyline (dist: its running lengths) of its point nearest to p.
+function ROADS.stationOf(points, dist, p)
+  local best, at = math.huge, 0
+  for k = 1, #points - 1 do
+    local a, b = points[k], points[k + 1]
+    local dx, dy = b[1] - a[1], b[2] - a[2]
+    local len2 = dx * dx + dy * dy
+    local t = len2 > EPS and math.max(0, math.min(1, ((p[1] - a[1]) * dx + (p[2] - a[2]) * dy) / len2)) or 0
+    local d = (a[1] + dx * t - p[1]) ^ 2 + (a[2] + dy * t - p[2]) ^ 2
+    if d < best then best, at = d, dist[k] + (dist[k + 1] - dist[k]) * t end
+  end
+  return at
+end
+function ROADS.smoothRoads(roads, pause)
+  local S = ROADS.SMOOTH
+  local sqrt, acos, tan, sin, ceil, min, max = math.sqrt, math.acos, math.tan, math.sin, math.ceil, math.min, math.max
+  local gentle, spike = math.cos(math.rad(S.minTurn)), math.cos(math.rad(S.spike))
+  local function radiusOf(road)
+    local highway = tostring((road.tags or NONE).highway or '')
+    local base = highway:gsub('_link$', '')
+    local r = (S.radius[base] or 6) * (base ~= highway and .6 or 1)
+    return max(r, (road.width or 7) / 2 + 2)
+  end
+  -- the run either side of a corner of `half` radians (half its turn), on chords la and lb long
+  local function runs(half, radius, la, lb)
+    local cap = min(S.reach, max(radius * tan(half), 2 * S.cut / sin(half)))
+    local ta, tb = min(la / 2, cap), min(lb / 2, cap)
+    ta = min(ta, 2 * tb)
+    return ta, min(tb, 2 * ta)
+  end
+  local plans, mouths = {}, {}
+  for index, road in ipairs(roads) do
+    if index % 64 == 0 then pause() end
+    local pts = {}
+    for _, p in ipairs(road.points or NONE) do
+      local q = pts[#pts]
+      if not q or math.abs(q[1] - p[1]) + math.abs(q[2] - p[2]) > 1e-4 then pts[#pts + 1] = p end
+    end
+    if #pts >= 2 then
+      -- plan corners: the knots a plan-only Douglas-Peucker keeps; the rest are profile knots
+      local kept, idx, q = simplify(pts, S.plan, math.huge), {}, 1
+      for k = 1, #pts do
+        if pts[k] == kept[q] then idx[q], q = k, q + 1 end
+      end
+      local s = {0}
+      for k = 2, #pts do
+        s[k] = s[k - 1] + sqrt((pts[k][1] - pts[k - 1][1]) ^ 2 + (pts[k][2] - pts[k - 1][2]) ^ 2)
+      end
+      local dir, len, sound = {}, {}, true
+      for j = 1, #idx - 1 do
+        local a, b = pts[idx[j]], pts[idx[j + 1]]
+        local dx, dy = b[1] - a[1], b[2] - a[2]
+        local l = sqrt(dx * dx + dy * dy)
+        if l < 1e-3 then sound = false; break end
+        dir[j], len[j] = {dx / l, dy / l}, l
+      end
+      if sound then
+        plans[road] = {pts = pts, idx = idx, s = s, dir = dir, len = len, m = #idx, radius = radiusOf(road)}
+        local nodes = road.nodes or NONE
+        if nodes[1] ~= nil and nodes[2] ~= nil and not road.track then
+          for e = 1, 2 do
+            local id = tostring(nodes[e])
+            local list = mouths[id]
+            if not list then list = {}; mouths[id] = list end
+            list[#list + 1] = {road = road, e = e}
+          end
+        end
+      end
+    end
+  end
+  -- Two ways that run on through a node: one arc over both. Every value below is symmetric in
+  -- the two mouths, so the order the tile's cells list them in does not move the arc.
+  local joints = {}
+  for _, list in pairs(mouths) do
+    local A, B = list[1], list[2]
+    local pa, pb = A and plans[A.road], B and plans[B.road]
+    if #list == 2 and pa and pb and not (A.road == B.road and pa.m < 4) then
+      local function mouth(m, plan)
+        local pts = plan.pts
+        if m.e == 1 then return pts[1], plan.dir[1][1], plan.dir[1][2], plan.len[1] end
+        local d = plan.dir[plan.m - 1]
+        return pts[#pts], -d[1], -d[2], plan.len[plan.m - 1]
+      end
+      local na, ax, ay, la = mouth(A, pa)
+      local nb, bx, by, lb = mouth(B, pb)
+      local dot = ax * bx + ay * by
+      -- the generator's own test for a joined end is a turn of at most 60 degrees
+      if dot < -.5 and -dot < gentle and math.abs(na[1] - nb[1]) + math.abs(na[2] - nb[2]) < .05 then
+        local ta, tb = runs(acos(max(-1, min(1, -dot))) / 2, max(pa.radius, pb.radius), la, lb)
+        local qa, qb = {na[1] + ax * ta, na[2] + ay * ta}, {na[1] + bx * tb, na[2] + by * tb}
+        local mid = {((qa[1] + qb[1]) + 2 * na[1]) / 4, ((qa[2] + qb[2]) + 2 * na[2]) / 4}
+        local n = max(1, ceil(math.deg(acos(max(-1, min(1, -dot)))) / 2 / S.step))
+        local ja, jb = joints[A.road] or {}, joints[B.road] or {}
+        joints[A.road], joints[B.road] = ja, jb
+        ja[A.e] = {t = ta, q = qa, other = qb, node = na, mid = mid, n = max(1, min(n, math.floor(ta / S.piece)))}
+        jb[B.e] = {t = tb, q = qb, other = qa, node = na, mid = mid, n = max(1, min(n, math.floor(tb / S.piece)))}
+      end
+    end
+  end
+  local out = {}
+  for index, road in ipairs(roads) do
+    if index % 64 == 0 then pause() end
+    local plan = plans[road]
+    local own = road
+    if plan then
+      local pts, idx, s, dir, len, m = plan.pts, plan.idx, plan.s, plan.dir, plan.len, plan.m
+      local joint = joints[road] or NONE
+      local arcs, bent = {}, joint[1] ~= nil or joint[2] ~= nil
+      for j = 2, m - 1 do
+        local cos = dir[j - 1][1] * dir[j][1] + dir[j - 1][2] * dir[j][2]
+        if cos < gentle and cos > spike then
+          local turn = acos(max(-1, min(1, cos)))
+          local t1, t2 = runs(turn / 2, plan.radius, len[j - 1], len[j])
+          local n = max(1, min(ceil(math.deg(turn) / S.step), math.floor((t1 + t2) / S.piece)))
+          arcs[j], bent = {t1 = t1, t2 = t2, n = n}, true
+        end
+      end
+      if bent then
+        -- the profile's height `d` metres along plan chord j
+        local function zAt(j, d)
+          local k0, k1 = idx[j], idx[j + 1]
+          local at = s[k0] + (s[k1] - s[k0]) * max(0, min(1, d / len[j]))
+          for k = k0, k1 - 1 do
+            if at <= s[k + 1] or k == k1 - 1 then
+              local span = s[k + 1] - s[k]
+              local f = span > EPS and max(0, min(1, (at - s[k]) / span)) or 0
+              return (pts[k][3] or 0) + ((pts[k + 1][3] or 0) - (pts[k][3] or 0)) * f
+            end
+          end
+          return pts[k0][3] or 0
+        end
+        local line = {}
+        local function push(x, y, z)
+          local q = line[#line]
+          if q and math.abs(q[1] - x) + math.abs(q[2] - y) < 1e-3 then q[1], q[2], q[3] = x, y, z
+          else line[#line + 1] = {x, y, z} end
+        end
+        -- the arc's stations: n even pieces of u over [0, top], and one at each of `marks` (the
+        -- surveyed vertices inside it) in place of the even ones within S.keep metres of it
+        local function stations(n, top, marks, total)
+          local us, gap = {}, S.keep / total
+          for i = 0, n do
+            local u, clear = top * i / n, true
+            if i > 0 and i < n then
+              for _, mark in ipairs(marks) do
+                if math.abs(mark - u) < gap then clear = false; break end
+              end
+            end
+            if clear then us[#us + 1] = u end
+          end
+          for _, mark in ipairs(marks) do
+            if mark > gap and mark < top - gap then us[#us + 1] = mark end
+          end
+          table.sort(us)
+          return us
+        end
+        -- the surveyed knots of chord j from `a` to `b` metres along it, as metres along it
+        local function knots(j, a, b)
+          local found, span = {}, max(EPS, s[idx[j + 1]] - s[idx[j]])
+          for k = idx[j] + 1, idx[j + 1] - 1 do
+            local f = (s[k] - s[idx[j]]) / span * len[j]
+            if f > a and f < b then found[#found + 1] = f end
+          end
+          return found
+        end
+        -- half of a joint's arc, from this road's chord (u = 0) to the arc's middle (u = .5)
+        local function half(jn, chord, from)
+          local marks = from and knots(chord, 0, jn.t) or knots(chord, len[chord] - jn.t, len[chord])
+          for n, f in ipairs(marks) do marks[n] = (1 - (from and f or len[chord] - f) / jn.t) / 2 end
+          local us = stations(jn.n, .5, marks, 2 * jn.t)
+          for n = from and #us or 1, from and 1 or #us, from and -1 or 1 do
+            local u = us[n]
+            local w0, w1, w2 = (1 - u) ^ 2, 2 * u * (1 - u), u * u
+            local x, y = w0 * jn.q[1] + w1 * jn.node[1] + w2 * jn.other[1], w0 * jn.q[2] + w1 * jn.node[2] + w2 * jn.other[2]
+            if u == .5 then x, y = jn.mid[1], jn.mid[2] end
+            local back = jn.t * (1 - 2 * u)   -- metres of chord left to the node
+            push(x, y, zAt(chord, from and back or len[chord] - back))
+          end
+        end
+        local head, tail = joint[1], joint[2]
+        if head then
+          half(head, 1, true)
+        else
+          push(pts[1][1], pts[1][2], pts[1][3] or 0)
+        end
+        for j = 1, m - 1 do
+          local a, d, l = pts[idx[j]], dir[j], len[j]
+          local from = j == 1 and (head and head.t or 0) or (arcs[j] and arcs[j].t2 or 0)
+          local to = l - (j == m - 1 and (tail and tail.t or 0) or (arcs[j + 1] and arcs[j + 1].t1 or 0))
+          local span = max(EPS, s[idx[j + 1]] - s[idx[j]])
+          for k = idx[j] + 1, idx[j + 1] - 1 do
+            local f = (s[k] - s[idx[j]]) / span * l
+            if f > from + .25 and f < to - .25 then push(a[1] + d[1] * f, a[2] + d[2] * f, pts[k][3] or 0) end
+          end
+          if j < m - 1 then
+            local arc, v, d2 = arcs[j + 1], pts[idx[j + 1]], dir[j + 1]
+            if arc then
+              local p0x, p0y = v[1] - d[1] * arc.t1, v[2] - d[2] * arc.t1
+              local p2x, p2y = v[1] + d2[1] * arc.t2, v[2] + d2[2] * arc.t2
+              local total = arc.t1 + arc.t2
+              local marks = {arc.t1 / total}
+              for _, f in ipairs(knots(j, l - arc.t1, l)) do marks[#marks + 1] = (f - l + arc.t1) / total end
+              for _, f in ipairs(knots(j + 1, 0, arc.t2)) do marks[#marks + 1] = (f + arc.t1) / total end
+              for _, u in ipairs(stations(arc.n, 1, marks, total)) do
+                local w0, w1, w2 = (1 - u) ^ 2, 2 * u * (1 - u), u * u
+                local c = u * (arc.t1 + arc.t2) - arc.t1   -- metres past the corner along the chords
+                push(w0 * p0x + w1 * v[1] + w2 * p2x, w0 * p0y + w1 * v[2] + w2 * p2y,
+                  c <= 0 and zAt(j, l + c) or zAt(j + 1, c))
+              end
+            else
+              push(v[1], v[2], v[3] or 0)
+            end
+          elseif tail then
+            half(tail, m - 1, false)
+          else
+            local p = pts[#pts]
+            push(p[1], p[2], p[3] or 0)
+          end
+        end
+        if #line >= 2 then
+          own = {}
+          for key, value in pairs(road) do own[key] = value end
+          own.points, own.surveyed = line, road.points
+        end
+      end
+    end
+    out[index] = own
+  end
+  return out
+end
+
 local function build(cells, i, j, options)
   ROADS.leftHand = options.leftHand == true
   options = options or {}
@@ -12156,6 +12414,16 @@ local function build(cells, i, j, options)
   if options.terrainStep then tune.terrainStep = options.terrainStep end
   for name, value in pairs(options.tune or NONE) do tune[name] = value end
   local lift, step = tune.roadLift, tune.terrainStep
+  -- Arcs for the plan corners, before the ground, the junction mouths, the strips or the navgraph
+  -- read a point: all of them follow the same line. The source cells are cached across tiles, so
+  -- the curved roads are copies in a list of this build's own. Near, far and horizon alike: they
+  -- shape the same ground along their shared edges.
+  if tune.smooth ~= 0 then
+    local own = {}
+    for k, v in pairs(lists) do own[k] = v end
+    own.roads = ROADS.smoothRoads(lists.roads, pause)
+    lists = own
+  end
   -- A road shapes the ground up to pullZero from its edge, and the ground lattice reaches one
   -- step past the tile (its border nodes are lowered for roads in the neighbour's cells too).
   local reach = tune.pullZero + step + 5
