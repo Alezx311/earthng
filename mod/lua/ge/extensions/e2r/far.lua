@@ -238,6 +238,11 @@ local function loadRaster(r, pause)
           -- its colour map (earthng-far-tex-v1) beside it, when the pack has one
           local dds = path:gsub('%.bin$', '.color.dds')
           local rough = path:gsub('%.bin$', '_r.data.dds')
+          -- the same map in the land's real colour (Sentinel-2, earthng/s2_colour.py), when the
+          -- pack has it: the drawn map's texels and water, the picture's land
+          local real = path:gsub('%.bin$', '.s2.color.dds')
+          local okReal, hasReal = pcall(function() return M.realColour ~= false and FS:fileExists(real) end)
+          if okReal and hasReal then dds, R.real = real, true end
           local okTex, hasTex = pcall(function() return FS:fileExists(dds) end)
           local okRough, hasRough = pcall(function() return FS:fileExists(rough) end)
           if okTex and hasTex and M.texMaterial then

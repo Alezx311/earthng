@@ -77,7 +77,8 @@ class GeneratorTests(unittest.TestCase):
 
     def build(self, i=0, **cell):
         cell.setdefault('roads', [STREET])
-        return self.g.build(self.table([cell]), i, 0, self.table({"terrainStep": 100, "maxTrees": 0}))[:2]
+        # tune.lanes 0: the carriageway as one quad a chord in 'e2rf_road' (test_road_lanes has the lanes)
+        return self.g.build(self.table([cell]), i, 0, self.table({"terrainStep": 100, "maxTrees": 0, "tune": {"lanes": 0}}))[:2]
 
     @staticmethod
     def track(points, tags=None, ident='t'):

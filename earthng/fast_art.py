@@ -21,6 +21,7 @@ import fast_packs
 import fast_pixel
 import fast_storefront
 import fast_tone
+import kit_art
 import fast_photo as photo
 import fast_style as style
 
@@ -335,6 +336,93 @@ def road_sheets(r):
     Image.fromarray((alpha * 255 + .5).astype(np.uint8)).convert('RGB').save(out / 'line_o.data.png')
 
 
+# A lane of asphalt (fast_style LANES, generator.lua ROADS.laneBands): u across the lane, v along
+# it. The grain is a strip of the same aerial photo the plain asphalt uses, laid along its own
+# long cracks; the wear is drawn over it. Traffic leaves two wheel paths a little darker and
+# smoother (rubber, flushed bitumen), a faint stained middle between them and a paler edge by the
+# seam, all of them stronger in places and streaked along the road. The sheet keeps the base's
+# mean, so a lane meets a junction's plain asphalt without a step in colour.
+LANE_ART_VERSION = '3'
+LANE_PX = (256, 2048)
+LANE_BAND = .30             # the strip's near edge in the photo, as a share of its height
+LANE_FADE = 160             # rows blended into the start so the sheet repeats along the road
+# metres from the lane's middle: wheel paths, their spread, the middle's and the seam's spread
+LANE_WEAR = {'path': .85, 'spread': .3, 'middle': .2, 'seam': .11}
+LANE_GRAIN = 24             # texels: what of the photo is wider than this is left to the wear (a blotch
+                            # of the photo came back every repeat, and mirrored in the lane beside it)
+
+
+def lane_maps(seed=2611):
+    """(colour, normal, roughness) of the lane sheet as float arrays in 0..1, rows along the road."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    w, h = LANE_PX
+    src = photo.TEXTURES / 'road_macro'
+    # the photo's pixels under LANE_W x (LANE_M + the blended rows), the lane's length along x
+    px = BASE_PX / style.ROAD_M
+    tall = h + LANE_FADE
+    box_w, box_h = int(round(style.LANE_M * tall / h * px)), int(round(style.LANE_W * px))
+    top = int(BASE_PX * LANE_BAND)
+    box = (0, top, min(BASE_PX, box_w), top + box_h)
+
+    def strip(name, mode):
+        im = Image.open(src / f'{name}.jpg').convert(mode).resize((BASE_PX, BASE_PX), Image.LANCZOS)
+        # turned so that the road runs down the rows
+        return np.asarray(im.crop(box).transpose(Image.TRANSPOSE).resize((w, tall), Image.LANCZOS), np.float32) / 255
+
+    def wrap(a):
+        # the rows past the end fade into the start: row h - 1 runs on into row 0
+        t = (np.arange(LANE_FADE, dtype=np.float32) / LANE_FADE).reshape((-1,) + (1,) * (a.ndim - 1))
+        out = a[:h].copy()
+        out[:LANE_FADE] = a[h:] * (1 - t) + a[:LANE_FADE] * t
+        return out
+
+    lin = wrap(_srgb_to_linear(strip('albedo', 'RGB')))
+    lum = lin @ np.array([.2126, .7152, .0722], np.float32)
+    lin = lum[..., None] + (lin - lum[..., None]) * BASE_SATURATION
+    # the grain alone, its odd dark stone clipped: one that stood out came by once a lane a repeat
+    fine = lum - _blur_wrap(lum, LANE_GRAIN)
+    fine = np.clip(fine, -1.6 * fine.std(), 1.6 * fine.std())
+    lin = (lin - lum[..., None]) + (lum.mean() + fine)[..., None]
+    m = ((np.arange(w, dtype=np.float32) + .5) / w - .5) * style.LANE_W          # metres from the middle
+    W = LANE_WEAR
+    paths = sum(np.exp(-.5 * ((m - s * W['path']) / W['spread']) ** 2) for s in (-1, 1))[None, :]
+    middle = np.exp(-.5 * (m / W['middle']) ** 2)[None, :]
+    seam = np.exp(-.5 * ((style.LANE_W / 2 - np.abs(m)) / W['seam']) ** 2)[None, :]
+    # how worn each stretch is, each path on its own; streaks drawn out along the road
+    left, right = (.55 + .45 * _periodic_noise(rng, 1, h, 1, n) for n in (9, 11))
+    side = np.where(m[None, :] < 0, left, right)
+    stained = _periodic_noise(rng, 1, h, 1, 14) ** 2
+    streaks = (.6 * _periodic_noise(rng, w, h, 48, 10) + .4 * _periodic_noise(rng, w, h, 96, 28)) - .5
+    # (drawn out along the road as well: every lane of a carriageway shows the same stretch of
+    # the sheet, and a round blotch came by once a lane across the road)
+    blotch = _periodic_noise(rng, w, h, 3, 6) - .5
+    # (at .17 for the paths the lanes could not be told from the plain asphalt behind a car in
+    # the game, under the detail maps' grain: hyperreal run-08)
+    wear = 1 - .30 * paths * side - .12 * middle * stained + .09 * seam + .14 * streaks * (.4 + .6 * paths) + .04 * blotch
+    # the joint between two lanes: a dark line a centimetre or two wide where the mats meet, broken
+    joint = np.clip(_periodic_noise(rng, 1, h, 1, 40) * 2 - .7, 0, 1)
+    wear[:, :2] *= 1 - .3 * joint
+    lin = lin * wear[..., None]
+    colour = _linear_to_srgb(lin * (BASE_MEAN / lin.mean()))
+    n = wrap(strip('normal', 'RGB')) * 2 - 1
+    # the photo was turned: its x is the sheet's y; green flipped for the game, as road_sheets
+    nx, ny = n[..., 1], n[..., 0]
+    nz = np.sqrt(np.clip(1 - nx * nx - ny * ny, 0, 1))
+    normal = np.stack([nx, -ny, nz], -1) * .5 + .5
+    rough = wrap(strip('roughness', 'L'))
+    rough = np.clip(rough - rough.mean() + BASE_ROUGH - .26 * paths * side - .08 * middle * stained + .05 * seam, .05, 1)
+    return np.clip(colour, 0, 1), np.clip(normal, 0, 1), rough
+
+
+def lane_sheets(r):
+    """The lane sheet's maps as PNGs in r (the real pack's folder)."""
+    import numpy as np
+    for a, name in zip(lane_maps(), ('road_lane.color.png', 'road_lane.normal.png', 'road_lane.data.png')):
+        Image.fromarray((a * 255 + .5).astype(np.uint8)).convert('RGB').save(r / name)
+    (r / 'lane.version').write_text(LANE_ART_VERSION)
+
+
 def synth_glow(name):
     """Emissive map for a synthwave facade: only the neon window frames light up."""
     im = Image.new('RGB', (PX, PX), (0, 0, 0))
@@ -399,6 +487,10 @@ def pack_fields(pack, base, toned=True):
         # the bed it draws under them (the seasonal packs start from the real fields)
         for kind in style.RUTS:
             out['e2rf_' + kind] = {**out['e2rf_' + kind], 'opacityFactor': 0}
+        # and so are the asphalt's lanes: no other pack draws them (generator.lua tune.lanes), and
+        # each keeps the plain asphalt it has
+        for kind, plain in style.LANES.items():
+            out['e2rf_' + kind] = dict(out['e2rf_' + plain])
     return out
 
 
@@ -643,6 +735,11 @@ def prebuild(distributable=False):
         if not stamp.exists() or stamp.read_text() != RUTS_ART_VERSION:
             ruts_art(shared / 'real')
             to_dds(shared / 'real')
+        # and the asphalt's lanes (generator.lua ROADS.laneBands)
+        stamp = shared / 'real' / 'lane.version'
+        if not stamp.exists() or stamp.read_text() != LANE_ART_VERSION:
+            lane_sheets(shared / 'real')
+            to_dds(shared / 'real')
         stamp = shared / 'real' / 'brand_sign.version'
         if not (shared / 'real' / 'brand_photo.glow.dds').exists() or not stamp.exists() or stamp.read_text() != BRAND_ART_VERSION:
             brand_art(shared / 'real')
@@ -656,6 +753,11 @@ def prebuild(distributable=False):
         if not stamp.exists() or stamp.read_text() != FACADE_ART_VERSION:
             facade_art(shared)
             to_dds(shared)
+        # and the building kit's walls, cells and trim (kit_art, generator.lua BLD.kit)
+        stamp = shared / 'real' / 'kit.version'
+        if kit_art.ready() and (not stamp.exists() or stamp.read_text() != kit_art.VERSION):
+            kit_art.build(shared / 'real')
+            to_dds(shared / 'real')
         repair_pixel_cache(shared)
         write_manifest(shared)  # environment/fields are code, not a texture cache
     missing = missing_art(shared)
@@ -733,9 +835,12 @@ def build(r, game_assets=True):
     synth_grid(None, glow=True).save(r / 'synth' / 'grid.glow.png')
     synth_sun().save(r / 'synth' / 'sun.color.png')
     road_sheets(r)
+    lane_sheets(r / 'real')
     fast_packs.build(r, base)
     fast_pixel.build(r)
     facade_art(r)
+    if kit_art.ready():
+        kit_art.build(r / 'real')
     to_dds(r)
     write_manifest(r)
     return r

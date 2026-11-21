@@ -20,7 +20,7 @@ from lupa.luajit21 import LuaRuntime
 LUA = ROOT / 'mod/lua/ge/extensions/e2r'
 
 
-def runtime(pack, game_structs=False):
+def runtime(pack, game_structs=False, kit=False):
     archive = zipfile.ZipFile(pack)
     names = {'/' + n for n in archive.namelist()}
     lua = LuaRuntime(unpack_returned_tuples=True)
@@ -74,6 +74,12 @@ def runtime(pack, game_structs=False):
                     " vec3 = ffi.typeof('struct __luaVec3_t')")
     mods = {}
     load = lua.eval('function(source, name) return assert(load(source, "@" .. name))() end')
+    if kit:
+        # the building kit as the game requires it (the bench's require knows only the mods below)
+        g.kit_cells = load((LUA / 'kit_cells.lua').read_text(encoding='utf8'), 'kit_cells.lua')
+        lua.execute("package.loaded['ge/extensions/e2r/kit_cells'] = kit_cells")
+        g.kit = load((LUA / 'kit.lua').read_text(encoding='utf8'), 'kit.lua')
+        lua.execute("package.loaded['ge/extensions/e2r/kit'] = kit")
     for name in ('countries', 'coordinates', 'cellformat', 'generator', 'quality', 'manual', 'manual_editor'):
         mods[name] = load((LUA / f'{name}.lua').read_text(encoding='utf8'), f'{name}.lua')
     g.mods = convert({})
@@ -127,7 +133,8 @@ for di = -radius, radius do
         local pauses = 0
         local t1 = clock()
         local road, scene, farM = generator.build({cells[ck]}, i, j, {tileSize = 500, far = far,
-          pause = function() pauses = pauses + 1 end, seaLevel = d.seaLevel, propSpacing = PROP_SPACING})
+          pause = function() pauses = pauses + 1 end, seaLevel = d.seaLevel, propSpacing = PROP_SPACING,
+          kit = KIT, country = COUNTRY, detail = DETAIL, look = d.look, kitReport = KIT and not far and KIT_REPORT or nil})
         local ms = (clock() - t1) * 1000
         local kb = collectgarbage('count') - kb0
         collectgarbage('restart')
@@ -263,9 +270,14 @@ def main():
     p.add_argument('--speed', type=float, default=0, help='m/s along +x after the landing (stream part)')
     p.add_argument('--skip-tiles', action='store_true')
     p.add_argument('--json', type=Path)
+    p.add_argument('--kit', action='store_true', help='the building kit on in the tile bench (kit.lua)')
+    p.add_argument('--country', help='country id for the tile bench (the region of its buildings)')
+    p.add_argument('--detail', type=float, help='quality 0..100 for the tile bench')
     p.add_argument('--prop-spacing', type=float, default=0, help='street props every this many metres of sidewalk (0: none)')
     a = p.parse_args()
-    lua, mods, io_stats = runtime(a.pack)
+    lua, mods, io_stats = runtime(a.pack, kit=a.kit)
+    g = lua.globals()
+    g.KIT, g.COUNTRY, g.DETAIL, g.KIT_REPORT = a.kit, a.country, a.detail, lua.table()
     lua.globals().PROP_SPACING = a.prop_spacing or None
     native = mods['native']
     st = native.refresh()
@@ -293,6 +305,10 @@ def main():
                       f'max {max(r["ms"] for r in group):.1f}, KB mean {sum(r["kb"] for r in group) / len(group):.0f}, '
                       f'verts/tri {sum(r["verts"] for r in group) / max(1, sum(r["tris"] for r in group)):.2f}, '
                       f'tables/tri {sum(r["tables"] for r in group) / max(1, sum(r["tris"] for r in group)):.2f}')
+        if a.kit:
+            kr = g.KIT_REPORT
+            print('kit:', kr.buildings or 0, 'buildings,', int(kr.tris or 0), 'triangles,',
+                  dict(kr.styles or {}), dict(kr.parts or {}))
         report['tiles'] = rows
         # land again: the tile bench left the module's caches warm
         native.refresh()

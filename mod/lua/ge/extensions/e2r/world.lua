@@ -3575,6 +3575,8 @@ local function applyPack(name)
   -- the pack sets its own fog: the vista scales the new one (VISTA.apply)
   S.vistaApplied, S.vistaBase = nil, nil
   S.pack = name
+  -- (the engine's grass is the real pack's: turf.lua)
+  if detail.turf then detail.turf.setReal(name == 'real') end
   if native and native.setRealStyle and native.setRealStyle(name == 'real') and applyTune then applyTune(true) end
   S.envAgain, S.exposurePending = nil, nil
   local timer = hptimer()
@@ -5418,6 +5420,9 @@ end
 function M.onClientEndMission()
   restorePackState()
   resetForests()
+  -- the real-colour sheets' materials went with the level (s2.lua), and the grass's block (turf.lua)
+  pcall(function() require('ge/extensions/e2r/s2').reset() end)
+  if detail.turf then detail.turf.reset() end
   if NATIVE then native.refresh() end
   if S.ocean then pcall(function() S.ocean:delete() end); S.ocean = nil end
   S.stream, S.co, S.job, S.landing, S.state = nil, nil, nil, nil, 'off'
@@ -5880,6 +5885,10 @@ local function runTest()
       local v = S.galleryView
       if ready and v and (v[4] or v[5]) and not v.fixed then
         local function surface(p)
+          -- what a car would stand on: the ground's collision, not the grass's hidden terrain under
+          -- it (turf.lua), which is all a ray finds off the lawn
+          local okBelow, below = pcall(function() return be:getSurfaceHeightBelow(vec3(p.x, p.y, p.z + 3000)) end)
+          if okBelow and type(below) == 'number' and below > -1e4 and below < 1e4 then return below end
           local okHit, hit = pcall(Engine.castRay, vec3(p.x, p.y, p.z + 3000), vec3(p.x, p.y, p.z - 3000), true, true)
           return okHit and hit and hit.pt and hit.pt.z
         end
@@ -6323,7 +6332,10 @@ function M.tick(dt)
       end
       local detailTimer = hptimer()
       if getDetailStream():step(p, S.appliedTune or TUNE_DEFAULT, S.now, detailTimer, gate and 3 or 1) then changed = true end
+      -- the engine's grass follows the car on its hidden block (turf.lua)
+      if detail.turf and detail.turf.step(p, S.now, S.appliedTune or TUNE_DEFAULT) then changed = true end
       result.detailMs = detailTimer:stop()
+      if detail.turf then result.turf = detail.turf.stats end
       result.liveGrass, result.liveRocks = detailStream.count.grass, detailStream.count.rock
       if gate and not allowed and not changed then gate:yield() end
     end
@@ -6754,6 +6766,23 @@ function M.optionsBind()
     label = {uk = 'Припарковані машини', en = 'Parked cars'},
     read = function() return S.parkedPick or (S.tune or TUNE_DEFAULT).parkedCars or 0 end,
     apply = function(v) S.parkedPick = v end}   -- updateParking applies and saves it
+  -- the land's real colour (s2.lua, far.lua) and the engine's grass (turf.lua)
+  o.define{key = 'realColour', kind = 'bool', group = 'quality', default = true, path = {'realColour'},
+    label = {uk = 'Справжній колір землі', en = 'Real ground colour'},
+    hint = {uk = 'Знімки Sentinel-2 з пака, де вони є; для щойно завантажених околиць',
+      en = 'Sentinel-2 imagery of the pack, where it has it; for newly loaded surroundings'},
+    read = function() return S.realColour ~= false end,
+    apply = function(v)
+      S.realColour = v
+      pcall(function() require('ge/extensions/e2r/s2').enabled = v end)
+      if M.far then M.far.realColour = v end
+    end}
+  o.define{key = 'turf', kind = 'bool', group = 'quality', default = true, path = {'turf'},
+    label = {uk = 'Густа трава рушія', en = 'Dense engine grass'},
+    hint = {uk = 'Трава гри на всю видимість замість купин; для щойно завантажених околиць',
+      en = "The game's own grass as far as it draws, in place of tufts; for newly loaded surroundings"},
+    read = function() return not detail.turf or detail.turf.enabled ~= false end,
+    apply = function(v) if detail.turf then detail.turf.setEnabled(v) end end}
   -- interface and style
   o.define{key = 'mapPhoto', kind = 'bool', group = 'view', default = true, path = {'mapPhoto'},
     label = {uk = 'Фотопідкладка мапи', en = 'Map imagery'},

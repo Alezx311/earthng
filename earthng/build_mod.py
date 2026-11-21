@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw
 import flow_art  # noqa: E402 (earthng/ is on sys.path for every caller)
 import people_art  # noqa: E402
 import ped_body  # noqa: E402
+import turf_art  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 MOD = HERE.parent / 'mod'
@@ -149,6 +150,8 @@ def level_files(lang='uk'):
         **flow_art.level_files(LEVEL),
         **people_art.level_files(LEVEL),
         **ped_body.vehicle_files(),
+        # the hidden terrain block's layers, for the engine's grass (turf.lua)
+        **turf_art.level_files(LEVEL),
     }
 
 

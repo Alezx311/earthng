@@ -507,6 +507,24 @@ for _kind, _srgb in (('road', (83, 83, 82)), ('footway_asphalt', (83, 83, 82)), 
                      ('road_major', (62, 62, 63))):
     KINDS[_kind] = KINDS[_kind][:3] + (ROAD_M,) + KINDS[_kind][4:]
     TINT[_kind] = _factor(_srgb, .12)
+# The same asphalts drawn as lanes (generator.lua ROADS.laneBands; the real pack's near tiles): one
+# sheet over a lane, LANE_W m across and LANE_M m along it (uv mode 'strip'), with what a world
+# projection cannot carry: wheel paths, the lane's dark middle, the seam between lanes
+# (fast_art.lane_sheets). Its linear mean is the base's (fast_art.BASE_MEAN), so a lane and the
+# plain asphalt of the junction it runs into are one colour under one tint; each keeps the fine
+# detail of its plain asphalt over DETAIL_M.
+LANE_W, LANE_M = 3.5, 28.0
+_LANE = {'baseColorMap': f'{ART}/real/road_lane.color.png', 'normalMap': f'{ART}/real/road_lane.normal.png',
+         'roughnessMap': f'{ART}/real/road_lane.data.png',
+         'detailScale': [LANE_W / DETAIL_M, LANE_M / DETAIL_M], 'detailNormalMapStrength': 1.0,
+         'detailRoughnessMapStrength': .15}
+LANES = {'road_lane': 'road', 'road_major_lane': 'road_major', 'road_worn_lane': 'road_worn'}
+for _kind, _plain in LANES.items():
+    _detail = TEXTURES[KINDS[_plain][0]]
+    TEXTURES[_kind] = {**_LANE, **{_k: _detail[_k] for _k in ('detailMap', 'detailBaseColorMapStrength', 'detailNormalMap',
+                                                               'roughnessDetailMap')}}
+    KINDS[_kind] = (_kind, KINDS[_plain][1], 'ASPHALT', LANE_M, 'strip')
+    TINT[_kind] = TINT[_plain]
 
 # OSM areas that change the ground under them (anything else stays grass)
 PAVED = {'industrial', 'commercial', 'retail', 'railway', 'garages', 'construction', 'depot'}
@@ -1040,7 +1058,7 @@ def material(kind):
     toned = _tone.factor(kind, stage)     # the real pack's one tone (fast_tone)
     if toned:
         stage['baseColorFactor'] = toned
-    if kind == 'road_worn':
+    if kind in ('road_worn', 'road_worn_lane'):
         stage['roughnessFactor'] = .96
     elif kind in ('road_gravel', 'road_dirt', 'road_broken', 'road_track') or kind in RUTS:
         stage['roughnessFactor'] = .98
@@ -1120,6 +1138,27 @@ for _k in ('fence_brick', 'fence_stone'):
 KINDS['road_sett'] = ('sh_setts', [.45, .44, .42, 1], 'ASPHALT', 3.0, 'plan')
 SHEET_KINDS = (*SHEET_WALLS, *SHEET_ROOFS, 'fence_prof_green', 'fence_prof_brown', 'fence_prof_grey', 'fence_brick', 'fence_stone',
                'fence_boards', 'road_sett')
+# The building kit (kit.lua, generator.lua BLD.kit): its walls, each a generated PBR surface and
+# some in several paints; one atlas of windows and doors whose glass mirrors the sky; one sheet
+# of trim bands. Only where its paid sources are present (kit_art.ready): a checkout without
+# them builds the planet as before, and the kit stays off in the game.
+import kit_art as _kit
+KIT_KINDS = ()
+if _kit.ready():
+    for _k, (_tex, _rgb, _m, _cls) in _kit.wall_kinds().items():
+        TEXTURES['kw_' + _tex] = {'baseColorMap': f'{ART}/real/kw_{_tex}.color.png', 'normalMap': f'{ART}/real/kw_{_tex}.normal.png',
+                                  'roughnessFactor': _kit.ROUGH[_cls], 'metallicFactor': .3 if _cls == 'metal' else 0}
+        KINDS['kw_' + _k] = ('kw_' + _tex, [_c / 255 for _c in (_rgb or (170, 160, 150))] + [1],
+                             'METAL' if _cls == 'metal' else 'ROCK', _m, 'roof' if _cls == 'roof' else 'wall')
+        if _rgb:
+            TINT['kw_' + _k] = _factor(_rgb, _kit.GREY)
+    for _k in ('kit_cells', 'kit_cells2'):
+        TEXTURES[_k] = {'baseColorMap': f'{ART}/real/{_k}.color.png', 'roughnessMap': f'{ART}/real/{_k}_r.data.png',
+                        'metallicMap': f'{ART}/real/{_k}_m.data.png', 'metallicFactor': .5}
+        KINDS[_k] = (_k, [.62, .64, .66, 1], 'ROCK', 3.0, 'wall')
+    TEXTURES['kit_trim'] = {'baseColorMap': f'{ART}/real/kit_trim.color.png', 'roughnessFactor': .9}
+    KINDS['kit_trim'] = ('kit_trim', [.8, .78, .72, 1], 'ROCK', 3.0, 'wall')
+    KIT_KINDS = tuple(_k for _k in KINDS if _k.startswith(('kw_', 'kit_')))
 
 
 def dds(obj):

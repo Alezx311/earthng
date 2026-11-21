@@ -101,6 +101,9 @@ class GeneratorTests(unittest.TestCase):
         # the open land's own relief (generator RELIEF) off: these cells' DEMs are exact heights.
         # Its own tests pass relief=True.
         options.setdefault('relief', False)
+        # the asphalt's lanes (generator ROADS.laneBands) off: these tests read a carriageway as
+        # one quad a chord in its plain material. test_road_lanes.py builds with them.
+        options['tune'] = {'lanes': 0, **(options.get('tune') or {})}
         return self.generator.build(self.table(cells), i, j, self.table(options))
 
     def test_road_centre_clears_conflicting_buildings_only(self):
@@ -2114,8 +2117,9 @@ class GeneratorTests(unittest.TestCase):
         self.assertGreaterEqual(extents(True, raised=True)[0], 105)
 
     def test_dashed_marks_keep_source_phase_and_match_across_tile_border(self):
-        source = [{'roads': [{'id': 'marked', 'width': 6, 'points': [[0, 10, 5], [100, 10, 5]],
-                              'tags': {'highway': 'residential', 'lanes': '2', 'sidewalk': 'no'}}]}]
+        # a minor street is painted where the map says so (ROADS.lanes); under 6 m, no edge lines
+        source = [{'roads': [{'id': 'marked', 'width': 5.8, 'points': [[0, 10, 5], [100, 10, 5]],
+                              'tags': {'highway': 'residential', 'lanes': '2', 'lane_markings': 'yes', 'sidewalk': 'no'}}]}]
         manifests = [self.build(source, i=index, tileSize=25, terrainStep=25)[0] for index in [0, 1]]
         borders, border_v = [], []
         for manifest in manifests:
@@ -2354,7 +2358,7 @@ class GeneratorTests(unittest.TestCase):
         # an older BeamNG: world.lua loads the fallback materials, the generator draws no strip
         self.lua.execute('FS = {fileExists = function(_, path) return not path:find("decalroad", 1, true) end}')
         lane = {'id': 'lane', 'width': 6, 'nodes': [1, 2], 'points': line(-50, 250, 550, 250),
-                'tags': {'highway': 'residential', 'lanes': '2', 'sidewalk': 'no'}}
+                'tags': {'highway': 'residential', 'lanes': '2', 'lane_markings': 'yes', 'sidewalk': 'no'}}
         manifest = self.build([self.edge_cell(lane)])[0]
         self.assertFalse(list(self.meshes(manifest, 'e2rf_edge_grass')))
         self.assertTrue(list(self.meshes(manifest, 'e2rf_mark')))

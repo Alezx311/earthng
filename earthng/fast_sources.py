@@ -24,7 +24,7 @@ import shapely
 from shapely.geometry import LineString, MultiPoint, Point
 from shapely.ops import transform
 
-VERSION = 'fast-31'         # source index cache: networks, sights, grey zone pins (aeroway, healthcare, waterway)
+VERSION = 'fast-32'         # source index cache: lanes carried over to untagged sections (infer_lanes)
 GEOMETRY = 'fast-33'         # mesh/material semantics; bump to reject tiles built by older code
 TILE = 500.0
 ROAD_LIFT = 0.12            # road surface over its profile (the ground mesh sits 0.25 under the DEM)
@@ -97,6 +97,112 @@ def shoulder(tags):
     return SHOULDER.get(highway, (0., 0.))
 
 
+# Lanes of a way whose mapper left them out, carried over from the tagged stretches of the same
+# road (infer_lanes). They are written to the way under LANES_KEY: road_width widens the way by
+# them and the generator draws them (generator.lua ROADS.lanes), but neither takes them for the
+# mapper's word (a minor street's centre line is still painted only where the map says so).
+# Without them a section between two four-lane stretches was two lanes, and one carriageway of an
+# untagged divided road a single lane 4 m wide: the lanes came and went along one road.
+LANES_KEY = 'e2r:lanes'
+LANE_CLASSES = {'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential'}
+LANE_GAP = 2500.        # m of untagged road between two tagged stretches that takes their lanes
+LANE_TAIL = 400.        # m of untagged road at the road's end that takes the lanes before it
+# one carriageway of a divided main road, where nothing nearer says how many
+ONEWAY_LANES = {'motorway': 2, 'trunk': 2, 'primary': 2}
+
+
+def tagged_lanes(tags):
+    """The lanes a way is mapped with (lanes, or lanes:forward + lanes:backward), or None."""
+    forward = number(tags.get('lanes:forward'), None)
+    backward = number(tags.get('lanes:backward'), None)
+    directional = forward + backward if not oneway(tags) and forward is not None and backward is not None and forward >= 0 and backward >= 0 else None
+    return number(tags.get('lanes'), directional)
+
+
+def _same_road(tags):
+    """What makes two ways one road for their lanes: class, direction and number or name. None
+    for a way that neither gives nor takes lanes (ramps, roundabouts, minor service ways)."""
+    klass = tags.get('highway', '')
+    if klass not in LANE_CLASSES or tags.get('junction') in ('roundabout', 'circular'):
+        return None
+    name = tags.get('ref') or tags.get('name')
+    return (klass, oneway(tags), name) if name else None
+
+
+def infer_lanes(roads):
+    """Write LANES_KEY into the tags of ways without a lane count. roads: {way id: (tags,
+    [(node, lon, lat), ...])}, whole ways. Ways of one road (_same_road) that meet end to end,
+    two at a node, form a line; a run of untagged ways on it takes the lanes of the tagged
+    stretches at its ends, the fewer of the two (lanes are added before a junction more often
+    than dropped), when it is no longer than LANE_GAP, or LANE_TAIL where only one end has any.
+    The rest of the untagged one-way main roads get ONEWAY_LANES. Returns the ways changed."""
+    ends, keys = defaultdict(list), {}
+    for wid in sorted(roads):
+        tags, nodes = roads[wid]
+        key = _same_road(tags)
+        if key is None or len(nodes) < 2 or nodes[0][0] == nodes[-1][0]:
+            continue
+        keys[wid] = key
+        for node in (nodes[0][0], nodes[-1][0]):
+            ends[(key, node)].append(wid)
+
+    def length(wid):
+        nodes = roads[wid][1]
+        k = math.cos(math.radians(nodes[0][2])) * 111320.
+        return sum(math.hypot((b[1] - a[1]) * k, (b[2] - a[2]) * 110540.) for a, b in zip(nodes, nodes[1:]))
+
+    def onward(wid, node):
+        """The way this one runs on into at its end node, or None (a fork, a dead end)."""
+        there = ends[(keys[wid], node)]
+        return next(w for w in there if w != wid) if len(there) == 2 else None
+
+    changed, seen = 0, set()
+    for start in sorted(keys):
+        if start in seen or tagged_lanes(roads[start][0]) is None:
+            continue
+        seen.add(start)
+        for side in (0, -1):
+            # from a tagged way outwards: the untagged run, and the tagged way that ends it
+            run, total, wid, node = [], 0., start, roads[start][1][side][0]
+            while True:
+                nxt = onward(wid, node)
+                if nxt is None or nxt == start or nxt in run:
+                    nxt = None
+                    break
+                if tagged_lanes(roads[nxt][0]) is not None:
+                    break
+                run.append(nxt)
+                total += length(nxt)
+                if total > LANE_GAP:
+                    nxt = None
+                    break
+                a, b = roads[nxt][1][0][0], roads[nxt][1][-1][0]
+                wid, node = nxt, (b if a == node else a)
+            if not run:
+                continue
+            here = tagged_lanes(roads[start][0])
+            if nxt is not None:
+                lanes = min(here, tagged_lanes(roads[nxt][0]))
+            elif total <= LANE_TAIL:
+                lanes = here
+            else:
+                continue
+            for wid in run:
+                tags = roads[wid][0]
+                # a run between two tagged ways is reached from both: the same answer twice
+                if LANES_KEY not in tags and lanes >= 1:
+                    tags[LANES_KEY] = str(int(lanes))
+                    changed += 1
+    for wid in sorted(roads):
+        tags = roads[wid][0]
+        default = ONEWAY_LANES.get(tags.get('highway'))
+        if (default and LANES_KEY not in tags and tagged_lanes(tags) is None and oneway(tags)
+                and tags.get('junction') not in ('roundabout', 'circular')):
+            tags[LANES_KEY] = str(default)
+            changed += 1
+    return changed
+
+
 def road_width(tags):
     klass = tags.get('highway', '').replace('_link', '')
     if klass in FOOT_WIDTH:
@@ -106,6 +212,8 @@ def road_width(tags):
     backward = number(tags.get('lanes:backward'), None)
     directional = forward + backward if not one and forward is not None and backward is not None and forward >= 0 and backward >= 0 else None
     tagged_lanes = number(tags.get('lanes'), directional)
+    if tagged_lanes is None:
+        tagged_lanes = number(tags.get(LANES_KEY), None)
     if klass == 'raceway':
         fallback = RACEWAY.get(tags.get('sport'), RACEWAY_WIDTH)
     elif klass in NARROW and tagged_lanes is None:
@@ -825,6 +933,7 @@ def _prepare(source, output, dem, emit=print, point=None, cancelled=None, box=No
     del parts
     emit(f'roads parsed in {time.perf_counter()-started:.1f}s')
     check()
+    emit(f'lanes carried over to {infer_lanes(roads)} untagged ways')
     order = sorted(roads)
     lens = [len(roads[w][1]) for w in order]
     lon = [n[1] for w in order for n in roads[w][1]]; lat = [n[2] for w in order for n in roads[w][1]]

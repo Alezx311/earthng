@@ -1045,8 +1045,11 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
 
 def build_country(country_id, title, version, regions, out, bbox=None, emit=print, jobs=1, landing=None, landcover=(), vegetation=None,
                   look=None, include=None, cancel=None, map_data=None, section=None, credits=(), experiments=None,
-                  photo_index=None, require_far=False):
+                  photo_index=None, require_far=False, real_colour=False):
     """Stream source blocks to ZIP64 and atomically replace the completed archive.
+    real_colour: also the land's real colour from Sentinel-2 (s2_colour.py: the far map and the
+    near sheets), read from the open archive while building; a build that cannot reach it keeps
+    the drawn colours.
     section: {'id', 'title'}: one region, written as a section of the country
     (earthng_<country>_<section>.zip with sections/<id>/section.json and no country manifest),
     which the game joins with the country's other mounted sections.
@@ -1226,6 +1229,8 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
                 build_area_photos.write_archive(archive, photo_index, folder + '/photos')
         _add_routing(temporary, jobs, emit, cancel)
         _add_far(temporary, emit, cancel, required=require_far)
+        if real_colour:
+            _add_real_colour(temporary, emit, cancel)
         os.replace(temporary, target)
         shutil.rmtree(output / f'.{target.stem}.parts', ignore_errors=True)
     finally:
@@ -1318,6 +1323,25 @@ def _add_far(pack, emit, cancel=None, required=False):
                     info = zipfile.ZipInfo(f'{root}far/{region}{suffix}', date_time=(2020, 1, 1, 0, 0, 0))
                     info.compress_type, info.external_attr = zipfile.ZIP_DEFLATED, 0o600 << 16
                     archive.writestr(info, path.read_bytes())
+
+
+def _add_real_colour(pack, emit, cancel=None):
+    """The land's real colour (Sentinel-2, s2_colour.py) beside the far view it draws over. It
+    needs the network and the far rasters; without either the pack is whole as it is."""
+    import s2_colour
+    cache = Path(os.environ.get('EARTHNG_S2_CACHE') or Path(__file__).resolve().parent.parent / 'data' / 's2')
+    try:
+        files = s2_colour.build_pack(pack, cache, emit=emit, cancel=cancel)
+    except InterruptedError:
+        raise
+    except Exception as exc:       # the network, the server, a raster library that is not there
+        emit(f'real ground colour not built ({type(exc).__name__}: {exc}); the pack keeps its drawn colours')
+        return
+    if not files:
+        return
+    with zipfile.ZipFile(pack, 'a', zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        s2_colour.write_archive(archive, files)
+    emit(f'real ground colour: {len(files)} maps, {sum(map(len, files.values())) / 1e6:.0f} MB ({s2_colour.CREDIT})')
 
 
 class EmptySelection(ValueError):
@@ -1479,6 +1503,7 @@ def run_job(path):
                 jobs=job.get('jobs') or 1, landing=job.get('landing'), look=job.get('look'),
                 include=job.get('include'), map_data=job.get('map_data'), section=job.get('section'),
                 photo_index=job.get('photo_index'), require_far=job.get('require_far', False),
+                real_colour=job.get('real_colour', False),
                 credits=job.get('credits') or (), experiments=job.get('experiments'))
         finally:
             fast_style.POIS = previous_pois
@@ -1512,6 +1537,8 @@ def main():
                         help='local ESA WorldCover 2021 v200 Map GeoTIFF; repeat for adjacent tiles (optional)')
     parser.add_argument('--tree-line', type=float, help='regional forest limit in metres above sea level')
     parser.add_argument('--conifer-start', type=float, help='altitude at which untagged forest begins mixing conifers')
+    parser.add_argument('--real-colour', action='store_true',
+                        help="the land's real colour from Sentinel-2 (ESA WorldCover 2021 composite, CC BY 4.0; needs the network)")
     args = parser.parse_args()
     if args.job:
         try:
@@ -1531,7 +1558,8 @@ def main():
             regions += grid_regions(args.sources, args.dem, args.work, args.grid)
         vegetation = {k: v for k, v in (('treeLine', args.tree_line), ('coniferStart', args.conifer_start)) if v is not None}
         result = build_country(args.id, args.title, args.version, regions, args.out, args.bbox,
-                               jobs=args.jobs, landing=args.landing, landcover=args.landcover, vegetation=vegetation)
+                               jobs=args.jobs, landing=args.landing, landcover=args.landcover, vegetation=vegetation,
+                               real_colour=args.real_colour)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     print(result)

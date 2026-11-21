@@ -13,6 +13,16 @@ local manualEditor = require('ge/extensions/e2r/manual_editor')
 local okFarModule, farModule = pcall(require, 'ge/extensions/e2r/far')
 local FARMAP = okFarModule and type(farModule) == 'table' and farModule.mapAt
   and {at = farModule.mapAt, uv = farModule.mapUV, lift = farModule.liftAt} or nil
+-- the near land's real colour: the pack's Sentinel-2 sheets (s2.lua)
+local okS2, S2 = pcall(require, 'ge/extensions/e2r/s2')
+if not okS2 or type(S2) ~= 'table' or type(S2.options) ~= 'function' then S2 = nil end
+-- a pack's sheets for a near tile of the real pack, or nil; a file that cannot be read must
+-- not stop the tile
+local function sheetsOf(r, wanted, real)
+  if not S2 or not real or wanted.horizon or wanted.far then return nil end
+  local ok, options = pcall(S2.options, r)
+  return ok and type(options) == 'table' and options or nil
+end
 local liveOk, liveMod = pcall(require, 'ge/extensions/e2r/live')
 local live = liveOk and type(liveMod) == 'table' and type(liveMod.sync) == 'function' and liveMod or nil
 -- TILE_LIMIT holds the whole wanted set (1 km near plus the 3 km far ring, ~130 tiles): a
@@ -1336,6 +1346,7 @@ local function buildTile(key, wanted)
       far = wanted.far, horizon = wanted.horizon, vista = wanted.vista, farDecor = wanted.decor and true or false,
       -- the horizon is draped in the far colour map; a far tile takes its water from it (generator.lua)
       farMap = (wanted.horizon or wanted.far) and FARMAP or nil,
+      s2 = sheetsOf(r, wanted, realStyle),
       mark = function(stage) STAGE[coroutine.running()] = stage end,
       -- a vista block's edge at 100 m (4x faster, its skirts hide the seam with the 25 m horizon)
       terrainStep = wanted.vista and 100 or nil,

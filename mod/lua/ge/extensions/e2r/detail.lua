@@ -12,6 +12,11 @@
 local M = {}
 M.CELL = 32
 M.GRASS_CELL = 8
+-- the engine's grass on a hidden terrain block (turf.lua), where the game and the planet have it
+do
+  local ok, turf = pcall(require, 'ge/extensions/e2r/turf')
+  M.turf = ok and type(turf) == 'table' and turf or nil
+end
 local GROUP = {grass = 'grass', grassMid = 'grass', grassInner = 'grass', grassNear = 'grass', rock = 'rock'}
 local function cellSize(kind) return kind == 'rock' and M.CELL or M.GRASS_CELL end
 -- the order budgets are given in: the nearest ring first
@@ -271,6 +276,8 @@ function M.new(create, destroy)
   function self:add(tile, it)
     local kind = M.kind(it)
     if not kind then return false end
+    -- the engine's grass takes the lawn where it can (turf.lua): no tufts for this patch
+    if it.grassPatch and M.turf and M.turf.take(tile, it.grassPatch) then return true end
     if it.grassPatch then
       -- one patch, a share of its tufts in each ring's cell
       local patch = it.grassPatch
@@ -298,6 +305,7 @@ function M.new(create, destroy)
   end
 
   function self:remove(tile)
+    if M.turf then M.turf.remove(tile) end
     for _, key in ipairs(tile.detailCells or {}) do
       local cell = self.cells[key]
       local part = cell and cell.parts[tile]

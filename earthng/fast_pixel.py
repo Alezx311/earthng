@@ -153,7 +153,7 @@ def build(root, only=None):
     out = root / 'pixel'
     out.mkdir(parents=True, exist_ok=True)
     for kind in style.KINDS:
-        if kind in style.SHEET_KINDS or kind.startswith('wall_') and fast_facade.like(kind[5:]) != kind[5:]:
+        if kind in style.SHEET_KINDS or kind in style.KIT_KINDS or kind.startswith('wall_') and fast_facade.like(kind[5:]) != kind[5:]:
             continue                                # fields() points them at an older kind's art
         if only is not None and f'{kind}.color.dds' not in only:
             continue
@@ -210,6 +210,8 @@ def fields(base):
             texture = 'wall_' + fast_facade.like(kind[5:])
         elif kind in style.SHEET_KINDS:
             texture = sheet_source(kind)
+        elif kind in style.KIT_KINDS:
+            texture = 'wall_block'              # the building kit is the real pack's (kit.lua)
         f.update(baseColorMap=f'{base}/pixel/{texture}.color.png', baseColorFactor='1 1 1 1',
                  emissiveFactor='0 0 0', roughnessFactor=.9, metallicFactor=0)
         if kind in ('brand_sign', 'brand_photo', 'storefront'):

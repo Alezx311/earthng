@@ -43,7 +43,12 @@ local TUNE = {roadLift = ROAD_LIFT, groundDrop = .25, pullFull = 12, pullZero = 
   terrainStep = 25, sidewalk = 2, curb = .25, vergeCut = 1, vergeSink = 0, pressEven = 1, mitre = 2,
   simplifyXY = 0, simplifyZ = .02, fenceStep = 4, wallThick = .2, fenceThick = .08,
   -- 1: plan corners of a road become arcs (ROADS.smoothRoads); 0: the surveyed chords as they are
-  smooth = 1}
+  smooth = 1,
+  -- 1: a near tile of the real pack draws asphalt as lanes, the texture along the road
+  -- (ROADS.laneBands); 0: one quad a chord under the world projection
+  lanes = 1,
+  -- 1: a way narrows to the narrower way it runs on into (ROADS.taper); 0: a step at the join
+  taper = 1}
 -- Covers that take a whole ground triangle over (lower rank wins where they overlap).
 local CLAIM = {paved = 1, ballast = 1, water = 2, glacier = 3, bare_rock = 4, scree = 5, beach = 6,
   wetland = 7, orchard = 8, vineyard = 9, farmland = 10, meadow = 11, heath = 12,
@@ -528,6 +533,48 @@ for level = 1, VEG.land.levels do
   for _, land in ipairs({'dry', 'lush', 'earth'}) do COVER_SCALE['fade_' .. land .. level] = COVER_SCALE.ground end
   for _, land in ipairs({'grass', 'dry', 'lush'}) do COVER_SCALE['cut_' .. land .. level] = COVER_SCALE.ground end
 end
+-- The land in its real colour (the real pack, a pack with Sentinel-2 sheets: s2.lua,
+-- earthng/s2_colour.py). A near tile lies in one sheet, a square of the yearly cloud-free picture
+-- with a gutter round it; the tile's open land is drawn in the sheet's material, its UVs laid
+-- over the sheet (row 0 north), with the grass's or the soil's fine detail from the material.
+-- The colour is then the place's own: a field brown where it is ploughed, a water meadow green,
+-- a town's lawns the grey-green they are, and the levels drawn from the relief (VEG.land), the
+-- drawn crops and the green band beside every road give way to it. A far tile's land takes the
+-- region's far map, the same picture at its coarser step, as the horizon does.
+-- lands: the kinds drawn in real colour, and the detail under each ('grass' or 'earth'); any
+-- field (farmland and its crops) is 'earth'.
+-- town: the built-up share of the ground (builtAt) from which the land keeps its drawn colour.
+-- A texel of the picture is 12-50 m: among buildings it is their roofs and yards, and an
+-- industrial quarter's lawns came out the pale grey of its sheds (hyperreal run-02).
+VEG.real = {town = .06, lands = {ground = 'grass', meadow = 'grass', grass_dry = 'grass', grass_lush = 'grass', earth = 'earth',
+  steppe = 'grass', dry_grass = 'grass', tundra = 'grass', desert = 'earth', alpine = 'earth', bare_ground = 'earth'}}
+-- options.s2 of a build (s2.lua options): {sheet, step, px, gutter, kind(I, J, land)}. Returns
+-- the tile's sheet {grass, earth: its kinds; ox, top: the sheet's west and north edges, gutter
+-- and all; span: its side in metres}, or nil where real colour is not drawn.
+function VEG.real.tile(options, rect, distant)
+  local s = options.s2
+  if distant or options.realStyle == false or type(s) ~= 'table' or type(s.kind) ~= 'function' then return nil end
+  local I, J = floor((rect[1] + rect[3]) / 2 / s.sheet), floor((rect[2] + rect[4]) / 2 / s.sheet)
+  local grass = s.kind(I, J, 'grass')
+  if not grass then return nil end
+  return {grass = grass, earth = s.kind(I, J, 'earth') or grass, ox = I * s.sheet - s.gutter * s.step,
+    top = (J + 1) * s.sheet + s.gutter * s.step, span = s.px * s.step}
+end
+-- the kind a land is drawn in on sheet T, or nil where it keeps its own; built: the built-up
+-- share of the ground there
+function VEG.real.kindOf(T, kind, built)
+  if not T or type(kind) ~= 'string' or (built or 0) >= VEG.real.town then return nil end
+  local land = VEG.real.lands[kind] or (kind:sub(1, 8) == 'farmland' and 'earth') or nil
+  return land and T[land]
+end
+-- a polygon's corners with the sheet's UVs (each keeps its height and normal)
+function VEG.real.poly(T, poly)
+  local out = {}
+  for k, p in ipairs(poly) do
+    out[k] = {p[1], p[2], p[3], (p[1] - T.ox) / T.span, (T.top - p[2]) / T.span, p[6], p[7], p[8]}
+  end
+  return out
+end
 
 -- Plants and stones of other climates (biome.lua), all from the player's own levels: Utah's
 -- junipers, sagebrush and boulders, Johnson Valley's desert shrubs, dry grass and rocks, West
@@ -838,7 +885,11 @@ end
 function VEG.stockFor(items, shapes)
   local files, out = {}, {}
   local all = {}
-  for _, item in ipairs(items) do all[#all + 1] = item.shape end
+  for _, item in ipairs(items) do
+    all[#all + 1] = item.shape
+    -- Generated shapes keep their own material file, like stock folders do.
+    if type(item.materials) == 'string' then files[item.materials] = true end
+  end
   for _, shape in ipairs(shapes or NONE) do all[#all + 1] = shape end
   for _, shape in ipairs(all) do
     if type(shape) == 'string' and shape:sub(1, 8) == '/levels/' then
@@ -852,6 +903,10 @@ function VEG.stockFor(items, shapes)
   for file in pairs(files) do out[#out + 1] = file end
   table.sort(out)
   return out
+end
+do
+  local ok, city3d = pcall(require, 'ge/extensions/e2r/city3d')
+  VEG.city3d = ok and type(city3d) == 'table' and city3d or nil
 end
 -- A set without the shapes this game lacks (FS absent, as outside the game: all of them); an
 -- empty set falls back to the forest's. Checked once per shape.
@@ -1558,7 +1613,7 @@ local function collector(rect, key, layer, pause, mixed)
     end
     return index
   end
-  local function corner(mesh, p, n, scale, axis)
+  local function cornerFace(mesh, p, n, scale, axis)
     local v = vertexIndex(mesh, p)
     local pu, pv = p[1], p[2]
     -- Dominant-axis box projection for rock; world-locked and independent of
@@ -1569,8 +1624,11 @@ local function collector(rect, key, layer, pause, mixed)
     local key = (v * CORNER_BASE + n) * CORNER_BASE + u
     local face = mesh.fmap[key]
     if not face then face = CORNER(v, n, u); mesh.fmap[key] = face end
+    return face
+  end
+  local function corner(mesh, p, n, scale, axis)
     local faces = mesh.faces
-    faces[#faces + 1] = face
+    faces[#faces + 1] = cornerFace(mesh, p, n, scale, axis)
   end
   -- Ground passes a per-corner normal in p[6..8] (nx can be 0, so the type is the test).
   -- Walls, curbs and roads leave it unset and keep the face normal n. Not a closure inside
@@ -1612,7 +1670,8 @@ local function collector(rect, key, layer, pause, mixed)
       mesh = {verts = {}, normals = {}, uvs = {}, faces = {}, material = material,
         vmap = {}, nmap = {}, umap = {}, fmap = {}, tris = 0,
         -- a far colour map spans a whole region: 1/1024 of it is ~100 m, no welding of its UVs
-        uvExact = kind:sub(1, 7) == 'farmap_' or nil,
+        -- (a real-colour sheet spans 3.2 km, VEG.real: 3 m, and the detail maps ride on its UVs)
+        uvExact = kind:sub(1, 7) == 'farmap_' or kind:sub(1, 2) == 's2' or nil,
         cell = hooks.cell and {hooks.cell[1], hooks.cell[2], hooks.cell[3]} or nil}
       groups[gkey], used[material] = mesh, true
     end
@@ -1640,7 +1699,34 @@ local function collector(rect, key, layer, pause, mixed)
     local first = clipped[1]
     for k = 2, #clipped - 1 do triangle(kind, first, clipped[k], clipped[k + 1], up) end
   end
-  return {items = items, used = used, polygon = polygon, triangle = triangle, finish = flush, hooks = hooks}
+  -- A flat quad that lies inside the tile, its corners in order and each with its own u, v: no
+  -- clipping, one normal, four corners for its two triangles. A kit facade (kit.lua) is tens of
+  -- thousands of these in a tile of central Kyiv.
+  local function quad(kind, a, b, c, d)
+    local ux, uy, uz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+    local vx, vy, vz = c[1] - a[1], c[2] - a[2], c[3] - a[3]
+    local nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+    local len = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if len < EPS then return end
+    local material = 'e2rf_' .. kind
+    if mixed and total >= mixed then flush() end
+    local mesh = groups[material]
+    if not mixed and mesh and mesh.tris >= PIECE_TRIS then flushMaterial(material); mesh = nil end
+    if not mesh then
+      mesh = {verts = {}, normals = {}, uvs = {}, faces = {}, material = material,
+        vmap = {}, nmap = {}, umap = {}, fmap = {}, tris = 0}
+      groups[material], used[material] = mesh, true
+    end
+    local n = normalIndex(mesh, nx / len, ny / len, nz / len)
+    local fa, fb, fc, fd = cornerFace(mesh, a, n, 1), cornerFace(mesh, b, n, 1), cornerFace(mesh, c, n, 1), cornerFace(mesh, d, n, 1)
+    local faces = mesh.faces
+    local k = #faces
+    -- clockwise, as triangle() writes them
+    faces[k + 1], faces[k + 2], faces[k + 3], faces[k + 4], faces[k + 5], faces[k + 6] = fa, fc, fb, fa, fd, fc
+    mesh.tris, total, operations = mesh.tris + 2, total + 2, operations + 2
+    if operations % 64 < 2 then pause() end
+  end
+  return {items = items, used = used, polygon = polygon, triangle = triangle, quad = quad, finish = flush, hooks = hooks, rect = rect}
 end
 
 -- Road semantics shared by the strips, junctions, markings, sidewalks and navgraph (one table:
@@ -2943,44 +3029,170 @@ function ROADS.shoulder(tags)
   if flip then return s[2], s[1] end
   return s[1], s[2]
 end
--- The painted lines of a strip by class, lanes and surface: {offset, width, dashed, double}.
--- Gravel, dirt and broken roads have none; minor streets have none unless tagged with lanes.
-function ROADS.marks(tags, width, grade)
-  local marks = {}
-  local paint = tostring(tags.lane_markings or '')
-  if grade >= 2 or paint == 'no' or width < 4.5 then return marks end
+-- The lanes of a carriageway `width` wide: one answer for the painted lines, the lanes of the
+-- surface (ROADS.laneBands) and the navgraph. n lanes share the carriageway between the
+-- shoulders (left, right: metres, of the node order); `split` of them lie right of the centre
+-- line (nil on a one-way road, or where the directions are not known to split evenly).
+-- The count is the way's own (lanes, lanes:forward + lanes:backward), else the one the pack
+-- carried over from the same road's tagged sections (e2r:lanes, fast_sources.infer_lanes), else
+-- read off the width: a section whose mapper left the tag out no longer loses its lanes.
+-- tagged: the count is the mapper's own. A minor street's line is painted only where the map
+-- says so (lane_markings=yes) or it has three lanes and more: `lanes=2` on a residential street
+-- is the default written out, and its centre line came and went with the tag along one street.
+ROADS.lanePaint = {minLanes = 3, wide = 6.2, min = 2.5}
+function ROADS.lanes(tags, width)
   local class = (tags.highway or ''):gsub('_link$', '')
   local oneway = ROADS.oneway(tags)
-  -- offsets are left of the node order; the lanes share the carriageway between the shoulders
   local left, right = ROADS.shoulder(tags)
   if width - left - right < 3 then left, right = 0, 0 end
   local carriage = width - left - right
   local forward, backward = number(tags['lanes:forward'], nil), number(tags['lanes:backward'], nil)
   local directional = not oneway and forward and backward and forward >= 0 and backward >= 0 and forward + backward or nil
-  local lanes = math.max(1, math.min(math.floor(carriage / 2.5),
-    math.floor(number(tags.lanes, directional or (ROADS.ring(tags) and math.floor(carriage / 4 + .1)
-      or oneway and math.floor(carriage / 3.3 + .5) or 2)))))
-  local painted = ROADS.centred[class] or tags.lanes ~= nil or directional ~= nil or paint == 'yes'
-  if painted and lanes >= 2 then
+  local tagged = number(tags.lanes, directional)
+  local P = ROADS.lanePaint
+  local n = tagged or number(tags['e2r:lanes'], nil)
+  if not n then
+    if ROADS.ring(tags) then n = math.floor(carriage / 4 + .1)
+    elseif oneway then n = math.floor(carriage / 3.3 + .5)
+    -- two directions: a pair of lanes for every P.wide metres (a 13 m avenue with no lanes tag
+    -- was two lanes of 6.5 m)
+    else n = 2 * math.max(1, math.floor(carriage / P.wide)) end
+  end
+  n = math.max(1, math.min(math.floor(carriage / P.min), math.floor(n)))
+  local split
+  if not oneway and n >= 2 then
+    split = directional == n and (ROADS.leftHand and backward or forward) or n / 2
+  end
+  local paint = tostring(tags.lane_markings or '')
+  local painted = paint ~= 'no' and (ROADS.centred[class] or paint == 'yes' or (tagged ~= nil and n >= P.minLanes))
+  return {n = n, split = split, left = left, right = right, carriage = carriage, oneway = oneway, class = class,
+    painted = painted, paint = paint}
+end
+-- The painted lines of a strip by class, lanes and surface: {offset, width, dashed, double}.
+-- Gravel, dirt and broken roads have none; minor streets have none unless the map paints them.
+function ROADS.marks(tags, width, grade)
+  local marks = {}
+  local paint = tostring(tags.lane_markings or '')
+  if grade >= 2 or paint == 'no' or width < 4.5 then return marks end
+  -- offsets are left of the node order; the lanes share the carriageway between the shoulders
+  local L = ROADS.lanes(tags, width)
+  local class, left, right, lanes, carriage = L.class, L.left, L.right, L.n, L.carriage
+  if L.painted and lanes >= 2 then
     for lane = 1, lanes - 1 do
-      local split = directional == lanes and (ROADS.leftHand and backward or forward) or lanes / 2
-      local centre = not oneway and math.abs(lane - split) < .01
+      local centre = L.split and math.abs(lane - L.split) < .01
       local at = -width / 2 + right + lane * carriage / lanes
       -- a four-lane two-way road: a solid double centre line
+      -- lane: a line between two lanes of one direction; it stops where the strip tapers
       if centre and lanes >= 4 then
         marks[#marks + 1] = {offset = at - .1, width = .12}
         marks[#marks + 1] = {offset = at + .1, width = .12}
       else
-        marks[#marks + 1] = {offset = at, width = .12, dashed = true}
+        marks[#marks + 1] = {offset = at, width = .12, dashed = true, lane = not centre or nil}
       end
     end
   end
   if ROADS.edged[class] or (class == 'tertiary' and width >= 6) or (paint == 'yes' and width >= 6) then
     -- on the carriageway's edge where there is a shoulder, else a little inside the asphalt
     local l, r = left > 0 and left + .1 or .3, right > 0 and right + .1 or .3
-    marks[#marks + 1], marks[#marks + 2] = {offset = width / 2 - l, width = .15}, {offset = -width / 2 + r, width = .15}
+    -- inset: metres inside the asphalt's edge (negative on the right), kept where the strip tapers
+    marks[#marks + 1], marks[#marks + 2] = {offset = width / 2 - l, width = .15, inset = l}, {offset = -width / 2 + r, width = .15, inset = -r}
   end
   return marks
+end
+-- The asphalt of a carriageway as its lanes (tune.lanes, the real pack): the texture laid along
+-- the road, u across it, one repeat a lane (0 on the carriageway's left edge in the node order,
+-- the lane count on its right), and v along it, LANE.metres a repeat. The sheet carries what a
+-- world projection cannot: wheel paths, the dark of the lane's middle, the seam between lanes
+-- (fast_art.lane_sheets). The shoulders stay the plain asphalt they were.
+-- The carriageway is one quad a chord, as it was: a quad for every lane, each at its own place
+-- of the sheet and in its own direction, doubled the road's triangles, which are collision too,
+-- and central Kyiv lost 2.7 ms a frame to it (hyperreal run-06 against 1.0.1). The sheet's wear
+-- runs along the road, so the lanes showing the same stretch of it do not read as a pattern.
+-- kinds: a strip's plain asphalt -> its lane sheet (fast_style LANES).
+ROADS.LANE = {metres = 28, minWidth = 2.2,
+  kinds = {road = 'road_lane', road_major = 'road_major_lane', road_worn = 'road_worn_lane'}}
+-- {from, to, u0, u1} for each band, offsets left of the node order (hw .. -hw); u0 and u1 nil:
+-- plain asphalt. nil when the carriageway has no lane a sheet could cover.
+function ROADS.laneBands(tags, width)
+  local L, LANE = ROADS.lanes(tags, width), ROADS.LANE
+  if L.carriage / L.n < LANE.minWidth then return nil end
+  local hw, bands = width / 2, {}
+  if L.left > .05 then bands[#bands + 1] = {from = hw, to = hw - L.left} end
+  bands[#bands + 1] = {from = hw - L.left, to = -hw + L.right, u0 = 0, u1 = L.n}
+  if L.right > .05 then bands[#bands + 1] = {from = -hw + L.right, to = -hw} end
+  return bands
+end
+-- Where a way runs on into a narrower one with no junction between them (a lane added before a
+-- crossing and dropped after it: in Kyiv one join in eight of a main road's ways), the wider
+-- strip narrows to the width of the other over TAPER.length metres, at most TAPER.share of its
+-- own length. Before, the edges met in a step of half the difference and every line jumped
+-- sideways there. Returns the half width at every point, or nil where no end narrows. The lines
+-- between lanes stop for the taper (ROADS.marks `lane`): a lane opens out of the flare, as it
+-- is painted on a real road.
+ROADS.TAPER = {length = 35, share = .45, least = .2}
+function ROADS.taper(joints, dist, hw)
+  if not joints then return nil end
+  local T, n, out = ROADS.TAPER, #dist, nil
+  local length = dist[n]
+  for e = 1, 2 do
+    local joint = joints[e]
+    local other = joint and joint[4] and joint[4] / 2
+    if other and other < hw - T.least and length > EPS then
+      -- the flare ends on a point of the strip (the first at or past its length): one straight
+      -- edge from the join, no bend inside a chord
+      local run = math.min(T.length, length * T.share)
+      for k = (e == 1 and 2 or n - 1), (e == 1 and n or 1), (e == 1 and 1 or -1) do
+        local s = e == 1 and dist[k] or length - dist[k]
+        if s >= run - 1e-6 then run = s; break end
+      end
+      out = out or {}
+      for k = 1, n do
+        local s = e == 1 and dist[k] or length - dist[k]
+        local half = s >= run and hw or other + (hw - other) * s / run
+        out[k] = math.min(out[k] or hw, half)
+      end
+    end
+  end
+  return out
+end
+-- The surface's normal at every point of a strip: up, leant back by the profile's slope, so a
+-- climbing road is lit as a slope (every asphalt quad was lit as level ground).
+function ROADS.stripUp(points, dist)
+  local ups, n = {}, #points
+  for k = 1, n do
+    local a, b = points[k > 1 and k - 1 or 1], points[k < n and k + 1 or n]
+    local dx, dy, dz = b[1] - a[1], b[2] - a[2], (b[3] or 0) - (a[3] or 0)
+    local h = math.sqrt(dx * dx + dy * dy)
+    if h > EPS then
+      local nx, ny = -dx / h * dz / h, -dy / h * dz / h
+      local l = math.sqrt(nx * nx + ny * ny + 1)
+      ups[k] = {nx / l, ny / l, 1 / l}
+    else
+      ups[k] = {0, 0, 1}
+    end
+  end
+  return ups
+end
+-- One chord of a strip (points k, k + 1) as its bands: v0 and v1 are the sheet's repeats at the
+-- chord's ends, counted along the road from its start (the same in every tile that draws it).
+function ROADS.laneQuads(polygon, bands, edge, k, ups, laneKind, plainKind, v0, v1)
+  local n0, n1 = ups[k], ups[k + 1]
+  local plain = COVER_SCALE[plainKind] or 6
+  for _, band in ipairs(bands) do
+    local a, b, c, d = edge(k, band.from), edge(k, band.to), edge(k + 1, band.to), edge(k + 1, band.from)
+    if band.u0 then
+      a[4], a[5], b[4], b[5] = band.u0, v0, band.u1, v0
+      c[4], c[5], d[4], d[5] = band.u1, v1, band.u0, v1
+    else
+      -- the shoulder: the plain asphalt's world projection, written out (a clipped corner
+      -- interpolates what it is given)
+      a[4], a[5], b[4], b[5] = a[1] / plain, a[2] / plain, b[1] / plain, b[2] / plain
+      c[4], c[5], d[4], d[5] = c[1] / plain, c[2] / plain, d[1] / plain, d[2] / plain
+    end
+    a[6], a[7], a[8], b[6], b[7], b[8] = n0[1], n0[2], n0[3], n0[1], n0[2], n0[3]
+    c[6], c[7], c[8], d[6], d[7], d[8] = n1[1], n1[2], n1[3], n1[1], n1[2], n1[3]
+    polygon(band.u0 and laneKind or plainKind, {a, b, c, d}, 'flat')
+  end
 end
 
 -- A track's runs off the roads: its line every TRACK_STEP m, cut where it comes within
@@ -3168,9 +3380,9 @@ local function navSegment(road)
   local highway = (tags.highway or 'residential'):gsub('_link$', '')
   if not SPEED[highway] or tags.access == 'private' or tags.access == 'no' or tags.area == 'yes' or #points < 2 then return nil end
   local oneway, flip = ROADS.oneway(tags)
-  local f, b = number(tags['lanes:forward'], nil), number(tags['lanes:backward'], nil)
-  local directional = not oneway and f and b and f >= 0 and b >= 0 and f + b or nil
-  local total = math.max(1, math.min(8, math.floor(number(tags.lanes, directional or math.floor((road.width or 7) / 3.5 + .5)))))
+  -- the lanes the road is drawn with (ROADS.lanes): traffic keeps to the painted ones
+  local L = ROADS.lanes(tags, road.width or 7)
+  local total = math.max(1, math.min(8, L.n))
   local lanes
   if oneway then
     lanes = string.rep('+', math.min(4, total))
@@ -5153,9 +5365,11 @@ function BLD.openings(scene, a, b, length, base, height, dress, door, detail)
     for i = 1, n do
       local s = (i - .5) * length / n
       if f == 0 and i == doorSlot then
-        quad('door_house', s, BLD.doors.w, base + .1, base + .1 + BLD.doors.h, dress.door)
+        quad(dress.kitDoor and (dress.kitDoor[7] == 1 and 'kit_cells2' or 'kit_cells') or 'door_house', s, BLD.doors.w,
+          base + .1, base + .1 + BLD.doors.h, dress.kitDoor or dress.door)
       else
-        quad(dress.win, s, style.w, z0, z0 + style.h, dress.cell)
+        quad(dress.kitWin and (dress.kitWin[7] == 1 and 'kit_cells2' or 'kit_cells') or dress.win, s, style.w, z0, z0 + style.h,
+          dress.kitWin or dress.cell)
         if dress.mass then BLD.frame(scene, a, b, length, s, style.w, z0, z0 + style.h, dress.win == 'win_wood', detail) end
       end
     end
@@ -6163,8 +6377,10 @@ function BLD.acUnits(scene, a, b, length, along, base, height, kind, h, spans, r
           if s + D.acWidth / 2 > span[1] and s - D.acWidth / 2 < span[2] and z0 < base + BLD.STORE.band + .1 then clear = false end
         end
         if clear then
-          BLD.box(scene, 'ac_unit', a, b, length, s - D.acWidth / 2, s + D.acWidth / 2, .02, .02 + D.acDepth,
-            z0, z0 + .52, false, true, true)
+          if not (VEG.city3d and VEG.city3d.aircon(scene.city3d, scene, a, b, length, s, z0)) then
+            BLD.box(scene, 'ac_unit', a, b, length, s - D.acWidth / 2, s + D.acWidth / 2, .02, .02 + D.acDepth,
+              z0, z0 + .52, false, true, true)
+          end
           BLD.note('ac_unit', a, b, length, s, z0 - base)
           n = n + 1
           if n >= room then return n end
@@ -12028,6 +12244,30 @@ end
 -- LuaJIT lets a function capture 60 upvalues: build() reaches these through tables it holds anyway.
 BLD.wallPoint, BLD.facadeScale, BLD.wallMaterial = wallPoint, facadeScale, wallMaterial
 BLD.pitchedRoof, BLD.footprintFrame = pitchedRoof, footprintFrame
+-- The building kit (kit.lua): a block of flats' facade assembled from blocks, where the planet
+-- has its art. BLD.kitPlan is the building in hand; without one the walls below are drawn.
+do
+  local ok, kit = pcall(require, 'ge/extensions/e2r/kit')
+  BLD.kit = ok and type(kit) == 'table' and kit or nil
+end
+function BLD.kitFor(building, tags, rings, height, footprint, h, block, options, rect, ground, bins)
+  if not BLD.kit or tags.amenity == 'place_of_worship' or tags.man_made or tags['bridge:support'] or tags['tower:type']
+    or BLD.worship[tags.building or ''] or BLD.isMonument(tags) then return nil end
+  return BLD.kit.plan({tags = tags, height = height, footprint = footprint, h = h, block = block, options = options,
+    rect = rect, ring = BLD.orient(rings[1], rings), rings = building.rings, ground = ground, shop = BLD.kitShop,
+    street = function(x, y) return BLD.street(bins, x, y, 18) end})
+end
+function BLD.kitWall(scene, piece, a, b, length, along, bottom, base, top, bins, court)
+  local plan = BLD.kitPlan
+  if not plan then return false end
+  -- a street in front of this wall: there the kit sets its windows in reveals higher up
+  local road = false
+  if length >= 4 then
+    local p = wallPoint(a, b, length, length * .5, 8, 0, 0, 0)
+    road = BLD.street(bins, p[1], p[2], 22) and true or false
+  end
+  return BLD.kit.wall(plan, scene, a, b, length, along, bottom, base, top, {full = piece.full, road = road and not court})
+end
 ROADS.trimLine, ROADS.simplify, ROADS.densifyWear = trimLine, simplify, densifyWear
 ROADS.liftDecks, ROADS.walkSides = liftDecks, walkSides
 
@@ -12413,6 +12653,7 @@ local function build(cells, i, j, options)
   end
   if options.terrainStep then tune.terrainStep = options.terrainStep end
   for name, value in pairs(options.tune or NONE) do tune[name] = value end
+  if not visualRoads or options.realStyle == false then tune.lanes = 0 end
   local lift, step = tune.roadLift, tune.terrainStep
   -- Arcs for the plan corners, before the ground, the junction mouths, the strips or the navgraph
   -- read a point: all of them follow the same line. The source cells are cached across tiles, so
@@ -13048,7 +13289,8 @@ local function build(cells, i, j, options)
             local sign = (tx * dx + ty * dy) >= 0 and 1 or -1
             local mitre = 1 / math.max(.5, math.abs(tx * dx + ty * dy))
             local joints = jointsOf[m.road] or {}
-            jointsOf[m.road], joints[m.e] = joints, {tx * sign, ty * sign, mitre}
+            -- [4]: the width of the way it runs on into (ROADS.taper)
+            jointsOf[m.road], joints[m.e] = joints, {tx * sign, ty * sign, mitre, list[3 - k].width}
           end
         end
       end
@@ -13167,7 +13409,7 @@ local function build(cells, i, j, options)
       -- joints: its ends that run on into the next way (no junction there)
       local strip = {road = road, points = points, normals = normals, hw = hw, tags = tags, dist = dist,
         surface = surfaceRoad, material = material, grade = grade, sides = sides, walk = walk,
-        start = cuts and cuts[1] or 0, joints = joints}
+        start = cuts and cuts[1] or 0, joints = joints, taper = tune.taper ~= 0 and ROADS.taper(joints, dist, hw) or nil}
       strips[#strips + 1] = strip
       trimmed[road] = points
       -- A cut mouth's corridor back to its node, a centimetre under the junction fan: drawn only
@@ -13197,6 +13439,13 @@ local function build(cells, i, j, options)
       local function edge(k, offset, dz)
         local p, n = points[k], normals[k]
         local widen = 1
+        -- a strip narrowing to the way it joins (ROADS.taper): the carriageway is scaled to the
+        -- half width there, and what lies past its edge (curb, sidewalk, verge) moves in with it
+        local half = strip.taper and strip.taper[k]
+        if half and half < hw then
+          local o = math.abs(offset)
+          offset = (offset < 0 and -1 or 1) * (o <= hw and o * half / hw or half + o - hw)
+        end
         if grade >= 4 and k > 1 and k < #points then
           widen = 1 + (hash('edge:' .. floor(p[1] + .5) .. ':' .. floor(p[2] + .5)) % 1000 / 1000 - .5) * .34
         end
@@ -13211,6 +13460,10 @@ local function build(cells, i, j, options)
         return {x, y, (p[3] or 0) + lift + (dz or 0) + cross}
       end
       strip.edge = edge
+      -- the asphalt as lanes with the texture along them (ROADS.laneBands), on a near tile
+      local laneKind = tune.lanes ~= 0 and grade == 0 and not road.track and ROADS.LANE.kinds[material]
+      local bands = laneKind and ROADS.laneBands(tags, width)
+      local ups = bands and ROADS.stripUp(points, dist)
       for k = 1, #points - 1 do
         local a, b = points[k], points[k + 1]
         local quad = {edge(k, hw), edge(k, -hw), edge(k + 1, -hw), edge(k + 1, hw)}
@@ -13218,7 +13471,12 @@ local function build(cells, i, j, options)
         if BOX.hit(rect, bx0, by0, bx1, by1, stripReach) then
           if surfaceRoad or ROADS.bridge(tags) then addAsphalt(quad, strip, k, not surfaceRoad) end
           if drawn(strip) and BOX.hit(rect, bx0, by0, bx1, by1, 0) and (farRoads or not road.deckGroup) then
-            emitSurface(strip.material, quad)
+            if bands then
+              ROADS.laneQuads(roads.polygon, bands, edge, k, ups, laneKind, material,
+                (strip.start + dist[k]) / ROADS.LANE.metres, (strip.start + dist[k + 1]) / ROADS.LANE.metres)
+            else
+              emitSurface(strip.material, quad)
+            end
           end
           local dx, dy = b[1] - a[1], b[2] - a[2]
           local length = math.sqrt(dx * dx + dy * dy)
@@ -13676,6 +13934,7 @@ local function build(cells, i, j, options)
   end
   -- before the verges and the drapes: a verge's land and a meadow's drape depend on it
   bio.landOff = options.land == false
+  bio.s2 = VEG.real.tile(options, rect, distant)
   -- The land at a point (VEG.land): moisture -1 (dry) .. 1 (lush) and bareness 0 .. 1, from the
   -- raw DEM `reach` m round it, so neighbouring tiles agree. Among buildings it stays lawn.
   function bio.landAt(x, y, d)
@@ -13796,7 +14055,11 @@ local function build(cells, i, j, options)
         -- a verge is the place's own ground: desert, alpine turf or snow, not a green band
         local kind = material
         if bio.on and #shaded >= 3 then kind = surfaceKind(cx / #shaded, cy / #shaded, 'ground') end
-        if #shaded >= 3 then
+        local real = not distant and bio.s2 and #shaded >= 3
+          and VEG.real.kindOf(bio.s2, kind, builtAt(cx / #shaded, cy / #shaded))
+        if real and #shaded >= 3 then
+          collectorOf.polygon(real, VEG.real.poly(bio.s2, shaded), up)
+        elseif #shaded >= 3 then
           local under, over, level = bio.landOf(cx / #shaded, cy / #shaded, kind)
           if over then
             collectorOf.polygon('cut_' .. under .. level, shaded, up)
@@ -14008,7 +14271,9 @@ local function build(cells, i, j, options)
           -- water is a WaterBlock (placeWater), not a textured sheet on the bed; `land`: an edge
           -- that stays grass is the ground's land sheet already (VEG.land)
           local surface = kind ~= 'water' and surfaceKind(cx / #half, cy / #half, kind)
-          if surface and not (land and VEG.land.kinds[surface]) then
+          -- (a field's or a meadow's edge over ground in real colour: the ground has its colour)
+          if surface and not (land and VEG.land.kinds[surface])
+              and not (bio.s2 and VEG.real.kindOf(bio.s2, surface, builtAt(cx / #half, cy / #half))) then
             scene.polygon(surface, out, true)
           end
         end
@@ -14126,22 +14391,39 @@ local function build(cells, i, j, options)
         if length > EPS then
           if boundsTouch(rect, {math.min(a[1], b[1]), math.min(a[2], b[2]), math.max(a[1], b[1]), math.max(a[2], b[2])}, width / 2) then
             local nx, ny = -dy / length, dx / length
+            -- the strip's half width at the chord's ends where it tapers (ROADS.taper)
+            local taper = strip.taper
+            local ha, hb = taper and taper[index] or width / 2, taper and taper[index + 1] or width / 2
+            local narrowed = taper and (ha < width / 2 - 1e-3 or hb < width / 2 - 1e-3)
             local function span(mark, start, finish)
               if finish - start <= EPS then return end
-              local p, q = lerp(a, b, (start - distance) / length), lerp(a, b, (finish - distance) / length)
+              local fp, fq = (start - distance) / length, (finish - distance) / length
+              local p, q = lerp(a, b, fp), lerp(a, b, fq)
               local half = mark.width * DECAL.markSpread / 2
-              local left, right = mark.offset - half, mark.offset + half
+              local op, oq = mark.offset, mark.offset
+              if narrowed then
+                -- an edge line keeps its inset from the narrowing edge, a centre line its share
+                local hp, hq = ha + (hb - ha) * fp, ha + (hb - ha) * fq
+                if mark.inset then
+                  op = mark.inset > 0 and hp - mark.inset or -hp - mark.inset
+                  oq = mark.inset > 0 and hq - mark.inset or -hq - mark.inset
+                else
+                  op, oq = op * hp / (width / 2), oq * hq / (width / 2)
+                end
+              end
               -- the worn paint runs on along the road: v from the source distance
               local v0 = start / DECAL.markRepeat % 1
               local v1 = v0 + (finish - start) / DECAL.markRepeat
               local zp, zq = (p[3] or 0) + lift + DECAL.markLift, (q[3] or 0) + lift + DECAL.markLift
-              roadDecor.polygon(markKind, {{p[1] + nx * left, p[2] + ny * left, zp, 0, v0},
-                {p[1] + nx * right, p[2] + ny * right, zp, 1, v0},
-                {q[1] + nx * right, q[2] + ny * right, zq, 1, v1},
-                {q[1] + nx * left, q[2] + ny * left, zq, 0, v1}}, 'flat')
+              roadDecor.polygon(markKind, {{p[1] + nx * (op - half), p[2] + ny * (op - half), zp, 0, v0},
+                {p[1] + nx * (op + half), p[2] + ny * (op + half), zp, 1, v0},
+                {q[1] + nx * (oq + half), q[2] + ny * (oq + half), zq, 1, v1},
+                {q[1] + nx * (oq - half), q[2] + ny * (oq - half), zq, 0, v1}}, 'flat')
             end
             for _, mark in ipairs(marks) do
-              if mark.dashed then
+              if narrowed and mark.lane then
+                -- no line between lanes in the flare
+              elseif mark.dashed then
                 for start = math.floor(distance / 12) * 12, distance + length, 12 do span(mark, math.max(distance, start), math.min(distance + length, start + 3)) end
               else span(mark, distance, distance + length) end
             end
@@ -14336,7 +14618,16 @@ local function build(cells, i, j, options)
       -- claimed water: the WaterBlock is the surface; the lattice is only the bed under it
       if kindA == 'water' then kindA = WATER.bed end
       if kindB == 'water' then kindB = WATER.bed end
-      if x1 > rect[1] and x0 < rect[3] and y1 > rect[2] and y0 < rect[4] then
+      local realA = bio.s2 and VEG.real.kindOf(bio.s2, kindA, builtAt((x0+x1+x1)/3, (y0+y0+y1)/3))
+      local realB = bio.s2 and VEG.real.kindOf(bio.s2, kindB, builtAt((x0+x1+x0)/3, (y0+y1+y1)/3))
+      if realA or realB then
+        -- real colour: the sheet's material, no lands by relief
+        if x1 > rect[1] and x0 < rect[3] and y1 > rect[2] and y0 < rect[4] then
+          if realA then roads.polygon(realA, VEG.real.poly(bio.s2, {a, b, c}), true) else roads.polygon(kindA, {a, b, c}, true) end
+          if realB then roads.polygon(realB, VEG.real.poly(bio.s2, {a, c, d}), true) else roads.polygon(kindB, {a, c, d}, true) end
+        end
+        kindA = true
+      elseif x1 > rect[1] and x0 < rect[3] and y1 > rect[2] and y0 < rect[4] then
         kindA, kindB = bio.landCell(x0, y0, x1, y1, kindA, kindB, a, b, c, d)
       end
       if kindA ~= true then
@@ -14363,7 +14654,8 @@ local function build(cells, i, j, options)
     return {version = 1, generator = 'earthng-lua-v1', source = options.regionId, layer = layer,
       tile = {i, j}, rect = rect, materials = options.materials or '/earthng/planet/materials.json',
       items = collector.items, mats = mats, triangles = total, packs = options.packs,
-      warmShapes = warm, stockMaterials = VEG.stockFor(collector.items, warm), yard = collector.yard}
+      warmShapes = warm, stockMaterials = VEG.stockFor(collector.items, warm), yard = collector.yard,
+      city3d = collector.city3d and collector.city3d.report or nil}
   end
   -- No road: the car stands on the ground at the landing (native.lua's off-road landing). The
   -- gentlest ground within ~80 m of it, the car across the slope: on Everest's summit ridge it
@@ -14488,6 +14780,11 @@ local function build(cells, i, j, options)
       local cx, cy = (a[1]+b[1]+c[1])/3, (a[2]+b[2]+c[2])/3
       local R = farMap and farMap.at(cx, cy)
       if R and drape then return scene.triangle(R.texKind, mapped(a, R), mapped(b, R), mapped(c, R), true) end
+      -- a far tile under a far map in real colour (far.lua, the pack's Sentinel-2 map) takes
+      -- it whole, as the horizon does: one picture from the near sheets to the skyline
+      if R and R.real and options.realStyle ~= false then
+        return scene.triangle(R.texKind, mapped(a, R), mapped(b, R), mapped(c, R), true)
+      end
       local kind = surfaceKind(cx, cy)
       if kind == 'water' then
         if R then return scene.triangle(R.texKind, mapped(a, R), mapped(b, R), mapped(c, R), true) end
@@ -14712,10 +15009,20 @@ local function build(cells, i, j, options)
   -- hidden walls between adjoining buildings (BLD.cover); far tiles draw boxes and keep them.
   -- Kept in `shops`: build() is at Lua's 200 locals.
   shops.cover = decor and not options.far and BLD.cover(lists.buildings, ground, false) or nil
+  shops.city3d = decor and not distant and VEG.city3d and VEG.city3d.plan(
+    {options = options, rect = rect, lists = lists, ground = ground}) or nil
+  scene.city3d = shops.city3d
+  if shops.city3d then
+    for _, item in ipairs(shops.city3d.items) do scene.items[#scene.items + 1] = item end
+  end
   for _, building in ipairs(decor and lists.buildings or NONE) do
+    if shops.city3d then
+      shops.city3d.currentAC = VEG.city3d.acBlocks[tostring(building.id)] and tostring(building.id) or nil
+    end
     local rings, tags = building.rings or {}, building.tags or {}
     local exterior = cleanRing(rings[1])
-    if #exterior >= 3 and not tags.e2r_outline and ringsTouch(rings, rect) then
+    if #exterior >= 3 and not tags.e2r_outline and ringsTouch(rings, rect)
+      and not (shops.city3d and shops.city3d.replaced[tostring(building.id)]) then
       local span = shops.cover and BLD.spanOf(shops.cover, building) or BLD.span(building, ground, options.far)
       if options.far then
         local box = ringBounds(rings)
@@ -14744,6 +15051,10 @@ local function build(cells, i, j, options)
       local scene = options.realStyle ~= false and (tags['bridge:support'] or tags['tower:type'] == 'bridge' or tags.e2r_part)
         and ROADS.clearTower(scene, asphaltBins, rings, rect, span) or scene
       local top, kind = base + height, BLD.wallMaterial(building, look, height, footprint)
+      -- a far box of a building the kit draws near keeps the kit's wall colour (kit.lua M.far)
+      if options.far and BLD.kit and not tags.e2r_part and tags.building ~= 'roof' and kind:find('wall_', 1, true) == 1 then
+        kind = BLD.kit.farKind(tags, height, footprint, h, look.block or BLD.packBlock, options, building.rings) or kind
+      end
       -- building=roof stands open on columns (BLD.shopCanopy); a canopy over pumps clears a
       -- lorry unless OSM gives its height
       local open = tags.building == 'roof' and not options.far
@@ -14751,6 +15062,7 @@ local function build(cells, i, j, options)
         height = math.max(height, tags['building:levels'] and BLD.SHOP.canopy.levels or BLD.SHOP.canopy.height)
         top = base + height
       end
+      BLD.kitShop = nil
       if not distant and not open and height >= 2.2 then
         local own, points, box = shops.own[building] or BLD.shopCell(nil, tags), {}, ringBounds(rings)
         for bx = math.floor(box[1] / 100), math.floor(box[3] / 100) do
@@ -14761,6 +15073,7 @@ local function build(cells, i, j, options)
           end
         end
         if own or #points > 0 then BLD.shopSigns(scene, building, rings, base, bottom, height, own, points, segmentBins, ground, shops.info[building]) end
+        BLD.kitShop = (own or #points > 0) and true or nil
         if shops.venue[building] then BLD.venueSigns(scene, rings, base, bottom, height, shops.venue[building], segmentBins, ground) end
       end
       -- Storefront spans (BLD.shopLinks). A lifted block and a wall lower than the band keep
@@ -14784,6 +15097,10 @@ local function build(cells, i, j, options)
       local plinth = not lifted and height <= 13 and (kind:find('wall_brk_', 1, true) == 1 or kind:find('wall_pls_', 1, true) == 1)
       -- a house (BLD.house): its plinth colour, windows, door, gables and roof guesses
       local dress = kind:find('hw_', 1, true) == 1 and not BLD.isMonument(tags) and BLD.dress(kind, h) or nil
+      -- with the kit's art, a house's window and door are its region's (kit.lua M.houses)
+      if dress and BLD.kit and not distant and BLD.kit.enabled(options) then
+        dress.kitWin, dress.kitDoor = BLD.kit.house(look.block or BLD.packBlock, h)
+      end
       if dress then plinth = not lifted and dress.plinth end
       -- Grammar v0, near tiles at Balanced and above: cornice, porch, one balcony, chimney.
       if dress and not options.far and BLD.mass(options.detail) then
@@ -14801,6 +15118,9 @@ local function build(cells, i, j, options)
       BLD.plane = not options.far and not open and BLD.skillion(rings, tags, top) or nil
       BLD.bare = BLD.plane and tags.e2r_part and tags.wall == 'no'
       local doors = (use == 'garage' or use == 'garages') and (h % 3 == 0 and 'door_rust' or 'door_garage')
+      -- the kit's facade instead of the photo wall and what is hung on it (canopies, AC, balconies)
+      BLD.kitPlan = not dress and not open and not lifted and not shopWalls and not doors and not BLD.plane and not distant
+        and BLD.kitFor(building, tags, rings, height, footprint, h, look.block or BLD.packBlock, options, rect, ground, segmentBins) or nil
       local detailed = options.experimentalDetail and BLD.city and not options.far
       BLD.report = type(options.detailReport) == 'table' and options.detailReport or nil
       local acRoom = BLD.DETAIL.acMax
@@ -14847,8 +15167,8 @@ local function build(cells, i, j, options)
           if hide then
             -- inside the neighbour up to its top; above a lower one, a blank fire wall
             if hide < top - .05 then
-              local fire = BLD.fireWall(wallKind)
-              local sc, z0 = BLD.facadeScale(fire), math.max(hide, bottom)
+              local fire = BLD.kitPlan and 'kw_' .. BLD.kitPlan.wall or BLD.fireWall(wallKind)
+              local sc, z0 = BLD.kitPlan and BLD.kitPlan.wallM or BLD.facadeScale(fire), math.max(hide, bottom)
               scene.polygon(fire, {{a[1], a[2], z0, along / sc, (z0 - base) / sc},
                 {b[1], b[2], z0, (along + length) / sc, (z0 - base) / sc},
                 {b[1], b[2], top, (along + length) / sc, height / sc},
@@ -14857,6 +15177,8 @@ local function build(cells, i, j, options)
             end
             if BLD.plane then BLD.skillionWall(scene, wallKind, a, b, top, along, length, base, scale) end
             if type(options.detailReport) == 'table' then BLD.note('hidden_wall', a, b, length, 0, hide) end
+          elseif BLD.kitWall(scene, piece, a, b, length, along, bottom, base, top, segmentBins, raw ~= rings[1]) then
+            -- drawn by the kit
           else
           local seam = plinth and math.min(top, math.max(bottom, base + BLD.plinth)) or bottom
           if seam > bottom then
@@ -14947,7 +15269,7 @@ local function build(cells, i, j, options)
       if options.far or open or not BLD.pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet, BLD.region(look)), dress) then
         for _, tri in ipairs(triangulate(rings, pause, rect)) do
           for _, p in ipairs(tri) do p[3] = BLD.plane and BLD.plane(p[1], p[2]) or top end
-          scene.polygon('roof', tri, true)
+          scene.polygon(BLD.kitPlan and 'kw_bitumen' or 'roof', tri, true)
         end
         if open then BLD.shopCanopy(scene, rings, base, top, shops.roofs[building], ground, pause, rect) end
         if BLD.city then
@@ -14958,8 +15280,16 @@ local function build(cells, i, j, options)
       elseif dress and dress.mass then
         BLD.chimney(scene, rings[1], top, dress, h, tags)
       end
-      if BLD.city then BLD.canopies(scene, h, height) end
-      BLD.city, BLD.face, BLD.faces = nil, nil, nil
+      if BLD.city and not BLD.kitPlan then BLD.canopies(scene, h, height) end   -- the kit has its own porches
+      if BLD.kitPlan and type(options.kitReport) == 'table' then
+        local report = options.kitReport
+        report.buildings, report.tris = (report.buildings or 0) + 1, (report.tris or 0) + BLD.kitPlan.tris
+        report.styles = report.styles or {}
+        report.styles[BLD.kitPlan.name] = (report.styles[BLD.kitPlan.name] or 0) + 1
+        report.parts = report.parts or {}
+        for part, n in pairs(BLD.kitPlan.parts) do report.parts[part] = (report.parts[part] or 0) + n end
+      end
+      BLD.city, BLD.face, BLD.faces, BLD.kitPlan = nil, nil, nil, nil
     end
     pause()
   end
@@ -15636,8 +15966,17 @@ local function build(cells, i, j, options)
       OFFROAD.manual = both
     end
   end
+  if shops.city3d then
+    local reserved = VEG.city3d.reserve(shops.city3d, lists, segments, scene, OFFROAD.signs, OFFROAD.manual, pause)
+    if #reserved > 0 then
+      local both = {}
+      for _, p in ipairs(OFFROAD.manual) do both[#both + 1] = p end
+      for _, p in ipairs(reserved) do p.city3dReserve = true; both[#both + 1] = p end
+      OFFROAD.manual = both
+    end
+  end
   for _, p in ipairs(OFFROAD.manual) do
-    if p.x >= rect[1] and p.x < rect[3] and p.y >= rect[2] and p.y < rect[4] then
+    if not p.city3dReserve and p.x >= rect[1] and p.x < rect[3] and p.y >= rect[2] and p.y < rect[4] then
       if p.editorObject then
         -- one name per object (manual_editor.objectName): the spawner skips it while the
         -- editor's own copy or another tile's copy is in the scene. Not decor: the scene

@@ -35,6 +35,19 @@ of the following data and assets:
   Area imagery is obtained from Terrascope's WMS true-colour 2021 composite, reprojected
   to Web Mercator and encoded as mipmapped DXT5 sheets; no imagery service is used in game.
   [Data and attribution](https://esa-worldcover.org/en/data-access) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+- The land's real colour in a pack built with `--real-colour` (`far/<region>.s2.color.dds`,
+  `far/<region>.s2.bin`; `earthng/s2_colour.py`) is the same ESA WorldCover 2021 annual
+  composite of Sentinel-2 (red, green and blue at 10 m), read from the open bucket
+  `esa-worldcover-s2`, resampled to the region's frame, brightened and encoded as BC1 maps.
+  © ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021)
+  processed by ESA WorldCover consortium.
+  [Registry of Open Data on AWS](https://registry.opendata.aws/esa-worldcover-vito-composites/) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+- The engine's grass on a hidden terrain block (`mod/lua/ge/extensions/e2r/turf.lua`) follows
+  BeamNG.Earth by TecnaGamer (MIT, https://github.com/TecnaGamer/BeamNG.Earth): that a
+  TerrainBlock which is not drawn still carries GroundCover, CPU placement with
+  `flushGroundCoverGrids`, and the way a stock GroundCover definition is read from the
+  game's own level files and bound to another layer (`fieldsFor`, adapted from its
+  `groundcover.lua`). Copyright (c) TecnaGamer; the MIT terms apply to those parts.
 - The address plates' letters (`real/glyphs` in the planet's art) are rendered from Noto
   Sans Mono Bold, which BeamNG.drive ships in `ui/common/Noto_Sans_Mono`; the font itself
   is not copied. Copyright 2022 The Noto Project Authors, SIL Open Font License 1.1:
@@ -72,3 +85,31 @@ compiled into `earthng-mapbuilder.exe` and `earthng_native.dll` are listed with 
 licenses in `bin/THIRD_PARTY_RUST.txt` inside the exe's runtime; the native tools load
 GEOS (LGPL 2.1) from shapely and PROJ (MIT) from pyproj at run time.
 The planet builder uses `distributable=True` to avoid embedding game textures.
+
+
+## Experimental Kyiv 3D art (fal, 21 November 2026)
+
+Original prototype art in `mod/art/shapes/earthng/kyiv3d/` was generated through fal
+with `fal-ai/nano-banana-2` (concept images) and `fal-ai/trellis-2` (textured 3D).
+The recipes are in `earthng/kyiv3d_assets.py`; the art folder contains provenance
+(endpoint, request IDs, seeds and source hashes) and metric conversion reports.
+This is artistic regional reconstruction, not a surveyed replica.
+
+Upstream model pages: [Nano Banana 2](https://fal.ai/models/fal-ai/nano-banana-2),
+[Trellis 2](https://fal.ai/models/fal-ai/trellis-2). Both pages label commercial use;
+provider terms apply. No BeamNG stock meshes or reference photographs are included
+in this generated art. Installed stock resources remain VFS references.
+
+## Building kit art (fal, 21 November 2026)
+
+The building kit's maps (`kw_*`, `kit_cells*`, `kit_trim*` in the planet's art; recipes and
+processing in `earthng/kit_art.py`) were generated through fal: wall and roof surfaces with
+`fal-ai/patina/material` (seamless colour, normal, roughness and height), the sheets of
+windows, doors and facade fittings and the trim strips with `fal-ai/nano-banana-2`. The
+prompts are in `kit_art.py`; endpoints, request IDs and seeds are logged in
+`data/textures/kit/fal_manifest.jsonl` beside the generated originals. The atlas, the panel
+sheets, the glass masks and the tints are computed from those originals at art build.
+These are artistic regional types, not photographs or surveys of real buildings.
+
+Upstream model pages: [PATINA](https://fal.ai/models/fal-ai/patina/material),
+[Nano Banana 2](https://fal.ai/models/fal-ai/nano-banana-2). Provider terms apply.

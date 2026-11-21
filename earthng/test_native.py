@@ -711,7 +711,7 @@ class NativeTests(unittest.TestCase):
         end''')
         cell = dict(roads=[dict(id='r', nodes=['a', 'b'], width=8,
                                 points=[[0, 50, 0], [50, 50, 0], [100, 50, 0]],
-                                tags={'highway': 'residential', 'lanes': '2', 'sidewalk': 'no'})],
+                                tags={'highway': 'residential', 'lanes': '2', 'lane_markings': 'yes', 'sidewalk': 'no'})],
                     buildings=[dict(id='b', height=9, kind='building', tags={'building': 'yes'},
                                     rings=[[[20, 20, 0], [40, 20, 0], [40, 40, 0], [20, 40, 0]]])],
                     junctions=[], areas=[], lines=[],

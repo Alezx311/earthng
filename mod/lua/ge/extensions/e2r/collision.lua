@@ -64,7 +64,7 @@ function M.quiet(meshes, layer)
     -- the proxies are the collision; a facade wall (e2rf_wall_*) is drawn, the shell collides
     if name == 'e2rf_col_ground' or name == 'e2rf_col_bldg' then return false end
     local skip = set[name]
-      or (layer == 'road' and (TERRAIN[name] or name:sub(1, 9) == 'e2rf_cut_'))
+      or (layer == 'road' and (TERRAIN[name] or name:sub(1, 9) == 'e2rf_cut_' or name:sub(1, 7) == 'e2rf_s2'))
       or (layer == 'scene' and name:sub(1, 10) == 'e2rf_wall_')
     if not skip then return false end
   end
