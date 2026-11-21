@@ -15,7 +15,7 @@ A subject is a table row where it can be: a new surface or cover is one more lin
 """
 import math
 
-from proving_ground import BASE, COLS, CORNER, GRID, RING, ROWS, SHORE, TILE, code, tags
+from proving_ground import BASE, COLS, CORNER, GRID, LAND, RING, ROWS, SHORE, TILE, block_of, code, tags
 
 MERIDIAN = 250.         # x of the north-south road: the middle of column H
 
@@ -34,7 +34,7 @@ def register(plan, i, j, zone, title, title_en=None, tag_text=''):
     x0, y0 = origin(i, j)
     yc = y0 + TILE / 2
     plan.tiles[code(i, j)] = {
-        'i': i, 'j': j, 'zone': zone, 'title': title, 'titleEn': title_en, 'tags': tag_text,
+        'i': i, 'j': j, 'block': block_of(i, j)['id'], 'zone': zone, 'title': title, 'titleEn': title_en, 'tags': tag_text,
         'at': (x0 + 30, yc - 1.6), 'yaw': 90,
         'views': [{'id': 'street', 'eye': (x0 + 40, yc - 5, 2.4), 'target': (x0 + 250, yc, 1.), 'fov': 55},
                   {'id': 'over', 'eye': (x0 + 250, y0 - 90, 190), 'target': (x0 + 250, y0 + 235, 0), 'fov': 60},
@@ -79,15 +79,24 @@ def shrunk(rect, by):
 
 
 # --- the coast and the roads every row shares ---------------------------------------------------
-def _side(plan, side, d):
-    """One side of the island's outline, d metres inland, counter-clockwise, corner to corner."""
-    cx, cy, r = GRID[2] + SHORE - CORNER, GRID[3] + SHORE - CORNER, CORNER - d
-    corners = {'s': ((-cx, -cy, 225, 270), (cx, -cy, 270, 315)), 'e': ((cx, -cy, 315, 360), (cx, cy, 0, 45)),
-               'n': ((cx, cy, 45, 90), (-cx, cy, 90, 135)), 'w': ((-cx, cy, 135, 180), (-cx, -cy, 180, 225))}
+def _round(plan, side, rect, r):
+    """One side of a rectangle with round corners of radius r, counter-clockwise, corner to corner."""
+    x0, y0, x1, y1 = rect
+    a, b, c, d = x0 + r, y0 + r, x1 - r, y1 - r
+    corners = {'s': ((a, b, 225, 270), (c, b, 270, 315)), 'e': ((c, b, 315, 360), (c, d, 0, 45)),
+               'n': ((c, d, 45, 90), (a, d, 90, 135)), 'w': ((a, d, 135, 180), (a, b, 180, 225))}
     out = []
     for x, y, a0, a1 in corners[side]:
         out += plan.arc(x, y, r, a0, a1)
     return out
+
+
+OUTLINE = (LAND[0] - SHORE, LAND[1] - SHORE, LAND[2] + SHORE, LAND[3] + SHORE)
+
+
+def _side(plan, side, d):
+    """One side of the island's outline, d metres inland."""
+    return _round(plan, side, (OUTLINE[0] + d, OUTLINE[1] + d, OUTLINE[2] - d, OUTLINE[3] - d), CORNER - d)
 
 
 def band(plan, side, d0, d1, tag):
@@ -100,16 +109,8 @@ def coast(plan):
     band(plan, 'w', 3, 150, tags('natural=beach surface=sand', name='Західний пляж'))
     band(plan, 'e', 3, 120, tags('natural=shingle', name='Галька'))
     band(plan, 'n', 3, 110, tags('natural=bare_rock', name='Північні скелі'))
-    # The cliffs of the north shore: the land holds its height up to 90 m from the water.
-    hy = GRID[3] + SHORE
-
-    def cliffs(x, y):
-        import numpy as np
-        edge = hy - y
-        return np.where(y > 0, 26. * (1 - np.clip((edge - 90) / 220., 0, 1)) * np.clip(edge / 90., 0, 1), 0.)
-    plan.relief.append(cliffs)
     # a pier and a harbour basin on the east shore, a lighthouse on the north-east corner
-    hx = GRID[2] + SHORE
+    hx = OUTLINE[2]
     plan.way([(hx - 160, 600), (hx + 180, 600)], tags('man_made=pier highway=footway', name='Пірс'))
     basin = (hx - 230, 700., hx + 20, 1000.)
     plan.rect(*basin, tags('natural=water water=harbour', name='Гавань'))
@@ -119,7 +120,7 @@ def coast(plan):
         inside = (x > basin[0] - 20) & (x < basin[2] + 60) & (y > basin[1] - 20) & (y < basin[3] + 20)
         return np.where(inside, np.minimum(h, -3.), h)
     plan.carve.append(dock)
-    plan.node(hx - 330, GRID[3] + SHORE - 330, tags('man_made=lighthouse', name='Маяк Немо'))
+    plan.node(hx - 330, OUTLINE[3] - 330, tags('man_made=lighthouse', name='Маяк Немо'))
     lon, lat = -123.3933, -48.8767
     from proving_ground import frame
     x, y = frame().local(lon, lat)
@@ -127,9 +128,9 @@ def coast(plan):
 
 
 def ring(plan):
-    d = SHORE - RING
+    around = (GRID[0] - RING, GRID[1] - RING, GRID[2] + RING, GRID[3] + RING)
     for side, label in zip('senw', ('південь', 'схід', 'північ', 'захід')):
-        plan.way(_side(plan, side, d), tags('highway=secondary lanes=2 surface=asphalt', name=f'Кільцева ({label})'))
+        plan.way(_round(plan, side, around, 200.), tags('highway=secondary lanes=2 surface=asphalt', name=f'Кільцева ({label})'))
     for j in ROWS:
         yc = centre_y(j)
         for x, x1 in ((GRID[0], GRID[0] - RING), (GRID[2], GRID[2] + RING)):
@@ -173,24 +174,27 @@ def dual(plan, i, j, tag, label, gap):
              dict(tag, oneway='yes', name=name))
 
 
+def classes_tile(plan, i, j, k):
+    label, spec, gap = CLASSES[k]
+    x0, y0, yc = register(plan, i, j, 'classes', label, tag_text=spec)
+    open_ground(plan, i, j)
+    if gap:
+        dual(plan, i, j, tags(spec), label, gap)
+    else:
+        avenue(plan, i, j, tags(spec), label)
+    path = PATHS[k]
+    plan.way([(x0 + 20, yc + 40), (x0 + 480, yc + 40)], tags(path, name=f'{code(i, j)} {path}'))
+    # the same path on the other side with a surface a path often has
+    soft = tags(path, surface='ground', name=f'{code(i, j)} {path} surface=ground')
+    plan.way([(x0 + 20, yc - 40), (x0 + 480, yc - 40)], soft)
+    # a way in from the avenue: a drive for what cars use, a footpath for the rest
+    link = tags('highway=service') if path.startswith('highway=service') else tags('highway=footway')
+    plan.way([(x0 + 60, yc + 40), (x0 + 60, yc), (x0 + 60, yc - 40)], link)
+
+
 def road_classes(plan, j):
-    columns = [i for i in COLS if i != 0]
-    for k, i in enumerate(columns):
-        label, spec, gap = CLASSES[k]
-        x0, y0, yc = register(plan, i, j, 'classes', label, tag_text=spec)
-        open_ground(plan, i, j)
-        if gap:
-            dual(plan, i, j, tags(spec), label, gap)
-        else:
-            avenue(plan, i, j, tags(spec), label)
-        path = PATHS[k]
-        plan.way([(x0 + 20, yc + 40), (x0 + 480, yc + 40)], tags(path, name=f'{code(i, j)} {path}'))
-        # the same path on the other side with a surface a path often has
-        soft = tags(path, surface='ground', name=f'{code(i, j)} {path} surface=ground')
-        plan.way([(x0 + 20, yc - 40), (x0 + 480, yc - 40)], soft)
-        # a way in from the avenue: a drive for what cars use, a footpath for the rest
-        link = tags('highway=service') if path.startswith('highway=service') else tags('highway=footway')
-        plan.way([(x0 + 60, yc + 40), (x0 + 60, yc), (x0 + 60, yc - 40)], link)
+    for k, i in enumerate(c for c in COLS if c != 0):
+        classes_tile(plan, i, j, k)
 
 
 # --- row 9: surfaces ----------------------------------------------------------------------------
@@ -198,28 +202,31 @@ SURFACES = ('asphalt', 'concrete', 'concrete:plates', 'paving_stones', 'sett', '
             'fine_gravel', 'gravel', 'dirt', 'ground', 'sand', 'grass')
 
 
+def surfaces_tile(plan, i, j, k):
+    s = SURFACES[k]
+    x0, y0, yc = register(plan, i, j, 'surfaces', f'surface={s}', tag_text=f'highway=unclassified surface={s}')
+    open_ground(plan, i, j)
+    avenue(plan, i, j, tags('highway=unclassified', surface=s), f'surface={s}', xs=(120, 380))
+    plan.way([(x0 + 20, yc + 34), (x0 + 480, yc + 34)], tags('highway=footway', surface=s))
+    plan.way([(x0 + 20, yc - 34), (x0 + 480, yc - 34)], tags('highway=track', surface=s))
+    north, south = plots(i, j, 'n', 2, setback=60), plots(i, j, 's', 2, setback=60)
+    a = (north[0][0], north[0][1], north[0][2], north[0][1] + 70)
+    plan.rect(*a, tags('amenity=parking parking=surface', surface=s, name=f'Стоянка {s}'))
+    plan.way([(x0 + 120, yc), (x0 + 120, a[1] + 35), (a[2] - 10, a[1] + 35)],
+             tags('highway=service service=parking_aisle', surface=s))
+    b = (north[1][0], north[1][1], north[1][2], north[1][1] + 70)
+    plan.rect(*b, tags('highway=pedestrian area=yes', surface=s, name=f'Площа {s}'))
+    plan.way([(x0 + 380, yc), (x0 + 380, b[1])], tags('highway=footway', surface=s))
+    c = (south[0][0], south[0][3] - 70, south[0][2], south[0][3])
+    plan.rect(*c, tags('leisure=pitch sport=multi', surface=s, name=f'Майданчик {s}'))
+    d = (south[1][0], south[1][3] - 70, south[1][2], south[1][3])
+    plan.rect(*d, tags('landuse=industrial', surface=s, name=f'Двір {s}'))
+    plan.way([(x0 + 380, yc), (x0 + 380, d[3] - 35), (d[2] - 10, d[3] - 35)], tags('highway=service', surface=s))
+
+
 def surfaces(plan, j):
-    columns = [i for i in COLS if i != 0]
-    for k, i in enumerate(columns):
-        s = SURFACES[k]
-        x0, y0, yc = register(plan, i, j, 'surfaces', f'surface={s}', tag_text=f'highway=unclassified surface={s}')
-        open_ground(plan, i, j)
-        avenue(plan, i, j, tags('highway=unclassified', surface=s), f'surface={s}', xs=(120, 380))
-        plan.way([(x0 + 20, yc + 34), (x0 + 480, yc + 34)], tags('highway=footway', surface=s))
-        plan.way([(x0 + 20, yc - 34), (x0 + 480, yc - 34)], tags('highway=track', surface=s))
-        north, south = plots(i, j, 'n', 2, setback=60), plots(i, j, 's', 2, setback=60)
-        a = (north[0][0], north[0][1], north[0][2], north[0][1] + 70)
-        plan.rect(*a, tags('amenity=parking parking=surface', surface=s, name=f'Стоянка {s}'))
-        plan.way([(x0 + 120, yc), (x0 + 120, a[1] + 35), (a[2] - 10, a[1] + 35)],
-                 tags('highway=service service=parking_aisle', surface=s))
-        b = (north[1][0], north[1][1], north[1][2], north[1][1] + 70)
-        plan.rect(*b, tags('highway=pedestrian area=yes', surface=s, name=f'Площа {s}'))
-        plan.way([(x0 + 380, yc), (x0 + 380, b[1])], tags('highway=footway', surface=s))
-        c = (south[0][0], south[0][3] - 70, south[0][2], south[0][3])
-        plan.rect(*c, tags('leisure=pitch sport=multi', surface=s, name=f'Майданчик {s}'))
-        d = (south[1][0], south[1][3] - 70, south[1][2], south[1][3])
-        plan.rect(*d, tags('landuse=industrial', surface=s, name=f'Двір {s}'))
-        plan.way([(x0 + 380, yc), (x0 + 380, d[3] - 35), (d[2] - 10, d[3] - 35)], tags('highway=service', surface=s))
+    for k, i in enumerate(c for c in COLS if c != 0):
+        surfaces_tile(plan, i, j, k)
 
 
 # --- row 8: lanes and markings ------------------------------------------------------------------
@@ -241,22 +248,25 @@ LANES = (
 )
 
 
+def lanes_tile(plan, i, j, k):
+    label, spec = LANES[k]
+    x0, y0, yc = register(plan, i, j, 'lanes', label, tag_text=spec or 'highway=primary lanes=4 / lanes=2')
+    open_ground(plan, i, j)
+    if spec is None:
+        name = f'{code(i, j)} {label}'
+        plan.way([(x0, yc), (x0 + 250, yc)], tags('highway=primary lanes=4', name=name))
+        plan.way([(x0 + 250, yc), (x0 + TILE, yc)], tags('highway=primary lanes=2', name=name))
+    else:
+        avenue(plan, i, j, tags(spec), label, xs=(250,))
+    # a side street of each kind to turn into: the mouth of a narrower road on a wider one
+    plan.way([(x0 + 250, yc), (x0 + 250, yc + 200)], tags('highway=residential', name=f'{code(i, j)} бічна'))
+    plan.way([(x0 + 250, yc), (x0 + 250, yc - 200)], tags('highway=service', name=f'{code(i, j)} проїзд'))
+    plan.node(x0 + 250, yc + 200, tags('highway=turning_circle'))
+
+
 def lanes(plan, j):
-    columns = [i for i in COLS if i != 0]
-    for k, i in enumerate(columns):
-        label, spec = LANES[k]
-        x0, y0, yc = register(plan, i, j, 'lanes', label, tag_text=spec or 'highway=primary lanes=4 / lanes=2')
-        open_ground(plan, i, j)
-        if spec is None:
-            name = f'{code(i, j)} {label}'
-            plan.way([(x0, yc), (x0 + 250, yc)], tags('highway=primary lanes=4', name=name))
-            plan.way([(x0 + 250, yc), (x0 + TILE, yc)], tags('highway=primary lanes=2', name=name))
-        else:
-            avenue(plan, i, j, tags(spec), label, xs=(250,))
-        # a side street of each kind to turn into: the mouth of a narrower road on a wider one
-        plan.way([(x0 + 250, yc), (x0 + 250, yc + 200)], tags('highway=residential', name=f'{code(i, j)} бічна'))
-        plan.way([(x0 + 250, yc), (x0 + 250, yc - 200)], tags('highway=service', name=f'{code(i, j)} проїзд'))
-        plan.node(x0 + 250, yc + 200, tags('highway=turning_circle'))
+    for k, i in enumerate(c for c in COLS if c != 0):
+        lanes_tile(plan, i, j, k)
 
 
 # --- column H: junctions ------------------------------------------------------------------------
@@ -301,71 +311,74 @@ def _on(plan, way, x, y, tag):
     return n
 
 
-def junctions(plan):
-    i = 0
+def junction_tile(plan, i, j, row):
+    """A junction of the meridian with a row's avenue; row: which of the ten kinds (the main grid's rows)."""
     ter, res = tags('highway=tertiary lanes=2'), tags('highway=residential')
+    x0, y0 = origin(i, j)
+    open_ground(plan, i, j)
+    if row == 10:
+        register(plan, i, j, 'junctions', 'Світлофор, 4 смуги', 'Signals, 4 lanes', 'highway=traffic_signals')
+        xm, yc = _arms(plan, i, j, tags('highway=primary lanes=4'), tags('highway=secondary lanes=2'), label='світлофор')
+        plan.node(xm, yc, tags('highway=traffic_signals'))
+        for w in (len(plan.ways) - 2, len(plan.ways) - 1):
+            horizontal = w == len(plan.ways) - 2
+            for s in (-1, 1):
+                _on(plan, w, xm + (s * 12 if horizontal else 0), yc + (0 if horizontal else s * 12),
+                    tags('highway=crossing crossing=traffic_signals crossing:markings=zebra'))
+    elif row == 9:
+        register(plan, i, j, 'junctions', 'Кільце r=18', 'Roundabout r=18', 'junction=roundabout')
+        xm, yc = _arms(plan, i, j, ter, ter, 18., 'кільце')
+        _circle(plan, xm, yc, 18., tags('highway=tertiary junction=roundabout', name=f'{code(i, j)} кільце'))
+    elif row == 8:
+        register(plan, i, j, 'junctions', 'Знаки STOP', 'Stop signs', 'highway=stop')
+        xm, yc = _arms(plan, i, j, tags('highway=secondary lanes=2'), res, label='STOP')
+        for s in (-1, 1):
+            _on(plan, len(plan.ways) - 1, xm, yc + s * 9, tags('highway=stop'))
+    elif row == 7:
+        register(plan, i, j, 'junctions', 'Міні-кільце', 'Mini roundabout', 'highway=mini_roundabout')
+        xm, yc = _arms(plan, i, j, ter, res, label='міні-кільце')
+        plan.node(xm, yc, tags('highway=mini_roundabout'))
+    elif row == 6:
+        register(plan, i, j, 'junctions', 'Зебри на всіх виїздах', 'Zebras on every arm', 'highway=crossing')
+        xm, yc = _arms(plan, i, j, ter, ter, label='зебри')
+        for w in (len(plan.ways) - 2, len(plan.ways) - 1):
+            horizontal = w == len(plan.ways) - 2
+            for s in (-1, 1):
+                _on(plan, w, xm + (s * 9 if horizontal else 0), yc + (0 if horizontal else s * 9),
+                    tags('highway=crossing crossing=uncontrolled crossing:markings=zebra'))
+    elif row == 5:
+        register(plan, i, j, 'junctions', 'Зміщене перехрестя', 'Staggered junction')
+        xm, yc = x0 + TILE / 2, y0 + TILE / 2
+        avenue(plan, i, j, tags('highway=secondary lanes=2'), 'зміщене')
+        plan.way([(xm, y0), (xm, yc - 90), (xm - 35, yc - 45), (xm - 35, yc)], dict(res, name='Меридіан'))
+        plan.way([(xm + 35, yc), (xm + 35, yc + 45), (xm, yc + 90), (xm, y0 + TILE)], dict(res, name='Меридіан'))
+    elif row == 4:
+        register(plan, i, j, 'junctions', 'Перетин під 45°', 'Skew crossing 45°')
+        xm, yc = x0 + TILE / 2, y0 + TILE / 2
+        avenue(plan, i, j, ter, 'під кутом')
+        plan.way([(xm, y0), (xm, yc - 190), (xm - 120, yc - 120), (xm + 120, yc + 120), (xm, yc + 190),
+                  (xm, y0 + TILE)], dict(ter, name='Меридіан'))
+    elif row == 3:
+        register(plan, i, j, 'junctions', 'Кільце r=40, п’ять виїздів', 'Roundabout r=40, five arms', 'junction=roundabout')
+        xm, yc = _arms(plan, i, j, tags('highway=secondary lanes=2'), ter, 40., 'велике кільце')
+        _circle(plan, xm, yc, 40., tags('highway=secondary junction=roundabout lanes=2', name=f'{code(i, j)} кільце'))
+        a = math.radians(45)
+        plan.way([(xm + 40 * math.cos(a), yc + 40 * math.sin(a)), (xm + 190, yc + 190)], dict(res, name=f'{code(i, j)} п’ятий'))
+        plan.node(xm + 190, yc + 190, tags('highway=turning_circle'))
+    elif row == 2:
+        register(plan, i, j, 'junctions', 'Переїзд біля перехрестя', 'Level crossing by a junction', 'railway=level_crossing')
+        xm, yc = _arms(plan, i, j, ter, ter, label='переїзд')
+        plan.way([(x0 + 10, yc - 120), (x0 + TILE - 10, yc - 120)], tags('railway=rail gauge=1520', name='Вітка H2'))
+    else:
+        register(plan, i, j, 'junctions', 'Поступися дорогою', 'Give way', 'highway=give_way')
+        xm, yc = _arms(plan, i, j, ter, res, label='give way')
+        for s in (-1, 1):
+            _on(plan, len(plan.ways) - 1, xm, yc + s * 9, tags('highway=give_way'))
+
+
+def junctions(plan):
     for j in ROWS:
-        row = j - ROWS[0] + 1
-        x0, y0 = origin(i, j)
-        open_ground(plan, i, j)
-        if row == 10:
-            register(plan, i, j, 'junctions', 'Світлофор, 4 смуги', 'Signals, 4 lanes', 'highway=traffic_signals')
-            xm, yc = _arms(plan, i, j, tags('highway=primary lanes=4'), tags('highway=secondary lanes=2'), label='світлофор')
-            plan.node(xm, yc, tags('highway=traffic_signals'))
-            for w in (len(plan.ways) - 2, len(plan.ways) - 1):
-                horizontal = w == len(plan.ways) - 2
-                for s in (-1, 1):
-                    _on(plan, w, xm + (s * 12 if horizontal else 0), yc + (0 if horizontal else s * 12),
-                        tags('highway=crossing crossing=traffic_signals crossing:markings=zebra'))
-        elif row == 9:
-            register(plan, i, j, 'junctions', 'Кільце r=18', 'Roundabout r=18', 'junction=roundabout')
-            xm, yc = _arms(plan, i, j, ter, ter, 18., 'кільце')
-            _circle(plan, xm, yc, 18., tags('highway=tertiary junction=roundabout', name=f'{code(i, j)} кільце'))
-        elif row == 8:
-            register(plan, i, j, 'junctions', 'Знаки STOP', 'Stop signs', 'highway=stop')
-            xm, yc = _arms(plan, i, j, tags('highway=secondary lanes=2'), res, label='STOP')
-            for s in (-1, 1):
-                _on(plan, len(plan.ways) - 1, xm, yc + s * 9, tags('highway=stop'))
-        elif row == 7:
-            register(plan, i, j, 'junctions', 'Міні-кільце', 'Mini roundabout', 'highway=mini_roundabout')
-            xm, yc = _arms(plan, i, j, ter, res, label='міні-кільце')
-            plan.node(xm, yc, tags('highway=mini_roundabout'))
-        elif row == 6:
-            register(plan, i, j, 'junctions', 'Зебри на всіх виїздах', 'Zebras on every arm', 'highway=crossing')
-            xm, yc = _arms(plan, i, j, ter, ter, label='зебри')
-            for w in (len(plan.ways) - 2, len(plan.ways) - 1):
-                horizontal = w == len(plan.ways) - 2
-                for s in (-1, 1):
-                    _on(plan, w, xm + (s * 9 if horizontal else 0), yc + (0 if horizontal else s * 9),
-                        tags('highway=crossing crossing=uncontrolled crossing:markings=zebra'))
-        elif row == 5:
-            register(plan, i, j, 'junctions', 'Зміщене перехрестя', 'Staggered junction')
-            xm, yc = x0 + TILE / 2, y0 + TILE / 2
-            avenue(plan, i, j, tags('highway=secondary lanes=2'), 'зміщене')
-            plan.way([(xm, y0), (xm, yc - 90), (xm - 35, yc - 45), (xm - 35, yc)], dict(res, name='Меридіан'))
-            plan.way([(xm + 35, yc), (xm + 35, yc + 45), (xm, yc + 90), (xm, y0 + TILE)], dict(res, name='Меридіан'))
-        elif row == 4:
-            register(plan, i, j, 'junctions', 'Перетин під 45°', 'Skew crossing 45°')
-            xm, yc = x0 + TILE / 2, y0 + TILE / 2
-            avenue(plan, i, j, ter, 'під кутом')
-            plan.way([(xm, y0), (xm, yc - 190), (xm - 120, yc - 120), (xm + 120, yc + 120), (xm, yc + 190),
-                      (xm, y0 + TILE)], dict(ter, name='Меридіан'))
-        elif row == 3:
-            register(plan, i, j, 'junctions', 'Кільце r=40, п’ять виїздів', 'Roundabout r=40, five arms', 'junction=roundabout')
-            xm, yc = _arms(plan, i, j, tags('highway=secondary lanes=2'), ter, 40., 'велике кільце')
-            _circle(plan, xm, yc, 40., tags('highway=secondary junction=roundabout lanes=2', name=f'{code(i, j)} кільце'))
-            a = math.radians(45)
-            plan.way([(xm + 40 * math.cos(a), yc + 40 * math.sin(a)), (xm + 190, yc + 190)], dict(res, name=f'{code(i, j)} п’ятий'))
-            plan.node(xm + 190, yc + 190, tags('highway=turning_circle'))
-        elif row == 2:
-            register(plan, i, j, 'junctions', 'Переїзд біля перехрестя', 'Level crossing by a junction', 'railway=level_crossing')
-            xm, yc = _arms(plan, i, j, ter, ter, label='переїзд')
-            plan.way([(x0 + 10, yc - 120), (x0 + TILE - 10, yc - 120)], tags('railway=rail gauge=1520', name='Вітка H2'))
-        else:
-            register(plan, i, j, 'junctions', 'Поступися дорогою', 'Give way', 'highway=give_way')
-            xm, yc = _arms(plan, i, j, ter, res, label='give way')
-            for s in (-1, 1):
-                _on(plan, len(plan.ways) - 1, xm, yc + s * 9, tags('highway=give_way'))
+        junction_tile(plan, 0, j, j - ROWS[0] + 1)
 
 
 # --- buildings ----------------------------------------------------------------------------------
@@ -630,13 +643,17 @@ TOWN = (('Старе місто, 1900-ті', 'Old town', town_old), ('Сталі
         ('Гаражі й будова', 'Garages, construction', town_garages))
 
 
+def town_tile(plan, i, j, k):
+    title, title_en, make = TOWN[k]
+    x0, y0, yc = register(plan, i, j, 'town', title, title_en)
+    avenue(plan, i, j, tags('highway=tertiary lanes=2 sidewalk=both lit=yes maxspeed=50'), title,
+           xs=(16, 30, 40, 130, 250, 335, 370, 405, 460, 490))
+    make(plan, i, j, x0, y0, yc)
+
+
 def town(plan, j):
     for k, i in enumerate(c for c in COLS if c != 0):
-        title, title_en, make = TOWN[k]
-        x0, y0, yc = register(plan, i, j, 'town', title, title_en)
-        avenue(plan, i, j, tags('highway=tertiary lanes=2 sidewalk=both lit=yes maxspeed=50'), title,
-               xs=(16, 30, 40, 130, 250, 335, 370, 405, 460, 490))
-        make(plan, i, j, x0, y0, yc)
+        town_tile(plan, i, j, k)
 
 
 # --- row 6: houses, trade, works ----------------------------------------------------------------
@@ -891,12 +908,16 @@ WORKS = (('Село, садиби', 'Village homesteads', works_village, 'highwa
          ('Стоянки', 'Car parks', works_parking, 'highway=secondary lanes=2 parking:both=parallel'))
 
 
+def works_tile(plan, i, j, k):
+    title, title_en, make, spec = WORKS[k]
+    x0, y0, yc = register(plan, i, j, 'works', title, title_en, spec)
+    avenue(plan, i, j, tags(spec), title, xs=(16, 30, 40, 60, 130, 250, 256, 300, 335, 350, 370, 415, 460, 484))
+    make(plan, i, j, x0, y0, yc)
+
+
 def works(plan, j):
     for k, i in enumerate(c for c in COLS if c != 0):
-        title, title_en, make, spec = WORKS[k]
-        x0, y0, yc = register(plan, i, j, 'works', title, title_en, spec)
-        avenue(plan, i, j, tags(spec), title, xs=(16, 30, 40, 60, 130, 250, 256, 300, 335, 350, 370, 415, 460, 484))
-        make(plan, i, j, x0, y0, yc)
+        works_tile(plan, i, j, k)
 
 
 # --- row 5: street furniture and points of interest ----------------------------------------------
@@ -1054,12 +1075,16 @@ STREET = (('Ліхтарі', 'Street lamps', street_lamps), ('Дерева й ж
           ('Реклама', 'Advertising', street_ads))
 
 
+def street_tile(plan, i, j, k):
+    title, title_en, make = STREET[k]
+    x0, y0, yc = register(plan, i, j, 'street', title, title_en)
+    ave = avenue(plan, i, j, tags('highway=secondary lanes=2 sidewalk=both lit=yes'), title)
+    make(plan, i, j, x0, y0, yc, ave)
+
+
 def street(plan, j):
     for k, i in enumerate(c for c in COLS if c != 0):
-        title, title_en, make = STREET[k]
-        x0, y0, yc = register(plan, i, j, 'street', title, title_en)
-        ave = avenue(plan, i, j, tags('highway=secondary lanes=2 sidewalk=both lit=yes'), title)
-        make(plan, i, j, x0, y0, yc, ave)
+        street_tile(plan, i, j, k)
 
 
 # --- row 4: ground covers -----------------------------------------------------------------------
@@ -1080,17 +1105,21 @@ COVERS = (
 )
 
 
+def covers_tile(plan, i, j, k):
+    four = COVERS[k * 4:k * 4 + 4]
+    title = ' · '.join((c or 'без тегів').split('=', 1)[-1].replace(' ', ' ') for c in four)
+    x0, y0, yc = register(plan, i, j, 'covers', title, tag_text=' | '.join(c or '-' for c in four))
+    avenue(plan, i, j, tags('highway=unclassified'), title)
+    rects = plots(i, j, 'n', 2) + plots(i, j, 's', 2)
+    for spec, rect in zip(four, rects):
+        if spec:
+            plan.rect(*rect, tags(spec, name=spec))
+        plan.way([(rect[0], rect[1] - 3), (rect[2], rect[1] - 3)], tags('highway=path', name=spec or 'без тегів'))
+
+
 def covers(plan, j):
     for k, i in enumerate(c for c in COLS if c != 0):
-        four = COVERS[k * 4:k * 4 + 4]
-        title = ' · '.join((c or 'без тегів').split('=', 1)[-1].replace(' ', ' ') for c in four)
-        x0, y0, yc = register(plan, i, j, 'covers', title, tag_text=' | '.join(c or '-' for c in four))
-        avenue(plan, i, j, tags('highway=unclassified'), title)
-        rects = plots(i, j, 'n', 2) + plots(i, j, 's', 2)
-        for spec, rect in zip(four, rects):
-            if spec:
-                plan.rect(*rect, tags(spec, name=spec))
-            plan.way([(rect[0], rect[1] - 3), (rect[2], rect[1] - 3)], tags('highway=path', name=spec or 'без тегів'))
+        covers_tile(plan, i, j, k)
 
 
 # --- row 3: vegetation --------------------------------------------------------------------------
@@ -1111,27 +1140,31 @@ PLANTS = (
 )
 
 
+def plants_tile(plan, i, j, k):
+    north, south = PLANTS[k]
+    title = f"{north.split('=', 1)[1]} · {south.split('=', 1)[1]}"
+    x0, y0, yc = register(plan, i, j, 'plants', title, tag_text=f'{north} | {south}')
+    # the last but one: the road itself runs through the wood, no clearing beside it
+    through = k == 11
+    avenue(plan, i, j, tags('highway=tertiary'), title)
+    a, = plots(i, j, 'n', 1, setback=3 if through else 24)
+    b, = plots(i, j, 's', 1, setback=3 if through else 24)
+    plan.rect(*a, tags(north, name=north))
+    plan.rect(*b, tags(south, name=south))
+    if 'park' in north or 'garden' in north or 'village' in south:
+        for rect in (a, b):
+            plan.way([(rect[0] + 10, rect[1] + 10), (rect[2] - 10, rect[3] - 10)], tags('highway=footway'))
+            plan.way([(rect[0] + 10, rect[3] - 10), (rect[2] - 10, rect[1] + 10)], tags('highway=footway'))
+            for n in range(8):
+                plan.node(rect[0] + 30 + n * 55, (rect[1] + rect[3]) / 2 + 30, tags('amenity=bench' if n % 2 else 'natural=tree'))
+    else:
+        plan.way([(a[0] + 20, a[1] + 60), (a[2] - 20, a[3] - 40)], tags('highway=path'))
+        plan.way([(b[0] + 20, b[3] - 60), (b[2] - 20, b[1] + 40)], tags('highway=track tracktype=grade4'))
+
+
 def plants(plan, j):
     for k, i in enumerate(c for c in COLS if c != 0):
-        north, south = PLANTS[k]
-        title = f"{north.split('=', 1)[1]} · {south.split('=', 1)[1]}"
-        x0, y0, yc = register(plan, i, j, 'plants', title, tag_text=f'{north} | {south}')
-        # the last but one: the road itself runs through the wood, no clearing beside it
-        through = k == 11
-        avenue(plan, i, j, tags('highway=tertiary'), title)
-        a, = plots(i, j, 'n', 1, setback=3 if through else 24)
-        b, = plots(i, j, 's', 1, setback=3 if through else 24)
-        plan.rect(*a, tags(north, name=north))
-        plan.rect(*b, tags(south, name=south))
-        if 'park' in north or 'garden' in north or 'village' in south:
-            for rect in (a, b):
-                plan.way([(rect[0] + 10, rect[1] + 10), (rect[2] - 10, rect[3] - 10)], tags('highway=footway'))
-                plan.way([(rect[0] + 10, rect[3] - 10), (rect[2] - 10, rect[1] + 10)], tags('highway=footway'))
-                for n in range(8):
-                    plan.node(rect[0] + 30 + n * 55, (rect[1] + rect[3]) / 2 + 30, tags('amenity=bench' if n % 2 else 'natural=tree'))
-        else:
-            plan.way([(a[0] + 20, a[1] + 60), (a[2] - 20, a[3] - 40)], tags('highway=path'))
-            plan.way([(b[0] + 20, b[3] - 60), (b[2] - 20, b[1] + 40)], tags('highway=track tracktype=grade4'))
+        plants_tile(plan, i, j, k)
 
 
 # --- row 2: water and rails ---------------------------------------------------------------------
@@ -1314,13 +1347,17 @@ WATER = (('Річка й міст', 'River and a bridge', water_river), ('Стр
          ('Дорога над колією', 'Road over the rails', rail_under), ('Депо, вузька колія', 'Yard, narrow gauge', rail_yard))
 
 
+def water_tile(plan, i, j, k):
+    title, title_en, make = WATER[k]
+    x0, y0, yc = register(plan, i, j, 'water', title, title_en)
+    if k >= 7:
+        open_ground(plan, i, j)       # the rails; the water keeps its wild banks
+    make(plan, i, j, x0, y0, yc)
+
+
 def water(plan, j):
     for k, i in enumerate(c for c in COLS if c != 0):
-        title, title_en, make = WATER[k]
-        x0, y0, yc = register(plan, i, j, 'water', title, title_en)
-        if k >= 7:
-            open_ground(plan, i, j)       # the rails; the water keeps its wild banks
-        make(plan, i, j, x0, y0, yc)
+        water_tile(plan, i, j, k)
 
 
 # --- row 1: relief ------------------------------------------------------------------------------
@@ -1492,12 +1529,16 @@ RELIEF = (('Ухил 5 %', 'Grade 5 %', relief_grade(5)), ('Ухил 10 %', 'Gra
           ('Бездоріжжя', 'Off road', relief_offroad))
 
 
+def relief_tile(plan, i, j, k):
+    title, title_en, make = RELIEF[k]
+    x0, y0, yc = register(plan, i, j, 'relief', title, title_en)
+    open_ground(plan, i, j)
+    make(plan, i, j, x0, y0, yc)
+
+
 def relief(plan, j):
     for k, i in enumerate(c for c in COLS if c != 0):
-        title, title_en, make = RELIEF[k]
-        x0, y0, yc = register(plan, i, j, 'relief', title, title_en)
-        open_ground(plan, i, j)
-        make(plan, i, j, x0, y0, yc)
+        relief_tile(plan, i, j, k)
 
 
 # --- the whole island ---------------------------------------------------------------------------
@@ -1511,6 +1552,12 @@ ROWS_PLAN = {10: ('classes', 'Класи доріг', 'Road classes', road_class
              3: ('plants', 'Рослинність', 'Vegetation', plants),
              2: ('water', 'Вода й колії', 'Water and rails', water),
              1: ('relief', 'Рельєф і студія', 'Relief and the studio', relief)}
+
+
+# a subject of the main grid by its theme and its place in the row: what a universe builds again
+TILES = {'classes': classes_tile, 'surfaces': surfaces_tile, 'lanes': lanes_tile, 'town': town_tile, 'works': works_tile,
+         'street': street_tile, 'covers': covers_tile, 'plants': plants_tile, 'water': water_tile, 'relief': relief_tile,
+         'junction': junction_tile}
 
 
 def build(plan):
@@ -1529,3 +1576,5 @@ def build(plan):
     studio = next((t for t in plan.tiles.values() if t['title'] == 'Студія'), None)
     if studio:
         plan.zones.insert(0, {'id': 'studio', 'title': 'Студія', 'titleEn': 'Studio', 'start': studio['at']})
+    import proving_universes
+    proving_universes.build(plan)

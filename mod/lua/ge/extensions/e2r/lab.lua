@@ -48,10 +48,31 @@ local function normalise(spec, v)
   return v
 end
 
-local function defaultOf(spec)
+-- a knob's own default: a value, or a function of the tile (a pack names a universe for a tile
+-- of its own; the world's default is asked with no tile)
+local function ownDefault(spec, scope)
   local d = spec.default
-  if type(d) == 'function' then d = d() end
+  if type(d) == 'function' then d = d(scope) end
   return d
+end
+
+-- M.rules(id): a universe's rules ({tune =, look =, option =}; bind's host.rules). The universe
+-- in force for a tile gives its knobs their defaults: a road's lanes are off in the snow, and
+-- the page shows them off until somebody sets them on against the universe.
+M.rules = nil
+local function defaultOf(spec, scope)
+  if M.rules and spec.key ~= 'universe' and specs.universe then
+    local id = M.get('universe', scope)
+    local rules = id and id ~= 'none' and M.rules(id) or nil
+    local values = rules and rules[spec.target]
+    local v = values and values[spec.field]
+    if v ~= nil then
+      if spec.number then v = v ~= 0 and v ~= false end
+      v = normalise(spec, v)
+      if v ~= nil then return v end
+    end
+  end
+  return ownDefault(spec, scope)
 end
 
 function M.group(g)
@@ -61,10 +82,13 @@ end
 
 -- define{key=, target='tune'|'look'|'option', field=, kind='bool'|'int'|'float'|'enum', min=, max=, step=,
 --        values={{value=, label={uk=, en=}}}, default=, group=, label={uk=, en=}, hint={uk=, en=},
---        number=true}
+--        number=true, neutral=}
 -- field: the name in the target table (the key itself when left out). number: a bool the
 -- generator reads as 0 / 1 (TUNE's switches). default: a value, or a function for a knob that
--- follows something else until it is set (the world's quality).
+-- follows something else until it is set (the world's quality; called with the tile's name
+-- where a tile has a default of its own). neutral: the value that means nothing is asked; a
+-- knob that has one is handed to the generator whenever its value in force is another, set by
+-- hand or not (the universe a pack gives a tile).
 function M.define(spec)
   assert(type(spec) == 'table' and type(spec.key) == 'string', 'lab.define: key')
   assert(spec.target == 'tune' or spec.target == 'look' or spec.target == 'option', 'lab.define: target of ' .. spec.key)
@@ -90,7 +114,7 @@ function M.get(key, scope)
   local own = scope and tiles[scope]
   if own and own[key] ~= nil then return own[key], 'tile' end
   if world[key] ~= nil then return world[key], 'world' end
-  return defaultOf(spec), 'default'
+  return defaultOf(spec, scope), 'default'
 end
 
 local function changed()
@@ -111,8 +135,9 @@ function M.set(key, value, scope)
     store = tiles[scope]
     if not store then store = {}; tiles[scope] = store end
   end
+  -- what the level above gives: the world's value over the tile's own default, or the default
   local above
-  if scope then above = M.get(key, nil) else above = defaultOf(spec) end
+  if scope and world[key] ~= nil then above = world[key] else above = defaultOf(spec, scope) end
   local nextValue = v
   if v == above then nextValue = nil end
   local was = store[key]
@@ -173,6 +198,10 @@ function M.resolve(scope)
     local spec = specs[order[k]]
     local v = own and own[spec.key]
     if v == nil then v = world[spec.key] end
+    if v == nil and spec.neutral ~= nil then
+      v = defaultOf(spec, scope)
+      if v == spec.neutral then v = nil end
+    end
     if v ~= nil then
       local t = r[spec.target]
       if not t then t = {}; r[spec.target] = t end
@@ -209,7 +238,7 @@ function M.payload(scope)
     local value, from = M.get(spec.key, scope)
     local d = {key = spec.key, target = spec.target, kind = spec.kind, label = label(spec.label, spec.key),
       hint = spec.hint and label(spec.hint, '') or nil, min = spec.min, max = spec.max,
-      step = spec.step or (spec.kind == 'int' and 1 or nil), default = defaultOf(spec),
+      step = spec.step or (spec.kind == 'int' and 1 or nil), default = defaultOf(spec, scope),
       world = world[spec.key], tile = scope and tiles[scope] and tiles[scope][spec.key] or nil,
       value = value, from = from}
     if spec.kind == 'enum' then
@@ -258,7 +287,7 @@ function M.load(cfg)
     for k, v in pairs(type(cfg.world) == 'table' and cfg.world or {}) do
       local spec = specs[k]
       local value = spec and normalise(spec, v)
-      if value ~= nil and value ~= defaultOf(spec) then world[k] = value end
+      if value ~= nil and value ~= ownDefault(spec, nil) then world[k] = value end
     end
     for scope, store in pairs(type(cfg.tiles) == 'table' and cfg.tiles or {}) do
       if type(scope) == 'string' and type(store) == 'table' then
@@ -329,12 +358,50 @@ function M.bind(host)
   host = host or {}
   local tune = host.tune or {}
   specs, order, groups, groupOrder = {}, {}, {}, {}
+  M.rules = host.rules
+  M.group{key = 'universe', label = {uk = 'Всесвіт', en = 'Universe'}}
   M.group{key = 'look', label = {uk = 'Набір асетів і текстур', en = 'Assets and textures'}}
   M.group{key = 'buildings', label = {uk = 'Будівлі', en = 'Buildings'}}
   M.group{key = 'road', label = {uk = 'Дорога', en = 'Road'}}
   M.group{key = 'ground', label = {uk = 'Земля біля дороги', en = 'Ground by the road'}}
   M.group{key = 'detail', label = {uk = 'Наповнення', en = 'Content'}}
   M.group{key = 'advanced', label = {uk = 'Інші числа генератора', en = 'Other generator numbers'}, collapsed = true}
+
+  -- A universe (universe.lua): the climate, the region, the materials and the ground's physics
+  -- of another world over the same map. host.universes: {{id, uk, en}}; host.universeOf(scope):
+  -- the universe a pack names for a tile of its own. The knobs under it win over its rules.
+  local none = {{'none', 'Свій', 'Its own'}}
+  if host.universes and #host.universes > 0 then
+    local list = {none[1]}
+    for _, entry in ipairs(host.universes) do list[#list + 1] = entry end
+    M.define{key = 'universe', target = 'option', kind = 'enum', group = 'universe', values = choices(list), neutral = 'none',
+      default = function(scope)
+        local id = scope and host.universeOf and host.universeOf(scope)
+        for _, entry in ipairs(list) do if entry[1] == id then return id end end
+        return 'none'
+      end,
+      label = {uk = 'Правила якого світу', en = 'Whose rules'},
+      hint = {uk = 'Клімат, регіон, матеріали доріг, дахів і землі, фізика ґрунту', en = 'Climate, region, materials of roads, roofs and land, ground physics'}}
+  end
+  if host.climates and #host.climates > 0 then
+    local list = {{'auto', 'За місцем або всесвітом', 'By the place or the universe'}}
+    for _, name in ipairs(host.climates) do list[#list + 1] = {name, name, name} end
+    M.define{key = 'climate', target = 'option', kind = 'enum', group = 'universe', values = choices(list), default = 'auto',
+      label = {uk = 'Клімат', en = 'Climate'}}
+  end
+  -- The woods of a natural zone (flora.lua ZONES), whatever the place: a Polissia pinewood, a
+  -- Carpathian beech wood or a rainforest on any tile. host.floraZones: {{id, uk, en}}.
+  if host.floraZones and #host.floraZones > 0 then
+    local list = {{'auto', 'За місцем і кліматом', 'By the place and the climate'}}
+    for _, entry in ipairs(host.floraZones) do list[#list + 1] = entry end
+    M.define{key = 'floraZone', target = 'option', kind = 'enum', group = 'universe', values = choices(list), default = 'auto',
+      label = {uk = 'Природна зона рослинності', en = 'Vegetation zone'},
+      hint = {uk = 'Які дерева, кущі й трави ростуть: з пака флори', en = 'Which trees, shrubs and herbs grow: from the flora pack'}}
+  end
+  M.define{key = 'feel', target = 'option', kind = 'enum', group = 'universe', default = 'auto',
+    values = choices({{'auto', 'Як вирішує всесвіт', 'As the universe decides'}, {'on', 'Увімкнено', 'On'}, {'off', 'Вимкнено', 'Off'}}),
+    label = {uk = 'Фізика ґрунту за видом землі', en = 'Ground physics by the land drawn'},
+    hint = {uk = 'Сніг, пісок і багно під колесами; інакше всюди трава', en = 'Snow, sand and mud under the tyres; grass everywhere otherwise'}}
 
   -- host.look: the pack's look, or a function that returns it (the landing changes it)
   local function lookNow()

@@ -172,9 +172,11 @@ local frameTimer = hptimer()
 local LIMIT = {pairsDriving = 3, pairsCatch = 6, pairsLanding = 24, plantBatch = 128, sceneLag = 3,
   forestStep = 0.12, forestKind = 1.5, forestMax = 2500, propMax = 600,
   -- A wood's fill (generator.lua VEG.layers.fill; M.fillStep): the trees a tile's cap left out
-  -- wait in cells of fillCell m and are planted within fillRadius m of a car that has been under
-  -- fillSlow m/s for fillAfter s, the farthest first, fillRate of them a pass every fillEvery s.
-  fillCell = 32, fillRadius = 90, fillSlow = .6, fillAfter = 1.2, fillRate = 120, fillEvery = .2,
+  -- wait in cells of fillCell m and are planted within fillRadius m of the place a car that has
+  -- been under fillSlow m/s (50 km/h, as turf.lua STILL.slow; a walking pace before 21.11) for
+  -- fillAfter s will be in fillLead s, the farthest from the car first, fillRate of them a pass
+  -- every fillEvery s.
+  fillCell = 32, fillRadius = 90, fillSlow = 13.9, fillAfter = 1.2, fillLead = 3, fillRate = 120, fillEvery = .2,
   -- Trees of one shape split into forestVariants^2 kinds by cells of forestCell m (0: off), and a
   -- commit takes kinds until forestLive crowns stand in them (see forestCommit)
   forestCell = 1000, forestVariants = 3, forestLive = 6000,
@@ -480,8 +482,10 @@ end
 -- night-probe-12): a Forest item with an alpha tuft is not drawn, and every Forest kind
 -- adds ~3 ms to each Forest commit (forestCommit), which five rock kinds would pay.
 local function vegetationShape(shape)
+  -- (the flora pack's herbs, mushrooms and crops too: cut-outs like a tree's leaves, with levels)
   return type(shape) == 'string' and not shape:find('3d_grass', 1, true) and not shape:find('/rocks/', 1, true)
-    and (shape:find('/trees/', 1, true) or shape:find('trees_library', 1, true) or shape:find('scots_pine', 1, true))
+    and (shape:find('/trees/', 1, true) or shape:find('trees_library', 1, true) or shape:find('scots_pine', 1, true)
+      or shape:find('/earthng/flora/', 1, true))
 end
 
 -- BeamNG 0.39 registers the datablock as ForestItemData. TSForestItemData does
@@ -614,6 +618,11 @@ end
 function M.variantShape(shape, x, y)
   local cell, k = LIMIT.forestCell, LIMIT.forestVariants
   if not cell or cell <= 0 or not k or k <= 1 then return shape end
+  -- The flora pack's shapes are one kind each: a spelling is a load, and a pack model is tens
+  -- of thousands of triangles of Collada text, 0.4-0.7 s a spelling the first time it is met
+  -- (a drive through a wood was a hitch a commit, out/flora/game-01). Its species are many, so
+  -- a kind holds a fraction of the crowns a stock tree's does.
+  if shape:find('/earthng/flora/', 1, true) then return shape end
   local v = math.floor(x / cell) % k + k * (math.floor(y / cell) % k)
   if v == 0 then return shape end
   local dir, file = shape:match('^(.*/)([^/]+)$')
@@ -833,29 +842,40 @@ function M.fillDrop(tile)
   tile.fillCells = nil
 end
 
--- Every frame: p the car or the camera. Standing still, the wood round it fills up.
+-- the natural zones the lab may give a tile (flora.lua), nil without the module
+function M.floraZones()
+  local ok, flora = pcall(require, 'ge/extensions/e2r/flora')
+  return ok and type(flora) == 'table' and flora.zoneChoices and flora.zoneChoices() or nil
+end
+
+-- Every frame: p the car or the camera. Slow enough to look round, the wood fills up round the
+-- place the car is heading for: at 50 km/h the trees stand 130 m ahead of it and 50 m behind.
 function M.fillStep(p, now)
   local F = S.fill
   if not F or not p then return end
   local last = F.at
   if last and now > last.t then
-    local v = math.sqrt((p.x - last.x) ^ 2 + (p.y - last.y) ^ 2) / (now - last.t)
+    local vx, vy = (p.x - last.x) / (now - last.t), (p.y - last.y) / (now - last.t)
+    local v = math.sqrt(vx * vx + vy * vy)
     -- (a landing or a camera's jump is not a drive)
-    if v > LIMIT.fillSlow and v < 200 then F.slowSince = nil
-    elseif v <= LIMIT.fillSlow then F.slowSince = F.slowSince or now end
+    if v < 200 then
+      F.vx, F.vy = vx, vy
+      if v > LIMIT.fillSlow then F.slowSince = nil else F.slowSince = F.slowSince or now end
+    end
   end
   if not last or now > last.t then F.at = {x = p.x, y = p.y, t = now} end
   if F.waiting <= 0 or not F.slowSince or now - F.slowSince < LIMIT.fillAfter then return end
   if F.passAt and now - F.passAt < LIMIT.fillEvery then return end
   F.passAt = now
   local c, r = LIMIT.fillCell, LIMIT.fillRadius
+  local ax, ay = p.x + (F.vx or 0) * LIMIT.fillLead, p.y + (F.vy or 0) * LIMIT.fillLead
   local near = {}
-  for cx = math.floor((p.x - r) / c), math.floor((p.x + r) / c) do
-    for cy = math.floor((p.y - r) / c), math.floor((p.y + r) / c) do
+  for cx = math.floor((ax - r) / c), math.floor((ax + r) / c) do
+    for cy = math.floor((ay - r) / c), math.floor((ay + r) / c) do
       local key = (cx + 32768) * 65536 + cy + 32768
-      if F.cells[key] then
-        local d = ((cx + .5) * c - p.x) ^ 2 + ((cy + .5) * c - p.y) ^ 2
-        if d <= (r + c * .71) ^ 2 then near[#near + 1] = {key, d} end
+      if F.cells[key] and ((cx + .5) * c - ax) ^ 2 + ((cy + .5) * c - ay) ^ 2 <= (r + c * .71) ^ 2 then
+        -- (the order is by the way from the car, not from where it is heading)
+        near[#near + 1] = {key, ((cx + .5) * c - p.x) ^ 2 + ((cy + .5) * c - p.y) ^ 2}
       end
     end
   end
@@ -3915,6 +3935,20 @@ local function beginArrival(job, early)
       if FS:fileExists(shape) then table.insert(manifest.warmShapes, shape) end
     end
   end
+  -- test.floraAll (earthng/flora_cook.py's cook run): every shape of the flora pack, so the game
+  -- compiles each and bakes its imposter here, where the tool finds them
+  if test and test.floraAll and manifest.warmShapes and not manifest.floraWarm then
+    manifest.floraWarm = true
+    local okF, flora = pcall(require, 'ge/extensions/e2r/flora')
+    for _, shape in ipairs(okF and type(flora) == 'table' and flora.packShapes and flora.packShapes() or {}) do
+      if FS:fileExists(shape) then
+        -- its materials first: a shape met before them keeps no material for the session, and
+        -- its imposter is baked as the orange placeholder (out/flora/game-06)
+        loadNewMaterials(nil, {shape:match('^(.*/)[^/]*$') .. 'main.materials.json'})
+        table.insert(manifest.warmShapes, shape)
+      end
+    end
+  end
   for k, shape in ipairs(manifest.warmShapes or {}) do
     local obj = createObject('TSStatic')
     obj:setField('shapeName', 0, shape)
@@ -6943,6 +6977,16 @@ function M.labBind()
   for name in pairs(okC and type(cells) == 'table' and cells.walls or {}) do walls[#walls + 1] = name end
   table.sort(styles); table.sort(walls)
   lab.bind{tune = okG and type(generator) == 'table' and generator.TUNE or {}, kitStyles = styles, kitWalls = walls,
+    universes = native.universes and native.universes.choices() or nil,
+    climates = native.universes and native.universes.climates or nil,
+    floraZones = M.floraZones(),
+    rules = native.universes and native.universes.get or nil,
+    -- the universe a pack names for a tile of its own (the proving ground's plan)
+    universeOf = function(scope)
+      local i, j = tostring(scope):match(':(-?%d+)_(-?%d+)$')
+      local tile = i and M.polygonHere(tonumber(i), tonumber(j))
+      return tile and tile.universe or nil
+    end,
     look = function() return native.regionLook and native.regionLook() or nil end,
     quality = function(key) return S.appliedTune and S.appliedTune[key] or (S.tune and S.tune[key]) end}
   lab.storage = {
@@ -6968,7 +7012,10 @@ function M.labList()
   payload.landed = S.state == 'driving'
   payload.tile = key and {key = key, i = i, j = j, pinned = S.labPin ~= nil} or nil
   local ground = M.polygonHere and M.polygonHere(i, j)
-  if ground then payload.tile.code, payload.tile.title, payload.tile.titleEn, payload.tile.tags = ground.code, ground.title, ground.titleEn, ground.tags end
+  if ground then
+    payload.tile.code, payload.tile.title, payload.tile.titleEn, payload.tile.tags = ground.code, ground.title, ground.titleEn, ground.tags
+    payload.tile.universe = ground.universe
+  end
   local stream = S.status and S.status.stream
   payload.stream = stream and {building = stream.building, queued = stream.queued, built = stream.built,
     ready = key and stream.ready and stream.ready[key] and true or false,
@@ -7101,7 +7148,7 @@ function M.polygonList()
   local here = plan and M.polygonHere(i, j)
   guihooks.trigger('EarthNGPolygon', {lang = lang, mounted = plan ~= nil, title = country and country.title or nil,
     landed = S.state == 'driving', here = here and here.code or nil, view = S.polygonView,
-    plan = plan and {cols = plan.cols, rows = plan.rows, zones = plan.zones, tiles = plan.tiles} or nil})
+    plan = plan and {blocks = plan.blocks, zones = plan.zones, tiles = plan.tiles} or nil})
 end
 
 local function polygonTile(code)

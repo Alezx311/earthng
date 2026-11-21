@@ -138,10 +138,8 @@ end
 
 -- The climate of the place: one shared table per class and tenth of a degree of latitude.
 local places = {}
-function M.place(lon, lat)
-  local raw = M.dithered(lon, lat)
-  if raw == 0 then raw = M.class(lon, lat) end
-  local class = M.regional(lon, lat, raw)
+-- the place a class makes at a latitude (raw: the grid's own class there, before M.regional)
+local function placeOf(class, raw, lon, lat)
   local west = lon < -30
   -- The grid's own tundra on a mid-latitude ridge measures what the latitude table guesses: the
   -- warmest month under 10 °C, the tree line's climate. Such a ridge (the Carpathians' polonyny,
@@ -167,6 +165,39 @@ function M.place(lon, lat)
     arid = group == 'desert' or group == 'steppe'}
   places[key] = p
   return p
+end
+function M.place(lon, lat)
+  local raw = M.dithered(lon, lat)
+  if raw == 0 then raw = M.class(lon, lat) end
+  return placeOf(M.regional(lon, lat, raw), raw, lon, lat)
+end
+
+-- A climate that is given, not read from the grid (universe.lua, the lab): the place a class
+-- makes at this latitude, with a tree line and a snow line of its own where the spec names
+-- them. spec: {class = 1..30, treeline = m, snowline = m}; without a class the place's own
+-- climate keeps everything but the lines. One shared table per spec and tenth of a degree.
+local forcedPlaces = setmetatable({}, {__mode = 'k'})
+function M.forced(spec, lon, lat)
+  local cache = forcedPlaces[spec]
+  if not cache then cache = {}; forcedPlaces[spec] = cache end
+  local class = tonumber(spec.class)
+  local key = floor((lat + 90) * 10) * 2 + (lon < -30 and 1 or 0)
+  -- the place's own climate changes along the tile: a spec without a class is keyed by it too
+  local own = not class and M.place(lon, lat) or nil
+  local p = cache[own or key]
+  if p then return p end
+  p = {}
+  for k, v in pairs(own or placeOf(class, class, lon, lat)) do p[k] = v end
+  -- the spec's lines as they are: a snow line under the sea is snow everywhere
+  if tonumber(spec.treeline) then p.treeline, p.fixedTreeline = spec.treeline, spec.treeline end
+  if tonumber(spec.snowline) then p.snowline = spec.snowline end
+  p.forced = true
+  cache[own or key] = p
+  return p
+end
+function M.forcedAt(spec, geo, x, y)
+  local lon, lat = M.lonlat(geo, x, y)
+  return M.forced(spec, lon, lat)
 end
 
 -- The place at a point of a region frame: geo is the pack's affine (x0, y0, lon0, lat0,

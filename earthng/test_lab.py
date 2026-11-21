@@ -112,7 +112,7 @@ class LabTests(unittest.TestCase):
         self.assertEqual((knobs['sidewalk']['from'], knobs['sidewalk']['tile'], knobs['sidewalk']['default']), ('tile', 3, 2))
         self.assertEqual(payload['scopes'], ['r:0_0'])
         self.assertTrue(payload['worldTouched'] and payload['tileTouched'])
-        self.assertEqual([g['key'] for g in payload['groups']][:3], ['look', 'buildings', 'road'])
+        self.assertEqual([g['key'] for g in payload['groups']][:4], ['universe', 'look', 'buildings', 'road'])
 
     def test_file_round_trip_drops_what_it_does_not_know(self):
         lua = lab()

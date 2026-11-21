@@ -12,6 +12,11 @@ exporter as a country (spot_pack.py), so what is tested is the pipeline players 
 
 The plan is in metres of the pack's own frame (x east, y north, the origin where four OSM cells
 meet), so a plan tile is a game tile: tile (i, j) is x in [500 i, 500 i + 500).
+
+Round the main grid lie four universes (BLOCKS; mod/lua/ge/extensions/e2r/universe.lua): a
+mountain range, a desert, deep snow and deep mud. Each has the same sample of the main grid's
+subjects, built by its own rules, and land of its own; the pack's manifest names the universe
+of every tile, and the game builds the tile by it.
 """
 import argparse
 from collections import defaultdict
@@ -32,18 +37,33 @@ ID = 'polygon'
 TITLE = 'Полігон · точка Немо'
 VERSION = '0.1.0'
 POINT_NEMO = (-48.8767, -123.3933)      # lat, lon of the oceanic pole of inaccessibility
-# OSM cells (0.05 degrees) of the package, half-open: 4 x 3 cells, 14.6 x 16.7 km of ocean. The
+# OSM cells (0.05 degrees) of the package, half-open: 6 x 5 cells, 22 x 28 km of ocean. The
 # frame's origin is the middle of the package box (fast_sources.source_identity): the corner of
 # four cells in longitude, the middle of a cell in latitude, 520 m from Point Nemo.
-CELLS = (-2470, -979, -2466, -976)
+CELLS = (-2471, -980, -2465, -975)
 CENTRE = (-48.875, -123.4)              # lat, lon
 TILE = 500.
-COLS, ROWS = range(-7, 7), range(-5, 5)  # the tiles with a subject: 14 x 10, 7 x 5 km
+COLS, ROWS = range(-7, 7), range(-5, 5)  # the main grid, a subject a tile: 14 x 10, 7 x 5 km
 GRID = (COLS[0] * TILE, ROWS[0] * TILE, (COLS[-1] + 1) * TILE, (ROWS[-1] + 1) * TILE)
 RING = 120.                             # the ring road runs this far outside the grid
-SHORE = 420.                            # and the coastline this far
+SHORE = 420.                            # the coastline this far outside the outermost block
 CORNER = 500.                           # radius of the island's corners
 BASE = 12.                              # metres above the sea of the flat land
+# The island's blocks of tiles, half-open (i0, i1, j0, j1): the main grid and, a tile of ring
+# road away, a universe on each side. prefix: of a tile's code ('MT-C2'; the main grid has none).
+BLOCKS = (
+    {'id': 'main', 'prefix': '', 'title': 'Основна сітка', 'titleEn': 'Main grid', 'tiles': (-7, 7, -5, 5), 'universe': None},
+    {'id': 'mountains', 'prefix': 'MT', 'title': 'Гори', 'titleEn': 'Mountains', 'tiles': (-8, 8, 6, 12), 'universe': 'mountains'},
+    {'id': 'desert', 'prefix': 'DS', 'title': 'Пустеля', 'titleEn': 'Desert', 'tiles': (-8, 8, -11, -6), 'universe': 'desert'},
+    {'id': 'snow', 'prefix': 'SN', 'title': 'Сніг', 'titleEn': 'Snow', 'tiles': (-13, -8, -6, 6), 'universe': 'snow'},
+    {'id': 'mud', 'prefix': 'MD', 'title': 'Багно', 'titleEn': 'Mud', 'tiles': (8, 13, -6, 6), 'universe': 'mud'},
+    # (the island's south-east corner, between the desert and the mud)
+    {'id': 'jungle', 'prefix': 'JG', 'title': 'Джунглі', 'titleEn': 'Jungle', 'tiles': (8, 13, -11, -6), 'universe': 'jungle'},
+)
+BLOCK = {b['id']: b for b in BLOCKS}
+# the land every block stands on, in metres: the coastline runs SHORE outside it
+LAND = (min(b['tiles'][0] for b in BLOCKS) * TILE, min(b['tiles'][2] for b in BLOCKS) * TILE,
+        max(b['tiles'][1] for b in BLOCKS) * TILE, max(b['tiles'][3] for b in BLOCKS) * TILE)
 # The sun the island is lit by (world.lua reads the manifest's 'sun'): Kyiv's, which the look is
 # tuned to. Point Nemo's own June noon stands 18 degrees over the horizon: long shadows all day.
 SUN = (50.45, 30.52)
@@ -63,9 +83,23 @@ def frame():
     return Frame.at(CENTRE[1], CENTRE[0])
 
 
+def block_of(i, j):
+    """The block a tile belongs to, or None (the ring road's corridor, the island's corners)."""
+    for b in BLOCKS:
+        i0, i1, j0, j1 = b['tiles']
+        if i0 <= i < i1 and j0 <= j < j1:
+            return b
+    return None
+
+
 def code(i, j):
-    """A tile's name on the plan: columns A..N from the west, rows 1..10 from the south."""
-    return f'{chr(65 + i - COLS[0])}{j - ROWS[0] + 1}'
+    """A tile's name on the plan: columns A.. from the west, rows 1.. from the south of its block,
+    after the block's prefix ('D7' in the main grid, 'MT-C2' in the mountains)."""
+    b = block_of(i, j)
+    if b is None:
+        raise ValueError(f'tile {i}, {j} is in no block')
+    name = f"{chr(65 + i - b['tiles'][0])}{j - b['tiles'][2] + 1}"
+    return f"{b['prefix']}-{name}" if b['prefix'] else name
 
 
 def tags(spec='', **more):
@@ -76,10 +110,12 @@ def tags(spec='', **more):
 
 
 def inland(x, y):
-    """Metres from the coastline, positive on land: the island is a rectangle with round corners."""
+    """Metres from the coastline, positive on land: the island is a rectangle with round corners,
+    SHORE outside the land of its blocks."""
     import numpy as np
-    hx, hy = GRID[2] + SHORE, GRID[3] + SHORE
-    qx, qy = np.abs(x) - (hx - CORNER), np.abs(y) - (hy - CORNER)
+    cx, cy = (LAND[0] + LAND[2]) / 2, (LAND[1] + LAND[3]) / 2
+    hx, hy = (LAND[2] - LAND[0]) / 2 + SHORE, (LAND[3] - LAND[1]) / 2 + SHORE
+    qx, qy = np.abs(x - cx) - (hx - CORNER), np.abs(y - cy) - (hy - CORNER)
     return CORNER - (np.hypot(np.maximum(qx, 0), np.maximum(qy, 0)) + np.minimum(np.maximum(qx, qy), 0))
 
 
@@ -99,7 +135,7 @@ class Plan:
         self.relations = []             # [[('w', way number, role)], tags]
         self.relief = []                # f(x, y) arrays -> metres added to the flat land
         self.carve = []                 # f(x, y, h) arrays -> h: after the relief (a river bed)
-        self.tiles = {}                 # code -> {'i', 'j', 'zone', 'title', 'tags', 'views'}
+        self.tiles = {}                 # code -> {'i', 'j', 'block', 'zone', 'title', 'tags', 'views'}
         self.zones = []                 # {'id', 'title', 'titleEn', 'start': (x, y)}
 
     # --- drawing ---------------------------------------------------------------------------------
@@ -292,18 +328,23 @@ class Plan:
         def geo(x, y, *rest):
             lon, lat = self.lonlat(x, y)
             return [round(lat, 7), round(lon, 7), *rest]
+        order = {b['id']: n for n, b in enumerate(BLOCKS)}
         tiles = []
-        for name in sorted(self.tiles, key=lambda c: (int(c[1:]), c[0])):
+        for name in sorted(self.tiles, key=lambda c: (order[self.tiles[c]['block']], self.tiles[c]['j'], self.tiles[c]['i'])):
             t = self.tiles[name]
-            tiles.append({'code': name, 'i': t['i'], 'j': t['j'], 'zone': t['zone'], 'title': t['title'],
-                          'titleEn': t.get('titleEn') or t['title'], 'tags': t.get('tags', ''),
-                          'at': geo(*t['at']), 'yaw': t.get('yaw', 90),
-                          'views': [{'id': v['id'], 'eye': geo(*v['eye']), 'target': geo(*v['target']),
-                                     'fov': v.get('fov', 60)} for v in t['views']]})
+            entry = {'code': name, 'i': t['i'], 'j': t['j'], 'block': t['block'], 'zone': t['zone'], 'title': t['title'],
+                     'titleEn': t.get('titleEn') or t['title'], 'tags': t.get('tags', ''),
+                     'at': geo(*t['at']), 'yaw': t.get('yaw', 90),
+                     'views': [{'id': v['id'], 'eye': geo(*v['eye']), 'target': geo(*v['target']),
+                                'fov': v.get('fov', 60)} for v in t['views']]}
+            if BLOCK[t['block']]['universe']:
+                entry['universe'] = BLOCK[t['block']]['universe']     # world.lua: the lab's default for the tile
+            tiles.append(entry)
         zones = [{'id': z['id'], 'title': z['title'], 'titleEn': z['titleEn'], 'at': geo(*z['start'])}
                  for z in self.zones]
-        return {'tile': TILE, 'cols': [COLS[0], COLS[-1]], 'rows': [ROWS[0], ROWS[-1]],
-                'zones': zones, 'tiles': tiles}
+        blocks = [{'id': b['id'], 'title': b['title'], 'titleEn': b['titleEn'], 'universe': b['universe'],
+                   'cols': [b['tiles'][0], b['tiles'][1] - 1], 'rows': [b['tiles'][2], b['tiles'][3] - 1]} for b in BLOCKS]
+        return {'tile': TILE, 'blocks': blocks, 'zones': zones, 'tiles': tiles}
 
 
 def make_plan():
@@ -314,16 +355,16 @@ def make_plan():
     return plan
 
 
-def draw(plan, path, size=2800):
+def draw(plan, path, size=4200):
     """The plan as a picture: every way by its main tag, the tile grid and the codes."""
     from PIL import Image, ImageDraw
-    hx, hy = GRID[2] + SHORE + 150, GRID[3] + SHORE + 150
-    scale = size / (2 * hx)
-    image = Image.new('RGB', (size, round(2 * hy * scale)), (36, 78, 110))
+    west, south, east, north = LAND[0] - SHORE - 150, LAND[1] - SHORE - 150, LAND[2] + SHORE + 150, LAND[3] + SHORE + 150
+    scale = size / (east - west)
+    image = Image.new('RGB', (size, round((north - south) * scale)), (36, 78, 110))
     pen = ImageDraw.Draw(image)
 
     def px(x, y):
-        return (x + hx) * scale, (hy - y) * scale
+        return (x - west) * scale, (north - y) * scale
     fill = {'landuse': (150, 170, 120), 'natural': (120, 160, 110), 'leisure': (140, 190, 130),
             'amenity': (170, 170, 170), 'building': (200, 150, 120), 'place': (180, 180, 180)}
     coast = [w for w in plan.ways if w[1].get('natural') == 'coastline']
@@ -347,12 +388,14 @@ def draw(plan, path, size=2800):
             pen.line(line, fill=(90, 150, 200), width=3)
         elif 'barrier' in tag:
             pen.line(line, fill=(90, 60, 40), width=1)
-    for i in COLS:
-        for j in ROWS:
-            x0, y0 = px(i * TILE, (j + 1) * TILE)
-            x1, y1 = px((i + 1) * TILE, j * TILE)
-            pen.rectangle([x0, y0, x1, y1], outline=(255, 210, 0))
-            pen.text((x0 + 4, y0 + 3), code(i, j), fill=(255, 210, 0))
+    for b in BLOCKS:
+        colour = (255, 210, 0) if b['id'] == 'main' else (255, 140, 60)
+        for i in range(b['tiles'][0], b['tiles'][1]):
+            for j in range(b['tiles'][2], b['tiles'][3]):
+                x0, y0 = px(i * TILE, (j + 1) * TILE)
+                x1, y1 = px((i + 1) * TILE, j * TILE)
+                pen.rectangle([x0, y0, x1, y1], outline=colour)
+                pen.text((x0 + 3, y0 + 2), code(i, j), fill=colour)
     image.save(path)
     return path
 

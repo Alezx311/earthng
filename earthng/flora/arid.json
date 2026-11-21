@@ -1,0 +1,27 @@
+{
+  "region": "arid",
+  "title": "Флора посушливих країв",
+  "source": "FoliMesh (folimesh.com), realistic style",
+  "style": "real",
+  "note": "Deserts and the dry subtropics: cacti and succulents, the date palm of an oasis, the acacia of a savanna, and the Mediterranean's cypress, olive and stone pine. Fields as in earthng/flora/ukraine.json. use: desert, oasis, coast (a Mediterranean shore: also the south coast of Crimea), savanna.",
+  "species": {
+    "saguaro": {"slug": "saguaro", "latin": "Carnegiea gigantea", "uk": "сагуаро", "priority": 1, "use": ["desert"],
+      "variants": [{"seed": 1}]},
+    "opuntia": {"slug": "opuntia", "latin": "Opuntia", "uk": "опунція", "priority": 1, "layer": "shrub", "use": ["desert", "coast"],
+      "variants": [{"seed": 1}]},
+    "agave": {"slug": "agave", "latin": "Agave americana", "uk": "агава", "priority": 1, "layer": "shrub", "use": ["desert", "coast"],
+      "variants": [{"seed": 1}]},
+    "date_palm": {"slug": "palm-date", "latin": "Phoenix dactylifera", "uk": "фінікова пальма", "priority": 1, "use": ["oasis", "desert", "coast"],
+      "variants": [{"seed": 1}]},
+    "fan_palm": {"slug": "palm-washingtonia", "latin": "Washingtonia robusta", "uk": "віялова пальма (вашингтонія)", "priority": 1, "use": ["coast", "city", "oasis"],
+      "variants": [{"seed": 1}]},
+    "acacia": {"slug": "acacia", "latin": "Vachellia tortilis", "uk": "акація зонтична", "priority": 1, "use": ["savanna", "desert"],
+      "variants": [{"seed": 1}]},
+    "cypress": {"slug": "cypress", "latin": "Cupressus sempervirens", "uk": "кипарис вічнозелений", "priority": 1, "use": ["coast", "city"],
+      "variants": [{"seed": 1}]},
+    "olive": {"slug": "olive", "latin": "Olea europaea", "uk": "маслина", "priority": 1, "use": ["coast", "village"],
+      "variants": [{"seed": 1}]},
+    "stone_pine": {"slug": "stone-pine", "latin": "Pinus pinea", "uk": "пінія", "priority": 1, "use": ["coast"],
+      "variants": [{"seed": 1}]}
+  }
+}

@@ -95,7 +95,10 @@ padding:0;background:rgba(255,255,255,.1);overflow:hidden}
 .eng-z-classes{background:#5c6b7a}.eng-z-surfaces{background:#7a6a55}.eng-z-lanes{background:#4f6f8f}
 .eng-z-town{background:#8a5a4a}.eng-z-works{background:#7d6a3c}.eng-z-street{background:#6b5a86}
 .eng-z-covers{background:#5f7d3f}.eng-z-plants{background:#3f7d4f}.eng-z-water{background:#3d6f96}
-.eng-z-relief{background:#75695c}.eng-z-junctions{background:#8f4f6a}.eng-z-studio{background:#9a8f7a}.eng-z-free{background:rgba(255,255,255,.08)}
+.eng-z-relief{background:#75695c}.eng-z-junctions{background:#8f4f6a}.eng-z-main{background:#5c6b7a}
+.eng-z-wild{background:#46554c}.eng-z-mountains{background:#6f7f92}.eng-z-desert{background:#a9823f}
+.eng-z-snow{background:#8fa9bd}.eng-z-mud{background:#5d4731}
+.eng-legend button.on{outline:2px solid #fff;outline-offset:-2px;font-weight:700}.eng-z-studio{background:#9a8f7a}.eng-z-free{background:rgba(255,255,255,.08)}
 .eng-legend{display:flex;flex-wrap:wrap;gap:.3em;padding:0 .5em .3em}
 .eng-legend button{padding:.25em .6em;border:0;border-radius:2px;cursor:pointer;font:inherit;font-size:.85em;color:#fff}
 .eng-legend button:hover{outline:2px solid #fff;outline-offset:-2px}

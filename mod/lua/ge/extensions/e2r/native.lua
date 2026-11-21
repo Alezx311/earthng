@@ -14,6 +14,9 @@ local manualEditor = require('ge/extensions/e2r/manual_editor')
 do
   local ok, lab = pcall(require, 'ge/extensions/e2r/lab')
   M.lab = ok and type(lab) == 'table' and type(lab.resolve) == 'function' and lab or nil
+  -- the worlds a tile can be rebuilt as (universe.lua)
+  local okU, universes = pcall(require, 'ge/extensions/e2r/universe')
+  M.universes = okU and type(universes) == 'table' and type(universes.get) == 'function' and universes or nil
 end
 -- the far view's colour maps, draped over the horizon tiles once far.lua has loaded them
 local okFarModule, farModule = pcall(require, 'ge/extensions/e2r/far')
@@ -1299,6 +1302,25 @@ local function buildTile(key, wanted)
     if value == 'off' then return false end
     return first
   end
+  -- The universe of the tile (universe.lua): the real pack's alone, as its rules name the real
+  -- pack's materials. Its climate, look, tune and options lie under the lab's own knobs.
+  local universes = M.universes
+  local universe = universes and realStyle and knob.universe and universes.get(knob.universe) or nil
+  local was = universe and universe.option or NONE_LIST
+  local labTune = knobs.tune
+  if universe and universe.tune then
+    local merged = {}
+    for name, value in pairs(universe.tune) do merged[name] = value end
+    for name, value in pairs(labTune or NONE_LIST) do merged[name] = value end
+    labTune = merged
+  end
+  local baseLook = universe and universes.look(universe, r.data.look) or r.data.look
+  local climate = universes and knob.climate and universes.climate(knob.climate) or (universe and universe.climate) or nil
+  local function density(name)
+    if knob[name] ~= nil then return knob[name] end
+    if was[name] ~= nil then return was[name] end
+    return tune[name]
+  end
   local function stamp(road, nav)
     if road.spawn and not finite(road.spawn.yaw) and vector(road.spawn.dir, 3) then
       road.spawn.yaw = math.atan2(-road.spawn.dir[1], road.spawn.dir[2])
@@ -1371,18 +1393,22 @@ local function buildTile(key, wanted)
       terrainStep = wanted.vista and 100 or nil,
       farStep = 100, adaptiveFar = not wanted.horizon, horizonStep = wanted.step or 100,
       latitude = r.data.geo and r.data.geo[4], geo = r.data.geo, nature = r.data.nature,
-      look = lab and lab.lookOf(r.data.look, labScope) or r.data.look,
+      look = lab and lab.lookOf(baseLook, labScope) or baseLook,
       country = r.country and r.country.id, realStyle = realStyle,
-      tune = knobs.tune, kit = switch(knob.kit, nil),
+      tune = labTune, kit = switch(knob.kit, nil),
+      climate = climate, swap = universe and universes.swapper(universe) or nil,
+      floraZone = knob.floraZone ~= 'auto' and knob.floraZone or (universe and universe.flora) or nil,
+      feel = switch(knob.feel, universe and universe.feel or nil) or nil,
+      land = was.land,
       kitStyle = knob.kitStyle ~= 'auto' and knob.kitStyle or nil,
       kitWall = knob.kitWall ~= 'auto' and knob.kitWall or nil,
       leftHand = generator.keepsLeft and generator.keepsLeft(r.country and r.country.id, r.data.look) or nil,
       seaLevel = finite(r.data.seaLevel) and r.data.seaLevel or nil,
-      maxTrees = knob.maxTrees or tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = knob.maxGrass or tune.maxGrass,
-      maxRocks = knob.maxRocks or tune.maxRocks, forestSpacing = knob.forestSpacing or tune.forestSpacing,
-      groundSpacing = knob.groundSpacing or tune.groundSpacing,
-      groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = knob.propSpacing or tune.propSpacing,
-      detail = knob.detail or tune.detail, roadReady = roadReady or nil, sceneReady = sceneReady or nil,
+      maxTrees = density('maxTrees'), maxFarTrees = tune.maxFarTrees, maxGrass = density('maxGrass'),
+      maxRocks = density('maxRocks'), forestSpacing = density('forestSpacing'),
+      groundSpacing = density('groundSpacing'),
+      groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = density('propSpacing'),
+      detail = density('detail'), roadReady = roadReady or nil, sceneReady = sceneReady or nil,
       -- a wood's floor is the engine's grass alone (turf.lua): no squares for it where that is off
       woodFloor = realStyle ~= false and package.loaded['ge/extensions/e2r/turf'] ~= nil
         and package.loaded['ge/extensions/e2r/turf'].active() or false,

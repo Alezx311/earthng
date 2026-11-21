@@ -142,7 +142,7 @@ def pixel_source(kind):
              'scree': 'trodden', 'beach': 'trodden', 'wetland': 'forest',
              'glacier': 'mark', 'bare_ground': 'trodden', 'mark_yellow': 'mark',
              'desert': 'trodden', 'dune': 'trodden', 'steppe': 'trodden', 'dry_grass': 'trodden',
-             'tundra': 'ground', 'alpine': 'ground', 'snow': 'mark', 'snow_edge': 'mark'}
+             'tundra': 'ground', 'alpine': 'ground', 'snow': 'mark', 'snow_edge': 'mark', 'mud': 'trodden'}
     source = alias.get(kind, kind)
     return source if source in SURFACES else 'ground'
 
@@ -186,7 +186,7 @@ def fields(base):
                    'scree': 'trodden', 'beach': 'trodden', 'wetland': 'forest',
                    'glacier': 'mark', 'bare_ground': 'trodden', 'mark_yellow': 'mark',
                    'desert': 'trodden', 'dune': 'trodden', 'steppe': 'trodden', 'dry_grass': 'trodden',
-                   'tundra': 'ground', 'alpine': 'ground', 'snow': 'mark', 'snow_edge': 'mark',
+                   'tundra': 'ground', 'alpine': 'ground', 'snow': 'mark', 'snow_edge': 'mark', 'mud': 'trodden',
                    'edge_grass': 'ground', 'edge_dirt': 'trodden',
                    'road_worn': 'road', 'road_gravel': 'trodden', 'road_dirt': 'trodden',
                    'road_broken': 'trodden', 'road_track': 'trodden',

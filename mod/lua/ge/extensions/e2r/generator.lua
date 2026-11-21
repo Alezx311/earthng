@@ -73,7 +73,8 @@ local COVER_SCALE = {ground = 96, forest = 24, park = 24, meadow = 96, orchard =
   road = 30, road_major = 30, road_worn = 30, footway_asphalt = 30, road_sett = 3,
   sidewalk_tile = 2.4, sidewalk_asphalt = 3,   -- a town's walking surfaces (street_art.MATERIALS)
   -- the climate's open ground (biome.lua): photo sheets of fast_photo.GROUND_M
-  desert = 24, dune = 24, steppe = 24, dry_grass = 24, tundra = 24, alpine = 24, snow = 24, snow_edge = 24}
+  desert = 24, dune = 24, steppe = 24, dry_grass = 24, tundra = 24, alpine = 24, snow = 24, snow_edge = 24,
+  mud = 4}   -- a universe's deep mud (fast_style KINDS: the game's terrain mud)
 local ABIN = 12.5      -- m: bins of asphalt pieces that sidewalks and verges are cut by
 local SEA_ABOVE = 0.3   -- the water surface over the DEM's flat sea / river surface (no z-fighting)
 -- Real WaterBlock volumes (world.lua), not the old e2rf_water mesh sheet. The bed under them
@@ -505,6 +506,9 @@ local VEG = {
 -- gardenRamp (a village street reads .04-.14). Firs from firFrom m above the sea, fully at
 -- firFrom + firRamp: the Polissia and steppe pinewoods stay pine, the Carpathians turn fir.
 VEG.gardenFrom, VEG.gardenRamp, VEG.firFrom, VEG.firRamp = .004, .012, 450, 450
+-- yardBuilt: from this built-up share the planted trees of residential land are a town
+-- courtyard's (flora.lua SETTLED.yard), under it a village yard's with its kitchen garden
+VEG.yardBuilt = .12
 -- The clearings of open land, and residential land away from its buildings: copses where noise
 -- over `size` m passes `from` (`chance` of the lattice planted, in open land one in `bush` a
 -- bush) and a lone tree at `lone` (twice that in residential land). An even 6 % of open land,
@@ -894,6 +898,9 @@ VEG.layers = {under = {step = 5.5, chance = .5, young = .35, old = 1.25, edge = 
   -- lattice points the cap left out are planted too, `share` of the cap at most, as items
   -- marked `fill`: the world plants them round a car that has stopped (world.lua fillStep).
   fill = {share = 2},
+  -- herbs: the flora pack's small plants (bio.herbs), `share` of the grass budget a scatter;
+  -- planted as the fill is
+  herbs = {share = .4},
   wet = {reach = 24, bin = 12, wetland = {swamp = .7, bog = .14, marsh = .05, reedbed = .03, wet_meadow = .04, default = .1}},
   deadwood = {'/levels/east_coast_usa/art/shapes/trees/trees_beech/tree_beech_dead_a.dae',
     '/levels/east_coast_usa/art/shapes/trees/trees_douglasfir/fir_dead_branches.dae',
@@ -1726,6 +1733,12 @@ local function collector(rect, key, layer, pause, mixed)
       if swap == false then return end
       if swap then kind, plain = swap, true end
     end
+    -- hooks.swap(kind): a universe's material for this surface, or false to leave it out
+    -- (universe.lua: roads of packed snow, roofs under snow, mud for the open land)
+    if hooks.swap then
+      kind = hooks.swap(kind)
+      if kind == false then return end
+    end
     local material = 'e2rf_' .. kind
     -- hooks.cell buckets an invisible collision proxy into its own object ({ix, iy, size})
     local gkey = material
@@ -1775,6 +1788,10 @@ local function collector(rect, key, layer, pause, mixed)
     local nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
     local len = math.sqrt(nx * nx + ny * ny + nz * nz)
     if len < EPS then return end
+    if hooks.swap then
+      kind = hooks.swap(kind)
+      if kind == false then return end
+    end
     local material = 'e2rf_' .. kind
     if mixed and total >= mixed then flush() end
     local mesh = groups[material]
@@ -1860,7 +1877,12 @@ end
 -- per cell. A step four times coarser chorded across hills, so the car sank into the
 -- texture or rode above it. The detailed ground stays drawn and is left out of
 -- reloadCollision; only the cells round the car join a rebuild, so the full step is cheap.
-function ROADS.collisionGround(roads, rect, step, heightAt, pause)
+-- kindAt(x, y): the land drawn at a point; a cell of snow, sand or mud then takes a proxy of
+-- that ground (ROADS.FEEL, fast_style's col_* materials) and the car sinks, slides or bogs as
+-- the picture says. Without it every cell is grass, as before.
+ROADS.FEEL = {snow = 'col_snow', snow_edge = 'col_snow', glacier = 'col_snow', dune = 'col_sand', beach = 'col_sand',
+  mud = 'col_mud', desert = 'col_dirt'}
+function ROADS.collisionGround(roads, rect, step, heightAt, pause, kindAt)
   if not roads or not heightAt or not step or step <= 0 then return end
   -- Walk the very same global lattice as the drawn mesh. Restarting a 25 m grid at
   -- each 128 m bucket both shifted its diagonals and left 3 m gaps between buckets.
@@ -1875,8 +1897,9 @@ function ROADS.collisionGround(roads, rect, step, heightAt, pause)
       local h11, h01 = heightAt(x + step, y + step), heightAt(x, y + step)
       if h00 and h10 and h11 and h01 then
         roads.hooks.cell = {math.floor((x + step * .5) / cell), math.floor((y + step * .5) / cell), cell}
-        roads.polygon('col_ground', {{x, y, h00}, {x + step, y, h10}, {x + step, y + step, h11}}, true)
-        roads.polygon('col_ground', {{x, y, h00}, {x + step, y + step, h11}, {x, y + step, h01}}, true)
+        local proxy = kindAt and ROADS.FEEL[kindAt(x + step * .5, y + step * .5)] or 'col_ground'
+        roads.polygon(proxy, {{x, y, h00}, {x + step, y, h10}, {x + step, y + step, h11}}, true)
+        roads.polygon(proxy, {{x, y, h00}, {x + step, y + step, h11}, {x, y + step, h01}}, true)
       end
     end
     if pause then pause() end
@@ -13241,6 +13264,11 @@ local function build(cells, i, j, options)
   -- them in separate objects so collision can retain them while hiding the ground.
   roads.verges = collector(rect, key .. '_verge', 'road', pause)
   local roadDecor, sceneDecor = collector(rect, key .. '_marks', 'road', pause), collector(rect, key .. '_cars', 'scene', pause)
+  -- options.swap (universe.lua): every surface of the tile through one substitution
+  if type(options.swap) == 'function' then
+    roads.hooks.swap, scene.hooks.swap, roads.verges.hooks.swap = options.swap, options.swap, options.swap
+    roadDecor.hooks.swap, sceneDecor.hooks.swap = options.swap, options.swap
+  end
   -- A far tile (the ring past the near radius, ~1 km) draws each road's surface into its scene layer,
   -- decoration without collision: it kept the guard rails and fences, and from a free camera the
   -- Tallinna ringtee was grass between two lines of rail. The horizon draws no road.
@@ -13711,18 +13739,24 @@ local function build(cells, i, j, options)
   -- One table, as build() is near LuaJIT's limits on locals and upvalues.
   local bio = {bins = {}, on = VEG.biome ~= nil and type(options.geo) == 'table' and VEG.biome.available(),
     sea = options.seaLevel or 20, config = type(options.nature) == 'table' and options.nature or NONE}
+  -- options.climate: a climate that is given (universe.lua, the lab), {class, treeline, snowline}
+  bio.given = type(options.climate) == 'table' and VEG.biome ~= nil and VEG.biome.forcedAt and options.climate or nil
   function bio.at(x, y)
     if not bio.on then return nil end
     local bx, by = floor(x / 100), floor(y / 100)
     local k = (bx + 32768) * 65536 + by + 32768
     local p = bio.bins[k]
     if not p then
-      p = VEG.biome.at(options.geo, (bx + .5) * 100, (by + .5) * 100)
+      if bio.given then
+        p = VEG.biome.forcedAt(bio.given, options.geo, (bx + .5) * 100, (by + .5) * 100)
+      else
+        p = VEG.biome.at(options.geo, (bx + .5) * 100, (by + .5) * 100)
+      end
       bio.bins[k] = p
     end
     return p
   end
-  function bio.treeline(p) return tonumber(bio.config.treeLine) or p.treeline end
+  function bio.treeline(p) return p.fixedTreeline or tonumber(bio.config.treeLine) or p.treeline end
   -- Smooth 0..1 noise with `size` m features (the decor's grove() is the same).
   function bio.noise(x, y, size, seed)
     local fx, fy = x / size, y / size
@@ -13739,7 +13773,14 @@ local function build(cells, i, j, options)
   -- look names its own trees.
   bio.flora = VEG.flora and options.flora ~= false and type(options.geo) == 'table' and VEG.flora.enabled
     and (lookOf('trees') == nil or lookOf('trees') == 'regional') and VEG.flora or nil
-  bio.zones, bio.lons, bio.stands, bio.q, bio.bands = {}, {}, {}, {}, {}
+  bio.zones, bio.lons, bio.stands, bio.q, bio.bands, bio.world = {}, {}, {}, {}, {}, {}
+  -- options.floraZone: a zone that is given (the lab's knob, a pack's tile), whatever the place
+  -- (a climate's zone only where the pack has its trees: without them the climate's old sets stand)
+  bio.givenZone = bio.flora and bio.flora.ZONES[options.floraZone]
+    and (not bio.flora.ZONES[options.floraZone].world or bio.flora.zoneOwn(options.floraZone)) and options.floraZone or nil
+  -- The zone at a point, its longitude, and whether the zone is the pack's own for this place
+  -- (given, or the climate's usual woods: flora.lua worldZone): such a zone's trees stand
+  -- instead of the climate's old sets (bio.species), the region's own only where those have none.
   function bio.zone(x, y)
     local F = bio.flora
     if not F then return nil end
@@ -13750,10 +13791,18 @@ local function build(cells, i, j, options)
       local geo, cx, cy = options.geo, (bx + .5) * 100, (by + .5) * 100
       local lon = geo[3] + geo[5] * (cx - geo[1]) + geo[6] * (cy - geo[2])
       local lat = geo[4] + geo[7] * (cx - geo[1]) + geo[8] * (cy - geo[2])
-      z = F.zone(lon, lat, rawHeight(cx, cy) - bio.sea, cx, cy) or false
-      bio.zones[k], bio.lons[k] = z, lon
+      -- (not the region's zone under a climate that is given: a desert laid over Kyiv is not a
+      -- forest-steppe)
+      z = bio.givenZone or (not bio.given and F.zone(lon, lat, rawHeight(cx, cy) - bio.sea, cx, cy)) or false
+      local world = bio.givenZone ~= nil
+      if not z and F.worldZone then
+        local p = bio.at(cx, cy)
+        z = p and F.worldZone(p) or false
+        world = z and true or false
+      end
+      bio.zones[k], bio.lons[k], bio.world[k] = z, lon, world
     end
-    return z or nil, bio.lons[k]
+    return z or nil, bio.lons[k], bio.world[k]
   end
   -- Is a point within about `reach` m of the edge of an area of `kinds`: bins of `bin` m marked
   -- along the edges, once a tile and name. (A distance to every polygon at every lattice point
@@ -15633,7 +15682,14 @@ local function build(cells, i, j, options)
     end
     pause()
   end
-  if not distant then ROADS.collisionGround(roads, rect, step, ground, pause) end
+  -- options.feel: the ground under the wheels is what is drawn there, after the universe's swap
+  if not distant then
+    ROADS.collisionGround(roads, rect, step, ground, pause, options.feel and function(x, y)
+      local kind = surfaceKind(x, y)
+      if type(options.swap) == 'function' then kind = options.swap(kind) or kind end
+      return kind
+    end or nil)
+  end
   local function manifest(collector, layer)
     local mats, total = {}, 0
     for material in pairs(collector.used) do mats[#mats + 1] = material end
@@ -17324,8 +17380,12 @@ local function build(cells, i, j, options)
       else
         local zone = bio.zone(x, y)
         if not zone then return false end
+        -- a village yard has a kitchen garden, a town block's courtyard has not: by how much
+        -- of the ground round the point is built on (VEG.yardBuilt)
         local planted = kind == 'park' and 'park'
-          or ((kind == 'garden' or kind == 'orchard' or (kind == 'residential' and h % 100 < 40)) and 'garden' or 'town')
+          or ((kind == 'garden' or kind == 'orchard') and 'garden')
+          or (kind == 'residential' and h % 100 < 40 and (builtAt(x, y) < VEG.yardBuilt and 'garden' or 'yard'))
+          or 'town'
         species, height = F.planted(planted, zone, F.field(x, y, 85, 611), r1, r2)
       end
       if not species then return false end
@@ -17334,6 +17394,89 @@ local function build(cells, i, j, options)
       static(string.format('tree_%s_%d', kind, c.key), shape, x, y, z, h % 6283 / 1000, scale, materials)
       if bio.fill then scene.items[#scene.items].fill = true end
       return true
+    end
+    -- A small plant or a piece of dead wood of a layer (flora.lua LAYERS) at a scatter's
+    -- candidate: true when it stands (false without the flora pack: the layers are its own).
+    -- fill: planted as a wood's fill is, round a car slow enough to see it (world.lua fillStep).
+    function bio.herb(layer, prefix, c, x, y, z, fill)
+      local F = bio.flora
+      local species, height = F.layer(layer, keyHash(31, c.key) % 1000 / 1000, keyHash(212, c.key) % 1000 / 1000)
+      if not species then return false end
+      local shape, scale, materials = F.plant(species, height, c.hash)
+      if not shape then return false end
+      static(prefix .. '_' .. c.key, shape, x, y, z, c.hash % 6283 / 1000, scale, materials)
+      if fill then scene.items[#scene.items].fill = true end
+      return true
+    end
+    -- A field's margin: its crop as plants along its edges, MARGIN.rows of them MARGIN.step m
+    -- apart from MARGIN.off m inside the edge: wheat with poppies and cornflowers in it, the rows
+    -- of sunflowers or of maize. A field is drawn as its sheet and the engine's grass; where a
+    -- road runs along it, the first metres are plants that stand. `cap` a tile.
+    bio.MARGIN = {step = 2.4, rows = 3, off = 1.3, wheat = {farmland_wheat = true, farmland_wheat_y = true},
+      rowed = {farmland_rows = true, farmland_rows_y = true}}
+    function bio.margins(cap)
+      local F, M, planted = bio.flora, bio.MARGIN, 0
+      for index, area in ipairs(lists.areas) do
+        local crop = area.kind == 'farmland' and ringsTouch(area.rings, rect) and FIELD.of(area, 'farmland')
+        local layer = crop and ((M.wheat[crop] and 'grain')
+          or (M.rowed[crop] and (hash('rows:' .. tostring(area.id or '')) % 2 == 0 and 'rows' or 'rows_maize')))
+        if layer and F.layer(layer, 0, 0) then
+          for _, ring in ipairs(area.rings) do
+            for k = 1, #ring do
+              local a, b = ring[k], ring[k % #ring + 1]
+              local dx, dy = b[1] - a[1], b[2] - a[2]
+              local len = math.sqrt(dx * dx + dy * dy)
+              for s = 0, len > 1 and floor(len / M.step) or -1 do
+                for row = 1, M.rows * 2 do
+                  -- either side of the edge: the inside one is the field's
+                  local off = (M.off + (math.ceil(row / 2) - 1) * M.step) * (row % 2 == 0 and -1 or 1)
+                  local x, y = a[1] + dx * (s + .5) * M.step / len - dy / len * off, a[2] + dy * (s + .5) * M.step / len + dx / len * off
+                  local key = latticeKey(2, floor(x * 2), floor(y * 2), 500 + row)
+                  local h = keyHash(97, key)
+                  x, y = x + (h % 100 / 100 - .5) * .8, y + (floor(h / 100) % 100 / 100 - .5) * .8
+                  if planted < cap and x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4]
+                      and select(2, coverAt(x, y)) == area and not blocked(x, y, 1.6) then
+                    local z = ground(x, y)
+                    if (not sea or z > sea) and bio.herb(layer, 'crop', {key = key, hash = h}, x, y, z, true) then
+                      planted = planted + 1
+                    end
+                  end
+                end
+              end
+              if k % 16 == 0 then pause() end
+            end
+          end
+        end
+        if index % 32 == 0 then pause() end
+      end
+    end
+    -- The pack's small plants over a tile (flora.lua LAYERS), `cap` of each scatter: a wood's
+    -- floor by its stand, meadows and yards in flower, reed and cattail in a wetland and along a
+    -- bank, a kitchen garden, the fields' margins. scatter: build()'s own (it is defined below).
+    bio.SHORE = {water = true}
+    function bio.herbs(scatter, cap, treeline)
+      scatter('floor', {forest = 5.5}, {forest = .55}, NONE, cap, 0, 1, 1, .7, {forest = treeline},
+        function(c, x, y, z, e)
+          local stand = bio.standAt(x, y, e, c.tags or NONE, 'forest')
+          return stand and stand.floor and bio.herb(stand.floor, 'floor', c, x, y, z, true) or false
+        end)
+      scatter('bloom', {meadow = 5, park = 7.5, ground = 9.5, orchard = 8.5, residential = 10.5},
+        {meadow = .5, park = .3, ground = .22, orchard = .3, residential = .2}, NONE, cap, 0, 1, 1, .8, {meadow = treeline},
+        function(c, x, y, z)
+          -- a meadow's flowers, a dry land's feather grass, a rainforest clearing's big leaves;
+          -- a desert's open ground is bare
+          local zone = bio.zone(x, y)
+          if zone == 'desert' then return false end
+          local dry = zone == 'steppe' or zone == 'savanna' or zone == 'mediterranean'
+          return bio.herb(zone == 'tropics' and 'jungle_floor' or (dry and 'steppe' or 'meadow'), 'bloom', c, x, y, z, true)
+        end)
+      scatter('bank', {wetland = 4.5, water = 3.5}, {wetland = .45, water = function(x, y)
+          return bio.band('shore', bio.SHORE, 4, 4, x, y) and .6 or 0
+        end}, NONE, cap, 0, 1, 1, .8, nil,
+        function(c, x, y, z) return bio.herb('bank', 'bank', c, x, y, z, true) end)
+      scatter('plot', {garden = 3.5, allotments = 3.5}, {garden = .3, allotments = .45}, NONE, floor(cap / 2), 0, 1, 1, .8, nil,
+        function(c, x, y, z) return bio.herb('plot', 'plot', c, x, y, z, true) end)
+      bio.margins(cap)
     end
     -- A mapped row's tree (natural=tree_row): one species along a street, an avenue of lindens or
     -- a line of poplars, and the shelter belt's along a field. True when the flora planted it.
@@ -17734,7 +17877,8 @@ local function build(cells, i, j, options)
                 end
                 -- (the stock poplar, one crown in ten, stays the old set's until the flora has a
                 -- poplar of its own: flora.lua STOCK.poplar)
-                if not ((name == 'pine' or name == 'town' or (bio.flora and bio.flora.own('poplar')))
+                if not ((name == 'pine' or name == 'town' or select(3, bio.zone(x, y))
+                      or (bio.flora and bio.flora.own('poplar')))
                     and bio.plantRow(x, y, z, h, position, needle, line)) then
                   local set = VEG.use(name)
                   static(string.format('tree_row_%d', position), set[math.floor(h / 7) % #set + 1], x, y, z, h % 6283 / 1000, .8 + keyHash(6, position) % 300 / 1000)
@@ -17808,7 +17952,9 @@ local function build(cells, i, j, options)
       end
       -- the region's own species, by the stand the point lies in (flora.lua); another climate's
       -- plants (bio.species) keep their sets
-      if not other and bio.plantTree(candidate, x, y, z, elevation, bush, settled, line) then return true end
+      if (not other or select(3, bio.zone(x, y))) and bio.plantTree(candidate, x, y, z, elevation, bush, settled, line) then
+        return true
+      end
       if kind == 'wetland' or bio.fill then return false end
       local set = VEG.use(name)
       -- Source and exact key: `..` prints 14 digits, and one lattice point's keys in two
@@ -18122,7 +18268,11 @@ local function build(cells, i, j, options)
         end)
       VEG.deadwood = VEG.layers.deadwood
       local dead = VEG.have('deadwood')
-      if dead ~= VEG.have('forest') then
+      if bio.flora.layer and bio.flora.layer('deadwood', 0, 0) then
+        -- the flora pack's own logs, stumps, snags and brushwood
+        scatter('dead', {forest = D.step}, {forest = D.chance}, dead, D.cap, 0, .8, 1.25, .8, {forest = treeline},
+          function(c, x, y, z) return bio.herb('deadwood', 'dead', c, x, y, z) end)
+      elseif dead ~= VEG.have('forest') then
         scatter('dead', {forest = D.step}, {forest = D.chance}, dead, D.cap, 0, .8, 1.25, .8, {forest = treeline})
       end
     else
@@ -18137,6 +18287,11 @@ local function build(cells, i, j, options)
       VEG.have('flowers'), maxFlowers, 0, .8, 1.2, .8, {meadow = treeline})
     scatter('fern', {forest = 9}, {forest = .3},
       VEG.have('ferns'), math.floor(maxGrass * .1), 0, .7, 1.2, .72, {forest = treeline})
+    -- the flora pack's small plants, for a car slow enough to see them (nothing without the pack)
+    if bio.flora and bio.flora.layer and not distant and options.fill ~= false and maxGrass > 0
+        and bio.zone((rect[1] + rect[3]) / 2, (rect[2] + rect[4]) / 2) then
+      bio.herbs(scatter, floor(maxGrass * VEG.layers.herbs.share), treeline)
+    end
     scatter('rock', {bare_rock = 11, scree = 8}, {bare_rock = .72, scree = .84},
       VEG.rocks, maxRocks, math.min(16, maxRocks), .55, 1.25, .45, nil)
     -- Slopes too steep for trees still had no stones unless OSM tagged bare_rock or scree.

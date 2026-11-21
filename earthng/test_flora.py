@@ -69,11 +69,28 @@ class StandTest(unittest.TestCase):
                 for key, entries in lists(table):
                     for entry in entries.values():
                         self.assertIn(entry[1], species, (name, key))
-                        self.assertIn(entry[1], stock, (name, key))
+                        # Ukraine's own zones stand without the flora pack: every species of
+                        # theirs has a stand-in among the game's trees
+                        if not zone.world:
+                            self.assertIn(entry[1], stock, (name, key))
         for kind, entries in self.flora.SETTLED.items():
+            total = sum(entry[2] for entry in entries.values())
+            bare = sum(entry[2] for entry in entries.values() if entry[1] not in stock)
             for entry in entries.values():
                 self.assertIn(entry[1], species, kind)
-                self.assertIn(entry[1], stock, kind)
+            # a town's and a yard's lists name the pack's shrubs and herbs too: a minor share,
+            # and never the leading species
+            self.assertIn(entries[1][1], stock, kind)
+            self.assertLess(bare / total, .4, kind)
+        for zone, kinds in self.flora.SETTLED_WORLD.items():
+            self.assertEqual(sorted(kinds.keys()), sorted(self.flora.SETTLED.keys()), zone)
+            for kind, entries in kinds.items():
+                for entry in entries.values():
+                    self.assertIn(entry[1], species, (zone, kind))
+        for layer, entries in self.flora.LAYERS.items():
+            for entry in entries.values():
+                self.assertIn(entry[1], species, layer)
+                self.assertNotIn(entry[1], stock, layer)
 
     def test_polissia_is_pinewood_with_stands_of_broadleaves(self):
         stands = self.stands(self.q('polissia', 120))
@@ -198,6 +215,115 @@ class ModelTest(unittest.TestCase):
         values = [field(x * 61.7, y * 47.3, 130, 603) for x in range(60) for y in range(60)]
         for share in (.1, .3, .64, .9):
             self.assertAlmostEqual(sum(v < share for v in values) / len(values), share, delta=.06)
+
+
+class WorldTest(unittest.TestCase):
+    """The pack's own species: the zones of other climates, the small plants, the blocks."""
+
+    def setUp(self):
+        self.lua, self.flora = load()
+        self.place = self.lua.eval('function(group) return {group = group} end')
+        self.q = self.lua.eval('function(zone, needle) return {zone = zone, e = 30, needle = needle, lon = 100} end')
+
+    def pack(self, *names):
+        """A flora pack with one model of each of these species."""
+        entries = ', '.join(
+            f"{n} = {{models = {{{{shape = '/art/shapes/earthng/flora/trees/{n}/{n}_s1.dae', height = 10}}}}, "
+            f"use = {{'forest'}}, layer = 'shrub', region = 'r', latin = 'L'}}" for n in names)
+        self.flora.setManifest(self.lua.eval('{species = {' + entries + '}}'))
+
+    def test_without_the_pack_other_climates_keep_their_old_sets(self):
+        for group in ('rainforest', 'savanna', 'desert', 'mediterranean', 'temperate', 'boreal', 'steppe'):
+            self.assertIsNone(self.flora.worldZone(self.place(group)), group)
+        self.assertIsNone(self.flora.worldZone(self.place('ice')))
+        self.assertIsNone(self.flora.layer('floor', .3, .5))
+        self.assertEqual(len(list(self.flora.cover('bank').values())), 0)
+        self.assertEqual(len(list(self.flora.blocks().values())), 0)
+        # a yard has what the game's own trees can be: no sunflower without its model
+        seen = {self.flora.planted('garden', 'foreststeppe', k / 97, k / 211, .5)[0] for k in range(400)}
+        self.assertFalse(seen & {'sunflower', 'corn', 'pumpkin', 'currant', 'garden_rose', 'hydrangea'})
+
+    def test_a_climates_zone_needs_most_of_its_trees(self):
+        self.pack('rubber_tree', 'mango')                           # 52 of the canopy's 100 parts
+        self.assertFalse(self.flora.zoneOwn('tropics'))
+        self.assertIsNone(self.flora.worldZone(self.place('rainforest')))
+        self.pack('rubber_tree', 'mango', 'breadfruit')
+        self.assertTrue(self.flora.zoneOwn('tropics'))
+        self.assertEqual(self.flora.worldZone(self.place('rainforest')), 'tropics')
+        # another climate's trees are still not there
+        self.assertIsNone(self.flora.worldZone(self.place('desert')))
+
+    def test_a_rainforest_is_its_canopy_with_bananas_and_tree_ferns_under_it(self):
+        self.pack('rubber_tree', 'mango', 'breadfruit', 'coconut_palm', 'banana', 'tree_fern', 'bamboo', 'monstera')
+        stand = self.flora.stand(self.q('tropics', None), 40, 60)
+        self.assertFalse(stand.conifer)
+        self.assertEqual(stand.floor, 'jungle_floor')
+        trees = Counter(self.flora.tree(stand, k / 300, .5)[0] for k in range(300))
+        self.assertTrue(set(trees) <= {'rubber_tree', 'mango', 'breadfruit', 'coconut_palm', 'banana'})
+        self.assertGreaterEqual(len(trees), 4)
+        under = {self.flora.undergrowth(stand, k / 100, .5)[0] for k in range(100)}
+        self.assertEqual(under, {'banana', 'tree_fern', 'bamboo'})
+        # the map's needle-leaved wood in a zone without conifers is its broadleaf wood
+        self.assertFalse(self.flora.stand(self.q('tropics', True), 40, 60).conifer)
+        species, height = self.flora.layer('jungle_floor', .2, .5)
+        self.assertEqual(species, 'monstera')
+        self.assertAlmostEqual(height, 1, delta=.3)
+        # a street there is an avenue of palms
+        row = Counter(self.flora.planted('row', 'tropics', .2, k / 200, .5)[0] for k in range(200))
+        self.assertEqual(row.most_common(1)[0][0], 'coconut_palm')
+
+    def test_a_desert_wood_has_no_floor_and_a_pinewood_has_heather(self):
+        self.pack('saguaro', 'acacia', 'date_palm', 'opuntia', 'agave', 'heather', 'fern')
+        self.assertIsNone(self.flora.stand(self.q('desert', None), 10, 10).floor)
+        stand = self.flora.stand(self.q('polissia', True), 10, 10)
+        self.assertEqual(stand.floor, 'pine_floor')
+        self.assertEqual(self.flora.stand(self.q('polissia', False), 10, 10).floor, 'floor')
+        plants = Counter(self.flora.layer('pine_floor', k / 100, .5)[0] for k in range(100))
+        self.assertEqual(set(plants), {'heather', 'fern'})
+        self.assertGreater(plants['heather'], plants['fern'])
+
+    def test_a_village_yard_has_a_kitchen_garden_and_a_town_courtyard_has_not(self):
+        self.pack('sunflower', 'corn', 'pumpkin', 'currant', 'garden_rose', 'hydrangea', 'hedge', 'barberry')
+        garden = Counter(self.flora.planted('garden', 'foreststeppe', k / 97, k / 400, .5)[0] for k in range(400))
+        yard = Counter(self.flora.planted('yard', 'foreststeppe', k / 97, k / 400, .5)[0] for k in range(400))
+        self.assertTrue({'sunflower', 'corn', 'currant'} <= set(garden))
+        self.assertFalse(set(yard) & {'sunflower', 'corn', 'pumpkin'})
+        self.assertEqual(garden.most_common(1)[0][0], 'fruit')
+        self.assertEqual(yard.most_common(1)[0][0], 'fruit')
+        # a sunflower is a sunflower's height, not a tree's
+        heights = [self.flora.planted('garden', 'foreststeppe', k / 97, k / 400, .5)[1] for k in range(400)
+                   if self.flora.planted('garden', 'foreststeppe', k / 97, k / 400, .5)[0] == 'sunflower']
+        self.assertTrue(heights and max(heights) < 3)
+
+    def test_a_layers_models_are_listed_for_the_ground_cover(self):
+        self.pack('reed', 'cattail')
+        cover = list(self.flora.cover('bank').values())
+        self.assertEqual(sorted(c.species for c in cover), ['cattail', 'reed'])
+        self.assertTrue(all(c.shape.endswith('_s1.dae') and c.share > 0 for c in cover))
+
+    def test_the_pack_is_a_list_of_blocks(self):
+        self.pack('oak', 'banana')
+        blocks = list(self.flora.blocks().values())
+        self.assertEqual([b.id for b in blocks], ['banana_s1', 'oak_s1'])
+        self.assertEqual((blocks[0].species, blocks[0].layer, blocks[0].region, blocks[0].height), ('banana', 'shrub', 'r', 10))
+        self.assertEqual(list(blocks[0].use.values()), ['forest'])
+
+    def test_a_landing_warms_its_own_zones_floor(self):
+        self.pack('monstera', 'fern', 'heather', 'reed')
+
+        def has(zone, species):
+            return any(f'/{species}/' in shape for shape in self.flora.shapesOf(zone).values())
+        self.assertTrue(has('foreststeppe', 'fern') and has('foreststeppe', 'heather') and has('foreststeppe', 'reed'))
+        self.assertFalse(has('foreststeppe', 'monstera'))
+        self.assertTrue(has('tropics', 'monstera'))
+        self.assertFalse(has('tropics', 'heather'))
+        self.assertFalse(has('desert', 'fern'))
+
+    def test_every_zone_has_a_name_for_the_lab(self):
+        names = {entry[1] for entry in self.flora.zoneChoices().values()}
+        self.assertEqual(names, set(self.flora.ZONES.keys()))
+        for group, zone in self.flora.WORLD.items():
+            self.assertIn(zone, names, group)
 
 
 if __name__ == '__main__':

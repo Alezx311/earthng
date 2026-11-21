@@ -410,6 +410,13 @@ for _k, (_tex, _tint, _ground) in RUTS.items():
     EXTRA[_k] = {'alphaTest': True, 'alphaRef': RUTS_REF, 'castShadows': False}
 # an older game without the maps loads a flat colour; the generator then draws no ruts at all
 FALLBACK.update({_k: None for _k in RUTS})
+# Deep mud (universe.lua): the game's own terrain mud every 4 m, and its mud under the tyres. The
+# open land, the fields and the unpaved roads of the mud universe are drawn with it.
+_MUD = '/assets/materials/terrain/mud/mud/t_mud'
+TEXTURES['mud'] = {'baseColorMap': _MUD + '_b.png', 'normalMap': _MUD + '_nm.png', 'roughnessMap': _MUD + '_r.png',
+                   'ambientOcclusionMap': _MUD + '_ao.png'}
+KINDS['mud'] = ('mud', [.23, .18, .13, 1], 'MUD', 4.0, 'plan')
+FALLBACK['mud'] = None
 KINDS['rail'] = (None, [.58, .58, .59, 1], 'METAL', 1.0, 'wall')
 KINDS['rail_side'] = (None, [.31, .23, .18, 1], 'METAL', 1.0, 'wall')
 # gilded domes (generator.lua BLD.dome)
@@ -1223,6 +1230,11 @@ def _proxy(name, source):
 
 MATERIALS['e2rf_col_ground'] = _proxy('e2rf_col_ground', 'ground')
 MATERIALS['e2rf_col_bldg'] = _proxy('e2rf_col_bldg', 'ground')
+# the ground a universe is felt by (generator.lua ROADS.FEEL): snow, sand and mud under the tyres
+MATERIALS['e2rf_col_snow'] = _proxy('e2rf_col_snow', 'snow')
+MATERIALS['e2rf_col_sand'] = _proxy('e2rf_col_sand', 'dune')
+MATERIALS['e2rf_col_mud'] = _proxy('e2rf_col_mud', 'mud')
+MATERIALS['e2rf_col_dirt'] = _proxy('e2rf_col_dirt', 'desert')
 for _kind, _glow in LENS.items():
     MATERIALS['e2rf_' + _kind]['Stages'][0]['emissiveFactor'] = [c * 4 for c in _glow]
 # The tree shapes' own materials (game textures under /assets): this level does not define

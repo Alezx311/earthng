@@ -18,6 +18,7 @@ in Git, and the repository holds only the recipe (earthng/flora/<region>.json).
     python earthng/folimesh.py params oak
     python earthng/folimesh.py stats oak --seed 2 --age 60
     python earthng/folimesh.py fetch --region ukraine --limit 20 [--dry-run]
+    python earthng/folimesh.py fetch --region all --reserve 6
 """
 import argparse
 import hashlib
@@ -215,6 +216,12 @@ def fetch_bytes(url, timeout=300):
         raise FoliMeshError(f'download failed: {error}') from None
 
 
+def regions():
+    """Every recipe there is, by name: ukraine first, the rest in the alphabet's order."""
+    names = sorted(path.stem for path in RECIPES.glob('*.json'))
+    return sorted(names, key=lambda name: (name != 'ukraine', name))
+
+
 def recipe(region):
     path = RECIPES / f'{region}.json'
     if not path.exists():
@@ -224,15 +231,27 @@ def recipe(region):
 
 def wanted(region_recipe):
     """Every model of a recipe, the most needed first: (priority, order) then the species' own
-    order of variants. Each: {name, species, seed, age, style, priority}."""
+    order of variants. Each: {name, species (the FoliMesh slug: a variant may name its own),
+    seed, age, style, priority}."""
     out = []
     style = region_recipe.get('style', 'real')
     for order, (name, plant) in enumerate(region_recipe['species'].items()):
         for index, variant in enumerate(plant.get('variants') or [{}]):
-            out.append({'name': name, 'species': plant['slug'], 'seed': variant.get('seed', index + 1),
+            out.append({'name': name, 'species': variant.get('slug', plant['slug']), 'seed': variant.get('seed', index + 1),
                         'age': variant.get('age'), 'style': variant.get('style', style),
                         # a species' first model before any second one
                         'priority': (plant.get('priority', 2) + index, order, index)})
+    out.sort(key=lambda m: m['priority'])
+    return out
+
+
+def wanted_all(names=None):
+    """The models of several recipes as one list, the most needed first across them all (a
+    region's first models are not behind another's last); each also names its `region`."""
+    out = []
+    for position, region in enumerate(names or regions()):
+        for model in wanted(recipe(region)):
+            out.append(dict(model, region=region, priority=(model['priority'][0], position) + model['priority'][1:]))
     out.sort(key=lambda m: m['priority'])
     return out
 
@@ -262,14 +281,18 @@ def balance_left(balance):
 
 
 def fetch(client, region, limit=None, reserve=0, dry=False, say=print):
-    """Export the recipe's models that are not in the cache yet, the most needed first, while
-    the balance stays above `reserve`. Returns (have, got, missing) lists of cache names."""
-    models = wanted(recipe(region))
-    have, missing = [], []
+    """Export the models of a recipe ('all': of every recipe) that are not in the cache yet, the
+    most needed first, while the balance stays above `reserve`. Returns (have, got, missing)
+    lists of cache names."""
+    models = wanted_all() if region == 'all' else wanted(recipe(region))
+    have, missing, seen = [], [], set()
     for model in models:
         path = client.path(model['species'], model['seed'], model['age'], model['style'])
+        if path.name in seen:
+            continue
+        seen.add(path.name)
         (have if path.exists() else missing).append((model, path))
-    say(f'{region}: {len(models)} models, {len(have)} in {client.cache}, {len(missing)} to export')
+    say(f'{region}: {len(seen)} models, {len(have)} in {client.cache}, {len(missing)} to export')
     got = []
     if dry or not missing:
         for model, path in missing:
@@ -280,13 +303,19 @@ def fetch(client, region, limit=None, reserve=0, dry=False, say=print):
     budget = len(missing) if limit is None else min(limit, len(missing))
     if left is not None:
         budget = min(budget, max(0, left - reserve))
+    failed = 0
     for model, path in missing[:budget]:
         try:
             client.export(model['species'], model['seed'], model['age'], model['style'])
         except FoliMeshError as error:
             say(f'  {path.name}: {error}')
+            failed += 1
             if 'download' in str(error).lower() and 'left' in str(error).lower():
                 break
+            # a server that refuses one model after another is not asked for the whole list
+            if failed >= 4 and not got[-1:] == [path.name]:
+                if failed >= 8:
+                    break
             continue
         got.append(path.name)
         say(f'  {path.name} ({path.stat().st_size // 1024} KB)')
@@ -310,7 +339,7 @@ def main():
         s.add_argument('--age', type=int)
         s.add_argument('--style')
     s = sub.add_parser('fetch')
-    s.add_argument('--region', default='ukraine')
+    s.add_argument('--region', default='ukraine', help="a recipe of earthng/flora/, or 'all'")
     s.add_argument('--limit', type=int)
     s.add_argument('--reserve', type=int, default=0, help='downloads to leave on the balance')
     s.add_argument('--dry-run', action='store_true')

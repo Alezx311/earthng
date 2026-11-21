@@ -51,7 +51,7 @@ M.QUIET = QUIET
 local TERRAIN = {}
 for _, kind in ipairs({'ground', 'meadow', 'grass', 'grass_dry', 'grass_lush', 'earth', 'park', 'forest',
     'farmland', 'orchard', 'vineyard', 'heath', 'scrub', 'wetland', 'bare_ground', 'beach', 'bare_rock',
-    'scree', 'sand', 'desert', 'dune', 'steppe', 'dry_grass', 'tundra', 'alpine', 'snow', 'snow_edge'}) do
+    'scree', 'sand', 'desert', 'dune', 'steppe', 'dry_grass', 'tundra', 'alpine', 'snow', 'snow_edge', 'mud'}) do
   TERRAIN['e2rf_' .. kind] = true
 end
 for _, kind in ipairs(FIELDS) do TERRAIN['e2rf_' .. kind] = true end
@@ -63,7 +63,8 @@ function M.quiet(meshes, layer)
   for _, mesh in ipairs(meshes) do
     local name = mesh.material or ''
     -- the proxies are the collision; a facade wall (e2rf_wall_*) is drawn, the shell collides
-    if name == 'e2rf_col_ground' or name == 'e2rf_col_bldg' then return false end
+    -- (col_ground, col_bldg and the grounds a universe is felt by: col_snow, col_sand, col_mud)
+    if name:sub(1, 9) == 'e2rf_col_' then return false end
     local skip = set[name]
       or (layer == 'road' and (TERRAIN[name] or name:sub(1, 9) == 'e2rf_cut_' or name:sub(1, 7) == 'e2rf_s2'))
       or (layer == 'scene' and name:sub(1, 10) == 'e2rf_wall_')

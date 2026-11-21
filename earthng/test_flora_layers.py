@@ -54,21 +54,48 @@ class TurfLayersTest(unittest.TestCase):
         self.assertTrue(all(d.layer not in ('e2rTurfForest', 'e2rTurfPine') for d in old))
         self.assertLess(len(old), len(standing))
 
-    def test_a_car_is_still_after_a_moment_of_standing_and_not_while_it_crawls(self):
-        motion, point = self.turf.motion, self.point
-        t = 0.0
-        # driving at 14 m/s
-        for k in range(20):
-            t += .05
-            self.assertFalse(motion(point(k * .7, 0), t))
-        # stopped where the last step left it: still only after STILL.after seconds
-        x = 19 * .7
-        self.assertFalse(motion(point(x, 0), t + .5))
-        self.assertFalse(motion(point(x, 0), t + 1.0))
-        self.assertTrue(motion(point(x, 0), t + 1.8))
-        # crawling at 1.5 m/s keeps what it has; driving off ends it
-        self.assertTrue(motion(point(x + .15, 0), t + 1.9))
-        self.assertFalse(motion(point(x + .65, 0), t + 2.0))
+    def drive(self, x, t, speed, seconds, step=.05):
+        """Move at `speed` m/s for `seconds`; the answers of every step, the place and the time."""
+        answers = []
+        for _ in range(round(seconds / step)):
+            t += step
+            x += speed * step
+            answers.append(bool(self.turf.motion(self.point(x, 0), t)))
+        return answers, x, t
+
+    def test_the_layers_fill_up_under_fifty_kilometres_an_hour(self):
+        still = self.turf.STILL
+        self.assertAlmostEqual(still.slow * 3.6, 50, delta=.1)
+        self.assertGreater(still.fast, still.slow)
+        # at 90 km/h: what a fast car reads
+        answers, x, t = self.drive(0, 0, 25, 2)
+        self.assertFalse(any(answers))
+        # down to 40 km/h: full after STILL.after seconds, not at once
+        answers, x, t = self.drive(x, t, 11, 1)
+        self.assertFalse(any(answers))
+        answers, x, t = self.drive(x, t, 11, 1)
+        self.assertTrue(answers[-1])
+        # standing, crawling and a town's 50 keep them
+        for speed in (0, 1.5, 13.5):
+            answers, x, t = self.drive(x, t, speed, 2)
+            self.assertTrue(all(answers), speed)
+
+    def test_the_layers_go_only_after_a_while_above_sixty(self):
+        answers, x, t = self.drive(0, 0, 5, 2)
+        self.assertTrue(answers[-1])
+        # 55 km/h, between the two bars: kept
+        answers, x, t = self.drive(x, t, 15.3, 4)
+        self.assertTrue(all(answers))
+        # a burst to 80 km/h shorter than STILL.leave: kept; held: gone
+        answers, x, t = self.drive(x, t, 22, 1)
+        self.assertTrue(all(answers))
+        answers, x, t = self.drive(x, t, 5, 3)
+        self.assertTrue(all(answers))
+        answers, x, t = self.drive(x, t, 22, 3)
+        self.assertFalse(answers[-1])
+        # and between the bars again nothing comes back
+        answers, x, t = self.drive(x, t, 15.3, 3)
+        self.assertFalse(any(answers))
 
     def test_a_cameras_jump_is_not_a_drive(self):
         motion, point = self.turf.motion, self.point

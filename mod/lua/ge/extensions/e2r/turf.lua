@@ -24,12 +24,14 @@
 -- broadleaves ferns, the wood's low herbs and its flowers, under conifers the sparser herbs of
 -- a needle floor. They are stock definitions too: Hirochi's forest floor.
 --
--- Driving, the grass is a few definitions a layer: what reads from a moving car. Standing still
--- (M.STILL: under `slow` m/s for `after` s) the layers fill up as a level's own are laid, one
--- definition over another: nettles and tall weeds, flowers, seeded grass heads, wet plants in
--- the hollows, the wood's second and third herbs. The definitions marked `still` are made then,
--- at most `step` a frame, and go when the car moves off above `fast` m/s. The frame has room
--- for them only when nothing streams in.
+-- At speed the grass is a few definitions a layer: what reads from a fast car. Slow enough to
+-- look round (M.STILL: under `slow` m/s for `after` s; 50 km/h, the user's bar of 21.11, was a
+-- walking pace before) the layers fill up as a level's own are laid, one definition over
+-- another: nettles and tall weeds, flowers, seeded grass heads, wet plants in the hollows, the
+-- wood's second and third herbs. The definitions marked `still` are made then, at most `step` a
+-- frame, and go once the car has been above `fast` m/s (60 km/h) for `leave` s: a car that holds
+-- 50 does not make and drop them at every touch of the pedal. A definition regrows its cells in
+-- the frame it is made: above `crawl` m/s they are made one every `pace` s, not `step` a frame.
 local M = {}
 
 M.NAME = 'e2rTurf'
@@ -48,7 +50,7 @@ M.NEAR, M.NEAR_CELL = 170, 32
 M.BUDGET = 1.5       -- ms a frame for gathering the next block
 -- the block's layers (earthng/turf_art.py LAYERS, the same order): its layer map holds index - 1
 M.LAYERS = {'e2rTurfNone', 'e2rTurfGrass', 'e2rTurfLush', 'e2rTurfDry', 'e2rTurfCrop', 'e2rTurfForest', 'e2rTurfPine'}
-M.STILL = {slow = .6, fast = 2.5, after = 1.2, step = 2}
+M.STILL = {slow = 13.9, fast = 16.7, after = 1.2, leave = 2, step = 2, crawl = 2.5, pace = .25}
 M.enabled = true
 -- element count factor (the settings: grass density) and draw distance factor
 M.density, M.distance = 1, 1
@@ -408,7 +410,8 @@ local function ensureCovers(limit)
 end
 
 -- Pure: the car's (or the camera's) speed from its place this frame and the last, and whether
--- it stands still by M.STILL: true once it has been slow for `after` s, false once it is fast.
+-- it is slow enough for the full layers by M.STILL: true once it has been under `slow` for
+-- `after` s, false once it has been over `fast` for `leave` s; between the two it keeps what it has.
 function M.motion(p, now)
   local T = M.STILL
   local last = M.lastP
@@ -421,12 +424,13 @@ function M.motion(p, now)
   local v = M.speed
   if not v then return M.still end
   if v > T.fast then
-    M.slowSince, M.still = nil, false
+    M.slowSince, M.fastSince = nil, M.fastSince or now
+    if now - M.fastSince >= (T.leave or 0) then M.still = false end
   elseif v < T.slow then
-    M.slowSince = M.slowSince or now
+    M.fastSince, M.slowSince = nil, M.slowSince or now
     if now - M.slowSince >= T.after then M.still = true end
   else
-    M.slowSince = nil
+    M.slowSince, M.fastSince = nil, nil
   end
   return M.still
 end
@@ -505,9 +509,13 @@ function M.step(p, now, tune)
   local was = M.still
   if M.stillOn ~= false then M.motion(p, now) else M.still = false end
   if block and (M.still ~= was or (M.coversLeft or 0) > 0) then
-    local _, left = ensureCovers(M.STILL.step)
-    M.coversLeft = left
-    stats.still = M.still or false
+    local T = M.STILL
+    local moving = (M.speed or 0) > T.crawl
+    if M.still ~= was or not moving or now - (M.coverAt or -1) >= T.pace then
+      local _, left = ensureCovers(moving and 1 or T.step)
+      M.coversLeft, M.coverAt = left, now
+      stats.still = M.still or false
+    end
   end
   if work then
     -- (the coroutine keeps the pause it was started with: the clock is this frame's)
@@ -596,7 +604,7 @@ function M.reset()
   tiles, count, revision, block, work, pending = {}, 0, 0, nil, nil, {}
   covers, coverSet, defsCache, loadedMaterials = {}, {}, {}, {}
   M.readyState, M.at, M.failed, M.tune, M.off, M.woodLayers = nil, nil, nil, nil, nil, nil
-  M.still, M.speed, M.lastP, M.slowSince, M.coversLeft = nil, nil, nil, nil, nil
+  M.still, M.speed, M.lastP, M.slowSince, M.fastSince, M.coversLeft, M.coverAt = nil, nil, nil, nil, nil, nil, nil
   stats.moves, stats.patches, stats.squares, stats.error = 0, 0, 0, nil
 end
 

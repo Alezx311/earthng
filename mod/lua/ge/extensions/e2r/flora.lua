@@ -121,6 +121,75 @@ M.SPECIES = {
   birch_young = {of = 'birch', height = 4, shrub = true},
   pine_young = {of = 'pine', height = 4, shrub = true, conifer = true},
   spruce_young = {of = 'spruce', height = 3.5, shrub = true, conifer = true},
+  -- The species below have no stand-in among the game's own trees: they grow only where the
+  -- flora pack has their models (earthng/flora/*.json), and the rules that name them fall back
+  -- to the rest of a list without it.
+  plane = {latin = 'Platanus x acerifolia', height = 28},
+  blackberry = {latin = 'Rubus caesius', height = 1.6, shrub = true},
+  currant = {latin = 'Ribes nigrum', height = 1.5, shrub = true},
+  garden_rose = {latin = 'Rosa', height = 1.7, shrub = true},
+  hydrangea = {latin = 'Hydrangea', height = 2, shrub = true},
+  boxwood = {latin = 'Buxus sempervirens', height = 1.4, shrub = true},
+  hedge = {latin = 'Ligustrum vulgare', height = 1.9, shrub = true},
+  -- (red-leaved: an ornamental of yards and squares, not a wood's shrub)
+  barberry = {latin = 'Berberis thunbergii', height = 1.5, shrub = true},
+  -- the wet tropics
+  coconut_palm = {latin = 'Cocos nucifera', height = 21},
+  mango = {latin = 'Mangifera indica', height = 17},
+  rubber_tree = {latin = 'Ficus elastica', height = 19},
+  breadfruit = {latin = 'Artocarpus altilis', height = 19},
+  banana = {latin = 'Musa', height = 4.2, shrub = true},
+  tree_fern = {latin = 'Cyathea', height = 5.5, shrub = true},
+  bamboo = {latin = 'Bambusa', height = 9, shrub = true},
+  papaya = {latin = 'Carica papaya', height = 6, shrub = true},
+  pandan = {latin = 'Pandanus', height = 7, shrub = true},
+  liana_hang = {latin = '', height = 5, shrub = true},
+  liana_trunk = {latin = '', height = 8, shrub = true},
+  -- deserts, savannas and the Mediterranean
+  saguaro = {latin = 'Carnegiea gigantea', height = 7},
+  date_palm = {latin = 'Phoenix dactylifera', height = 17},
+  fan_palm = {latin = 'Washingtonia robusta', height = 22},
+  acacia = {latin = 'Vachellia tortilis', height = 6.5},
+  olive = {latin = 'Olea europaea', height = 7.5},
+  stone_pine = {latin = 'Pinus pinea', height = 12.5, conifer = true},
+  opuntia = {latin = 'Opuntia', height = 1.4, shrub = true},
+  agave = {latin = 'Agave americana', height = 1, shrub = true},
+  -- herbs that stand one by one: a bank's, a kitchen garden's, a field's edge, a wood's floor
+  reed = {latin = 'Phragmites australis', height = 2.5, shrub = true, herb = true},
+  cattail = {latin = 'Typha latifolia', height = 2.3, shrub = true, herb = true},
+  sedge = {latin = 'Carex', height = .9, shrub = true, herb = true},
+  water_lily = {latin = 'Nymphaea alba', height = .6, shrub = true, herb = true},
+  sunflower = {latin = 'Helianthus annuus', height = 2.1, shrub = true, herb = true},
+  corn = {latin = 'Zea mays', height = 2.6, shrub = true, herb = true},
+  pumpkin = {latin = 'Cucurbita pepo', height = .5, shrub = true, herb = true},
+  wheat = {latin = 'Triticum aestivum', height = 1.1, shrub = true, herb = true},
+  fern = {latin = 'Dryopteris filix-mas', height = 1, shrub = true, herb = true},
+  bracken = {latin = 'Pteridium aquilinum', height = 1.8, shrub = true, herb = true},
+  heather = {latin = 'Calluna vulgaris', height = .65, shrub = true, herb = true},
+  monstera = {latin = 'Monstera deliciosa', height = 1, shrub = true, herb = true},
+  alocasia = {latin = 'Alocasia', height = 1.3, shrub = true, herb = true},
+  meadow_grass = {latin = 'Poa, Festuca', height = .9, shrub = true, herb = true},
+  sage = {latin = 'Salvia pratensis', height = .8, shrub = true, herb = true},
+  dry_grass = {latin = 'Festuca valesiaca', height = .75, shrub = true, herb = true},
+  honey_fungus = {latin = 'Armillaria mellea', height = .12, shrub = true, herb = true},
+  feather_grass = {latin = 'Stipa', height = 1, shrub = true, herb = true},
+  poppy = {latin = 'Papaver rhoeas', height = .6, shrub = true, herb = true},
+  cornflower = {latin = 'Centaurea cyanus', height = .55, shrub = true, herb = true},
+  daisy = {latin = 'Leucanthemum vulgare', height = .5, shrub = true, herb = true},
+  dandelion = {latin = 'Taraxacum officinale', height = .28, shrub = true, herb = true},
+  clover = {latin = 'Trifolium pratense', height = .25, shrub = true, herb = true},
+  bellflower = {latin = 'Campanula patula', height = .4, shrub = true, herb = true},
+  fly_agaric = {latin = 'Amanita muscaria', height = .21, shrub = true, herb = true},
+  porcini = {latin = 'Boletus edulis', height = .16, shrub = true, herb = true},
+  chanterelle = {latin = 'Cantharellus cibarius', height = .07, shrub = true, herb = true},
+  -- what has died, and the stones among it
+  log = {height = .85, dead = true},
+  birch_log = {height = 1.7, dead = true},
+  stump = {height = 1.6, dead = true},
+  snag = {height = 7.9, dead = true},
+  brushwood = {height = .63, dead = true},
+  root_plate = {height = 5, dead = true},
+  mossy_boulder = {height = 1.5, dead = true},
 }
 
 -- --- models ------------------------------------------------------------------------------------
@@ -207,7 +276,9 @@ function M.plant(species, height, h)
     if abs(math.log(height / list[k].height)) <= best + .2 then count = count + 1; fit[count] = list[k] end
   end
   local model = fit[(h or 0) % count + 1]
-  local lo, hi = .6, model.own and 1.3 or 1.1
+  -- (the pack's models too: FoliMesh's trees are grown in the open, stout for their height, and
+  -- at 1.3 a wood of them stood on trunks a metre and a half through, out/flora/game-01)
+  local lo, hi = .6, 1.1
   local scale = max(lo, min(hi, height / model.height))
   M.used[model.shape] = true
   return model.shape, scale, model.materials, model.height
@@ -353,8 +424,58 @@ local ZONES = {
     under = {{'hazel', 30}, {'beech_young', 26}, {'elder', 12}, {'raspberry', 12}, {'rowan', 10}, {'bush', 10}},
     under_conifer = {{'spruce_young', 34}, {'rowan', 18}, {'raspberry', 16}, {'beech_young', 14}, {'bush', 10}, {'juniper', 8}},
   },
+  -- The world outside Ukraine, by its climate (biome.lua's groups; M.worldZone): in force where
+  -- the flora pack has the zone's own trees, the old sets of the climate otherwise. They are a
+  -- climate's usual woods, not a country's: a temperate wood of Europe's trees stands in New
+  -- York too.
+  temperate = {conifer = .2, world = true,
+    conifer_stand = {{'pine', 46}, {'spruce', 30}, {'birch', 12}, {'larch', 6}, {'oak', 6}},
+    broadleaf = {{'oak', 26}, {'beech', 20}, {'maple', 14}, {'ash', 10}, {'birch', 10}, {'linden', 8}, {'hornbeam', 6}, {'elm', 3},
+      {'aspen', 3}},
+    wet = {{'alder', 44}, {'willow', 34}, {'poplar', 12}, {'ash', 10}},
+    under = {{'hazel', 30}, {'hawthorn', 14}, {'elder', 12}, {'bush', 12}, {'blackberry', 10}, {'rowan', 8}, {'oak_young', 8},
+      {'raspberry', 6}},
+    under_conifer = {{'juniper', 20}, {'bush', 18}, {'pine_young', 16}, {'spruce_young', 14}, {'birch_young', 14}, {'rowan', 10},
+      {'blackberry', 8}},
+  },
+  taiga = {conifer = .78, world = true,
+    conifer_stand = {{'spruce', 46}, {'pine', 34}, {'birch', 10}, {'larch', 6}, {'fir', 4}},
+    broadleaf = {{'birch', 56}, {'aspen', 24}, {'alder', 10}, {'rowan', 6}, {'spruce', 4}},
+    wet = {{'alder', 40}, {'birch', 30}, {'willow', 30}},
+    under = {{'rowan', 22}, {'juniper', 20}, {'birch_young', 20}, {'spruce_young', 18}, {'raspberry', 10}, {'bush', 10}},
+    under_conifer = {{'spruce_young', 30}, {'juniper', 24}, {'pine_young', 16}, {'birch_young', 16}, {'rowan', 14}},
+  },
+  -- a rainforest: the canopy, palms where it opens, and under it the banana, the tree fern,
+  -- bamboo and lianas
+  tropics = {conifer = 0, world = true, floor = 'jungle_floor',
+    broadleaf = {{'rubber_tree', 28}, {'mango', 24}, {'breadfruit', 22}, {'coconut_palm', 16}, {'banana', 10}},
+    wet = {{'coconut_palm', 44}, {'pandan', 30}, {'rubber_tree', 26}},
+    under = {{'banana', 24}, {'tree_fern', 22}, {'bamboo', 16}, {'papaya', 12}, {'pandan', 10}, {'liana_hang', 10},
+      {'liana_trunk', 6}},
+  },
+  savanna = {conifer = 0, world = true, floor = 'steppe',
+    broadleaf = {{'acacia', 70}, {'mango', 12}, {'date_palm', 10}, {'breadfruit', 8}},
+    wet = {{'date_palm', 50}, {'acacia', 30}, {'mango', 20}},
+    under = {{'opuntia', 34}, {'agave', 30}, {'acacia', 20}, {'bush', 16}},
+  },
+  desert = {conifer = 0, world = true, floor = false,
+    broadleaf = {{'saguaro', 46}, {'acacia', 34}, {'date_palm', 20}},
+    wet = {{'date_palm', 80}, {'acacia', 20}},
+    under = {{'opuntia', 50}, {'agave', 50}},
+  },
+  mediterranean = {conifer = .3, world = true, floor = 'steppe',
+    conifer_stand = {{'stone_pine', 56}, {'cypress', 26}, {'olive', 10}, {'oak', 8}},
+    broadleaf = {{'olive', 36}, {'oak', 30}, {'cypress', 12}, {'stone_pine', 12}, {'ash', 10}},
+    wet = {{'poplar', 40}, {'willow', 34}, {'alder', 26}},
+    under = {{'juniper', 26}, {'rose', 20}, {'hawthorn', 16}, {'opuntia', 14}, {'agave', 12}, {'bush', 12}},
+    under_conifer = {{'juniper', 40}, {'rose', 22}, {'agave', 14}, {'opuntia', 12}, {'bush', 12}},
+  },
 }
 M.ZONES = ZONES
+
+-- A climate group of biome.lua -> the zone of its woods (the dry steppe's are Ukraine's own).
+M.WORLD = {rainforest = 'tropics', savanna = 'savanna', desert = 'desert', steppe = 'steppe',
+  mediterranean = 'mediterranean', temperate = 'temperate', boreal = 'taiga', tundra = 'taiga'}
 -- the Carpathian belt at e metres (its borders wander with u, the stand's 0..1 noise)
 function M.belt(e, u)
   local shift = ((u or .5) - .5) * 160
@@ -366,15 +487,75 @@ end
 -- Where people live: what is planted, by the kind of the place. The steppe's towns have the
 -- plane and the poplar, its shelter belts the ash, elm and maple.
 local SETTLED = {
+  -- a town's trees, and the shrubs of its yards: lilac, a clipped hedge, box, hydrangea
   town = {{'linden', 20}, {'chestnut', 15}, {'maple', 15}, {'poplar', 11}, {'birch', 10}, {'ash', 8}, {'rowan', 5}, {'spruce', 5},
-    {'willow', 4}, {'walnut', 4}, {'thuja', 3}},
+    {'willow', 4}, {'walnut', 4}, {'thuja', 3}, {'plane', 3}, {'lilac', 4}, {'hedge', 3}, {'boxwood', 2}, {'hydrangea', 2},
+    {'barberry', 2}},
   park = {{'oak', 18}, {'linden', 17}, {'maple', 14}, {'chestnut', 11}, {'birch', 9}, {'ash', 7}, {'hornbeam', 6}, {'pine', 6},
-    {'spruce', 5}, {'willow', 4}, {'elm', 3}},
-  garden = {{'fruit', 46}, {'walnut', 18}, {'birch', 6}, {'spruce', 5}, {'linden', 5}, {'rowan', 6}, {'willow', 5}, {'lilac', 9}},
+    {'spruce', 5}, {'willow', 4}, {'elm', 3}, {'plane', 2}, {'juniper', 3}, {'boxwood', 2}, {'barberry', 2}},
+  -- a village yard: fruit trees and a walnut, berry bushes and flowers by the house, and the
+  -- kitchen garden's sunflowers, maize and pumpkins
+  garden = {{'fruit', 34}, {'walnut', 12}, {'lilac', 8}, {'currant', 7}, {'raspberry', 6}, {'garden_rose', 6}, {'sunflower', 5},
+    {'corn', 4}, {'hydrangea', 4}, {'hazel', 3}, {'birch', 3}, {'spruce', 3}, {'rowan', 3}, {'thuja', 3}, {'pumpkin', 2},
+    {'willow', 2}, {'linden', 2}},
+  -- a town block's courtyard: the fruit trees and lilac its people planted, no kitchen garden
+  yard = {{'fruit', 30}, {'lilac', 12}, {'walnut', 10}, {'birch', 8}, {'rowan', 8}, {'linden', 6}, {'maple', 6}, {'hydrangea', 5},
+    {'garden_rose', 5}, {'hedge', 4}, {'barberry', 3}, {'thuja', 3}, {'spruce', 3}},
   row = {{'linden', 24}, {'poplar', 20}, {'maple', 14}, {'chestnut', 12}, {'ash', 10}, {'birch', 8}, {'walnut', 7}, {'willow', 5}},
   field = {{'poplar', 24}, {'ash', 20}, {'maple', 16}, {'elm', 12}, {'oak', 12}, {'birch', 8}, {'walnut', 8}},
 }
 M.SETTLED = SETTLED
+-- What is planted where people live in another climate (a zone of M.WORLD): the same kinds.
+local SETTLED_WORLD = {
+  tropics = {
+    town = {{'coconut_palm', 30}, {'mango', 22}, {'breadfruit', 16}, {'rubber_tree', 14}, {'banana', 10}, {'papaya', 8}},
+    park = {{'rubber_tree', 26}, {'mango', 22}, {'coconut_palm', 20}, {'breadfruit', 14}, {'bamboo', 10}, {'tree_fern', 8}},
+    garden = {{'banana', 30}, {'papaya', 20}, {'mango', 18}, {'coconut_palm', 14}, {'breadfruit', 10}, {'bamboo', 8}},
+    yard = {{'mango', 30}, {'coconut_palm', 26}, {'banana', 18}, {'papaya', 14}, {'breadfruit', 12}},
+    row = {{'coconut_palm', 60}, {'mango', 25}, {'rubber_tree', 15}},
+    field = {{'coconut_palm', 50}, {'banana', 30}, {'mango', 20}},
+  },
+  desert = {
+    town = {{'date_palm', 44}, {'fan_palm', 14}, {'acacia', 22}, {'olive', 12}, {'cypress', 8}},
+    park = {{'date_palm', 36}, {'fan_palm', 10}, {'acacia', 24}, {'olive', 14}, {'cypress', 8}, {'agave', 8}},
+    garden = {{'date_palm', 30}, {'olive', 26}, {'agave', 18}, {'opuntia', 14}, {'acacia', 12}},
+    yard = {{'date_palm', 40}, {'olive', 24}, {'acacia', 16}, {'fan_palm', 10}, {'agave', 10}},
+    row = {{'date_palm', 60}, {'fan_palm', 22}, {'acacia', 18}},
+    field = {{'date_palm', 70}, {'acacia', 30}},
+  },
+  mediterranean = {
+    town = {{'plane', 22}, {'cypress', 20}, {'olive', 16}, {'stone_pine', 16}, {'linden', 10}, {'fan_palm', 8}, {'poplar', 8}},
+    park = {{'stone_pine', 24}, {'cypress', 20}, {'plane', 18}, {'oak', 14}, {'olive', 14}, {'fan_palm', 6}, {'boxwood', 4}},
+    garden = {{'olive', 30}, {'fruit', 26}, {'cypress', 12}, {'walnut', 10}, {'garden_rose', 8}, {'lilac', 8}, {'agave', 6}},
+    yard = {{'olive', 26}, {'fruit', 22}, {'cypress', 16}, {'plane', 12}, {'fan_palm', 10}, {'garden_rose', 8}, {'lilac', 6}},
+    row = {{'plane', 30}, {'cypress', 26}, {'stone_pine', 18}, {'fan_palm', 12}, {'poplar', 14}},
+    field = {{'cypress', 40}, {'olive', 30}, {'poplar', 30}},
+  },
+}
+SETTLED_WORLD.savanna = SETTLED_WORLD.desert
+M.SETTLED_WORLD = SETTLED_WORLD
+
+-- The small plants and the dead wood of a place, by layer (M.layer): what stands under a
+-- broadleaf wood and a pinewood, on a rainforest's floor, in a meadow and a dry grassland, on a
+-- bank, in a kitchen garden, along a field of grain or of rows, and what lies where trees have
+-- died. All of them are the flora pack's: a layer is empty without it and the generator keeps
+-- its own scatter.
+M.LAYERS = {
+  floor = {{'fern', 42}, {'bracken', 24}, {'bellflower', 10}, {'honey_fungus', 7}, {'fly_agaric', 6}, {'porcini', 6},
+    {'chanterelle', 5}},
+  pine_floor = {{'heather', 40}, {'fern', 22}, {'bracken', 14}, {'fly_agaric', 8}, {'porcini', 8}, {'chanterelle', 8}},
+  jungle_floor = {{'monstera', 40}, {'alocasia', 34}, {'bracken', 26}},
+  meadow = {{'daisy', 20}, {'clover', 14}, {'sage', 14}, {'poppy', 12}, {'cornflower', 12}, {'dandelion', 12},
+    {'meadow_grass', 10}, {'bellflower', 6}},
+  steppe = {{'feather_grass', 44}, {'dry_grass', 22}, {'sage', 14}, {'poppy', 10}, {'meadow_grass', 10}},
+  bank = {{'reed', 50}, {'cattail', 28}, {'sedge', 22}},
+  plot = {{'sunflower', 28}, {'corn', 26}, {'pumpkin', 16}, {'garden_rose', 12}, {'currant', 10}, {'sage', 8}},
+  grain = {{'wheat', 86}, {'poppy', 7}, {'cornflower', 7}},
+  rows = {{'sunflower', 100}},
+  rows_maize = {{'corn', 100}},
+  deadwood = {{'log', 26}, {'stump', 20}, {'brushwood', 16}, {'snag', 14}, {'birch_log', 12}, {'root_plate', 6},
+    {'mossy_boulder', 6}},
+}
 
 local function weighted(list, r)
   local total = 0
@@ -422,6 +603,8 @@ function M.stand(q, x, y)
       local share = q.mixed and .5 or zone.conifer
       conifer = M.field(x, y, q.mixed and T.mixed or T.type, 601) < share
     end
+    -- (a zone without conifers of its own: the map's needle-leaved wood is its broadleaf one)
+    if conifer and not zone.conifer_stand then conifer = false end
     if conifer then list = zone.conifer_stand
     elseif q.zone == 'crimea' and (q.e or 0) >= 650 then list = Z.high
     elseif zone.broadleaf_east and (q.lon or 0) > 31.2 then list = zone.broadleaf_east
@@ -429,8 +612,56 @@ function M.stand(q, x, y)
   end
   list = available(list)
   if #list == 0 then return nil end
+  local floor_ = Z.floor
+  if floor_ == nil then floor_ = conifer and 'pine_floor' or 'floor' end
   return {conifer = conifer and true or false, list = list, leader = weighted(list, M.field(x, y, T.leader, 603)),
-    age = M.field(x, y, T.age, 605), under = conifer and Z.under_conifer or Z.under}
+    age = M.field(x, y, T.age, 605), under = conifer and Z.under_conifer or Z.under, floor = floor_ or nil}
+end
+
+-- The zone of a place outside the region the zones were written for, from its climate (a place
+-- of biome.lua): the climate's usual woods, where the flora pack has most of their trees. nil:
+-- the generator's own sets of that climate.
+local ownZones = {}
+function M.zoneOwn(zone)
+  if not models then load() end
+  local known = ownZones[zone]
+  if known and known.models == models then return known.own end
+  local Z, total, own = ZONES[zone], 0, 0
+  for _, list in ipairs(Z and {Z.broadleaf, Z.conifer_stand} or {}) do
+    for _, entry in ipairs(list) do
+      total = total + entry[2]
+      if M.own(entry[1]) then own = own + entry[2] end
+    end
+  end
+  ownZones[zone] = {models = models, own = total > 0 and own >= .6 * total}
+  return ownZones[zone].own
+end
+function M.worldZone(place)
+  local zone = place and M.WORLD[place.group]
+  if not zone or not M.zoneOwn(zone) then return nil end
+  return zone
+end
+
+-- A plant of a layer (M.LAYERS): species and height in metres, or nil where the pack has none of
+-- the layer's species. r1, r2: the plant's own 0..1 hashes.
+function M.layer(name, r1, r2)
+  local list = M.LAYERS[name]
+  list = list and available(list)
+  if not list or #list == 0 then return nil end
+  local species = weighted(list, r1)
+  return species, M.SPECIES[species].height * (.75 + .5 * r2)
+end
+
+-- The models of a layer's species, for the engine's own ground cover (turf.lua): a list of
+-- {shape, height, species, share}, empty without the pack.
+function M.cover(name)
+  local out = {}
+  for _, entry in ipairs(M.LAYERS[name] or {}) do
+    for _, model in ipairs(M.models(entry[1])) do
+      if model.own then out[#out + 1] = {shape = model.shape, height = model.height, species = entry[1], share = entry[2]} end
+    end
+  end
+  return out
 end
 
 -- A tree of the stand: its species and its height in metres. r1, r2: the tree's own 0..1 hashes.
@@ -457,7 +688,8 @@ end
 -- 'field' (a shelter belt). patch: 0..1 that is one value along a street or across a yard (a
 -- row is one species: a linden avenue, a line of poplars). Returns species, height in metres.
 function M.planted(kind, zone, patch, r1, r2)
-  local list = available(SETTLED[kind] or SETTLED.town)
+  local set = SETTLED_WORLD[zone] or SETTLED
+  local list = available(set[kind] or set.town)
   if #list == 0 then return nil end
   local species
   local pure = (kind == 'row' or kind == 'field') and .86 or (kind == 'park' and .35 or .2)
@@ -486,7 +718,14 @@ function M.shapesOf(zone)
   for _, belt in ipairs({'low', 'beech', 'spruce'}) do
     if Z[belt] then zoneLists(Z[belt]) end
   end
-  for _, list in pairs(SETTLED) do take(list) end
+  for _, list in pairs(SETTLED_WORLD[zone] or SETTLED) do take(list) end
+  -- the small plants and the dead wood (the pack's alone: nothing without it); of the wood
+  -- floors only the zone's own (a landing in Kyiv does not load a rainforest's monstera)
+  local floors = {floor = Z.floor == nil, pine_floor = Z.floor == nil, jungle_floor = false}
+  if type(Z.floor) == 'string' then floors[Z.floor] = true end
+  for name, list in pairs(M.LAYERS) do
+    if floors[name] ~= false then take(list) end
+  end
   local seen, out = {}, {}
   for name in pairs(species) do
     for _, model in ipairs(M.models(name)) do
@@ -500,6 +739,39 @@ end
 -- Is the flora in force at a place: on, and the place inside the region it is written for.
 function M.on(lon, lat)
   return M.enabled and lon ~= nil and M.covers(lon, lat)
+end
+
+-- The zones by name, for the lab's knob: {id, uk, en}, Ukraine's own first.
+M.ZONE_NAMES = {{'polissia', 'Полісся', 'Polissia'}, {'foreststeppe', 'Лісостеп', 'Forest-steppe'}, {'steppe', 'Степ', 'Steppe'},
+  {'carpathians', 'Карпати', 'Carpathians'}, {'crimea', 'Гірський Крим', 'Crimean mountains'},
+  {'temperate', 'Помірний ліс', 'Temperate wood'}, {'taiga', 'Тайга', 'Taiga'}, {'tropics', 'Вологі тропіки', 'Rainforest'},
+  {'savanna', 'Савана', 'Savanna'}, {'desert', 'Пустеля', 'Desert'}, {'mediterranean', 'Середземномор’я', 'Mediterranean'}}
+function M.zoneChoices() return M.ZONE_NAMES end
+
+-- Every shape of the pack, sorted (the cook run of earthng/flora_cook.py loads them all).
+function M.packShapes()
+  local out = {}
+  for _, block in ipairs(M.blocks()) do out[#out + 1] = block.shape end
+  table.sort(out)
+  return out
+end
+
+-- Every model of the pack as a building block, for a constructor: {id, species, latin, layer,
+-- use (the places it belongs to), region, shape, height}, sorted by id. Empty without the pack.
+function M.blocks()
+  if not models then load() end
+  local out = {}
+  for name, plant in pairs(M.manifest and M.manifest.species or {}) do
+    for _, model in ipairs(type(plant) == 'table' and type(plant.models) == 'table' and plant.models or {}) do
+      if type(model.shape) == 'string' then
+        out[#out + 1] = {id = model.shape:match('([^/]+)%.dae$') or model.shape, species = name, latin = plant.latin,
+          layer = plant.layer or 'canopy', use = plant.use or {}, region = plant.region, shape = model.shape,
+          height = tonumber(model.height)}
+      end
+    end
+  end
+  table.sort(out, function(a, b) return a.id < b.id end)
+  return out
 end
 
 function M.reset()

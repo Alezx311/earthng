@@ -96,6 +96,8 @@ def main():
     p.add_argument('--tod', type=float, help="time of day after landing (the game's 0..1, 0 noon, 0.25 dusk)")
     p.add_argument('--clean', action='store_true', help='no EarthNG window on screen (recorded video)')
     p.add_argument('--fog', type=float, help='fog density after landing (the level: 0.00015)')
+    p.add_argument('--cook-flora', action='store_true',
+                   help="load every shape of the flora pack at the landing (earthng/flora_cook.py harvests what the game cooks)")
     p.add_argument('--gen-budget', type=float, help='ms a frame for generation and spawning (stills; the game uses 4)')
     p.add_argument('--lights', type=int, help='street lights of night packs (stills; the game uses 24 within 400 m)')
     p.add_argument('--flight', type=Path, help='camera flight after the drive: {"speed", "keys": [{"cam": [lat, lon, agl], "at": [...]}]}')
@@ -254,6 +256,8 @@ def main():
         test['fog'] = a.fog
     if a.gen_budget is not None:
         test['genBudget'] = a.gen_budget
+    if a.cook_flora:
+        test['floraAll'] = True
     if a.no_pace:
         test['pace'] = False
     if a.lights is not None:

@@ -16,6 +16,11 @@
           <button v-for="zone in list(plan.zones)" :key="zone.id" :class="'eng-z-' + zone.id" bng-nav-item
             @click="world('polygonZone', zone.id)">{{ lang === 'en' ? zone.titleEn : zone.title }}</button>
         </div>
+        <div class="eng-info">{{ T.blocks }}</div>
+        <div class="eng-legend">
+          <button v-for="b in list(plan.blocks)" :key="b.id" :class="['eng-z-' + (b.universe || 'main'), { on: block && b.id === block.id }]"
+            bng-nav-item @click="blockId = b.id">{{ lang === 'en' ? b.titleEn : b.title }}</button>
+        </div>
         <div class="eng-info">{{ T.map }}</div>
         <div class="eng-map" :style="{ '--cols': cols.length }">
           <template v-for="j in rows" :key="j">
@@ -27,7 +32,7 @@
               :title="tileTitle(i, j)"
               bng-nav-item
               @click="pick(i, j)"
-            >{{ at(i, j) ? at(i, j).code : '' }}</button>
+            >{{ at(i, j) ? short(at(i, j).code) : '' }}</button>
           </template>
         </div>
         <template v-if="picked">
@@ -69,6 +74,7 @@ ensureStyle()
 const { events } = useBridge()
 const data = ref(null)
 const chosen = ref(null)
+const blockId = ref(null)      // the block on the map: the car's own until another is picked
 const shot = ref("")
 
 const lang = computed(() => (data.value?.lang === "en" ? "en" : "uk"))
@@ -77,22 +83,29 @@ const T = computed(() => lang.value === "en"
   ? { title: "Proving ground", sub: "a test island at Point Nemo", empty: "Waiting for the mod.",
       missing: "The proving ground pack is not mounted. Build it and put earthng_polygon.zip into mods:",
       zones: "Zones (land at the start of a row)", map: "Tiles: north is up, one subject a tile", here: "the car is here",
+      blocks: "The island: the main grid and a universe on each side",
       go: "Land here", car: "Back to the car", shot: "Screenshot", saved: "Saved", street: "Street", over: "From above",
       top: "Plan", note: "A camera looks at loaded ground: land in the tile first, then pick its views." }
   : { title: "Полігон", sub: "тестовий острів у точці Немо", empty: "Чекаю на мод.",
       missing: "Пак полігона не змонтовано. Зберіть його й покладіть earthng_polygon.zip у mods:",
       zones: "Зони (висадка на початку ряду)", map: "Тайли: північ угорі, один тайл — одна тема", here: "машина тут",
+      blocks: "Острів: основна сітка і всесвіт з кожного боку",
       go: "Висадитися тут", car: "Камеру до машини", shot: "Знімок", saved: "Збережено", street: "З вулиці", over: "Згори",
       top: "План", note: "Камера показує завантажену землю: спершу висадіться в тайлі, потім обирайте його кадри." })
 
+const hereTile = computed(() => list(plan.value?.tiles).find(t => t.code === data.value?.here) || null)
+const block = computed(() => {
+  const blocks = list(plan.value?.blocks)
+  return blocks.find(b => b.id === blockId.value) || blocks.find(b => hereTile.value && b.id === hereTile.value.block) || blocks[0] || null
+})
 const cols = computed(() => {
-  const c = list(plan.value?.cols)
+  const c = list(block.value?.cols)
   const out = []
   for (let i = c[0]; i <= c[1]; i++) out.push(i)
   return out
 })
 const rows = computed(() => {
-  const r = list(plan.value?.rows)
+  const r = list(block.value?.rows)
   const out = []
   for (let j = r[1]; j >= r[0]; j--) out.push(j)
   return out
@@ -122,6 +135,11 @@ function tileTitle(i, j) {
 function pick(i, j) {
   const t = at(i, j)
   if (t) chosen.value = t.code
+}
+// a universe's tiles are named 'MT-C2': the map of one block shows the 'C2'
+function short(code) {
+  const at = code.indexOf("-")
+  return at < 0 ? code : code.slice(at + 1)
 }
 function viewName(id) {
   return T.value[id] || id

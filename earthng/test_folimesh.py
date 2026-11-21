@@ -134,11 +134,32 @@ class RecipeTest(unittest.TestCase):
         flora = lua.eval('function(s) return assert(load(s, "@flora.lua"))() end')(
             (folimesh.ROOT / 'mod/lua/ge/extensions/e2r/flora.lua').read_text(encoding='utf8'))
         known = set(flora.SPECIES.keys())
-        recipe = folimesh.recipe('ukraine')
-        woody = {name for name, plant in recipe['species'].items() if not plant.get('layer')}
-        self.assertEqual(woody - known, set(), 'species the flora does not plant')
-        # every tree and shrub the flora plants has a model in the recipe
-        self.assertEqual(known - woody, set())
+        stock = set(flora.STOCK.keys())
+        named = set()
+        for region in folimesh.regions():
+            names = set(folimesh.recipe(region)['species'])
+            self.assertEqual(names & named, set(), f'{region} names a species another recipe has')
+            named |= names
+        self.assertEqual(named - known, set(), 'models the flora does not plant')
+        # what the flora plants and no recipe has stands as the game's own trees
+        self.assertEqual(known - named - stock, set())
+
+    def test_every_recipe_reads_and_all_of_them_make_one_list(self):
+        self.assertEqual(folimesh.regions()[0], 'ukraine')
+        models = folimesh.wanted_all()
+        files = [folimesh.slug_of(m['species'], m['seed'], m['age'], m['style']) for m in models]
+        self.assertEqual(len(files), len(set(files)), 'a model listed twice')
+        self.assertGreater(len(models), 100)
+        # a region's first models are not behind another's last
+        first = {m['region'] for m in models[:40]}
+        self.assertEqual(first, set(folimesh.regions()))
+        # a variant may be another FoliMesh species: the old oak is an oak
+        old = next(m for m in models if m['species'] == 'old-oak')
+        self.assertEqual(old['name'], 'oak')
+        for region in folimesh.regions():
+            for name, plant in folimesh.recipe(region)['species'].items():
+                self.assertRegex(name, r'^[a-z][a-z0-9_]*$')
+                self.assertTrue(plant.get('use'), f'{name}: a block belongs to some place')
 
     def test_fetch_takes_the_most_needed_within_the_balance(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -169,7 +190,7 @@ class PackTest(unittest.TestCase):
             test_flora_mesh.write_tree(cache / 'barberry_s1.glb', height=2.0)
             pack, manifest = build_flora.build('ukraine', cache, tmp / 'data', say=lambda *a: None)
             species = manifest['species']
-            self.assertEqual(sorted(species), ['bush', 'oak', 'oak_young'])
+            self.assertEqual(sorted(species), ['barberry', 'oak', 'oak_young'])
             self.assertEqual(species['oak']['models'][0]['shape'], '/art/shapes/earthng/flora/trees/oak/oak_s1_a80.dae')
             self.assertEqual(species['oak_young']['models'][0]['shape'],
                              '/art/shapes/earthng/flora/trees/oak_young/oak_young_s11_a7.dae')
@@ -181,6 +202,31 @@ class PackTest(unittest.TestCase):
             self.assertIn('art/shapes/earthng/flora/trees/oak/oak_s1_a80.dae', names)
             self.assertIn('art/shapes/earthng/flora/NOTICE.txt', names)
             self.assertTrue(all(n.startswith('art/shapes/earthng/flora/') for n in names))
+            # a texture is packed once: its DDS where it has one
+            for name in names:
+                if name.endswith('.png'):
+                    self.assertNotIn(name[:-4] + '.dds', names)
+            blocks = build_flora.blocks(manifest)
+            # by layer, then by species: the canopy before the shrubs
+            self.assertEqual([b['id'] for b in blocks], ['oak_s1_a80', 'barberry_s1', 'oak_young_s11_a7'])
+            oak = blocks[0]
+            self.assertEqual((oak['species'], oak['layer'], oak['region']), ('oak', 'canopy', 'ukraine'))
+            self.assertIn('forest', oak['use'])
+            self.assertEqual(blocks[1]['layer'], 'shrub')
+
+    def test_a_variant_of_another_slug_keeps_its_own_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            cache = tmp / 'cache'
+            cache.mkdir()
+            test_flora_mesh.write_tree(cache / 'oak_s1_a80.glb', height=24.0)
+            test_flora_mesh.write_tree(cache / 'old_oak_s1.glb', height=18.0)
+            test_flora_mesh.write_tree(cache / 'palm_coconut_s1.glb', height=19.0)
+            pack, manifest = build_flora.build('all', cache, tmp / 'data', say=lambda *a: None)
+            shapes = [m['shape'].rsplit('/', 1)[-1] for m in manifest['species']['oak']['models']]
+            self.assertEqual(shapes, ['oak_s1_a80.dae', 'oak_old_oak_s1.dae'])
+            self.assertEqual(manifest['species']['coconut_palm']['region'], 'tropics')
+            self.assertEqual(manifest['regions'][0], 'ukraine')
 
 
 if __name__ == '__main__':
