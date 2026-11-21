@@ -1,0 +1,33 @@
+{
+  "source": "C:\\js\\EarthNG\\out\\kyiv-first-person-3d\\compare\\coffee-tripo.glb",
+  "source_sha256": "f8ea823cc3eda176c70c7322c959b3a0794e856476dc9da7f339749b57142905",
+  "shape": "/art/shapes/earthng/kyiv3d/coffee/coffee.dae",
+  "materials": "/art/shapes/earthng/kyiv3d/coffee/main.materials.json",
+  "vertices": 46488,
+  "triangles": 59728,
+  "size": [
+    2.65,
+    2.65,
+    3.05
+  ],
+  "bounds": [
+    [
+      -1.325,
+      -1.325,
+      0.0
+    ],
+    [
+      1.325,
+      1.325,
+      3.05
+    ]
+  ],
+  "yaw_degrees": -90.0,
+  "uv_v_flipped": true,
+  "repairs": {
+    "degenerate_triangles_removed": 0,
+    "unused_vertices_removed": 0,
+    "zero_normals_reconstructed": 0
+  },
+  "collision": "none; select Visible Mesh in the runtime"
+}

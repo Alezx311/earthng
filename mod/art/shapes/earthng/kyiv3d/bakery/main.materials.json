@@ -1,0 +1,28 @@
+{
+  "e2r_kyiv3d_bakery_0": {
+    "name": "e2r_kyiv3d_bakery_0",
+    "mapTo": "e2r_kyiv3d_bakery_0",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorFactor": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "roughnessFactor": 1.0,
+        "metallicFactor": 1.0,
+        "baseColorMap": "/art/shapes/earthng/kyiv3d/bakery/e2r_kyiv3d_bakery_0_b.color.png",
+        "roughnessMap": "/art/shapes/earthng/kyiv3d/bakery/e2r_kyiv3d_bakery_0_r.data.png",
+        "metallicMap": "/art/shapes/earthng/kyiv3d/bakery/e2r_kyiv3d_bakery_0_m.data.png"
+      },
+      {},
+      {},
+      {}
+    ],
+    "persistentId": "dcc0aa85f66a3d265f6455457ff6970a",
+    "doubleSided": true
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "source": "C:\\js\\EarthNG\\out\\kyiv-first-person-3d\\generated\\flowers.glb",
+  "source_sha256": "e4f82deae5c976953a9e219956b0309edb72c4df9b321b3cd8ead64825078ae0",
+  "shape": "/art/shapes/earthng/kyiv3d/flowers/flowers.dae",
+  "materials": "/art/shapes/earthng/kyiv3d/flowers/main.materials.json",
+  "vertices": 142436,
+  "triangles": 78328,
+  "size": [
+    5.4,
+    5.7,
+    3.2
+  ],
+  "bounds": [
+    [
+      -2.7,
+      -2.85,
+      0.0
+    ],
+    [
+      2.7,
+      2.85,
+      3.2
+    ]
+  ],
+  "yaw_degrees": 0,
+  "uv_v_flipped": true,
+  "repairs": {
+    "degenerate_triangles_removed": 0,
+    "unused_vertices_removed": 0,
+    "zero_normals_reconstructed": 0
+  },
+  "collision": "none; select Visible Mesh in the runtime"
+}

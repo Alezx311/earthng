@@ -1,0 +1,33 @@
+{
+  "source": "C:\\js\\EarthNG\\out\\kyiv-first-person-3d\\generated\\pharmacy.glb",
+  "source_sha256": "defb5a2b53ca9d1fd654a645b90931a54fd2bda789a704c94e09ef354d32a0ae",
+  "shape": "/art/shapes/earthng/kyiv3d/pharmacy/pharmacy.dae",
+  "materials": "/art/shapes/earthng/kyiv3d/pharmacy/main.materials.json",
+  "vertices": 86915,
+  "triangles": 53343,
+  "size": [
+    7.0,
+    2.65,
+    3.1499999999999995
+  ],
+  "bounds": [
+    [
+      -3.5,
+      -1.325,
+      0.0
+    ],
+    [
+      3.5,
+      1.325,
+      3.1499999999999995
+    ]
+  ],
+  "yaw_degrees": 0,
+  "uv_v_flipped": true,
+  "repairs": {
+    "degenerate_triangles_removed": 0,
+    "unused_vertices_removed": 0,
+    "zero_normals_reconstructed": 0
+  },
+  "collision": "none; select Visible Mesh in the runtime"
+}

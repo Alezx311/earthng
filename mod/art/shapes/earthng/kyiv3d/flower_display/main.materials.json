@@ -1,0 +1,28 @@
+{
+  "e2r_kyiv3d_flower_display_0": {
+    "name": "e2r_kyiv3d_flower_display_0",
+    "mapTo": "e2r_kyiv3d_flower_display_0",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorFactor": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "roughnessFactor": 1.0,
+        "metallicFactor": 1.0,
+        "baseColorMap": "/art/shapes/earthng/kyiv3d/flower_display/e2r_kyiv3d_flower_display_0_b.color.png",
+        "roughnessMap": "/art/shapes/earthng/kyiv3d/flower_display/e2r_kyiv3d_flower_display_0_r.data.png",
+        "metallicMap": "/art/shapes/earthng/kyiv3d/flower_display/e2r_kyiv3d_flower_display_0_m.data.png"
+      },
+      {},
+      {},
+      {}
+    ],
+    "persistentId": "7be824cf70e103bdb0fde2b9140e0185",
+    "doubleSided": true
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "source": "C:\\js\\EarthNG\\out\\kyiv-first-person-3d\\generated\\bakery.glb",
+  "source_sha256": "c0a04f0cbbffface1f9aeba470b540c8ae28eaffedd805fd7dd49cf0038bd9a9",
+  "shape": "/art/shapes/earthng/kyiv3d/bakery/bakery.dae",
+  "materials": "/art/shapes/earthng/kyiv3d/bakery/main.materials.json",
+  "vertices": 50354,
+  "triangles": 59865,
+  "size": [
+    6.5,
+    3.6,
+    3.2
+  ],
+  "bounds": [
+    [
+      -3.25,
+      -1.8,
+      0.0
+    ],
+    [
+      3.25,
+      1.8,
+      3.2
+    ]
+  ],
+  "yaw_degrees": 0,
+  "uv_v_flipped": true,
+  "repairs": {
+    "degenerate_triangles_removed": 7,
+    "unused_vertices_removed": 21,
+    "zero_normals_reconstructed": 0
+  },
+  "collision": "none; select Visible Mesh in the runtime"
+}

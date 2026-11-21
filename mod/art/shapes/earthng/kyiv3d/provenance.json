@@ -1,0 +1,250 @@
+{
+  "schema": "earthng-generated-city-art-v1",
+  "site": {
+    "lat": 50.45973330892563,
+    "lon": 30.34628920171671
+  },
+  "evidence": "OSM footprints; artistic regional appearance, not surveyed replicas",
+  "assets": {
+    "bakery": {
+      "target_size_m": [
+        6.5,
+        3.6,
+        3.2
+      ],
+      "steps": [
+        {
+          "endpoint": "fal-ai/nano-banana-2",
+          "request_id": "01a1fb10-e99f-7293-94e0-7d14c46154cc",
+          "seed": null,
+          "t": "2026-11-21T00:26:14",
+          "input": {
+            "prompt": "Photorealistic high fidelity game asset, a single Kyiv Ukrainian street bakery kiosk, late Soviet neighborhood retail pavilion, rectangular footprint 7 metres wide and 4 metres deep, 3.2 metres high, front and right side visible in gentle three-quarter perspective. Cream painted metal cladding with small burgundy-red trims, flat shallow roof with galvanized coping and subtle rain streaks. Wide recessed shop window and glass door on front, warm bread shelves and individual loaves inside, glazed display case, red-and-white fascia sign with clear Ukrainian letters ХЛІБ, tiny opening-hours sticker. Narrow steel threshold, external ventilation grille, security roller shutter housing, realistic rubber window seals and individual aluminum profiles, subtly worn but cared for. Neutral overcast studio lighting, PBR material study, evenly lit diffuse textures without painted directional shadows or ambient ground shadow. Isolated entire object on pure plain white background. No people, no cars, no ground plane, no landscape, no floating exploded parts. Full object fills 85 percent of square image, roof and base fully visible. Architectural proportions straight, realistic object, not a diorama, not cartoon.",
+            "aspect_ratio": "1:1",
+            "resolution": "2K",
+            "num_images": 1,
+            "seed": 21431
+          }
+        },
+        {
+          "endpoint": "fal-ai/trellis-2",
+          "request_id": "01a1fb11-c124-7071-b3d1-a424efdcc7d2",
+          "seed": null,
+          "t": "2026-11-21T00:28:40",
+          "input": {
+            "image_url": "bakery.png",
+            "texture_size": 2048,
+            "decimation_target": 60000,
+            "resolution": 1536,
+            "seed": 21431,
+            "ss_sampling_steps": 20,
+            "shape_slat_sampling_steps": 20,
+            "tex_slat_sampling_steps": 20
+          }
+        }
+      ],
+      "png_sha256": "ae460b2f6c8c783cb076d5989a699854bb69d2b20c679af472202cabe8413800",
+      "glb_sha256": "c0a04f0cbbffface1f9aeba470b540c8ae28eaffedd805fd7dd49cf0038bd9a9"
+    },
+    "coffee": {
+      "target_size_m": [
+        2.65,
+        2.65,
+        3.05
+      ],
+      "steps": [
+        {
+          "endpoint": "fal-ai/nano-banana-2",
+          "request_id": "01a1fb14-297f-7f51-b049-f6475fed890d",
+          "seed": null,
+          "t": "2026-11-21T00:29:45",
+          "input": {
+            "prompt": "Compact contemporary Ukrainian coffee-to-go kiosk, charcoal vertical corrugated metal, warm oak service counter and mint green accents, open serving hatch with a professional chrome espresso machine, stacked paper cups, grinder and pastry display inside. Broad roof fascia reads КАВА in simple warm-white lettering, tiny menu panel, round exterior light, timber shelf, narrow side door. A single square 2.6 metre kiosk, no tables or loose items outside its footprint. Photorealistic high fidelity PBR 3D game asset reference, precise straight architectural proportions, meticulous near-camera detail, realistic slightly weathered materials, maintained everyday Kyiv neighborhood. Entire single object in gentle three-quarter front-right view, front is the wide face. Neutral diffuse overcast studio illumination, no strong baked sun or directional shadows. Isolated on pure white background, no ground plane or ground shadow, no people, cars or surroundings. Roof and bottom fully visible with generous white margin. Not a diorama, not cartoon, no exploded parts.",
+            "aspect_ratio": "1:1",
+            "resolution": "2K",
+            "num_images": 1,
+            "seed": 21432
+          }
+        },
+        {
+          "endpoint": "fal-ai/trellis-2",
+          "request_id": "01a1fb14-861a-7071-ba50-6eac2426f38a",
+          "seed": null,
+          "t": "2026-11-21T00:31:45",
+          "input": {
+            "image_url": "coffee.png",
+            "texture_size": 2048,
+            "decimation_target": 60000,
+            "resolution": 1536,
+            "seed": 21432,
+            "ss_sampling_steps": 20,
+            "shape_slat_sampling_steps": 20,
+            "tex_slat_sampling_steps": 20
+          }
+        }
+      ],
+      "png_sha256": "a996355b572716c9fd4e58f7784da85a0c8fdd7d3329540cf8110ffa36e3af25",
+      "glb_sha256": "1659b6ae7e5039fbe47e866944747942cf64ed3965a7e002a16a039852f18a9f"
+    },
+    "pharmacy": {
+      "target_size_m": [
+        7,
+        2.65,
+        3.15
+      ],
+      "steps": [
+        {
+          "endpoint": "fal-ai/nano-banana-2",
+          "request_id": "01a1fb16-4e1a-7721-b31b-39729ff27811",
+          "seed": null,
+          "t": "2026-11-21T00:32:04",
+          "input": {
+            "prompt": "Single-storey Ukrainian neighborhood pharmacy retail pavilion module 7 metres wide, 2.7 metres deep, 3 metres high. Clean pale grey composite wall panels, green fascia with Ukrainian text ГАЛА АПТЕКА and a small green pharmacy cross. Broad shop windows with shelves of small medicine boxes visible behind glass, glass entrance door, stainless handrail at one small threshold, closed technical side panel and external ventilation grille. Fine aluminum mullions, realistic dark rubber seals. Photorealistic high fidelity PBR 3D game asset reference, precise straight architectural proportions, meticulous near-camera detail, realistic slightly weathered materials, maintained everyday Kyiv neighborhood. Entire single object in gentle three-quarter front-right view, front is the wide face. Neutral diffuse overcast studio illumination, no strong baked sun or directional shadows. Isolated on pure white background, no ground plane or ground shadow, no people, cars or surroundings. Roof and bottom fully visible with generous white margin. Not a diorama, not cartoon, no exploded parts.",
+            "aspect_ratio": "1:1",
+            "resolution": "2K",
+            "num_images": 1,
+            "seed": 21433
+          }
+        },
+        {
+          "endpoint": "fal-ai/trellis-2",
+          "request_id": "01a1fb16-a107-7a02-8325-0b2e38769947",
+          "seed": null,
+          "t": "2026-11-21T00:34:13",
+          "input": {
+            "image_url": "pharmacy.png",
+            "texture_size": 2048,
+            "decimation_target": 60000,
+            "resolution": 1536,
+            "seed": 21433,
+            "ss_sampling_steps": 20,
+            "shape_slat_sampling_steps": 20,
+            "tex_slat_sampling_steps": 20
+          }
+        }
+      ],
+      "png_sha256": "dca6e743fa90b804eb2e7988fb683647c5b842ccc0cdb7cba94124af2750ad98",
+      "glb_sha256": "defb5a2b53ca9d1fd654a645b90931a54fd2bda789a704c94e09ef354d32a0ae"
+    },
+    "flowers": {
+      "target_size_m": [
+        5.4,
+        5.7,
+        3.2
+      ],
+      "steps": [
+        {
+          "endpoint": "fal-ai/nano-banana-2",
+          "request_id": "01a1fb18-9230-7bf0-aaf1-79c44010e6eb",
+          "seed": null,
+          "t": "2026-11-21T00:34:32",
+          "input": {
+            "prompt": "Kyiv flower shop pavilion, wide charcoal aluminum framed glazing, flat warm-grey metal roof with small overhang, black fascia sign КВІТИ. Behind the front glass are densely arranged individual pink and cream roses, white chrysanthemums, yellow sunflowers, foliage, clear glass and silver metal flower buckets on stepped stands, small handwritten price cards, charcoal walls, ceiling track lights, warm oak low bench. One glass door with long steel pull handle. This is a complete single small rectangular flower shop, 5 metres wide and 5 metres deep, not an entire street. Photorealistic high fidelity PBR 3D game asset reference, precise straight architectural proportions, meticulous near-camera detail, realistic slightly weathered materials, maintained everyday Kyiv neighborhood. Entire single object in gentle three-quarter front-right view, front is the wide face. Neutral diffuse overcast studio illumination, no strong baked sun or directional shadows. Isolated on pure white background, no ground plane or ground shadow, no people, cars or surroundings. Roof and bottom fully visible with generous white margin. Not a diorama, not cartoon, no exploded parts.",
+            "aspect_ratio": "1:1",
+            "resolution": "2K",
+            "num_images": 1,
+            "seed": 21434
+          }
+        },
+        {
+          "endpoint": "fal-ai/trellis-2",
+          "request_id": "01a1fb18-e13f-7493-8f9f-d4d97de05628",
+          "seed": null,
+          "t": "2026-11-21T00:36:54",
+          "input": {
+            "image_url": "flowers.png",
+            "texture_size": 2048,
+            "decimation_target": 60000,
+            "resolution": 1536,
+            "seed": 21434,
+            "ss_sampling_steps": 20,
+            "shape_slat_sampling_steps": 20,
+            "tex_slat_sampling_steps": 20
+          }
+        }
+      ],
+      "png_sha256": "d3206b7fd6b8028e93743459d83a86db010a503b6fc51efad1bd9962f7fb8273",
+      "glb_sha256": "e4f82deae5c976953a9e219956b0309edb72c4df9b321b3cd8ead64825078ae0"
+    },
+    "produce": {
+      "target_size_m": [
+        3.5,
+        1.8,
+        2.7
+      ],
+      "steps": [
+        {
+          "endpoint": "fal-ai/nano-banana-2",
+          "request_id": "01a1fb1b-0599-71c3-beff-8d67b6556f38",
+          "seed": null,
+          "t": "2026-11-21T00:37:17",
+          "input": {
+            "prompt": "One Ukrainian neighborhood market produce stall, open front, faded olive metal rear panel and dark green canvas awning on thin square steel posts. Three stepped wooden display shelves with individual black and green crates full of red tomatoes, cucumbers, yellow peppers, apples, potatoes and onions, small plain handwritten price cards. Digital weighing scale on counter. Weathered timber edges, detailed canvas seams and folds. Single stall, all goods contained under the 3.5 metre wide awning, no detached items or floor. Photorealistic high fidelity PBR 3D game asset reference, precise straight architectural proportions, meticulous near-camera detail, realistic slightly weathered materials, maintained everyday Kyiv neighborhood. Entire single object in gentle three-quarter front-right view, front is the wide face. Neutral diffuse overcast studio illumination, no strong baked sun or directional shadows. Isolated on pure white background, no ground plane or ground shadow, no people, cars or surroundings. Roof and bottom fully visible with generous white margin. Not a diorama, not cartoon, no exploded parts.",
+            "aspect_ratio": "1:1",
+            "resolution": "2K",
+            "num_images": 1,
+            "seed": 21435
+          }
+        },
+        {
+          "endpoint": "fal-ai/trellis-2",
+          "request_id": "01a1fb1b-65e8-76d0-adff-9091e7aeaa18",
+          "seed": null,
+          "t": "2026-11-21T00:39:21",
+          "input": {
+            "image_url": "produce.png",
+            "texture_size": 2048,
+            "decimation_target": 60000,
+            "resolution": 1536,
+            "seed": 21435,
+            "ss_sampling_steps": 20,
+            "shape_slat_sampling_steps": 20,
+            "tex_slat_sampling_steps": 20
+          }
+        }
+      ],
+      "png_sha256": "9ff7cb6e5006327826926266c0e7e04fe0dd44b9202b2c0e9f28cdfb1e09bed1",
+      "glb_sha256": "066c3b4f85129eaf9fda55a00ddce82e05d6924a34bab2e58adb6c1666d609bb"
+    },
+    "flower_display": {
+      "target_size_m": [
+        1.5,
+        0.7,
+        1.25
+      ],
+      "steps": [
+        {
+          "endpoint": "fal-ai/nano-banana-2",
+          "request_id": "01a1fb1d-4502-7f82-ada8-f714b6b70eb2",
+          "seed": null,
+          "t": "2026-11-21T00:39:40",
+          "input": {
+            "prompt": "A single freestanding florist outdoor display rack, two tiers of weathered oak shelves on thin black powder-coated steel frame. Eight individual galvanized silver buckets packed with distinct cream roses, pink peonies, white daisies, yellow sunflowers and green foliage; folded kraft paper bouquet wraps, fine stems, petal layers and leaves. Small black handwritten price cards in Ukrainian hryvnia. Rack 1.5 metres wide, 0.7 deep and 1.25 high. No surrounding shop, no floor. Photorealistic high fidelity PBR 3D game asset reference, precise straight architectural proportions, meticulous near-camera detail, realistic slightly weathered materials, maintained everyday Kyiv neighborhood. Entire single object in gentle three-quarter front-right view, front is the wide face. Neutral diffuse overcast studio illumination, no strong baked sun or directional shadows. Isolated on pure white background, no ground plane or ground shadow, no people, cars or surroundings. Roof and bottom fully visible with generous white margin. Not a diorama, not cartoon, no exploded parts.",
+            "aspect_ratio": "1:1",
+            "resolution": "2K",
+            "num_images": 1,
+            "seed": 21436
+          }
+        },
+        {
+          "endpoint": "fal-ai/trellis-2",
+          "request_id": "01a1fb1d-961d-7db0-9956-0401c1f82619",
+          "seed": null,
+          "t": "2026-11-21T00:42:07",
+          "input": {
+            "image_url": "flower_display.png",
+            "texture_size": 2048,
+            "decimation_target": 60000,
+            "resolution": 1536,
+            "seed": 21436,
+            "ss_sampling_steps": 20,
+            "shape_slat_sampling_steps": 20,
+            "tex_slat_sampling_steps": 20
+          }
+        }
+      ],
+      "png_sha256": "427b4012582b75a2bb74cbded33c1777fec65f57858bbe23df33e29e1a2f3ff8",
+      "glb_sha256": "cca5c574b20f3f8b80ff98932d33b0d3c31087a878d7a9fe2dfd2311882486f7"
+    }
+  }
+}
