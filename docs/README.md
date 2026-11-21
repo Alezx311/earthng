@@ -9,6 +9,7 @@ Start with the [player README](../README.md). Repository instructions are in [AG
 | [WORLD_EDITOR.md](WORLD_EDITOR.md) | Placing and saving custom objects in BeamNG |
 | [CROWDS_AND_PACKS.md](CROWDS_AND_PACKS.md) | Pedestrians and vehicle traffic |
 | [KNOCKDOWN.md](KNOCKDOWN.md) | Knockable street objects |
+| [FLORA.md](FLORA.md) | Real species by natural zone, the wood's layers, the FoliMesh flora pack |
 | [ESTONIA.md](ESTONIA.md) | Estonian data sources and credits |
 | [RELEASE_CHECK.md](RELEASE_CHECK.md) | Release verification and performance |
 | [NATIVE_MODS.md](NATIVE_MODS.md) | Planet and country packs |

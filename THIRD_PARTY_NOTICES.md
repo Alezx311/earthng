@@ -87,6 +87,31 @@ GEOS (LGPL 2.1) from shapely and PROJ (MIT) from pyproj at run time.
 The planet builder uses `distributable=True` to avoid embedding game textures.
 
 
+## Flora (21 November 2026)
+
+The species rules of `mod/lua/ge/extensions/e2r/flora.lua` (zones, stands, lists of trees and
+shrubs) are written from the general forestry of Ukraine's natural zones. They copy no dataset.
+
+The optional flora pack (`earthng_flora.zip`, built by `earthng/build_flora.py`) holds models
+made with FoliMesh (https://folimesh.com), a procedural vegetation generator by individual
+entrepreneur Voliansky Filipp Andriyovych, Kyiv. They are exported through the service's API
+with the pack maker's own account and are licensed to that account under the
+[FoliMesh License Agreement](https://folimesh.com/license). The licence forbids the models in
+an open repository and as standalone files: this repository holds only the recipe (species,
+seed, age: `earthng/flora/*.json`) and the converter, never a model or a texture of theirs.
+FoliMesh states that its generator was inspired by EZ-Tree by Dan Greenheck (MIT) and
+rewritten from scratch.
+
+Without the pack every species is drawn with the installed game's own trees, which stay in the
+player's install. The wood's ground cover (`turf.lua`) reads stock GroundCover definitions from
+the game's own level files (Hirochi Raceway, East Coast USA, Driver Training, West Coast USA)
+at run time and binds them to EarthNG's layers; none of those files is copied.
+
+The wood's floor sheet is composed from ambientCG ScatteredLeaves002 and Ground037 (CC0, the
+sets `leaves_brown` and `moss_earth` of `earthng/fetch_textures.py`) and the project's own
+ground photos; its fine detail is the installed game's forest floor texture, referenced through
+the VFS.
+
 ## Experimental Kyiv 3D art (fal, 21 November 2026)
 
 Original prototype art in `mod/art/shapes/earthng/kyiv3d/` was generated through fal
