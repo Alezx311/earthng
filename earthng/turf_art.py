@@ -19,7 +19,9 @@ TEXTURE_SET = 'e2rTurfTextureSet'
 # layer (the TerrainMaterial's name; its place here is its number in the block's layer map):
 # what the tyres feel, should a wheel ever reach the hidden block
 LAYERS = (('e2rTurfNone', 'DIRT'), ('e2rTurfGrass', 'GRASS'), ('e2rTurfLush', 'GRASS'), ('e2rTurfDry', 'GRASS'),
-          ('e2rTurfCrop', 'GRASS'))
+          ('e2rTurfCrop', 'GRASS'),
+          # a wood's floor under broadleaves and under conifers (generator.lua lawnCarpet)
+          ('e2rTurfForest', 'DIRT'), ('e2rTurfPine', 'DIRT'))
 MAPS = {'b': (96, 104, 70), 'nm': (128, 128, 255), 'r': (236, 236, 236), 'ao': (255, 255, 255), 'h': (128, 128, 128)}
 _SLOTS = (('baseColor', 'b'), ('normal', 'nm'), ('roughness', 'r'), ('ao', 'ao'), ('height', 'h'))
 

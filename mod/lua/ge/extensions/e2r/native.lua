@@ -1359,6 +1359,9 @@ local function buildTile(key, wanted)
       maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
       groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = tune.propSpacing,
       detail = tune.detail, roadReady = roadReady or nil, sceneReady = sceneReady or nil,
+      -- a wood's floor is the engine's grass alone (turf.lua): no squares for it where that is off
+      woodFloor = realStyle ~= false and package.loaded['ge/extensions/e2r/turf'] ~= nil
+        and package.loaded['ge/extensions/e2r/turf'].active() or false,
       grassFocus = function() return active and active.pose end, grassChunk = sceneReady and function(items, stock)
         local entry = active.tiles[key]
         if entry and entry.grassChunks then

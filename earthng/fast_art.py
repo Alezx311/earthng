@@ -635,6 +635,15 @@ def land_art(real):
 
 
 LAND_ART_VERSION = '7'  # change whenever a land sheet, the relief, a field's crop or the mask (or its mips) changes
+WOOD_ART_VERSION = '8'  # change whenever the wood's floor sheet does (fast_photo.GROUND['forest'])
+
+
+def wood_art(real):
+    """The wood's floor: its photo sheet again, in the recipe of today."""
+    im, nm = ground_sheet('forest')
+    im.save(real / 'ground_forest.color.png')
+    nm.save(real / 'ground_forest.normal.png')
+    (real / 'wood.version').write_text(WOOD_ART_VERSION)
 
 
 def ensure(user):
@@ -722,6 +731,11 @@ def prebuild(distributable=False):
         if not stamp.exists() or stamp.read_text() != LAND_ART_VERSION:
             land_art(shared / 'real')
             to_dds(shared / 'real')
+        # and the wood's floor
+        stamp = shared / 'real' / 'wood.version'
+        if not stamp.exists() or stamp.read_text() != WOOD_ART_VERSION:
+            wood_art(shared / 'real')
+            to_dds(shared / 'real')
         # and the yard's paint and railing (generator.lua YARD)
         if not (shared / 'real' / 'railing_o.data.dds').exists():
             yard_art(shared / 'real')
@@ -794,6 +808,7 @@ def build(r, game_assets=True):
     for kind in style.PHOTO_GROUND:
         im, nm = ground_sheet(kind)
         im.save(r / 'real' / f'ground_{kind}.color.png'); nm.save(r / 'real' / f'ground_{kind}.normal.png')
+    (r / 'real' / 'wood.version').write_text(WOOD_ART_VERSION)
     # footpaths: ambientCG photos as they are (normal green flipped for BeamNG)
     for name, src in (('paving', 'paving'), ('trodden', 'photo_trodden')):
         Image.open(photo.TEXTURES / src / 'albedo.jpg').convert('RGB').resize((1024, 1024), Image.LANCZOS).save(r / 'real' / f'{name}.color.png')

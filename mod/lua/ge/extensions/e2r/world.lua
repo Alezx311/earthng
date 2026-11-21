@@ -171,6 +171,10 @@ local frameTimer = hptimer()
 -- sceneLag: s, a scene item queues as the road of a tile reached this much later (its grass 3x)
 local LIMIT = {pairsDriving = 3, pairsCatch = 6, pairsLanding = 24, plantBatch = 128, sceneLag = 3,
   forestStep = 0.12, forestKind = 1.5, forestMax = 2500, propMax = 600,
+  -- A wood's fill (generator.lua VEG.layers.fill; M.fillStep): the trees a tile's cap left out
+  -- wait in cells of fillCell m and are planted within fillRadius m of a car that has been under
+  -- fillSlow m/s for fillAfter s, the farthest first, fillRate of them a pass every fillEvery s.
+  fillCell = 32, fillRadius = 90, fillSlow = .6, fillAfter = 1.2, fillRate = 120, fillEvery = .2,
   -- Trees of one shape split into forestVariants^2 kinds by cells of forestCell m (0: off), and a
   -- commit takes kinds until forestLive crowns stand in them (see forestCommit)
   forestCell = 1000, forestVariants = 3, forestLive = 6000,
@@ -619,6 +623,8 @@ end
 
 local function spawnForestItem(it, tile)
   if S.forestOff or not tile or not MatrixF then return false end
+  -- a wood's fill waits for a car that stands near it (M.fillStep)
+  if it.fill and not it.filled then return M.fillTake(it, tile) end
   -- a knockable prop (knock.lua's table) has no static collision while knocking is on
   local key = it.prop and it.shape .. ((not S.knockOff and M.knock.kindOf(it.shape)) and '#knock' or '#solid')
     or M.variantShape(it.shape, it.pos[1], it.pos[2])
@@ -644,6 +650,7 @@ local function retireForest(tile)
     tile.grassEarlyOwner, tile.grassEarlyVersion = nil, nil
   end
   tile.forestGen = (tile.forestGen or 0) + 1
+  M.fillDrop(tile)
   -- its knockable props leave knock.lua's hash, its debris the scene (they stand again when it is rebuilt)
   if S.knock then M.knock.unregisterTile(S.knock.K, tile, S.knock.api) end
   if not tile.forestId or not tile.i then tile.forestId = nil; return end
@@ -794,8 +801,88 @@ local function forestCommit()
   end
 end
 
+-- A wood's fill (LIMIT.fill*): the trees of a tile that wait for a standing car, by cell.
+function M.fillTake(it, tile)
+  local F = S.fill
+  if not F then F = {cells = {}, waiting = 0, planted = 0}; S.fill = F end
+  local c = LIMIT.fillCell
+  local key = (math.floor(it.pos[1] / c) + 32768) * 65536 + math.floor(it.pos[2] / c) + 32768
+  local cell = F.cells[key]
+  if not cell then cell = {}; F.cells[key] = cell end
+  cell[#cell + 1] = {it, tile, tile.forestGen or 0}
+  tile.fillCells = tile.fillCells or {}
+  tile.fillCells[key] = true
+  F.waiting = F.waiting + 1
+  return true
+end
+
+-- a tile goes: what of it still waits goes with it
+function M.fillDrop(tile)
+  local F, keys = S.fill, tile and tile.fillCells
+  if not F or not keys then return end
+  for key in pairs(keys) do
+    local cell = F.cells[key]
+    if cell then
+      local kept = {}
+      for _, entry in ipairs(cell) do
+        if entry[2] ~= tile then kept[#kept + 1] = entry else F.waiting = F.waiting - 1 end
+      end
+      F.cells[key] = #kept > 0 and kept or nil
+    end
+  end
+  tile.fillCells = nil
+end
+
+-- Every frame: p the car or the camera. Standing still, the wood round it fills up.
+function M.fillStep(p, now)
+  local F = S.fill
+  if not F or not p then return end
+  local last = F.at
+  if last and now > last.t then
+    local v = math.sqrt((p.x - last.x) ^ 2 + (p.y - last.y) ^ 2) / (now - last.t)
+    -- (a landing or a camera's jump is not a drive)
+    if v > LIMIT.fillSlow and v < 200 then F.slowSince = nil
+    elseif v <= LIMIT.fillSlow then F.slowSince = F.slowSince or now end
+  end
+  if not last or now > last.t then F.at = {x = p.x, y = p.y, t = now} end
+  if F.waiting <= 0 or not F.slowSince or now - F.slowSince < LIMIT.fillAfter then return end
+  if F.passAt and now - F.passAt < LIMIT.fillEvery then return end
+  F.passAt = now
+  local c, r = LIMIT.fillCell, LIMIT.fillRadius
+  local near = {}
+  for cx = math.floor((p.x - r) / c), math.floor((p.x + r) / c) do
+    for cy = math.floor((p.y - r) / c), math.floor((p.y + r) / c) do
+      local key = (cx + 32768) * 65536 + cy + 32768
+      if F.cells[key] then
+        local d = ((cx + .5) * c - p.x) ^ 2 + ((cy + .5) * c - p.y) ^ 2
+        if d <= (r + c * .71) ^ 2 then near[#near + 1] = {key, d} end
+      end
+    end
+  end
+  if #near == 0 then return end
+  -- the farthest first: a tree that appears between the trunks is seen less than one beside the car
+  table.sort(near, function(a, b) if a[2] ~= b[2] then return a[2] > b[2] end return a[1] < b[1] end)
+  local left = LIMIT.fillRate
+  for _, one in ipairs(near) do
+    local cell = F.cells[one[1]]
+    while left > 0 and #cell > 0 do
+      local entry = table.remove(cell)
+      local it, tile = entry[1], entry[2]
+      F.waiting = F.waiting - 1
+      if not tile.dropped and not tile.vegetationDropped and (tile.forestGen or 0) == entry[3] then
+        it.filled = true
+        if spawnForestItem(it, tile) then F.planted = F.planted + 1; left = left - 1 end
+      end
+    end
+    if #cell == 0 then F.cells[one[1]] = nil end
+    if left <= 0 then break end
+  end
+  result.fill = {waiting = F.waiting, planted = F.planted}
+end
+
 local function resetForests()
   detailStream = nil
+  S.fill = nil
   sharedForestId, plantData, plantShape = nil, {}, {}
   S.forestQ, S.forestOff, S.forestFails, S.forestCommitAt = nil, nil, nil, nil
 end
@@ -962,6 +1049,8 @@ local function spawnItem(it, group, pause, tile, layer)
     -- An editor object has an exact user-authored quaternion and possibly non-uniform
     -- scale. Forest instances only carry yaw and uniform scale; keep these TSStatic.
     if tile and not it.editorObject and (it.prop or vegetationShape(it.shape)) and spawnForestItem(it, tile) then return end
+    -- a wood's fill is thousands of trees a tile: the Forest's, never an object each
+    if it.fill then return end
     -- Forest lamps register on successful commit; fallback statics register here.
     if it.shape == LAMP_SHAPE then
       S.lamps = S.lamps or {}
@@ -5902,7 +5991,9 @@ local function runTest()
       end
       if ready then
         result.settle = result.settle or {}
-        result.settle[S.galleryPending] = {math.floor(waited * 10) / 10, busy, sig}
+        -- seconds waited, still loading, its signature, the frame's ms there, the fill planted
+        result.settle[S.galleryPending] = {math.floor(waited * 10) / 10, busy, sig, math.floor((S.frameAvg or 0) * 10) / 10,
+          S.fill and S.fill.planted or 0}
       end
     end
     if ready then
@@ -6120,6 +6211,8 @@ function M.onUpdate(dtReal, dtSim)
   profAdd('forest', S.forestTimer:stop())
   profAdd('gc', M.gc.paceMs or 0)   -- the collector's slice of the frame (gc.lua M.pace)
   local frameMs = frameTimer:stopAndReset()
+  -- the frame of late (about a second of them), for a still view's report (result.settle)
+  S.frameAvg = (S.frameAvg or frameMs) * .97 + frameMs * .03
   table.insert(S.frames, frameMs)
   if S.state == 'driving' and M.paceOn ~= false and not (test and test.pace == false) then
     S.gate = S.gate or M.pace.newGate()
@@ -6334,6 +6427,8 @@ function M.tick(dt)
       if getDetailStream():step(p, S.appliedTune or TUNE_DEFAULT, S.now, detailTimer, gate and 3 or 1) then changed = true end
       -- the engine's grass follows the car on its hidden block (turf.lua)
       if detail.turf and detail.turf.step(p, S.now, S.appliedTune or TUNE_DEFAULT) then changed = true end
+      -- and a wood fills up round a car that stands in it
+      M.fillStep(p, S.now)
       result.detailMs = detailTimer:stop()
       if detail.turf then result.turf = detail.turf.stats end
       result.liveGrass, result.liveRocks = detailStream.count.grass, detailStream.count.rock

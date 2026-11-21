@@ -32,7 +32,9 @@ SKIP = re.compile(r'(^wall_off_|glass|windows|^wall_shop_|roof_gold|lens|glyph|p
                   r'^car$|wire|water|sign|fascia|snow|glacier|^farmap_|^col_|storefront)')
 RULES = (
     ('crop', re.compile(r'^farmland')),
-    ('land', re.compile(r'^(cut_|fade_|edge_grass|edge_dirt|ground$|meadow|grass_|dry_grass|earth$|forest$|scrub|'
+    # (not a wood's floor: it lies in the canopy's shade, lit by the sky alone, and under the
+    # land's cap of saturation its leaf litter was grey-blue beside green ferns: flora-04)
+    ('land', re.compile(r'^(cut_|fade_|edge_grass|edge_dirt|ground$|meadow|grass_|dry_grass|earth$|scrub|'
                         r'heath|orchard|park$|steppe|vineyard|wetland|bare_ground|road_track|tundra)')),
     ('wall', re.compile(r'^(hw_|wall_|gable|plinth|chimney|fence_|clad_|parapet)')),
     ('roof', re.compile(r'^roof_')),

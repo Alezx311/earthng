@@ -299,7 +299,10 @@ GROUND_M = 24.0          # one sheet: 8 repeats of a 3 m photo, 6 of a 4 m one
 GROUND = {
     'ground': (('photo_lawn', 3.0), ('photo_meadow', 4.0, .35), ('photo_worn', 3.0, .12), (.88, .88, .84), .58),
     'park':   (('photo_lawn', 3.0), ('photo_meadow', 4.0, .22), ('photo_worn', 3.0, .05), (.86, .90, .82), .66),
-    'forest': (('photo_meadow', 4.0), ('photo_worn', 3.0, .35), ('photo_trodden', 3.0, .15), (.72, .74, .66), .6),
+    # a wood's floor: fine leaf and needle litter, moss over half of it, soil with low herbs
+    # showing through (21.11: the meadow photo, greyed, read as dark asphalt under the
+    # trunks of a pinewood)
+    'forest': (('leaves_brown', 2.0), ('moss_earth', 4.0, .5), ('photo_worn', 3.0, .28), (.92, .82, .6), .85),
     'verge':  (('photo_verge', 3.0), ('photo_lawn', 3.0, .35), ('photo_worn', 3.0, .15), (.86, .88, .76), .85),
     # other climates' open ground (generator.lua bio.ground, biome.lua): ambientCG sets of
     # fetch_textures.SETS. Desert floor of sandy grit with crusted patches; wind-rippled dune
@@ -320,7 +323,7 @@ GROUND = {
 }
 # Mean brightness (0..1, after tone and saturation) a sheet is brought to: Snow005 photographs
 # grey, the dune sand dark; a kind not named keeps its photos' own.
-GROUND_LEVEL = {'snow': .74, 'snow_edge': .64, 'glacier': .7, 'dune': .62, 'desert': .5, 'alpine': .42}
+GROUND_LEVEL = {'snow': .74, 'snow_edge': .64, 'glacier': .7, 'dune': .62, 'desert': .5, 'alpine': .42, 'forest': .24}
 
 
 def _layer(name, metres, which):

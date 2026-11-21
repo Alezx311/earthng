@@ -862,6 +862,33 @@ function VEG.use(name)
 end
 local okBiome, biomeModule = pcall(require, 'ge/extensions/e2r/biome')
 VEG.biome = okBiome and type(biomeModule) == 'table' and biomeModule or nil
+-- The real species of a region by its natural zones, in stands (flora.lua): which tree a wood,
+-- a street or a yard gets, and how tall. nil without the module: the sets above, by a hash.
+do
+  local ok, flora = pcall(require, 'ge/extensions/e2r/flora')
+  VEG.flora = ok and type(flora) == 'table' and flora or nil
+end
+-- The wood's own layers under the canopy where the flora is in force (build(): FLORA.*). under:
+-- shrubs and young trees, a lattice of `step` m planted with `chance` (old stands open up, young
+-- ones shade their floor: by the stand's age from `young` to `old` of it), twice that within
+-- `edge` m of the wood's edge (the mantle of shrubs a wood ends in), `cap` a tile. dead: fallen
+-- trunks, snags, stumps and brushwood, a lattice of `step` m. wet: trees stand in alder and
+-- willow within `reach` m of water; a wetland's own trees by its kind (a swamp is wooded, a bog
+-- has stunted pine and birch, a marsh a willow now and then).
+VEG.layers = {under = {step = 5.5, chance = .5, young = .35, old = 1.25, edge = 13, cap = 900, hard = 1600},
+  dead = {step = 19, chance = .42, cap = 140},
+  -- fill: a wood is a tile's cap of crowns thinner than a wood (a 5 m lattice holds four times
+  -- OASIS's 2400), which reads from a moving car and is a park to one who stands in it. The
+  -- lattice points the cap left out are planted too, `share` of the cap at most, as items
+  -- marked `fill`: the world plants them round a car that has stopped (world.lua fillStep).
+  fill = {share = 2},
+  wet = {reach = 24, bin = 12, wetland = {swamp = .7, bog = .14, marsh = .05, reedbed = .03, wet_meadow = .04, default = .1}},
+  deadwood = {'/levels/east_coast_usa/art/shapes/trees/trees_beech/tree_beech_dead_a.dae',
+    '/levels/east_coast_usa/art/shapes/trees/trees_douglasfir/fir_dead_branches.dae',
+    '/levels/east_coast_usa/art/shapes/trees/trees_douglasfir/tree_douglasfir_chopped.dae',
+    '/levels/east_coast_usa/art/shapes/trees/trees_douglasfir/tree_douglasfir_dead.dae',
+    '/levels/east_coast_usa/art/shapes/trees/trees_oak/tree_oak_dead_b.dae',
+    '/levels/east_coast_usa/art/shapes/trees/trees_douglasfir/fir_dead_branches.dae'}}
 -- Every shape the generator may place, once, for world.lua's load-time warm-up: the temperate
 -- sets always, another climate's sets once a tile has used them
 function VEG.warm(...)
@@ -878,7 +905,14 @@ function VEG.warm(...)
     local set = VEG.have(name)
     add(set[1]); add(set[#set])
   end
-  for _, shape in ipairs({...}) do add(shape) end
+  -- (a table among them: a list of shapes, as the flora's for the zone)
+  for _, shape in ipairs({...}) do
+    if type(shape) == 'table' then
+      for _, one in ipairs(shape) do add(one) end
+    else
+      add(shape)
+    end
+  end
   return out
 end
 -- The stock material files a manifest's shapes need, sorted.
@@ -892,6 +926,10 @@ function VEG.stockFor(items, shapes)
   end
   for _, shape in ipairs(shapes or NONE) do all[#all + 1] = shape end
   for _, shape in ipairs(all) do
+    -- a flora model's materials lie beside it (earthng/flora_mesh.py)
+    if type(shape) == 'string' and shape:sub(1, 26) == '/art/shapes/earthng/flora/' then
+      files[shape:match('^(.*/)[^/]*$') .. 'main.materials.json'] = true
+    end
     if type(shape) == 'string' and shape:sub(1, 8) == '/levels/' then
       local folder = shape:match('^(.*/)[^/]*$')
       local file, parent = VEG.stock[folder], VEG.stockParent[folder and folder:match('^(.*/)[^/]*/$') or '']
@@ -13002,6 +13040,95 @@ local function build(cells, i, j, options)
     local a, b = v00 + (v10 - v00) * tx, v01 + (v11 - v01) * tx
     return a + (b - a) * ty
   end
+  -- The flora (flora.lua): the natural zone of a place, one answer per 100 m bin (with its
+  -- longitude: the hornbeam stops at the Dnipro), nil where the flora has no rules or a pack's
+  -- look names its own trees.
+  bio.flora = VEG.flora and options.flora ~= false and type(options.geo) == 'table' and VEG.flora.enabled
+    and (lookOf('trees') == nil or lookOf('trees') == 'regional') and VEG.flora or nil
+  bio.zones, bio.lons, bio.stands, bio.q, bio.bands = {}, {}, {}, {}, {}
+  function bio.zone(x, y)
+    local F = bio.flora
+    if not F then return nil end
+    local bx, by = floor(x / 100), floor(y / 100)
+    local k = (bx + 32768) * 65536 + by + 32768
+    local z = bio.zones[k]
+    if z == nil then
+      local geo, cx, cy = options.geo, (bx + .5) * 100, (by + .5) * 100
+      local lon = geo[3] + geo[5] * (cx - geo[1]) + geo[6] * (cy - geo[2])
+      local lat = geo[4] + geo[7] * (cx - geo[1]) + geo[8] * (cy - geo[2])
+      z = F.zone(lon, lat, rawHeight(cx, cy) - bio.sea, cx, cy) or false
+      bio.zones[k], bio.lons[k] = z, lon
+    end
+    return z or nil, bio.lons[k]
+  end
+  -- Is a point within about `reach` m of the edge of an area of `kinds`: bins of `bin` m marked
+  -- along the edges, once a tile and name. (A distance to every polygon at every lattice point
+  -- is its vertices times the lattice.)
+  function bio.band(name, kinds, reach, bin, x, y)
+    local bins = bio.bands[name]
+    if not bins then
+      bins = {}
+      bio.bands[name] = bins
+      local span = math.ceil(reach / bin)
+      local wide = {rect[1] - 60, rect[2] - 60, rect[3] + 60, rect[4] + 60}
+      for index, area in ipairs(lists.areas) do
+        if kinds[area.kind] and ringsTouch(area.rings, wide) then
+          for _, ring in ipairs(area.rings) do
+            for k = 1, #ring do
+              local a, b = ring[k], ring[k % #ring + 1]
+              local dx, dy = b[1] - a[1], b[2] - a[2]
+              local steps = math.max(1, math.ceil(math.sqrt(dx * dx + dy * dy) / bin))
+              for s = 0, steps - 1 do
+                local px, py = a[1] + dx * s / steps, a[2] + dy * s / steps
+                if px > wide[1] and px < wide[3] and py > wide[2] and py < wide[4] then
+                  local gx, gy = floor(px / bin), floor(py / bin)
+                  for ox = -span, span do
+                    for oy = -span, span do bins[(gx + ox + 32768) * 65536 + gy + oy + 32768] = true end
+                  end
+                end
+              end
+            end
+          end
+        end
+        if index % 32 == 0 then pause() end
+      end
+    end
+    return bins[(floor(x / bin) + 32768) * 65536 + floor(y / bin) + 32768] == true
+  end
+  -- Does a point stand by water: beside a water body's or a wetland's edge (alder and willow grow
+  -- there, not the wood's oak or pine).
+  bio.WET, bio.WOOD = {water = true, wetland = true}, {forest = true}
+  function bio.wet(x, y)
+    return bio.band('wet', bio.WET, VEG.layers.wet.reach, VEG.layers.wet.bin, x, y)
+  end
+  -- The stand a point of a wood lies in (flora.lua stand()), one answer per 16 m square and
+  -- leaf type: {conifer, list, leader, age, under}, or nil where the flora has no rules.
+  -- tags: the wood's own (leaf_type, wood). e: metres above the sea.
+  function bio.standAt(x, y, e, tags, kind)
+    local zone, lon = bio.zone(x, y)
+    if not zone then return nil end
+    local leaf = tags.leaf_type or tags.wood
+    local needle = 0
+    if leaf == 'needleleaved' or leaf == 'coniferous' then needle = 1
+    elseif leaf == 'broadleaved' or leaf == 'deciduous' then needle = 2
+    elseif leaf == 'mixed' then needle = 3 end
+    -- a bog's stunted pine and birch; any other wetland, and a bank, is alder and willow
+    local bog = kind == 'wetland' and tags.wetland == 'bog'
+    if bog then needle = 1 end
+    local wet = not bog and (kind == 'wetland' or bio.wet(x, y))
+    local gx, gy = floor(x / 16), floor(y / 16)
+    local k = ((gx + 32768) * 65536 + gy + 32768) * 16 + needle * 2 + (wet and 1 or 0)
+    local stand = bio.stands[k]
+    if stand == nil then
+      local q = bio.q
+      q.zone, q.lon, q.e, q.mixed, q.wet = zone, lon, e, needle == 3, wet
+      q.needle = nil
+      if needle == 1 then q.needle = true elseif needle == 2 then q.needle = false end
+      stand = bio.flora.stand(q, (gx + .5) * 16, (gy + .5) * 16) or false
+      bio.stands[k] = stand
+    end
+    return stand or nil
+  end
   -- Share of snow at a point: from 300 m under the snow line to 500 m over it, a slope facing
   -- the pole holding it ~250 m lower and one facing the sun ~250 m higher. Nothing steeper than 60°.
   function bio.snow(p, e, nx, ny, nz)
@@ -14644,7 +14771,9 @@ local function build(cells, i, j, options)
     table.sort(mats)
     for _, item in ipairs(collector.items) do total = total + (item.triangles or 0) end
     -- bio.dryWarm: this build's lawn has dry land's tufts (VEG.dryLawn); last, it may be nil
-    local warm = VEG.warm(LAMP, BUS_STOP, bio.dryWarm)
+    -- with the zone's own trees and shrubs where the flora is in force (flora.lua)
+    local warm = VEG.warm(LAMP, BUS_STOP, bio.dryWarm,
+      bio.flora and bio.zone(target[1], target[2]) and bio.flora.shapesOf(bio.zone(target[1], target[2])) or NONE)
     -- knock.lua's debris shapes: a shape's first TSStatic costs ~35 ms (p24b), so not at its first
     -- knock; listed here so stockFor loads their materials too
     local okKnock, knock = pcall(require, 'ge/extensions/e2r/knock')
@@ -15421,10 +15550,11 @@ local function build(cells, i, j, options)
     end
     pause()
   end
-  local function static(name, shape, x, y, z, yaw, scale)
+  -- materials: the material file of a shape that is not the game's own (a flora model)
+  local function static(name, shape, x, y, z, yaw, scale, materials)
     scene.items[#scene.items + 1] = {kind = 'static', name = 'e2rl_' .. key .. '_' .. name,
       pos = {x, y, z}, rot = {0, 0, math.sin(yaw / 2), math.cos(yaw / 2)}, scale = scale or 1,
-      shape = shape, decor = true, layer = 'scene', collision = 'None'}
+      shape = shape, decor = true, layer = 'scene', collision = 'None', materials = materials}
   end
   mark('lines')
   local parking = {}
@@ -16295,6 +16425,62 @@ local function build(cells, i, j, options)
       end
       return nil
     end
+    -- The flora's tree or shrub for a lattice candidate (flora.lua): true when it stands. A
+    -- wood's tree comes from the stand it lies in, a yard's, a park's or a street's from what is
+    -- planted where people live. e: metres above the sea. line: the tree line here.
+    function bio.plantTree(c, x, y, z, e, bush, settled, line)
+      local F = bio.flora
+      if not F then return false end
+      local kind, h = c.kind, c.hash
+      local r1, r2 = keyHash(31, c.key) % 1000 / 1000, keyHash(6, c.key) % 1000 / 1000
+      local species, height
+      if bush or not settled then
+        local stand = bio.standAt(x, y, e, c.tags or NONE, kind)
+        if not stand then return false end
+        if bush then species, height = F.undergrowth(stand, r1, r2) else species, height = F.tree(stand, r1, r2) end
+        if species and not bush then
+          -- krummholz: the last 150 m under the tree line grows low and bent; a bog's trees are stunted
+          if e > line - 150 then height = height * (.45 + .55 * math.max(0, (line - e) / 150)) end
+          if kind == 'wetland' and (c.tags or NONE).wetland == 'bog' then height = height * .45 end
+        end
+      else
+        local zone = bio.zone(x, y)
+        if not zone then return false end
+        local planted = kind == 'park' and 'park'
+          or ((kind == 'garden' or kind == 'orchard' or (kind == 'residential' and h % 100 < 40)) and 'garden' or 'town')
+        species, height = F.planted(planted, zone, F.field(x, y, 85, 611), r1, r2)
+      end
+      if not species then return false end
+      local shape, scale, materials = F.plant(species, height, h)
+      if not shape then return false end
+      static(string.format('tree_%s_%d', kind, c.key), shape, x, y, z, h % 6283 / 1000, scale, materials)
+      if bio.fill then scene.items[#scene.items].fill = true end
+      return true
+    end
+    -- A mapped row's tree (natural=tree_row): one species along a street, an avenue of lindens or
+    -- a line of poplars, and the shelter belt's along a field. True when the flora planted it.
+    bio.ROW_CONIFERS = {{'spruce', 45}, {'pine', 35}, {'thuja', 20}}
+    function bio.plantRow(x, y, z, h, position, needle, line)
+      local F = bio.flora
+      local zone = F and bio.zone(x, y)
+      if not zone then return false end
+      -- the row's own species, the same in every tile it runs through (a row the map gave no
+      -- id: by the place)
+      local patch, r2 = F.field(x, y, 400, 613), keyHash(6, position) % 1000 / 1000
+      if line and line.id ~= nil then patch = hash('row:' .. tostring(line.id)) % 1000 / 1000 end
+      local species, height
+      if needle then
+        species = F.weighted(bio.ROW_CONIFERS, patch)
+        height = F.SPECIES[species].height * (.4 + .2 * r2)
+      else
+        species, height = F.planted(builtAt(x, y) > .01 and 'row' or 'field', zone, patch, keyHash(31, position) % 1000 / 1000, r2)
+      end
+      local shape, scale, materials
+      if species then shape, scale, materials = F.plant(species, height, h) end
+      if not shape then return false end
+      static(string.format('tree_row_%d', position), shape, x, y, z, h % 6283 / 1000, scale, materials)
+      return true
+    end
     -- Grass, flowers, ferns, understory and stones of the decor scatter at a place: another
     -- climate's set, false for none, `shapes` for the temperate one.
     function bio.decor(p, prefix, kind, e, shapes, x, y)
@@ -16427,6 +16613,8 @@ local function build(cells, i, j, options)
     if centre and (centre.group == 'rainforest' or centre.group == 'savanna' or (centre.palms and centre.hot)) then
       spacingOf.beach, townChance.beach = 15, .32
     end
+    -- a wetland's own trees where the flora knows them: an alder swamp, a bog's stunted pines
+    if bio.flora and bio.zone((rect[1] + rect[3]) / 2, (rect[2] + rect[4]) / 2) then spacingOf.wetland = 9 end
     for _, area in ipairs(lists.areas) do
       local spacing = spacingOf[area.kind]
       if spacing and ringsTouch(area.rings, rect) then
@@ -16448,6 +16636,9 @@ local function build(cells, i, j, options)
                 -- A low floor left whole 65 m groves almost empty, which read as a broken forest.
                 -- Parks and yards keep a lower chance so the town reads as lawns with trees, not canopy.
                 local chance = kind == 'forest' and (.8 + .2 * cluster) or (townChance[kind] or 1)
+                if kind == 'wetland' then
+                  chance = VEG.layers.wet.wetland[(owner.tags or NONE).wetland or 'default'] or VEG.layers.wet.wetland.default
+                end
                 -- A village's residential polygon holds its back gardens and the slopes round it:
                 -- groves only among its buildings, copses and a lone tree elsewhere and between the
                 -- groves (VEG.copse). Its groves on a 16 m lattice stood a bare hill as a savanna.
@@ -16663,8 +16854,13 @@ local function build(cells, i, j, options)
                   if p.palms and h % 10 < 4 then name = hot and 'palmCoco' or 'palmFan'
                   else name = bio.species(p, {kind = 'town', key = position}, z - bio.sea, false, true, .5, h) or name end
                 end
-                local set = VEG.use(name)
-                static(string.format('tree_row_%d', position), set[math.floor(h / 7) % #set + 1], x, y, z, h % 6283 / 1000, .8 + keyHash(6, position) % 300 / 1000)
+                -- (the stock poplar, one crown in ten, stays the old set's until the flora has a
+                -- poplar of its own: flora.lua STOCK.poplar)
+                if not ((name == 'pine' or name == 'town' or (bio.flora and bio.flora.own('poplar')))
+                    and bio.plantRow(x, y, z, h, position, needle, line)) then
+                  local set = VEG.use(name)
+                  static(string.format('tree_row_%d', position), set[math.floor(h / 7) % #set + 1], x, y, z, h % 6283 / 1000, .8 + keyHash(6, position) % 300 / 1000)
+                end
                 rowPlanted = rowPlanted + 1
               end
             end
@@ -16673,7 +16869,8 @@ local function build(cells, i, j, options)
         end
       end
     end
-    spread(candidates, maxTrees - rowPlanted, 25, function(candidate)
+    bio.accept = function(candidate)
+      candidate.seen = true
       local x, y, h = candidate.x, candidate.y, candidate.hash
       local z = ground(x, y)
       local elevation = rawHeight(x, y) - (options.seaLevel or 20)
@@ -16720,8 +16917,10 @@ local function build(cells, i, j, options)
       elseif settled then name, scale = 'town', .55 + u * .45
       elseif candidate.wooded then name, scale = 'forest', .6 + u * .4
       else name, scale = 'forest', .7 + u * .55 end
+      local other
       if p then
-        local other, size = bio.species(p, candidate, elevation, needle, settled, u, h)
+        local size
+        other, size = bio.species(p, candidate, elevation, needle, settled, u, h)
         if other then name, scale = other, size end
         -- krummholz: the last 150 m under the tree line grows low and bent
         if not bush and not settled and elevation > line - 150 then
@@ -16729,17 +16928,36 @@ local function build(cells, i, j, options)
           if name == 'forest' or name == 'pine' then name = 'fir' end
         end
       end
+      -- the region's own species, by the stand the point lies in (flora.lua); another climate's
+      -- plants (bio.species) keep their sets
+      if not other and bio.plantTree(candidate, x, y, z, elevation, bush, settled, line) then return true end
+      if kind == 'wetland' or bio.fill then return false end
       local set = VEG.use(name)
       -- Source and exact key: `..` prints 14 digits, and one lattice point's keys in two
       -- namespaces (forest and open ground at one spacing) printed the same name.
       static(string.format('tree_%s_%d', candidate.kind, candidate.key), set[h % #set + 1], x, y, z,
         h % 6283 / 1000, scale)
       return true
-    end, true)
+    end
+    spread(candidates, maxTrees - rowPlanted, 25, bio.accept, true)
+    -- the rest of a wood's lattice, for a car that stands in it (VEG.layers.fill)
+    if bio.flora and not distant and options.fill ~= false and maxTrees > 0 then
+      local rest = {}
+      for index = 1, #candidates do
+        local c = candidates[index]
+        if not c.seen and c.kind == 'forest' and not c.wooded then rest[#rest + 1] = c end
+        if index % 256 == 0 then pause() end
+      end
+      bio.fill = true
+      spread(rest, floor(maxTrees * VEG.layers.fill.share), 25, bio.accept, true)
+      bio.fill = nil
+    end
     -- Grass, forest floor and loose stone. Far keeps only a ranked handful of rocks:
     -- tufts do not read at the horizon, and the far list stays inside the near list.
     local SEED = {grass = 11, bush = 12, rock = 13, flower = 14, fern = 15}
-    local function scatter(prefix, spacingOf, chanceOf, shapes, cap, farCap, scaleMin, scaleMax, minNz, elevationOf)
+    -- chanceOf[kind]: a number, or function(x, y, owner) for a chance that depends on the place.
+    -- pick(candidate, x, y, z, elevation): plants the candidate itself and returns true, or false.
+    local function scatter(prefix, spacingOf, chanceOf, shapes, cap, farCap, scaleMin, scaleMax, minNz, elevationOf, pick)
       local seed = SEED[prefix] or 19
       local limit = cap
       if distant then limit = farCap or 0 end
@@ -16759,10 +16977,12 @@ local function build(cells, i, j, options)
               local position = latticeKey(0, gx, gy, code)
               if x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and not positions[position] then
                 local kind, where = coverAt(x, y)
-                if spacingOf[kind] == spacing and keyHash(seed + 100, position) % 1000 / 1000 < (chanceOf[kind] or 0)
+                local chance = spacingOf[kind] == spacing and chanceOf[kind] or 0
+                if type(chance) == 'function' then chance = chance(x, y, where) end
+                if chance > 0 and keyHash(seed + 100, position) % 1000 / 1000 < chance
                     and not (where and VEG.fields[(where.tags or NONE).leisure]) then
                   positions[position] = true
-                  candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = kind}
+                  candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = kind, tags = where and where.tags}
                 end
               end
             end
@@ -16802,6 +17022,7 @@ local function build(cells, i, j, options)
         if not (nz >= minNz and (not elevationCap or elevation < elevationCap) and (not sea or z > sea) and not blocked(x, y, clearance)) then
           return false
         end
+        if pick then return pick(candidate, x, y, z, elevation) end
         -- another climate's tufts, shrubs and stones (bio.decor), or none at all
         local here, lo, hi = shapes, scaleMin, scaleMax
         local p = bio.on and bio.at(x, y)
@@ -16848,6 +17069,18 @@ local function build(cells, i, j, options)
       local function lawnAt(x, y)
         local kind, where = coverAt(x, y)
         if kind == 'farmland' then return CROP[FIELD.of(where, kind)] or false end
+        -- A wood's floor: 512 under broadleaves, 1024 under conifers (turf.lua grows ferns and
+        -- the wood's herbs on it; the tufts of detail.lua leave it to the fern and grass scatter).
+        -- By the stand the square lies in, by the map's leaf type where the flora has no rules.
+        if kind == 'forest' and options.woodFloor ~= false then
+          -- (a wood mapped above the tree line has no trees, and no floor of one)
+          if rawHeight(x, y) - bio.sea >= treeline then return false end
+          local tags = where and where.tags or NONE
+          local stand = bio.standAt(x, y, rawHeight(x, y) - bio.sea, tags, kind)
+          if stand then return stand.conifer and 1024 or 512 end
+          local leaf = tags.leaf_type or tags.wood
+          return (leaf == 'needleleaved' or leaf == 'coniferous') and 1024 or 512
+        end
         if not lawn[kind] or (where and VEG.fields[(where.tags or NONE).leisure]) then return false end
         return VEG.land.kinds[kind] and 'land' or true
       end
@@ -16981,9 +17214,44 @@ local function build(cells, i, j, options)
     scatter('grass', {heath = 7, forest = 12, orchard = 5, vineyard = 9},
       {heath = .5, forest = .2, orchard = .55, vineyard = .28},
       VEG.grass, maxGrass, 0, 0.20, 0.30, .72, {forest = treeline + 80})
-    scatter('bush', {forest = 14, park = 18},
-      {forest = .4, park = .22},
-      VEG.have('bush'), maxUnder, 0, .85, 1.3, .72, {forest = treeline + 80})
+    if bio.flora and bio.zone((rect[1] + rect[3]) / 2, (rect[2] + rect[4]) / 2) then
+      -- The wood's layers under its canopy (VEG.layers): hazel, elder, juniper and the young
+      -- growth of its own trees, by the stand; thick in an old stand and along the wood's
+      -- edge, thin under a young one. Then what has died: fallen trunks, snags, stumps.
+      local U, D = VEG.layers.under, VEG.layers.dead
+      scatter('bush', {forest = U.step, park = 18}, {park = .22, forest = function(x, y, owner)
+          local stand = bio.standAt(x, y, rawHeight(x, y) - bio.sea, owner and owner.tags or NONE, 'forest')
+          if not stand then return 0 end
+          local chance = U.chance * (U.young + (U.old - U.young) * stand.age)
+          if bio.band('wood', bio.WOOD, U.edge, 13, x, y) then chance = chance * 2 end
+          return chance
+        end},
+        VEG.have('bush'), math.min(U.hard, math.max(maxUnder, opt('maxUnderstory', U.cap, U.hard))), 0, .85, 1.3, .72,
+        {forest = treeline + 80}, function(c, x, y, z, e)
+          if c.kind ~= 'forest' then
+            local set = VEG.have('bush')
+            static('bush_' .. c.key, set[c.hash % #set + 1], x, y, z, c.hash % 6283 / 1000, .85 + keyHash(212, c.key) % 1000 / 1000 * .45)
+            return true
+          end
+          local stand = bio.standAt(x, y, e, c.tags or NONE, 'forest')
+          if not stand then return false end
+          local species, height = bio.flora.undergrowth(stand, keyHash(31, c.key) % 1000 / 1000, keyHash(212, c.key) % 1000 / 1000)
+          local shape, scale, materials
+          if species then shape, scale, materials = bio.flora.plant(species, height, c.hash) end
+          if not shape then return false end
+          static('bush_' .. c.key, shape, x, y, z, c.hash % 6283 / 1000, scale, materials)
+          return true
+        end)
+      VEG.deadwood = VEG.layers.deadwood
+      local dead = VEG.have('deadwood')
+      if dead ~= VEG.have('forest') then
+        scatter('dead', {forest = D.step}, {forest = D.chance}, dead, D.cap, 0, .8, 1.25, .8, {forest = treeline})
+      end
+    else
+      scatter('bush', {forest = 14, park = 18},
+        {forest = .4, park = .22},
+        VEG.have('bush'), maxUnder, 0, .85, 1.3, .72, {forest = treeline + 80})
+    end
     -- clover and daisy patches (2.3 and 1.5 m across) and ferns under the trees
     local maxFlowers = math.floor(maxGrass * .12)
     scatter('flower', {meadow = 7, park = 9, ground = 12, orchard = 10, residential = 11},

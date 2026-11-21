@@ -19,6 +19,17 @@
 --
 -- The block collides like any terrain. It lies under the drawn ground and its collision proxy
 -- (SINK), and far under everything where there is no lawn.
+--
+-- A wood's floor is two more layers (generator.lua lawnCarpet flags 512 and 1024): under
+-- broadleaves ferns, the wood's low herbs and its flowers, under conifers the sparser herbs of
+-- a needle floor. They are stock definitions too: Hirochi's forest floor.
+--
+-- Driving, the grass is a few definitions a layer: what reads from a moving car. Standing still
+-- (M.STILL: under `slow` m/s for `after` s) the layers fill up as a level's own are laid, one
+-- definition over another: nettles and tall weeds, flowers, seeded grass heads, wet plants in
+-- the hollows, the wood's second and third herbs. The definitions marked `still` are made then,
+-- at most `step` a frame, and go when the car moves off above `fast` m/s. The frame has room
+-- for them only when nothing streams in.
 local M = {}
 
 M.NAME = 'e2rTurf'
@@ -36,17 +47,30 @@ M.PERIOD = 1.5       -- s between two moves at the least
 M.NEAR, M.NEAR_CELL = 170, 32
 M.BUDGET = 1.5       -- ms a frame for gathering the next block
 -- the block's layers (earthng/turf_art.py LAYERS, the same order): its layer map holds index - 1
-M.LAYERS = {'e2rTurfNone', 'e2rTurfGrass', 'e2rTurfLush', 'e2rTurfDry', 'e2rTurfCrop'}
+M.LAYERS = {'e2rTurfNone', 'e2rTurfGrass', 'e2rTurfLush', 'e2rTurfDry', 'e2rTurfCrop', 'e2rTurfForest', 'e2rTurfPine'}
+M.STILL = {slow = .6, fast = 2.5, after = 1.2, step = 2}
 M.enabled = true
 -- element count factor (the settings: grass density) and draw distance factor
 M.density, M.distance = 1, 1
 
-local HIROCHI, WCUSA = '/levels/hirochi_raceway/', '/levels/west_coast_usa/'
+local HIROCHI, WCUSA, TRAINING, ECA = '/levels/hirochi_raceway/', '/levels/west_coast_usa/', '/levels/driver_training/',
+  '/levels/east_coast_usa/'
+local HIROCHI_GC, TRAINING_GC = HIROCHI .. 'art/shapes/groundcover/main.materials.json',
+  TRAINING .. 'art/shapes/groundcover/main.materials.json'
 M.SOURCES = {
-  hirochi = {materials = HIROCHI .. 'art/shapes/groundcover/main.materials.json',
-    items = HIROCHI .. 'main/MissionGroup/vegetation/terrain_grass/items.level.json'},
+  hirochi = {materials = HIROCHI_GC, items = HIROCHI .. 'main/MissionGroup/vegetation/terrain_grass/items.level.json'},
+  hirochi2 = {materials = HIROCHI_GC, items = HIROCHI .. 'main/MissionGroup/vegetation/terrain_grass2/items.level.json'},
+  floor = {materials = HIROCHI_GC, items = HIROCHI .. 'main/MissionGroup/vegetation/terrain_forest_floor/items.level.json'},
+  forest = {materials = HIROCHI_GC, items = HIROCHI .. 'main/MissionGroup/vegetation/terrain_forest/items.level.json'},
   wcusa = {materials = WCUSA .. 'art/groundcover/main.materials.json',
     items = WCUSA .. 'main/MissionGroup/vegetation/items.level.json'},
+  nettles = {materials = TRAINING_GC, items = TRAINING .. 'main/MissionGroup/Level_object/vegetation/terrain_dirt_grass/items.level.json'},
+  wet = {materials = TRAINING_GC, items = TRAINING .. 'main/MissionGroup/Level_object/vegetation/terrain_dirt_loose/items.level.json'},
+  -- (the seeded grass heads' material is in the level's 3D grass folder)
+  eca = {materials = {ECA .. 'art/shapes/groundcover/main.materials.json', ECA .. 'art/shapes/groundcover/3d_grass_test/main.materials.json'},
+    items = ECA .. 'main/MissionGroup/Level_object/vegetation/terrain_grass/items.level.json'},
+  eca2 = {materials = ECA .. 'art/shapes/groundcover/main.materials.json',
+    items = ECA .. 'main/MissionGroup/Level_object/vegetation/terrain_grass2/items.level.json'},
 }
 -- stock GroundCover (source, src) -> our layer, with the share of its elements; `name` names a
 -- second use of one definition; `fields` override stock fields.
@@ -66,6 +90,36 @@ M.DEFS = {
   {source = 'hirochi', src = 'small_grass_close', name = 'small_grass_close_dry', layer = 'e2rTurfDry', share = .75},
   {source = 'wcusa', src = 'grass_dry_1', layer = 'e2rTurfDry', share = 1.8},
   {source = 'wcusa', src = 'grass_dry_1', name = 'grass_dry_1_crop', layer = 'e2rTurfCrop', share = 3},
+  -- a broadleaf wood's floor: ferns in clumps and the low herbs between them
+  {source = 'floor', src = 'fern1', layer = 'e2rTurfForest', share = 1.3},
+  {source = 'floor', src = 'Forest_weed', layer = 'e2rTurfForest', share = 1.1},
+  -- a conifer wood's: sparse low herbs over the needles, a fern here and there
+  {source = 'floor', src = 'Forest_weed', name = 'Forest_weed_pine', layer = 'e2rTurfPine', share = .8},
+  {source = 'floor', src = 'fern1', name = 'fern1_pine', layer = 'e2rTurfPine', share = .4},
+  -- Standing still: the layers a level's own vegetation is laid in, one over another.
+  -- the lawn: flowers, daisies and buttercups, seeded grass heads, a clump of coarse weeds
+  {source = 'hirochi2', src = 'flowers_01', layer = 'e2rTurfGrass', share = 1.6, still = true},
+  {source = 'eca', src = 'Daisies', layer = 'e2rTurfGrass', share = 1.2, still = true},
+  {source = 'eca2', src = 'buttercups_close', layer = 'e2rTurfGrass', share = 1, still = true},
+  {source = 'eca', src = 'long_grass_clump_close_03', layer = 'e2rTurfGrass', share = .7, still = true},
+  {source = 'hirochi', src = 'medium_grass_close', layer = 'e2rTurfGrass', share = 1.2, still = true},
+  -- the lush hollows: tall wet plants, more long grass, buttercups
+  {source = 'wet', src = 'wet_weed_01', layer = 'e2rTurfLush', share = .16, still = true},
+  {source = 'eca2', src = 'buttercups_close', name = 'buttercups_lush', layer = 'e2rTurfLush', share = 1.4, still = true},
+  {source = 'hirochi', src = 'medium_grass_close', name = 'medium_grass_lush', layer = 'e2rTurfLush', share = 2, still = true},
+  -- dry ground: seeded heads and a flower
+  {source = 'eca', src = 'long_grass_clump_close_03', name = 'seeded_dry', layer = 'e2rTurfDry', share = .5, still = true},
+  {source = 'hirochi2', src = 'flowers_01', name = 'flowers_dry', layer = 'e2rTurfDry', share = .7, still = true},
+  -- the broadleaf floor: its flowers, nettles in drifts, the forest's second herb, grass in the light
+  {source = 'floor', src = 'Purple_flowers', layer = 'e2rTurfForest', share = .9, still = true},
+  {source = 'nettles', src = 'Nettles_01', layer = 'e2rTurfForest', share = .3, still = true},
+  {source = 'forest', src = 'Weed2', layer = 'e2rTurfForest', share = .5, still = true},
+  {source = 'hirochi', src = 'long_grass_distant', name = 'long_grass_forest', layer = 'e2rTurfForest', share = .25, still = true,
+    fields = M.LONG},
+  -- the needle floor: the forest's herb, flowers at the paths, grass tufts
+  {source = 'forest', src = 'Weed2', name = 'Weed2_pine', layer = 'e2rTurfPine', share = .6, still = true},
+  {source = 'floor', src = 'Purple_flowers', name = 'Purple_flowers_pine', layer = 'e2rTurfPine', share = .35, still = true},
+  {source = 'hirochi', src = 'small_grass_close', name = 'small_grass_pine', layer = 'e2rTurfPine', share = .3, still = true},
 }
 M.PREFIX = 'e2rTurfGC_'
 -- CPU placement: all cells regrow in the frame of a move (flushGroundCoverGrids); GPU-placed
@@ -86,6 +140,7 @@ local pending = {}      -- NEAR_CELL squares that got lawn since the block was l
 local block             -- the block in the game: {x0, y0, seq, revision, file}
 local work              -- the next block being gathered (a coroutine)
 local covers = {}       -- GroundCover object names made
+local coverSet = {}     -- name -> true
 local defsCache, loadedMaterials = {}, {}
 local stats = {moves = 0, patches = 0, squares = 0, ms = 0, error = nil}
 M.stats = stats
@@ -93,6 +148,8 @@ M.stats = stats
 -- the layer (0-based index into M.LAYERS) of a lawn sample's flags (generator.lua lawnCarpet:
 -- 16 a lush hollow, 32 thin on dry ground, 64 ripe wheat, 128 a field's rows)
 function M.layerOf(flags)
+  -- a wood's floor: under conifers, under broadleaves (0: the planet has no such layers yet)
+  if flags >= 512 then return M.woodLayers == false and 0 or (flags >= 1024 and 6 or 5) end
   if flags >= 128 then return 2 end
   if floor(flags / 64) % 2 == 1 then return 4 end
   if floor(flags / 32) % 2 == 1 then return 3 end
@@ -208,6 +265,8 @@ function M.ready()
   if M.readyState == nil then
     M.readyState = scenetree ~= nil and scenetree.findObject(M.TEXTURE_SET) ~= nil
       and scenetree.findObject(M.LAYERS[2]) ~= nil or false
+    -- an older planet has the lawn's layers only: the block is written without the wood's
+    M.woodLayers = M.readyState and scenetree.findObject(M.LAYERS[6]) ~= nil
   end
   return M.readyState
 end
@@ -269,40 +328,73 @@ local function removeCovers()
     local o = scenetree.findObject(name)
     if o then pcall(function() o:delete() end) end
   end
-  covers = {}
+  covers, coverSet = {}, {}
 end
 
--- the GroundCover objects, once the block exists
-local function ensureCovers()
-  if #covers > 0 then return true end
+-- Pure: is a definition wanted now: always, or only standing still; a wood's when the planet
+-- has the wood's layers.
+function M.wanted(d)
+  if d.still and not M.still then return false end
+  if M.woodLayers == false and (d.layer == M.LAYERS[6] or d.layer == M.LAYERS[7]) then return false end
+  return true
+end
+
+local function makeCover(d, name)
+  if defsCache[d.source] == nil then
+    local files = M.SOURCES[d.source].materials
+    if type(files) ~= 'table' then files = {files} end
+    for _, file in ipairs(files) do
+      if not loadedMaterials[file] and FS:fileExists(file) then
+        loadJsonMaterialsFile(file)
+        loadedMaterials[file] = true
+      end
+    end
+    defsCache[d.source] = readDefs(d.source) or false
+  end
+  local def = defsCache[d.source] and defsCache[d.source][d.src]
+  if not def then return false end
+  local old = scenetree.findObject(name)
+  if old then old:delete() end
+  local gc = createObject('GroundCover')
+  local dist = M.distance
+  for _, c in ipairs(M.fieldsFor(def, d.layer, d.share * M.density * dist * dist, dist, jsonNull)) do
+    gc:setField(c[1], c[2], c[3])
+  end
+  for k, v in pairs(d.fields or {}) do
+    gc:setField(k, 0, tostring(RADIUS[k] and tonumber(v) and tonumber(v) * dist or v))
+  end
+  for _, f in ipairs(M.PLACEMENT) do gc:setField(f[1], 0, f[2]) end
+  gc.canSave = false
+  gc:registerObject(name)
+  scenetree.MissionGroup:addObject(gc)
+  pcall(function() gc:postApply() end)
+  return true
+end
+
+-- The GroundCover objects, once the block exists: those wanted now are made (at most `limit`
+-- of them in this call), those no longer wanted go. Returns whether any stand, and how many
+-- are still to be made.
+local function ensureCovers(limit)
+  local made, left = 0, 0
   local ok, err = pcall(function()
     for _, d in ipairs(M.DEFS) do
-      if defsCache[d.source] == nil then
-        if not loadedMaterials[d.source] and FS:fileExists(M.SOURCES[d.source].materials) then
-          loadJsonMaterialsFile(M.SOURCES[d.source].materials)
-          loadedMaterials[d.source] = true
+      local name = M.PREFIX .. (d.name or d.src)
+      local want = M.wanted(d)
+      if want and coverSet[name] == nil then
+        if limit and made >= limit then
+          left = left + 1
+        else
+          -- false: the game has no such definition; not asked again
+          coverSet[name] = makeCover(d, name)
+          if coverSet[name] then covers[#covers + 1] = name; made = made + 1 end
         end
-        defsCache[d.source] = readDefs(d.source) or false
-      end
-      local def = defsCache[d.source] and defsCache[d.source][d.src]
-      if def then
-        local name = M.PREFIX .. (d.name or d.src)
-        local old = scenetree.findObject(name)
-        if old then old:delete() end
-        local gc = createObject('GroundCover')
-        local dist = M.distance
-        for _, c in ipairs(M.fieldsFor(def, d.layer, d.share * M.density * dist * dist, dist, jsonNull)) do
-          gc:setField(c[1], c[2], c[3])
+      elseif not want and coverSet[name] then
+        local o = scenetree.findObject(name)
+        if o then pcall(function() o:delete() end) end
+        coverSet[name] = nil
+        for k = #covers, 1, -1 do
+          if covers[k] == name then table.remove(covers, k) end
         end
-        for k, v in pairs(d.fields or {}) do
-          gc:setField(k, 0, tostring(RADIUS[k] and tonumber(v) and tonumber(v) * dist or v))
-        end
-        for _, f in ipairs(M.PLACEMENT) do gc:setField(f[1], 0, f[2]) end
-        gc.canSave = false
-        gc:registerObject(name)
-        scenetree.MissionGroup:addObject(gc)
-        pcall(function() gc:postApply() end)
-        covers[#covers + 1] = name
       end
     end
   end)
@@ -311,7 +403,32 @@ local function ensureCovers()
     log('W', 'e2r.turf', 'ground cover: ' .. tostring(err))
     removeCovers()
   end
-  return #covers > 0
+  stats.covers = #covers
+  return #covers > 0, left
+end
+
+-- Pure: the car's (or the camera's) speed from its place this frame and the last, and whether
+-- it stands still by M.STILL: true once it has been slow for `after` s, false once it is fast.
+function M.motion(p, now)
+  local T = M.STILL
+  local last = M.lastP
+  if last and now > last.t then
+    local v = math.sqrt((p.x - last.x) ^ 2 + (p.y - last.y) ^ 2 + ((p.z or 0) - last.z) ^ 2) / (now - last.t)
+    -- a landing or a hop is not a drive
+    if v < 200 then M.speed = v end
+  end
+  if not last or now > last.t then M.lastP = {x = p.x, y = p.y, z = p.z or 0, t = now} end
+  local v = M.speed
+  if not v then return M.still end
+  if v > T.fast then
+    M.slowSince, M.still = nil, false
+  elseif v < T.slow then
+    M.slowSince = M.slowSince or now
+    if now - M.slowSince >= T.after then M.still = true end
+  else
+    M.slowSince = nil
+  end
+  return M.still
 end
 
 local function write(path, bytes)
@@ -353,6 +470,7 @@ local function commit(x0, y0, heights, layers, base, range)
   if block and block.file and FS.removeFile then pcall(function() FS:removeFile('/' .. block.file) end) end
   block = {x0 = x0, y0 = y0, seq = seq, file = path, base = base, range = range}
   if ensureCovers() and flushGroundCoverGrids then flushGroundCoverGrids() end
+  M.coversLeft = 0
   stats.moves = stats.moves + 1
   if timer then stats.ms = timer:stop() end
 end
@@ -383,6 +501,14 @@ function M.step(p, now, tune)
     end
   end
   if M.off then return false end
+  -- standing still: the layers fill up; moving off: back to what a moving car reads
+  local was = M.still
+  if M.stillOn ~= false then M.motion(p, now) else M.still = false end
+  if block and (M.still ~= was or (M.coversLeft or 0) > 0) then
+    local _, left = ensureCovers(M.STILL.step)
+    M.coversLeft = left
+    stats.still = M.still or false
+  end
   if work then
     -- (the coroutine keeps the pause it was started with: the clock is this frame's)
     M.timer = hptimer()
@@ -468,8 +594,9 @@ end
 -- The level ended: its objects and the stock materials loaded for it went with it.
 function M.reset()
   tiles, count, revision, block, work, pending = {}, 0, 0, nil, nil, {}
-  covers, defsCache, loadedMaterials = {}, {}, {}
-  M.readyState, M.at, M.failed, M.tune, M.off = nil, nil, nil, nil, nil
+  covers, coverSet, defsCache, loadedMaterials = {}, {}, {}, {}
+  M.readyState, M.at, M.failed, M.tune, M.off, M.woodLayers = nil, nil, nil, nil, nil, nil
+  M.still, M.speed, M.lastP, M.slowSince, M.coversLeft = nil, nil, nil, nil, nil
   stats.moves, stats.patches, stats.squares, stats.error = 0, 0, 0, nil
 end
 

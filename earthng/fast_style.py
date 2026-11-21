@@ -1046,7 +1046,18 @@ def real_stage(kind):
     if kind in CROPS:
         return crop_stage(kind)
     if kind in PHOTO_GROUND:
-        return {'baseColorMap': f'{ART}/real/ground_{kind}.color.png', 'normalMap': f'{ART}/real/ground_{kind}.normal.png'}
+        stage = {'baseColorMap': f'{ART}/real/ground_{kind}.color.png', 'normalMap': f'{ART}/real/ground_{kind}.normal.png'}
+        if kind == 'forest':
+            # A wood's floor at arm's length: the game's own forest floor detail (twigs, needles,
+            # leaves) every 2 m over the 24 m sheet. The sheet alone was 85 px a metre and lay
+            # under the ferns as smooth as sand (flora-02). The relief only, and matt: with the
+            # detail's roughness the leaves shone with the sky under the canopy, a floor of
+            # pale blue (flora-03, -04).
+            detail = _TERRAIN + 'forest/t_forest_ground/t_forest_ground'
+            stage.update(detailMap=detail + '_b.png', detailNormalMap=detail + '_nm.png',
+                         detailScale=[_photo.GROUND_M / LAND_DETAIL_M] * 2, detailBaseColorMapStrength=.2,
+                         detailNormalMapStrength=.8, roughnessFactor=1.)
+        return stage
     return dict(TEXTURES[tex]) if tex else {'diffuseColor': colour}
 
 

@@ -57,13 +57,16 @@ end
 -- A sample of a patch: its 2 m square (0..15) with flags, 16: a lush hollow's long grass,
 -- 32: thin grass on dry ground, 64: a field of ripe wheat, 128: a field's crop rows, 256:
 -- those rows run along y (generator.lua lawnCarpet, FIELD). crop: nil, 'wheat', 'rows' or 'rowsY'.
+-- 512 and 1024: a wood's floor under broadleaves and under conifers. It is the engine's grass
+-- only (turf.lua): no tufts are made for it here, the fern and grass scatter stays.
 local function sampleOf(value)
   local slot = value % 16
   local flags = (value - slot) / 16
   local crop = math.floor(flags / 4) % 2 == 1 and 'wheat' or nil
   if math.floor(flags / 8) % 2 == 1 then crop = math.floor(flags / 16) % 2 == 1 and 'rowsY' or 'rows' end
-  return slot, flags % 2 == 1, math.floor(flags / 2) % 2 == 1, crop
+  return slot, flags % 2 == 1, math.floor(flags / 2) % 2 == 1, crop, flags >= 32
 end
+M.sampleOf = sampleOf
 
 -- A field's standing crop near the road: wheat as dense dry tufts to the knee (the game's dry
 -- grass, the patch's dry set), the rows of sunflower or maize as long green tufts on the 2/3 m
@@ -114,11 +117,12 @@ end
 function M.patchCount(patch, level)
   local n, zs = 0, 0
   for k = 1, #patch.samples, 4 do
-    local slot, _, thin, crop = sampleOf(patch.samples[k])
+    local slot, _, thin, crop, wood = sampleOf(patch.samples[k])
     local even = (slot % 4 + math.floor(slot / 4)) % 2 == 0
     local T, c = M.TUFT
     -- thin: the first two of the near and inner tufts (both near ones, in expand's order)
-    if level == 3 then c = even and 1 or 0
+    if wood then c = 0
+    elseif level == 3 then c = even and 1 or 0
     elseif level == 2 then c = even and 1 or 2
     elseif level == 1 then c = thin and 0 or T.inner2
     elseif level == 0 then c = thin and T.thin or (crop and M.CROP.near or T.near)
@@ -145,7 +149,8 @@ function M.expand(part, pause)
   for _, patch in ipairs(part.patches) do
     local long, dry = patch.tall, patch.dry
     for k = 1, #patch.samples, 4 do
-      local slot, lush, thin, crop = sampleOf(patch.samples[k])
+      local slot, lush, thin, crop, wood = sampleOf(patch.samples[k])
+      if not wood then
       local z, gx, gy = patch.samples[k+1], patch.samples[k+2], patch.samples[k+3]
       local sx, sy = slot % 4, math.floor(slot / 4)
       local even = (sx + sy) % 2 == 0
@@ -232,6 +237,7 @@ function M.expand(part, pause)
             own > 0 and scale * wide or scale)
         end
       end end
+      end
     end
     if pause then pause() end
   end
