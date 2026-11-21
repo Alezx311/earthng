@@ -1392,6 +1392,10 @@ local function buildTile(key, wanted)
       -- the storefront experiment: only a pack whose data asks for it (docs/BILYCHI_EXPERIMENT.md)
       experimentalShopfront = type(r.data.experiments) == 'table' and r.data.experiments.shopfront == true or nil,
       experimentalDetail = type(r.data.experiments) == 'table' and r.data.experiments.detail == true or nil,
+      -- The real pack at full detail (generator.lua options.hyper): road signs, traffic lights and
+      -- lane arrows in every pack, not only where a pack's experiment asks. The one mode there is
+      -- yet: detail by the car's speed (full under 60 km/h, the road alone over 250) comes later.
+      hyper = realStyle or nil,
       cellSize = s})
   if type(road) ~= 'table' or type(road.items) ~= 'table' or type(road.mats) ~= 'table'
     or type(scene) ~= 'table' or type(scene.items) ~= 'table' then error('generator returned an invalid tile manifest') end

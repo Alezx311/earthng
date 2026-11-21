@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 # a street in Ukrainian letters: the fronts keep their words (generator.lua BLD.neutralSigns)
 STREET = {'id': 'street', 'nodes': ['a', 'b'], 'width': 8, 'tags': {'highway': 'residential', 'name': 'вулиця Січових Стрільців'},
           'points': [[0, 90, 0], [400, 90, 0]]}
+# the ground with no DEM under it: the generator's TUNE.seatDrop over 0 (it lay 0.25 m under)
+GROUND = .04
 BLOCK = [[100, 40], [160, 40], [160, 70], [100, 70]]
 SMALL = [[100, 60], [116, 60], [116, 72], [100, 72]]
 
@@ -125,8 +127,9 @@ class SignTests(unittest.TestCase):
         letters = self.verts(scene, 'e2rf_glyphs')
         self.assertTrue(letters)
         low = min(p[2] for p in letters)
-        self.assertGreater(low, 3.0)                                   # over the visor
-        self.assertLess(max(p[2] for p in letters), 3.96)              # under the sills
+        # (heights over the ground, which lies at GROUND)
+        self.assertGreater(low, GROUND + 3.25)                         # over the visor
+        self.assertLess(max(p[2] for p in letters), GROUND + 4.21)     # under the sills
         self.assertTrue(all(p[1] > 69.9 for p in letters))
 
     def test_no_name_keeps_the_class_sign(self):
@@ -155,7 +158,7 @@ class SignTests(unittest.TestCase):
         scene = self.build([self.poi({'amenity': 'pharmacy', 'name': 'Аптека'})], height=30)
         letters = self.verts(scene, 'e2rf_glyphs')
         self.assertTrue(letters)
-        self.assertLess(max(p[2] for p in letters), 3.0)               # the visor starts at 3.1
+        self.assertLess(max(p[2] for p in letters), GROUND + 3.25)     # the visor starts 3.35 over the ground
 
     def test_a_long_name_takes_more_bays(self):
         short = self.verts(self.build([self.poi({'amenity': 'cafe', 'name': 'Хвиля'})]), 'e2rf_storefront')
@@ -209,7 +212,7 @@ class SignTests(unittest.TestCase):
 
     def test_a_front_stops_at_a_bays_height_on_a_tall_wall(self):
         scene = self.build([self.poi({'amenity': 'bank'})])
-        self.assertLessEqual(max(p[2] for p in self.verts(scene, 'e2rf_storefront')), 3.26)
+        self.assertLessEqual(max(p[2] for p in self.verts(scene, 'e2rf_storefront')), GROUND + 3.51)
 
     def test_a_small_cafe_wears_its_band_and_name_alone(self):
         scene = self.build([self.poi({'amenity': 'cafe', 'name': 'Вікторія'}, pos=(108, 66, 0))], ring=SMALL, height=4, building='yes')

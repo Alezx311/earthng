@@ -9,6 +9,11 @@ from pathlib import Path
 from lupa.luajit21 import LuaRuntime
 
 SOURCE = Path(__file__).resolve().parents[1] / 'mod/lua/ge/extensions/e2r/generator.lua'
+# The ground over its DEM away from every road, and how far under a road's surface it is kept
+# (generator TUNE.seatDrop, roadLift - seatMargin: the real pack's seated roads). Before the
+# roads were seated the ground lay 0.25 m under the DEM and 0.22 m under the asphalt.
+GROUND = .04
+UNDER_ROAD = .10 - .05
 
 
 def area(triangle):
@@ -103,7 +108,9 @@ class GeneratorTests(unittest.TestCase):
         options.setdefault('relief', False)
         # the asphalt's lanes (generator ROADS.laneBands) off: these tests read a carriageway as
         # one quad a chord in its plain material. test_road_lanes.py builds with them.
-        options['tune'] = {'lanes': 0, **(options.get('tune') or {})}
+        # and its crown and an unpaved road's ruts off (ROADS.SHAPE): a carriageway is one flat quad
+        # a chord here. test_road_seat.py builds with them.
+        options['tune'] = {'lanes': 0, 'crown': 0, 'ruts': 0, **(options.get('tune') or {})}
         return self.generator.build(self.table(cells), i, j, self.table(options))
 
     def test_road_centre_clears_conflicting_buildings_only(self):
@@ -231,11 +238,11 @@ class GeneratorTests(unittest.TestCase):
         ground_points = [p for triangle in self.triangles(left, 'e2rf_ground') for p in triangle]
         pulled = [p[2] for p in ground_points if p[0] == 250 and p[1] == 250]
         self.assertTrue(pulled)
-        # the ground lies at least groundDrop (0.25 m) under the road's profile, as in the Python
-        # generator, and lower where the high DEM beside the road would lift it through the asphalt
-        self.assertTrue(all(z <= 12.25 + 1e-7 for z in pulled))
+        # the ground is pressed under the road's surface (its profile is 12.5 m here), however
+        # high the DEM beside the road would lift it
+        self.assertTrue(all(z <= 12.5 + UNDER_ROAD + 1e-7 for z in pulled))
         distant = [p[2] for p in ground_points if p[1] == 0]
-        self.assertTrue(all(abs(z - 99.75) < 1e-7 for z in distant))
+        self.assertTrue(all(abs(z - 100 - GROUND) < 1e-7 for z in distant))
         for _, mesh in self.meshes(left, 'e2rf_road'):
             self.assertTrue(all(n.z == 1 for n in mesh.normals.values()))
 
@@ -3200,8 +3207,8 @@ class GeneratorTests(unittest.TestCase):
         ground = list(self.triangles(far, 'e2rf_ground'))
         self.assertAlmostEqual(sum(map(area, ground)), 500 * 500, delta=1)
         # (0, 0) is a border vertex. (200, 200) is a coarse vertex on the slope up to the peak.
-        self.assertAlmostEqual(self.surface_at(ground, 0, 0), 19.75, places=2)
-        self.assertAlmostEqual(self.surface_at(ground, 200, 200), 262.95, places=2)
+        self.assertAlmostEqual(self.surface_at(ground, 0, 0), 20 + GROUND, places=2)
+        self.assertAlmostEqual(self.surface_at(ground, 200, 200), 263.2 + GROUND, places=2)
         self.assertGreater(self.surface_at(ground, 250, 250), 200)
         valley = [80.0] * 25
         valley[6] = 5
@@ -3285,8 +3292,8 @@ class GeneratorTests(unittest.TestCase):
         far = self.border(self.build([cell], i=1, far=True, land=False)[2], 500, surface=True)
         self.assertTrue(near and far)
         self.assertEqual(near, far)
-        # x = 500 is DEM column 60 m. Away from the road the surface is that minus groundDrop.
-        self.assertAlmostEqual(near[0][0], 59.75, places=2)
+        # x = 500 is DEM column 60 m. Away from the road the surface is that plus GROUND.
+        self.assertAlmostEqual(near[0][0], 60 + GROUND, places=2)
         self.assertNotAlmostEqual(near[250][0], near[0][0], places=2)
 
     def test_open_land_relief_breaks_the_plain_but_not_roads_seams_or_lods(self):
@@ -3302,7 +3309,10 @@ class GeneratorTests(unittest.TestCase):
             return {(round(x, 3), round(y, 3)): z for t in self.triangles(manifest, 'e2rf_ground') for x, y, z in t}
         a, b = heights(flat), heights(rough)
         far_off = [b[k] - a[k] for k in a if k in b and abs(k[1] - 250) > 40]
-        near_road = [b[k] - a[k] for k in a if k in b and abs(k[1] - 250) < 7]
+        # (the carriageway is 10 m wide: the nodes under it and its verge's corners at its edge;
+        # the verge's far corners take the ground 1.2 m out, between a node under the road and
+        # the first node past its edge, which the land has begun to lift)
+        near_road = [b[k] - a[k] for k in a if k in b and abs(k[1] - 250) < 5.5]
         self.assertTrue(far_off and near_road)
         self.assertGreater(max(far_off) - min(far_off), .4)
         self.assertLess(max(map(abs, far_off)), .95)       # RELIEF.octaves: half their sum
@@ -3327,15 +3337,15 @@ class GeneratorTests(unittest.TestCase):
             return [(x, y, z) for t in self.triangles(far, 'e2rf_farmap_t') for x, y, z in t]
         flat = zs(canopy=False)
         self.assertTrue(flat)
-        self.assertLess(max(abs(z - 39.75) for _, _, z in flat), .01)
+        self.assertLess(max(abs(z - 40 - GROUND) for _, _, z in flat), .01)
         tall = zs()
         inside = [z for x, y, z in tall if 200 <= x <= 300 and 0 < y < 500]
         outside = [z for x, y, z in tall if (x <= 40 or x >= 460) and 0 < y < 500]
         self.assertTrue(inside and outside)
-        self.assertAlmostEqual(min(inside), 39.75 + 16, places=2)
-        self.assertLess(max(abs(z - 39.75) for z in outside), .01)
+        self.assertAlmostEqual(min(inside), 40 + GROUND + 16, places=2)
+        self.assertLess(max(abs(z - 40 - GROUND) for z in outside), .01)
         # the rim: a wall from the canopy down under the ground, only where the wood reaches it
-        rim = [(x, z) for x, y, z in tall if abs(y) < 1e-6 and z < 39.75 - 1]
+        rim = [(x, z) for x, y, z in tall if abs(y) < 1e-6 and z < 40 + GROUND - 1]
         self.assertTrue(rim)
         self.assertTrue(all(25 <= x <= 475 for x, _ in rim), rim)
 
@@ -3352,7 +3362,7 @@ class GeneratorTests(unittest.TestCase):
         high = {'terrain': {'rect': [500, 0, 1000, 500], 'nx': 2, 'ny': 2, 'heights': [80, 80, 80, 80]}}
         for cells in ([low, high], [high, low]):
             ground = list(self.triangles(self.build(cells, far=True, land=False)[2], 'e2rf_ground'))
-            self.assertAlmostEqual(self.surface_at(ground, 500, 250), 9.75, places=2)
+            self.assertAlmostEqual(self.surface_at(ground, 500, 250), 10 + GROUND, places=2)
 
     def test_missing_dem_is_omitted_instead_of_a_zero_cliff(self):
         cell = {'terrain': {'rect': [0, 0, 400, 500], 'nx': 2, 'ny': 2, 'heights': [50, 50, 50, 50]}}

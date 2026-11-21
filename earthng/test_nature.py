@@ -218,7 +218,8 @@ class Runtime(unittest.TestCase):
         forest = patch('forest', tags={'source': 'worldcover-2021-v200'})
         cell = {'terrain': terrain(), 'areas': [forest]}
         road, scene, _, _ = self.g.build([cell], maxTrees=0)
-        self.assertEqual(len(list(self.g.triangles(road, 'e2rf_forest'))), 800)
+        # every triangle of the tile's ground lattice (12.5 m: generator TUNE.seatStep)
+        self.assertEqual(len(list(self.g.triangles(road, 'e2rf_forest'))), 2 * 40 * 40)
         self.assertFalse(list(self.g.triangles(scene)))
         cell['areas'].append(patch('bare_rock', tags={'natural': 'bare_rock'}))
         for far, index in ((False, 0), (True, 2)):

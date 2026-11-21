@@ -289,7 +289,9 @@ class RoadCoverTests(unittest.TestCase):
 
     def covers(self, tags, i=0, points=None, **opts):
         road = {'id': 'w1', 'width': 8, 'tags': tags, 'points': points or [[-200, 250, 0], [1200, 250, 0]]}
-        out = self.h.build([{'roads': [road]}], i, 0, maxTrees=0, maxGrass=0, **opts)
+        # (the wear of a seated road off: these read the covers a pack's experiment asks for.
+        # test_road_seat.py has the wear.)
+        out = self.h.build([{'roads': [road]}], i, 0, maxTrees=0, maxGrass=0, tune={'wear': 0}, **opts)
         result = {}
         for kind in ('manhole', 'drain'):
             result[kind] = [t for m in out[:2] for t in self.h.triangles(m, 'e2rf_' + kind)]
@@ -297,7 +299,7 @@ class RoadCoverTests(unittest.TestCase):
 
     def covers_all(self, tags, i=0):
         road = {'id': 'w1', 'width': 8, 'tags': tags, 'points': [[-200, 250, 0], [1200, 250, 0]]}
-        out = self.h.build([{'roads': [road]}], i, 0, maxTrees=0, maxGrass=0, experimentalDetail=True)
+        out = self.h.build([{'roads': [road]}], i, 0, maxTrees=0, maxGrass=0, experimentalDetail=True, tune={'wear': 0})
         return {k: list(self.h.triangles(out[0], 'e2rf_' + k)) for k in ('manhole', 'drain', 'patch')}
 
     def centres(self, triangles):

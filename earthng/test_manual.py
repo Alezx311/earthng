@@ -105,7 +105,8 @@ class ManualTests(unittest.TestCase):
         self.assertEqual(len(again), 1)
         self.assertEqual((east[0].pos[1], east[0].pos[2]), (500, 250))
         self.assertAlmostEqual(east[0].rot[3], math.sin(math.pi / 4))
-        self.assertAlmostEqual(east[0].pos[3], 20.25)
+        # the ground (the DEM's 20 m plus the generator's TUNE.seatDrop) and the bench's own height
+        self.assertAlmostEqual(east[0].pos[3], 20 + .04 + .5)
         self.assertEqual(east[0].name, again[0].name)
 
     def test_accepted_bench_reserves_space_against_vegetation(self):

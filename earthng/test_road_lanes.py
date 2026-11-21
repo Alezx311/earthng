@@ -30,6 +30,9 @@ class RoadLaneTests(unittest.TestCase):
 
     def build(self, cells, i=0, j=0, **options):
         options.setdefault('relief', False)
+        # the crown off (generator ROADS.SHAPE: it cuts a band over the centre line in two);
+        # test_road_seat.py builds the lanes with it
+        options['tune'] = {'crown': 0, **(options.get('tune') or {})}
         return self.generator.build(self.table(cells), i, j, self.table(options))
 
     def corners(self, manifest, materials):
@@ -132,7 +135,9 @@ class RoadLaneTests(unittest.TestCase):
         self.assertEqual(count(7.5, {'highway': 'primary', 'oneway': 'yes', 'width': '7.5'}), 2)
         # never a lane under 2.5 m
         self.assertEqual(count(6, {'highway': 'residential', 'lanes': '4'}), 2)
-        self.assertEqual(count(4, {'highway': 'service'}), 1)
+        self.assertEqual(count(4, {'highway': 'service', 'width': '4'}), 1)
+        # (an untagged service way is drawn 5 m wide, a yard's driveway: generator ROADS.YARD)
+        self.assertEqual(count(4, {'highway': 'service'}), 2)
 
     def marks(self, width, tags):
         manifest = self.build([{'roads': [self.road(width, tags)]}])[0]

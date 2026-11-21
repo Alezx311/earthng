@@ -22,6 +22,7 @@ import fast_pixel
 import fast_storefront
 import fast_tone
 import kit_art
+import street_art
 import fast_photo as photo
 import fast_style as style
 
@@ -772,6 +773,11 @@ def prebuild(distributable=False):
         if kit_art.ready() and (not stamp.exists() or stamp.read_text() != kit_art.VERSION):
             kit_art.build(shared / 'real')
             to_dds(shared / 'real')
+        # and a town's walking surfaces (street_art, generator.lua ROADS.YARD.paving)
+        stamp = shared / 'real' / 'street.version'
+        if street_art.ready() and (not stamp.exists() or stamp.read_text() != street_art.VERSION):
+            street_art.build(shared / 'real')
+            to_dds(shared / 'real')
         repair_pixel_cache(shared)
         write_manifest(shared)  # environment/fields are code, not a texture cache
     missing = missing_art(shared)
@@ -856,6 +862,8 @@ def build(r, game_assets=True):
     facade_art(r)
     if kit_art.ready():
         kit_art.build(r / 'real')
+    if street_art.ready():
+        street_art.build(r / 'real')
     to_dds(r)
     write_manifest(r)
     return r

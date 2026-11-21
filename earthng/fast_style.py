@@ -337,6 +337,20 @@ KINDS['patch'] = ('patch', [.17, .17, .18, 1], 'ASPHALT', 1.0, 'strip')
 for _k in ('manhole', 'drain', 'patch'):
     EXTRA[_k] = {'alphaTest': True, 'alphaRef': 77, 'castShadows': False}
     BUILDING_FALLBACK[_k] = None
+# The wear of a seated road's asphalt (generator.lua ROADS.covers `worn`), the game's own decal
+# sheets cut by their opacity: a net of cracks and a single long crack (their colour is the
+# asphalt's; darkened, they read as open cracks on ours, which is darker than the game's), and
+# a stretch worn through to the stone (paler than the asphalt round it). No older game: none drawn.
+TEXTURES['crack_net'] = _maps(f'{_DR}/asphalt/m_asphalt_cracks', 't_asphalt_cracks_02', 'b', 'nm', 'r', 'ao', 'o')
+TEXTURES['crack_line'] = _maps(f'{_DR}/detail/road_crack', 't_road_crack', 'b', 'nm', 'o')
+TEXTURES['wear'] = _maps(f'{_DR}/asphalt/m_asphalt_damaged_01', 't_asphalt_damaged_01', 'b', 'nm', 'r', 'ao', 'o')
+# (the single crack at .14 was a ruled black line down a yard's driveway in the game, roads run-02)
+WEAR = {'crack_net': ([.06, .06, .065, 1], 60, [.24, .24, .24, 1]), 'crack_line': ([.05, .05, .055, 1], 70, [.3, .3, .3, 1]),
+        'wear': ([.24, .24, .23, 1], 105, [.5, .5, .49, 1])}
+for _k, (_colour, _ref, _tint) in WEAR.items():
+    KINDS[_k] = (_k, _colour, 'ASPHALT', 1.0, 'strip')
+    EXTRA[_k] = {'alphaTest': True, 'alphaRef': _ref, 'castShadows': False}
+    BUILDING_FALLBACK[_k] = None
 KINDS['ac_unit'] = ('cladding', [.84, .84, .82, 1], 'METAL', 1.0, 'wall')
 KINDS['dish'] = ('cladding', [.86, .86, .85, 1], 'METAL', 1.0, 'wall')
 BUILDING_FALLBACK['ac_unit'] = BUILDING_FALLBACK['dish'] = None
@@ -426,6 +440,7 @@ TINT.update({_k: [_c / 255 for _c in _rgb] + [1] for _k, _rgb in RAILINGS.items(
 # blue-grey tint made a second, darker asphalt (decals-trunk-05).
 TINT.update({'mark': [.99, .99, .99, 1], 'mark_yellow': [.94, .79, .27, 1],
              'edge_grass': [.84, 1, .73, 1], 'edge_dirt': [.74, .72, .70, 1]})
+TINT.update({_k: _v[2] for _k, _v in WEAR.items()})     # a seated road's cracks and worn stretches
 def _factor(srgb, mean):
     """baseColorFactor that takes a map whose linear mean is `mean` to the colour `srgb` (0-255).
     The game reads the factor as an sRGB colour: it multiplies by about factor ** 2.2. A plinth
@@ -1170,6 +1185,18 @@ if _kit.ready():
     TEXTURES['kit_trim'] = {'baseColorMap': f'{ART}/real/kit_trim.color.png', 'roughnessFactor': .9}
     KINDS['kit_trim'] = ('kit_trim', [.8, .78, .72, 1], 'ROCK', 3.0, 'wall')
     KIT_KINDS = tuple(_k for _k in KINDS if _k.startswith(('kw_', 'kit_')))
+
+# A town's walking surfaces (street_art: fal-made, the sources kept out of Git): the block paving
+# of a main street's sidewalk and the cracked asphalt of the rest (generator.lua
+# ROADS.YARD.paving). Only where the sources are present, as the kit's.
+import street_art as _street
+STREET_KINDS = ()
+if _street.ready():
+    for _k, (_m, _rough, _) in _street.MATERIALS.items():
+        TEXTURES[_k] = {'baseColorMap': f'{ART}/real/{_k}.color.png', 'normalMap': f'{ART}/real/{_k}.normal.png',
+                        'roughnessMap': f'{ART}/real/{_k}.data.png'}
+        KINDS[_k] = (_k, [.5, .5, .5, 1], 'ASPHALT', _m, 'plan')
+    STREET_KINDS = tuple(_street.MATERIALS)
 
 
 def dds(obj):

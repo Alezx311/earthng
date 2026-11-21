@@ -48,7 +48,18 @@ local TUNE = {roadLift = ROAD_LIFT, groundDrop = .25, pullFull = 12, pullZero = 
   -- (ROADS.laneBands); 0: one quad a chord under the world projection
   lanes = 1,
   -- 1: a way narrows to the narrower way it runs on into (ROADS.taper); 0: a step at the join
-  taper = 1}
+  taper = 1,
+  -- 1: a road is seated on the land (the real pack): it leans across with the slope it lies on
+  -- (ROADS.FALL), the land comes up to seatDrop + roadLift under its edge and is pressed only
+  -- seatMargin under it (groundDrop and margin stood it on a bank 35 cm high and more), the
+  -- verge takes up what height is left by its own shape (ROADS.VERGE), a yard's driveways are
+  -- kerbed and as wide as they are built (ROADS.YARD); 0: the road as it was
+  seat = 1, seatDrop = -.04, seatMargin = .05, seatStep = 12.5,
+  -- a seated carriageway's shape across (ROADS.SHAPE): the crown's rise per metre of half
+  -- width (0: none), and 1: an unpaved road is driven into ruts
+  crown = .02, ruts = 1,
+  -- 1: a seated road's asphalt has covers, patches, cracks and worn stretches (ROADS.covers)
+  wear = 1}
 -- Covers that take a whole ground triangle over (lower rank wins where they overlap).
 local CLAIM = {paved = 1, ballast = 1, water = 2, glacier = 3, bare_rock = 4, scree = 5, beach = 6,
   wetland = 7, orchard = 8, vineyard = 9, farmland = 10, meadow = 11, heath = 12,
@@ -60,6 +71,7 @@ local COVER_SCALE = {ground = 96, forest = 24, park = 24, meadow = 96, orchard =
   scrub = 24, heath = 24, glacier = 24, farmland = 32, vineyard = 12, bare_rock = 12,
   scree = 12, beach = 12, wetland = 12, bare_ground = 12, ballast = 4,
   road = 30, road_major = 30, road_worn = 30, footway_asphalt = 30, road_sett = 3,
+  sidewalk_tile = 2.4, sidewalk_asphalt = 3,   -- a town's walking surfaces (street_art.MATERIALS)
   -- the climate's open ground (biome.lua): photo sheets of fast_photo.GROUND_M
   desert = 24, dune = 24, steppe = 24, dry_grass = 24, tundra = 24, alpine = 24, snow = 24, snow_edge = 24}
 local ABIN = 12.5      -- m: bins of asphalt pieces that sidewalks and verges are cut by
@@ -1028,6 +1040,23 @@ local function patchesPresent()
   end
   return patchesFound
 end
+-- The wear of a seated road's asphalt (ROADS.covers `worn`): the game's crack net, its single
+-- crack and its worn-through sheet (fast_style 'crack_net', 'crack_line', 'wear').
+DECAL.wearMaps = {'/assets/materials/decalroad/asphalt/m_asphalt_cracks/t_asphalt_cracks_02_o.data.dds',
+  '/assets/materials/decalroad/detail/road_crack/t_road_crack_o.data.dds',
+  '/assets/materials/decalroad/asphalt/m_asphalt_damaged_01/t_asphalt_damaged_01_o.data.dds'}
+function DECAL.wearPresent()
+  if DECAL.wearFound == nil then
+    DECAL.wearFound = true
+    if FS then
+      for _, path in ipairs(DECAL.wearMaps) do
+        local ok, found = pcall(function() return FS:fileExists(path) end)
+        if not (ok and found) then DECAL.wearFound = false; break end
+      end
+    end
+  end
+  return DECAL.wearFound
+end
 local coversFound
 local function coversPresent()
   if coversFound == nil then
@@ -1972,7 +2001,8 @@ end
 -- flood) and nothing downwards within `shore` m of a water body's box (its blocks reach a little
 -- onto the bank). Collision, grass, trees and the far view all read the same nodes.
 local RELIEF = {road = {3, 16}, town = {.003, .03}, sea = 3, shore = 30,
-  octaves = {{55, .4, 81}, {130, .6, 83}, {310, .8, 85}}, vary = {700, 87, .35}}
+  octaves = {{55, .4, 81}, {130, .6, 83}, {310, .8, 85}}, vary = {700, 87, .35},
+  fine = {{27, .5, 89}}}
 -- smooth 0..1 value noise with `size` m features (bio.noise's twin outside build())
 function RELIEF.noise(x, y, size, seed)
   local fx, fy = x / size, y / size
@@ -1985,9 +2015,14 @@ function RELIEF.noise(x, y, size, seed)
   return a + (b - a) * ty
 end
 -- the lift at a point before it fades by roads, towns and water (m, either way)
-function RELIEF.raw(x, y)
+-- fine: with the humps and hollows a 12.5 m lattice can hold (RELIEF.fine: a seated tile's;
+-- open land is never as level as the asphalt laid across it)
+function RELIEF.raw(x, y, fine)
   local h = 0
   for _, o in ipairs(RELIEF.octaves) do h = h + (RELIEF.noise(x, y, o[1], o[3]) - .5) * o[2] end
+  if fine then
+    for _, o in ipairs(RELIEF.fine) do h = h + (RELIEF.noise(x, y, o[1], o[3]) - .5) * o[2] end
+  end
   local v = RELIEF.vary
   return h * (v[3] + (1 - v[3]) * RELIEF.noise(x, y, v[1], v[2]))
 end
@@ -1997,12 +2032,12 @@ local function smooth01(t)
 end
 -- the lift of a node: near is the distance to the nearest road's edge (math.huge: none within
 -- reach), built the built-up share there, base the DEM, seaLevel nil inland
-function RELIEF.lift(x, y, near, built, base, seaLevel)
+function RELIEF.lift(x, y, near, built, base, seaLevel, fine)
   local R = RELIEF
   local f = smooth01((near - R.road[1]) / (R.road[2] - R.road[1])) * (1 - smooth01((built - R.town[1]) / (R.town[2] - R.town[1])))
   if seaLevel then f = f * smooth01((base - seaLevel) / R.sea) end
   if f <= 0 then return 0 end
-  local lift = R.raw(x, y) * f
+  local lift = R.raw(x, y, fine) * f
   if lift < 0 then
     for _, water in ipairs(ROADS.waters or NONE) do
       local b, s = water.bounds, R.shore
@@ -2145,7 +2180,7 @@ end
 -- clip made (a side street, a driveway, a junction plate: the kerb turns the corner). Sides
 -- where the slab runs on at its own height (the next segment, the verge, the paving behind
 -- the curb) get none. quad: the unclipped piece, its side i from quad[i] to quad[i % 4 + 1].
-ROADS.CURB = {height = .12, drop = .03, row = .09, tiny = .05}
+ROADS.CURB = {height = .12, drop = .03, row = .09, tiny = .05, thin = .1}
 local function onSide(a, b, p, q)
   local dx, dy = b[1] - a[1], b[2] - a[2]
   local l = math.sqrt(dx * dx + dy * dy)
@@ -2163,20 +2198,29 @@ function ROADS.curbSlab(polygon, material, pieces, quad, faces, height, onAsphal
   local tiny = 0
   for _, piece in ipairs(pieces) do
     local n = #piece
-    local top, cx, cy, area = {}, 0, 0, 0
+    local top, cx, cy, area, round = {}, 0, 0, 0, 0
     for k, p in ipairs(piece) do
       local q = piece[k % n + 1]
       area = area + p[1] * q[2] - q[1] * p[2]
+      round = round + math.sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2)
       top[k] = {p[1], p[2], (p[3] or 0) + height, p[4], p[5]}
       cx, cy = cx + p[1], cy + p[2]
     end
-    -- a sliver the clip left (a star's corner, a mitre) stays flush: a 12 cm tooth in a lane
-    if math.abs(area) / 2 < c.tiny then
+    cx, cy = cx / n, cy / n
+    -- A sliver the clip left (a star's corner, a mitre) stays flush: a 12 cm tooth in a lane.
+    -- So does a long thin one, whatever its area (its mean width under CURB.thin): between two
+    -- pieces of a junction's asphalt the clip left a strip 3 cm wide and 9 m long, and raised
+    -- it stood across the junction as a blade a car could not see and could not cross. On a
+    -- carriageway neither is drawn at all (flush, it flickered through the asphalt).
+    -- (nor is any piece whose middle lies on a carriageway: the clip leaves a road's own next
+    -- chords out, and on the inside of a sharp bend a kerb's stone stood on its own road)
+    if onAsphalt and onAsphalt(cx, cy) then
+      tiny = tiny + 1
+    elseif math.abs(area) / 2 < c.tiny or math.abs(area) / math.max(round, EPS) < c.thin then
       polygon(material, piece, 'flat')
       tiny = tiny + 1
     else
       polygon(material, top, 'flat')
-      cx, cy = cx / n, cy / n
       for k = 1, n do
         local p, q = piece[k], piece[k % n + 1]
         local face, keep = false, false
@@ -3213,9 +3257,23 @@ function ROADS.stripUp(points, dist)
 end
 -- One chord of a strip (points k, k + 1) as its bands: v0 and v1 are the sheet's repeats at the
 -- chord's ends, counted along the road from its start (the same in every tile that draws it).
-function ROADS.laneQuads(polygon, bands, edge, k, ups, laneKind, plainKind, v0, v1)
+-- crowned: a band over the centre line is two quads that meet on it (ROADS.SHAPE)
+function ROADS.laneQuads(polygon, bands, edge, k, ups, laneKind, plainKind, v0, v1, crowned)
   local n0, n1 = ups[k], ups[k + 1]
   local plain = COVER_SCALE[plainKind] or 6
+  if crowned then
+    local halves = {}
+    for _, band in ipairs(bands) do
+      if band.from > 1e-6 and band.to < -1e-6 then
+        local mid = band.u0 and band.u0 + (band.u1 - band.u0) * band.from / (band.from - band.to)
+        halves[#halves + 1] = {from = band.from, to = 0, u0 = band.u0, u1 = mid}
+        halves[#halves + 1] = {from = 0, to = band.to, u0 = mid, u1 = band.u1}
+      else
+        halves[#halves + 1] = band
+      end
+    end
+    bands = halves
+  end
   for _, band in ipairs(bands) do
     local a, b, c, d = edge(k, band.from), edge(k, band.to), edge(k + 1, band.to), edge(k + 1, band.from)
     if band.u0 then
@@ -3231,6 +3289,452 @@ function ROADS.laneQuads(polygon, bands, edge, k, ups, laneKind, plainKind, v0, 
     c[6], c[7], c[8], d[6], d[7], d[8] = n1[1], n1[2], n1[3], n1[1], n1[2], n1[3]
     polygon(band.u0 and laneKind or plainKind, {a, b, c, d}, 'flat')
   end
+end
+
+-- A road leans across with the land it lies on (tune.seat). The land beside a road is the roads
+-- beside it: the ground is pulled to every road's profile, so between two streets it is the
+-- slope from one to the other. (The DEM cannot say: under a town a 25 m grid in whole metres
+-- stands up to 2 m off the profiles the pack solved over it.) At every point of a road the
+-- nearest other road on either side, FALL.side metres away at most and abeam of the point, gives
+-- the rise to it per metre; a road keeps at most FALL.max of its class (a yard's driveway
+-- follows the yard, an avenue is built nearly level, a motorway and a trunk road are engineered
+-- and stay as they were) and the mean over FALL.reach metres of road either way. A road with no
+-- road beside it stays level across, as the ground pulled to it is. A level strip between
+-- streets of other heights stood on a bank on its low side: on a tile of Kyiv's yards a tenth
+-- of the driveways had the land a metre under one edge. Bridges, tunnels and field tracks
+-- (which follow the ground already) do not lean, and two ways that meet end to end lean as one
+-- at their join (FALL.of).
+-- The slope is the rise per metre to the left of the node order: an edge `o` metres left of the
+-- centre line stands slope * o over it. FALL.new's state is one build's (a tile's coroutine can
+-- be parked while another's runs: nothing of it is kept in the module).
+ROADS.FALL = {side = 30, abeam = .6, lone = .75, reach = 16, fade = 15, near = 14,
+  max = {service = .035, living_street = .035, residential = .03, unclassified = .03, road = .03,
+    tertiary = .025, secondary = .02, primary = .015}}
+-- bins: the build's road segments in 50 m bins (segmentBins: every segment within pullZero of a
+-- point is in the point's bin)
+function ROADS.FALL.new(bins, roads)
+  -- ends[node id]: the road ends that share the node ({road, e}: e 1 its first point, 2 its last)
+  local S = {bins = bins, roads = {}, pre = {}, ends = {}}
+  for _, road in ipairs(roads) do
+    local nodes = road.nodes or NONE
+    if not road.track and nodes[1] ~= nil and nodes[2] ~= nil and #(road.points or NONE) >= 2 then
+      for e = 1, 2 do
+        local id = tostring(nodes[e])
+        local list = S.ends[id]
+        if not list then list = {}; S.ends[id] = list end
+        list[#list + 1] = {road = road, e = e}
+      end
+    end
+  end
+  return S
+end
+-- The rise per metre to the left at a point of `road` (unit direction tx, ty; half width hw),
+-- by the nearest road on either side
+function ROADS.FALL.lateral(S, road, x, y, z, tx, ty, hw)
+  local F = ROADS.FALL
+  local nearL, nearR, slopeL, slopeR = F.side, F.side, nil, nil
+  for _, segment in ipairs(S.bins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE) do
+    if segment.surface and segment.road ~= road then
+      local a = segment.a
+      local t = math.max(0, math.min(1, ((x - a[1]) * segment.dx + (y - a[2]) * segment.dy) / segment.len2))
+      local ex, ey = a[1] + t * segment.dx - x, a[2] + t * segment.dy - y
+      local o = ey * tx - ex * ty
+      local away = math.abs(o)
+      -- clear of this road's own edge, and abeam: a street it meets ahead is not beside it
+      if away > hw + segment.width / 2 + .5 and math.abs(ex * tx + ey * ty) <= away * F.abeam then
+        if o > 0 and away < nearL then
+          nearL, slopeL = away, ((a[3] or 0) + t * ((segment.b[3] or 0) - (a[3] or 0)) - z) / o
+        elseif o < 0 and away < nearR then
+          nearR, slopeR = away, ((a[3] or 0) + t * ((segment.b[3] or 0) - (a[3] or 0)) - z) / o
+        end
+      end
+    end
+  end
+  if slopeL and slopeR then return (slopeL / nearL + slopeR / nearR) / (1 / nearL + 1 / nearR) end
+  return (slopeL or slopeR or 0) * F.lone
+end
+-- A road's lean before its ends are made to agree with the ways it runs on into (FALL.of):
+-- {dist = running lengths, f = the slope at every point}, or false where it does not lean
+function ROADS.FALL.pre(S, road)
+  local hit = S.pre[road]
+  if hit ~= nil then return hit end
+  local F = ROADS.FALL
+  local tags, points = road.tags or NONE, road.points or NONE
+  local most = F.max[((tags.highway or ''):gsub('_link$', ''))]
+  local n = #points
+  if not most or road.track or n < 2 or ROADS.bridge(tags) or ROADS.tunnel(tags) then
+    S.pre[road] = false
+    return false
+  end
+  local dist, raw = {0}, {}
+  for k = 2, n do
+    dist[k] = dist[k - 1] + math.sqrt((points[k][1] - points[k - 1][1]) ^ 2 + (points[k][2] - points[k - 1][2]) ^ 2)
+  end
+  local hw = math.max(.5, math.min(80, road.width or 7)) / 2
+  for k = 1, n do
+    local a, b = points[k > 1 and k - 1 or 1], points[k < n and k + 1 or n]
+    local dx, dy = b[1] - a[1], b[2] - a[2]
+    local l = math.sqrt(dx * dx + dy * dy)
+    local p = points[k]
+    raw[k] = l > EPS and F.lateral(S, road, p[1], p[2], p[3] or 0, dx / l, dy / l, hw) or 0
+  end
+  -- the mean round every point, each neighbour by its share of the line and its nearness: the
+  -- same window from either of two tiles that hold different stretches of one road
+  local f, reach = {}, F.reach
+  for k = 1, n do
+    local sum, weight = 0, 0
+    for j = k, 1, -1 do
+      local away = dist[k] - dist[j]
+      if away > reach then break end
+      local span = ((dist[j + 1] or dist[j]) - (dist[j - 1] or dist[j])) / 2 + .01
+      local w = (1 - away / reach) * span
+      sum, weight = sum + raw[j] * w, weight + w
+    end
+    for j = k + 1, n do
+      local away = dist[j] - dist[k]
+      if away > reach then break end
+      local span = ((dist[j + 1] or dist[j]) - (dist[j - 1] or dist[j])) / 2 + .01
+      local w = (1 - away / reach) * span
+      sum, weight = sum + raw[j] * w, weight + w
+    end
+    local v = weight > 0 and sum / weight or 0
+    f[k] = math.max(-most, math.min(most, v))
+  end
+  hit = {dist = dist, f = f}
+  S.pre[road] = hit
+  return hit
+end
+-- {dist, f} of a road, or false where it does not lean. Where two ways meet end to end and no
+-- third joins them (a way cut in two by a change of tags, in Kyiv every other hundred metres of
+-- a street), they are one carriageway and lean as one at the join: each comes to the mean of
+-- the two over FALL.fade metres, or to level where the other does not lean (a bridge, a
+-- tunnel, a trunk road). Each for itself, the edges of the two strips met in a step across the
+-- road: a lip a wheel catches on. The left of a way that runs the other way through the node
+-- is this one's right.
+function ROADS.FALL.of(S, road)
+  local hit = S.roads[road]
+  if hit ~= nil then return hit end
+  local pre = ROADS.FALL.pre(S, road)
+  if not pre then
+    S.roads[road] = false
+    return false
+  end
+  local dist, f, n = pre.dist, {}, #pre.dist
+  for k = 1, n do f[k] = pre.f[k] end
+  local nodes, total = road.nodes or NONE, pre.dist[n]
+  local fade = math.min(ROADS.FALL.fade, total / 2)
+  for e = 1, 2 do
+    local list = nodes[e] ~= nil and S.ends[tostring(nodes[e])]
+    if list and #list == 2 and fade > EPS then
+      local other = (list[1].road == road and list[1].e == e) and list[2] or list[1]
+      local theirs = ROADS.FALL.pre(S, other.road)
+      local own = pre.f[e == 1 and 1 or n]
+      local shared = 0
+      if theirs then
+        local v = theirs.f[other.e == 1 and 1 or #theirs.f]
+        shared = (own + (other.e ~= e and v or -v)) / 2
+      end
+      for k = 1, n do
+        local away = e == 1 and dist[k] or total - dist[k]
+        if away < fade then f[k] = f[k] + (shared - own) * (1 - away / fade) end
+      end
+    end
+  end
+  hit = {dist = dist, f = f}
+  S.roads[road] = hit
+  return hit
+end
+-- the slope `s` metres along the road
+function ROADS.FALL.at(fall, s)
+  local dist, f = fall.dist, fall.f
+  local n = #dist
+  if s <= 0 then return f[1] end
+  if s >= dist[n] then return f[n] end
+  -- a road's points are few tens at most; from the nearer end
+  for k = 1, n - 1 do
+    if s <= dist[k + 1] then
+      local span = dist[k + 1] - dist[k]
+      return f[k] + (f[k + 1] - f[k]) * (span > EPS and (s - dist[k]) / span or 0)
+    end
+  end
+  return f[n]
+end
+-- How far over (or under) its centre line's height the road nearest to (x, y) stands there: what
+-- lies on a carriageway or beside it (paint, an island, a lamp on the sidewalk) adds this to the
+-- height it has from the profile. bins: the build's road segments (segmentBins), each with the
+-- slope at its ends (fa, fb); past FALL.near of every road's edge: 0.
+-- shapes: the build's crowned roads (ROADS.SHAPE): on a carriageway the crown is added.
+function ROADS.FALL.cross(bins, x, y, pullFull, shapes)
+  local best, dz = ROADS.FALL.near, 0
+  for _, segment in ipairs(bins[(floor(x / 50) + 32768) * 65536 + floor(y / 50) + 32768] or NONE) do
+    if segment.surface then
+      local a = segment.a
+      local t = math.max(0, math.min(1, ((x - a[1]) * segment.dx + (y - a[2]) * segment.dy) / segment.len2))
+      local ex, ey = x - a[1] - t * segment.dx, y - a[2] - t * segment.dy
+      local d = math.sqrt(ex * ex + ey * ey) - segment.width / 2
+      if d < best then
+        best = d
+        local fa = segment.fa
+        local o = (ey * segment.dx - ex * segment.dy) / segment.len
+        if fa then
+          local cap = segment.width / 2 + (pullFull or 12)
+          dz = (fa + (segment.fb - fa) * t) * math.max(-cap, math.min(cap, o))
+        else
+          dz = 0
+        end
+        local shape = shapes and shapes[segment.road]
+        if shape and d < 0 then
+          local s = (segment.s0 or 0) + t * segment.len
+          local ease = math.max(0, math.min(1, (s - shape.lo) / ROADS.SHAPE.ease, (shape.hi - s) / ROADS.SHAPE.ease))
+          dz = dz + math.min(ROADS.SHAPE.most, shape.crown * (shape.hw - math.abs(o))) * ease
+        end
+      end
+    end
+  end
+  return dz
+end
+
+-- The verge of a seated road (tune.seat): from the outer edge of the paving to the ground as it
+-- lies beside it. It reaches VERGE.run metres for every metre it has to take up (in steps of
+-- VERGE.step, so two tiles that see slightly different ground past their edge still agree),
+-- VERGE.least where the land is level with the road and VERGE.most at a high embankment. A
+-- height of VERGE.bank and more is a bank of two faces, as a road is built: on a fill a berm
+-- that falls VERGE.fill of the height over the first VERGE.berm of the reach and then the
+-- slope; in a cut the bank first (VERGE.cut of the height) and the easy ground after it. Both
+-- stand over the straight line between their ends, and so over the ground lattice under them.
+-- Before, every verge was one straight quad 3 m wide: a kerb and 35 cm to fall beside every
+-- sidewalk, a wall of a metre where the land sloped away.
+ROADS.VERGE = {least = 1.2, most = 6, run = 4, step = .5, bank = .2, berm = .3, fill = .12, cut = .55}
+-- A yard's driveways and a town's streets as they are built (tune.seat).
+-- Kerbs: among buildings a carriageway without a sidewalk still has its kerb stone, and the lawn
+-- beside it lies at the stone's top: the road is the lowest thing in a yard, not a strip laid
+-- on the grass. A side with no sidewalk and no paving of its own gets the stone alone (as the
+-- sides whose sidewalk is a mapped footway already had), where the built-up share round the
+-- segment is YARD.built and more and not mostly houses' (YARD.houses of it: a village street and
+-- a street of private houses have none). Not a parking aisle (its bays open off it), not a
+-- motorway or a trunk road (barriers and shoulders).
+-- Widths: the pack gives a service way with no width or lanes tag 4 m, a driveway or an alley
+-- 3 m: one lane, on which two cars cannot pass and a yard reads as a footpath. Ukraine's
+-- planning norms build a yard's main driveway 5.5 m wide (two lanes of 2.75 m) and a secondary
+-- one 3.5 m; YARD.width is what the untagged ones are drawn with. A tagged width stays.
+ROADS.YARD = {built = .08, houses = .5, width = {service = 5, driveway = 3.5, alley = 3.5},
+  kerbs = {service = true, living_street = true, residential = true, unclassified = true, road = true,
+    tertiary = true, secondary = true, primary = true}}
+-- What a street's sidewalk is paved with. In a post-Soviet town (and a seated road's only): the
+-- grey block paving of the last twenty years along a main street, old cracked asphalt along
+-- the rest; the game's concrete slabs anywhere else, and where the planet was built without
+-- these sheets (street_art: fal-made, their sources are not in Git).
+ROADS.YARD.main = {primary = true, secondary = true, tertiary = true, trunk = true}
+function ROADS.YARD.paving(tags, town)
+  local Y = ROADS.YARD
+  if not town then return 'sidewalk' end
+  if Y.art == nil then
+    Y.art = not FS or FS:fileExists('/e2r_stream/fast-art/v10/real/sidewalk_tile.color.dds') or false
+  end
+  if not Y.art then return 'sidewalk' end
+  return Y.main[((tags.highway or ''):gsub('_link$', ''))] and 'sidewalk_tile' or 'sidewalk_asphalt'
+end
+function ROADS.YARD.kerbed(tags)
+  if not ROADS.YARD.kerbs[((tags.highway or ''):gsub('_link$', ''))] then return false end
+  return tags.service ~= 'parking_aisle' and tags.service ~= 'drive-through' and not ROADS.ring(tags)
+end
+-- the kerb sides of a segment with the stones added: walk = its sidewalk sides, kerb = its kerb
+-- sides so far ({[side] = metres} or nil)
+function ROADS.YARD.stones(tags, walk, kerb, a, b, builtAt, stone)
+  local Y = ROADS.YARD
+  if (walk[1] and walk[-1]) or not Y.kerbed(tags) then return kerb end
+  local x, y = (a[1] + b[1]) / 2, (a[2] + b[2]) / 2
+  local built = builtAt(x, y)
+  if built < Y.built or builtAt(x, y, true) >= built * Y.houses then return kerb end
+  for side = -1, 1, 2 do
+    if not walk[side] and not (kerb and kerb[side]) then
+      kerb = kerb or {}
+      kerb[side] = stone
+    end
+  end
+  return kerb
+end
+-- The roads with the untagged service ways at their built widths: a new list, and copies of the
+-- roads it widens (the source cells are shared by every build and every art pack).
+function ROADS.YARD.widen(roads)
+  local Y, out = ROADS.YARD, {}
+  for k, road in ipairs(roads) do
+    local tags = road.tags or NONE
+    local own = road
+    if tags.highway == 'service' and tags.width == nil and tags.lanes == nil and tags['e2r:lanes'] == nil
+        and not road.track and tags.service ~= 'parking_aisle' and tags.service ~= 'drive-through' then
+      local wide = Y.width[tags.service or 'service']
+      if wide and (road.width or 0) < wide then
+        own = {}
+        for key, value in pairs(road) do own[key] = value end
+        own.width = wide
+      end
+    end
+    out[k] = own
+  end
+  return out
+end
+
+-- A carriageway's shape across (tune.seat): no road is a flat ribbon.
+-- Asphalt for two directions, SHAPE.wide m and wider, is crowned: its middle stands SHAPE.crown
+-- of the half width over its edges (2 %, as it is built to shed water). The edges stay on the
+-- profile (kerbs, sidewalks, verges and the ground are where they were), an avenue's middle
+-- rises SHAPE.most at most, and the crown comes in
+-- over SHAPE.ease metres from either end of a strip: a junction's fan and the next way's strip
+-- meet a level end, with no lip in the middle of the mouth.
+-- An unpaved road (gravel, dirt, a broken road, a grass track) is driven into ruts: under each
+-- wheel path a rut SHAPE.rut[grade] deep (more and less from point to point, none at the
+-- strip's ends), a hump between them, a low lip outside. One pair on a single lane, a pair for
+-- each direction from SHAPE.double m of width. The rows are the offsets the bed is drawn at.
+ROADS.SHAPE = {wide = 5.2, ease = 8, double = 5.2, most = .12,
+  rut = {[2] = .025, [3] = .05, [4] = .06, [5] = .07},
+  -- metres from a lane's middle and the height there in rut depths: hump, flat, rut, lip
+  knots = {{0, .5}, {.45, 0}, {.75, -1}, {1.05, .2}, {1.3, 0}}}
+-- the shape of a strip, or nil for a plain one: {crown = rise per metre, ease = its share at
+-- every point, rows = offsets (left to right), lanes = their middles, depth = at every point}
+-- crown: the rise per metre (tune.crown); ruts: whether unpaved roads have them (tune.ruts)
+function ROADS.SHAPE.of(strip, track, oneway, crown, ruts)
+  local S, hw, n = ROADS.SHAPE, strip.hw, #strip.points
+  local dist = strip.dist
+  if strip.grade <= 1 then
+    if track or oneway or not strip.surface or hw * 2 < S.wide or (crown or 0) <= 0 then return nil end
+    local ease = {}
+    for k = 1, n do ease[k] = math.max(0, math.min(1, dist[k] / S.ease, (dist[n] - dist[k]) / S.ease)) end
+    return {crown = crown, ease = ease, rows = {hw, 0, -hw}}
+  end
+  local deep = S.rut[strip.grade]
+  if not ruts or not deep or not strip.surface or hw < 1.25 then return nil end
+  local lanes = hw * 2 >= S.double and {hw / 2, -hw / 2} or {0}
+  local rows = {hw}
+  for _, c in ipairs(lanes) do
+    for _, o in ipairs({1.05, .75, .45, 0, -.45, -.75, -1.05}) do
+      local at = c + o
+      if at < rows[#rows] - .12 and at > -hw + .12 then rows[#rows + 1] = at end
+    end
+  end
+  rows[#rows + 1] = -hw
+  local depth = {}
+  for k = 1, n do
+    local p = strip.points[k]
+    local h = hash('rut:' .. floor(p[1] * 2 + .5) .. ':' .. floor(p[2] * 2 + .5)) % 1000 / 1000
+    depth[k] = (k == 1 or k == n) and 0 or deep * (.45 + .85 * h)
+  end
+  return {rows = rows, lanes = lanes, depth = depth, most = deep * 1.3}
+end
+-- the surface's height `offset` m left of the centre line over the plain strip, at point k
+-- (half: the half width there)
+function ROADS.SHAPE.dz(shape, k, offset, half)
+  local a = math.abs(offset)
+  if a >= half then return 0 end
+  if shape.crown then return math.min(ROADS.SHAPE.most, shape.crown * (half - a)) * shape.ease[k] end
+  local near = math.huge
+  for _, c in ipairs(shape.lanes) do near = math.min(near, math.abs(offset - c)) end
+  local knots = ROADS.SHAPE.knots
+  for i = 1, #knots - 1 do
+    local p, q = knots[i], knots[i + 1]
+    if near <= q[1] then
+      -- (the bed's own edge is level: a rut's lip does not stand over the verge)
+      local v = p[2] + (q[2] - p[2]) * (near - p[1]) / (q[1] - p[1])
+      return v * shape.depth[k] * math.min(1, (half - a) / .2)
+    end
+  end
+  return 0
+end
+
+-- A point of a strip's carriageway as it is drawn: f along chord k (0 at point k), `off` m left
+-- of the centre line. The chord is quads between the strip's rows (strip.rows), each two
+-- triangles from its first corner, and where the road leans more at one end than the other,
+-- or its crown comes in, a quad is folded along its diagonal: the plane through its four
+-- corners passes up to `fold` over or under it. Returns x, y, z, fold, the quad's width.
+-- toward: on a row itself, the quad to its left (1) or to its right (-1, the default).
+function ROADS.onStrip(strip, k, f, off, toward)
+  local rows = strip.rows
+  local hi, lo = rows[1], rows[#rows]
+  off = math.max(lo, math.min(hi, off))
+  for r = 1, #rows - 1 do
+    local edge = rows[r + 1]
+    if off > edge + 1e-7 or r == #rows - 1 or (off > edge - 1e-7 and (toward or -1) > 0) then
+      hi, lo = rows[r], edge
+      break
+    end
+  end
+  local a, b, c, d = strip.edge(k, hi), strip.edge(k, lo), strip.edge(k + 1, lo), strip.edge(k + 1, hi)
+  local s = hi - lo > EPS and (hi - off) / (hi - lo) or 0
+  local t = math.max(0, math.min(1, f))
+  local z
+  if t <= s then z = a[3] + (b[3] - a[3]) * s + (c[3] - b[3]) * t
+  else z = a[3] + (d[3] - a[3]) * t + (c[3] - d[3]) * s end
+  -- (past the chord's ends: on along its edges)
+  if f ~= t then z = z + ((d[3] - a[3]) * (1 - s) + (c[3] - b[3]) * s) * (f - t) end
+  local x0, y0 = a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s
+  local x1, y1 = d[1] + (c[1] - d[1]) * s, d[2] + (c[2] - d[2]) * s
+  return x0 + (x1 - x0) * f, y0 + (y1 - y0) * f, z, math.abs(a[3] + c[3] - b[3] - d[3]) / 4, hi - lo
+end
+
+-- One end of the verge: at point k of a strip, side `sign`, from the paving's outer edge
+-- (`outer` from the centre line, `top` over the carriageway): {a, o, w, d, m}: the paving's
+-- edge, the corner on the ground (marked [9] = 1: a clip takes its height from the ground
+-- again), the reach, the height taken up and, on a bank, the break between its two faces. The
+-- chords either side of a point share it, so a point is worked out once.
+function ROADS.VERGE.at(strip, k, sign, outer, top, ground, normal)
+  local V = ROADS.VERGE
+  local ends = strip.vergeEnds
+  if not ends then ends = {}; strip.vergeEnds = ends end
+  local key = k * 2 + (sign > 0 and 1 or 0)
+  local e = ends[key]
+  if e and e.outer == outer and e.top == top then return e end
+  local a = strip.edge(k, sign * outer, top)
+  local w, o = V.least, nil
+  for _ = 1, 2 do
+    o = strip.edge(k, sign * (outer + w))
+    local need = math.abs(ground(o[1], o[2]) - a[3]) * V.run
+    local wide = math.max(V.least, math.min(V.most, math.ceil(need / V.step - 1e-6) * V.step))
+    if wide == w then break end
+    w, o = wide, nil
+  end
+  o = o or strip.edge(k, sign * (outer + w))
+  o[3], o[9] = ground(o[1], o[2]), 1
+  local d = o[3] - a[3]
+  e = {a = a, o = o, w = w, d = d, outer = outer, top = top}
+  if math.abs(d) >= V.bank * .5 then
+    -- the break of a height just at VERGE.bank lies on the straight line (no step to the plain
+    -- quad of the chord beside it) and takes its full share from twice that
+    local share = d < 0 and V.fill or V.cut
+    share = V.berm + (share - V.berm) * math.max(0, math.min(1, (math.abs(d) - V.bank) / V.bank))
+    local m = {a[1] + (o[1] - a[1]) * V.berm, a[2] + (o[2] - a[2]) * V.berm, a[3] + d * share}
+    -- lit as the faces lie: the slopes of the two faces along the way out
+    local ux, uy = (o[1] - a[1]) / w, (o[2] - a[2]) / w
+    local s1, s2 = d * share / (V.berm * w), d * (1 - share) / ((1 - V.berm) * w)
+    local gx, gy, gz = normal(o[1], o[2])
+    local l = math.sqrt(s2 * s2 + 1)
+    m[6], m[7], m[8] = -ux * (s1 + s2) / 2, -uy * (s1 + s2) / 2, 1
+    e.m, e.na = m, {-ux * s1, -uy * s1, 1}
+    e.no = {(gx - ux * s2 / l) / 2, (gy - uy * s2 / l) / 2, (gz + 1 / l) / 2}
+  end
+  ends[key] = e
+  return e
+end
+-- The verge's height `d` metres past a paving's edge that stands at `edge`, where the ground
+-- there lies at `ground`: what a thing set down beside a road stands on (a straight verge of the
+-- reach it would have; the shape of a bank is left out).
+function ROADS.VERGE.beside(ground, edge, d)
+  local V = ROADS.VERGE
+  local delta = ground - edge
+  local reach = math.max(V.least, math.min(V.most, math.abs(delta) * V.run))
+  return edge + delta * math.min(1, d / reach)
+end
+-- The quads of the verge beside chord k (points k, k + 1) of a strip, side `sign`: one, or the
+-- berm and the slope of a bank. Corners: the paving's edge at k, outwards at k, outwards at
+-- k + 1, the edge at k + 1. A bank's corners carry their normals at [6..8].
+function ROADS.VERGE.quads(strip, k, sign, outer, top, ground, normal)
+  local V = ROADS.VERGE
+  local p = V.at(strip, k, sign, outer, top, ground, normal)
+  local q = V.at(strip, k + 1, sign, outer, top, ground, normal)
+  if math.max(math.abs(p.d), math.abs(q.d)) < V.bank or not p.m or not q.m then return {{p.a, p.o, q.o, q.a}} end
+  -- the corners with the bank's normals: copies (the plain quad of the next chord is lit as ground)
+  local function lit(c, n) return {c[1], c[2], c[3], nil, nil, n[1], n[2], n[3], c[9]} end
+  local pa, qa, po, qo = lit(p.a, p.na), lit(q.a, q.na), lit(p.o, p.no), lit(q.o, q.no)
+  return {{pa, p.m, q.m, qa}, {p.m, po, qo, q.m}}
 end
 
 -- A track's runs off the roads: its line every TRACK_STEP m, cut where it comes within
@@ -3364,7 +3868,14 @@ function ROADS.ruts(kind, o)
    rows[k - 1] = nil
    if not o.rect or BOX.segment(o.rect, o.points[k], o.points[k + 1], hd + 1) then
     local v0, v1 = o.dist[k] / span, o.dist[k + 1] / span
-    o.core(kind, {at(k, hw, v0), at(k, -hw, v0), at(k + 1, -hw, v1), at(k + 1, hw, v1)})
+    if o.rows then
+      -- over a rutted bed (ROADS.SHAPE): row by row, as the bed is drawn
+      for r = 1, #o.rows - 1 do
+        o.core(kind, {at(k, o.rows[r], v0), at(k, o.rows[r + 1], v0), at(k + 1, o.rows[r + 1], v1), at(k + 1, o.rows[r], v1)})
+      end
+    else
+      o.core(kind, {at(k, hw, v0), at(k, -hw, v0), at(k + 1, -hw, v1), at(k + 1, hw, v1)})
+    end
     for _, sign in ipairs({1, -1}) do
       local walk = o.walk[k] or NONE
       if not walk[sign] and not ((o.walk.kerb or NONE)[k] or NONE)[sign] then
@@ -4489,7 +5000,9 @@ function ROADS.streetParking(roads, env)
             if s.orient == 'parallel' then yaw = math.atan2(ty * along, tx * along)
             elseif s.orient == 'perpendicular' then yaw = math.atan2(ny, nx)
             else yaw = math.atan2(ny + ty * along, nx + tx * along) end
-            local z = free and (s.where == 'lane' and (c[3] or 0) + ROAD_LIFT or env.ground(x, y))
+            -- (on the carriageway as it leans there, ROADS.FALL)
+            local z = free and (s.where == 'lane' and (c[3] or 0) + ROAD_LIFT + (env.cross and env.cross(x, y) or 0)
+              or env.ground(x, y))
             -- another street there, a house, or a sidewalk for a car on the kerb with none
             if free and (env.nearestOn(x, y, z, false, road) or env.nearestOn(x, y, z, true, road)) then free = false end
             if free and s.where == 'kerb' and env.walkAt(road, c[1], c[2], s.side) <= 0 then free = false end
@@ -6601,73 +7114,159 @@ end
 -- none lies within `clear` m of a cut end (a junction's fan).
 -- With patches: a patch of new asphalt every patchStep m at patchChance, 2.5 to 6 m long,
 -- 0.9 to 1.8 m wide, somewhere across the carriageway (the patch sheet is 1 x 8 of its width).
+-- worn (a seated road's, tune.seat): the asphalt as a town leaves it. A yard's driveways have
+-- covers and patches too (COVERS.yard: more patches than a street), and every paved road its
+-- wear by class (COVERS.wear: the chance at each step): a net of cracks in a wheel path, a long
+-- crack along the middle or a lane's seam, a stretch worn through to the stone. The game's own
+-- decal sheets, 1 x 4 (the single crack 1 x 32), drawn where the game has them (wearPresent).
+-- Everything lies on the surface as it leans and crowns (strip.edge), not on its profile.
 ROADS.COVERS = {manholeStep = 55, drainStep = 38, clear = 7, manhole = .82, drain = {.42, .95},
   patchStep = 23, patchChance = .5,
   classes = {residential = true, tertiary = true, secondary = true, primary = true, unclassified = true,
-    living_street = true}}
-function ROADS.covers(strips, rect, lift, decor, pause, patches)
+    living_street = true},
+  yard = {manholeStep = 70, patchStep = 17, patchChance = .65},
+  netStep = 19, lineStep = 29, wornStep = 37,
+  wear = {service = {.6, .5, .45}, living_street = {.5, .45, .35}, residential = {.45, .4, .25}, unclassified = {.4, .4, .25},
+    tertiary = {.3, .35, .12}, secondary = {.2, .3, .06}, primary = {.12, .25, .04}, trunk = {.05, .15, 0}}}
+function ROADS.covers(strips, rect, lift, decor, pause, patches, worn)
   local C = ROADS.COVERS
   for n, strip in ipairs(strips) do
     local tags, points, dist = strip.tags, strip.points, strip.dist
     local class = (tags.highway or ''):gsub('_link$', '')
-    if strip.surface and strip.grade <= 1 and C.classes[class] and strip.hw >= 2.5 and #points >= 2 then
+    local yard = worn and class == 'service' and tags.service ~= 'parking_aisle'
+    local wear = worn and worn.maps and C.wear[class]
+    if strip.surface and strip.grade <= 1 and #points >= 2 and not (strip.road and strip.road.track)
+        and ((C.classes[class] and strip.hw >= 2.5) or (yard and strip.hw >= 1.5) or wear) then
       local total, start, seed = dist[#dist], strip.start or 0, hash(tostring(strip.road.id or n))
+      local hw = strip.hw
       local function place(step, phase, put)
         for m = math.ceil((start + C.clear - phase) / step), math.floor((start + total - C.clear - phase) / step) do
           local at = m * step + phase - start
           local k = 1
           while k < #points - 1 and dist[k + 1] < at do k = k + 1 end
-          local a, b = points[k], points[k + 1]
           local len = dist[k + 1] - dist[k]
-          if len > EPS then
-            local f = (at - dist[k]) / len
-            local ux, uy = (b[1] - a[1]) / len, (b[2] - a[2]) / len
-            put(m, k, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, (a[3] or 0) + ((b[3] or 0) - (a[3] or 0)) * f, ux, uy)
-          end
+          if len > EPS then put(m, k, (at - dist[k]) / len, len) end
         end
       end
-      -- a patch lies between the paint and the covers: none of them fights another for depth
-      local function quad(kind, x, y, z, ux, uy, along, across, u0, v0, u1, v1)
+      -- a point of the surface (ROADS.onStrip): f along chord k, `off` m left of the centre line;
+      -- `up` over it, and over what its quad's fold can hide of a decal `across` m wide
+      local function on(k, f, off, up, across, toward)
+        local x, y, z, fold, wide = ROADS.onStrip(strip, k, f, off, toward)
+        return {x, y, z + up + fold * math.min(1, across / math.max(wide, EPS))}
+      end
+      -- A quad `along` by `across` m round the point: a patch lies between the paint and the
+      -- covers, the wear under both; none of them fights another for depth. Where the strip
+      -- twists along the chord the quad clears the fold of its two triangles (as the paint).
+      local over = {wear = .6, crack_net = .75, crack_line = .9, patch = 1.25}
+      -- Chord by chord along the strip: a crack 11 m long laid as one quad off the chord of its
+      -- middle stood 5 cm over the road where the grade changed under it.
+      local function quad(kind, k, f, len, off, along, across, u0, v0, u1, v1)
+        local half = math.max(.2, hw - across / 2 - .03)
+        off = math.max(-half, math.min(half, off))
+        local c = on(k, f, off, 0, 0)
         local reach = math.max(along, across) / 2 + .1
-        if not boundsTouch(rect, {x - reach, y - reach, x + reach, y + reach}) then return end
-        local nx, ny, ha, hc = -uy, ux, along / 2, across / 2
-        local zz = z + lift + DECAL.markLift * (kind == 'patch' and 1.25 or 1.5)
-        decor.polygon(kind, {{x - ux * ha - nx * hc, y - uy * ha - ny * hc, zz, u0, v0},
-          {x - ux * ha + nx * hc, y - uy * ha + ny * hc, zz, u1, v0},
-          {x + ux * ha + nx * hc, y + uy * ha + ny * hc, zz, u1, v1},
-          {x + ux * ha - nx * hc, y + uy * ha - ny * hc, zz, u0, v1}}, 'flat')
+        if not boundsTouch(rect, {c[1] - reach, c[2] - reach, c[1] + reach, c[2] + reach}) then return end
+        local at, hc = dist[k] + f * len, across / 2
+        local s0, s1 = at - along / 2, at + along / 2
+        local lift = DECAL.markLift * (over[kind] or 1.5)
+        local j = k
+        while j > 1 and dist[j] > s0 do j = j - 1 end
+        while j < #points and dist[j] < s1 do
+          local span = dist[j + 1] - dist[j]
+          local a0, a1 = math.max(s0, dist[j]), math.min(s1, dist[j + 1])
+          -- (the decal's ends run on along the first and the last chord, short of the strip's own)
+          if j == 1 then a0 = math.max(s0, 0) end
+          if j == #points - 1 then a1 = math.min(s1, dist[#points]) end
+          if span > EPS and a1 - a0 > .01 then
+            local f0, f1 = (a0 - dist[j]) / span, (a1 - dist[j]) / span
+            local w0, w1 = v0 + (v1 - v0) * (a0 - s0) / along, v0 + (v1 - v0) * (a1 - s0) / along
+            -- across, cut at the rows it lies over (a crown's ridge: the decal bends with it)
+            local lo, hi = off - hc, off + hc
+            local from = lo
+            for r = #strip.rows, 1, -1 do
+              local to = r == 1 and hi or math.min(hi, strip.rows[r - 1])
+              if strip.rows[r] <= from + 1e-6 and to > from + .01 and (r == 1 or strip.rows[r - 1] > from + 1e-6) then
+                local ua, ub = u0 + (u1 - u0) * (from - lo) / across, u0 + (u1 - u0) * (to - lo) / across
+                -- (each corner read off the quad the piece lies on: to the left of its right edge)
+                local a, b = on(j, f0, from, lift, to - from, 1), on(j, f0, to, lift, to - from, -1)
+                local d, e = on(j, f1, to, lift, to - from, -1), on(j, f1, from, lift, to - from, 1)
+                a[4], a[5], b[4], b[5], d[4], d[5], e[4], e[5] = ua, w0, ub, w0, ub, w1, ua, w1
+                decor.polygon(kind, {a, b, d, e}, 'flat')
+                from = to
+              end
+            end
+          end
+          j = j + 1
+        end
       end
       local town = false
       for k = 1, #points - 1 do
         local w = strip.walk[k] or NONE
-        if w[1] or w[-1] then town = true; break end
+        if w[1] or w[-1] or (worn and (strip.walk.kerb or NONE)[k]) then town = true; break end
       end
-      if town then
-        place(C.manholeStep, seed % C.manholeStep, function(m, k, x, y, z, ux, uy)
-          local side = m % 2 == 0 and 1 or -1
-          local off = strip.hw * .45 * side
+      local covers = town and ((C.classes[class] and hw >= 2.5) or (yard and hw >= 1.5))
+      local manholeStep = yard and C.yard.manholeStep or C.manholeStep
+      if covers and hw >= 2 then
+        place(manholeStep, seed % manholeStep, function(m, k, f, len)
           -- the round cover: the upper right quarter of the sheet
-          quad('manhole', x - uy * off, y + ux * off, z, ux, uy, C.manhole, C.manhole, .5, 0, 1, .5)
+          quad('manhole', k, f, len, hw * .45 * (m % 2 == 0 and 1 or -1), C.manhole, C.manhole, .5, 0, 1, .5)
         end)
-        if patches then
-          place(C.patchStep, (seed * 13 + 5) % C.patchStep, function(m, k, x, y, z, ux, uy)
-            local r = ihash(seed, m, 0, 71)
-            if r % 1000 < C.patchChance * 1000 then
-              local long = 2.5 + (r % 7) * .58
-              local wide = .9 + (math.floor(r / 7) % 5) * .22
-              local room = math.max(0, strip.hw - wide / 2 - .35)
-              local off = ((math.floor(r / 35) % 101) / 50 - 1) * room
-              local v0 = (math.floor(r / 3535) % 100) / 100
-              quad('patch', x - uy * off, y + ux * off, z, ux, uy, long, wide, 0, v0, 1, v0 + long / wide / 8)
-            end
-          end)
-        end
-        place(C.drainStep, (seed * 7 + 11) % C.drainStep, function(m, k, x, y, z, ux, uy)
+      end
+      if covers and patches then
+        local step, chance = yard and C.yard.patchStep or C.patchStep, yard and C.yard.patchChance or C.patchChance
+        place(step, (seed * 13 + 5) % step, function(m, k, f, len)
+          local r = ihash(seed, m, 0, 71)
+          if r % 1000 < chance * 1000 then
+            local long = 2.5 + (r % 7) * .58
+            local wide = math.min(.9 + (math.floor(r / 7) % 5) * .22, hw * 1.2)
+            local room = math.max(0, hw - wide / 2 - .35)
+            local off = ((math.floor(r / 35) % 101) / 50 - 1) * room
+            local v0 = (math.floor(r / 3535) % 100) / 100
+            quad('patch', k, f, len, off, long, wide, 0, v0, 1, v0 + long / wide / 8)
+          end
+        end)
+      end
+      if covers and C.classes[class] then
+        place(C.drainStep, (seed * 7 + 11) % C.drainStep, function(m, k, f, len)
           for _, side in ipairs({1, -1}) do
             if (strip.walk[k] or NONE)[side] then
-              local off = (strip.hw - C.drain[1] / 2 - .03) * side
-              quad('drain', x - uy * off, y + ux * off, z, ux, uy, C.drain[2], C.drain[1], 0, 0, 1, .5)
+              quad('drain', k, f, len, (hw - C.drain[1] / 2 - .03) * side, C.drain[2], C.drain[1], 0, 0, 1, .5)
             end
+          end
+        end)
+      end
+      if wear then
+        -- a lane's middle on a road of two lanes and more, the road's own on a narrow one
+        local lane = hw >= 2.6 and hw / 2 or 0
+        local function side(r) return lane * (r % 2 == 0 and 1 or -1) end
+        local function flip(r, kind, k, f, len, off, along, across)
+          -- the sheet as it is or turned end for end, mirrored or not: four looks of one sheet
+          local u0, u1 = 0, 1
+          local v0, v1 = 0, 1
+          if math.floor(r / 2) % 2 == 1 then u0, u1 = 1, 0 end
+          if math.floor(r / 4) % 2 == 1 then v0, v1 = 1, 0 end
+          quad(kind, k, f, len, off, along, across, u0, v0, u1, v1)
+        end
+        place(C.netStep, (seed * 5 + 3) % C.netStep, function(m, k, f, len)
+          local r = ihash(seed, m, 1, 73)
+          if r % 1000 < wear[1] * 1000 then
+            local across = math.min(2.6, math.max(1.2, (lane > 0 and hw or hw * 2) * .78)) * (.8 + (math.floor(r / 1000) % 5) * .08)
+            flip(r, 'crack_net', k, f, len, side(math.floor(r / 8)) + ((math.floor(r / 64) % 21) / 10 - 1) * .3, across * 4, across)
+          end
+        end)
+        place(C.lineStep, (seed * 11 + 7) % C.lineStep, function(m, k, f, len)
+          local r = ihash(seed, m, 2, 79)
+          if r % 1000 < wear[2] * 1000 then
+            -- along the middle (the mats' joint), or down a lane
+            local off = math.floor(r / 8) % 3 == 0 and side(math.floor(r / 32)) or ((math.floor(r / 64) % 21) / 10 - 1) * .25
+            flip(r, 'crack_line', k, f, len, off, 11.2, .35)
+          end
+        end)
+        place(C.wornStep, (seed * 17 + 1) % C.wornStep, function(m, k, f, len)
+          local r = ihash(seed, m, 3, 83)
+          if r % 1000 < wear[3] * 1000 then
+            local across = math.min(2.4, math.max(1.1, (lane > 0 and hw or hw * 2) * .7))
+            flip(r, 'wear', k, f, len, side(math.floor(r / 8)), across * 4, across)
           end
         end)
       end
@@ -8993,12 +9592,14 @@ end
 -- The paving a strip's end carries on each side, seen from the junction into the road
 -- ({[1] = left, [-1] = right}, metres): its own sidewalk, or the paving out to a mapped footway
 -- (walk.kerb wider than the kerb stone). own: the end has a sidewalk of its own. nil: neither.
-function ROADS.endWalks(strip, last, sidewalk)
+-- stones: the kerb stone alone counts too (a seated road's, ROADS.YARD): it goes on round the
+-- junction's corner, or the kerbs of two driveways stop a metre or two short of their corner.
+function ROADS.endWalks(strip, last, sidewalk, stones)
   local k = last and #strip.points - 1 or 1
   local own, kerb = (strip.walk or NONE)[k] or NONE, ((strip.walk or NONE).kerb or NONE)[k] or NONE
   local w = {own = next(own) ~= nil or nil}
   for _, side in ipairs({1, -1}) do
-    local v = own[side] and sidewalk or (kerb[side] or 0) > TUNE.curb and kerb[side] or nil
+    local v = own[side] and sidewalk or (kerb[side] or 0) > (stones and 0 or TUNE.curb) and kerb[side] or nil
     -- the last point looks back along the strip: its left is the strip's right
     if v then w[last and -side or side] = v end
   end
@@ -9016,7 +9617,7 @@ end
 -- 1/ROADS.RING_REACH of it where the corner lies almost along its road. Away from the node, so the
 -- rays of two corners never cross (straight across each road, they did on a narrow street).
 ROADS.RING_REACH = .75
-function ROADS.ringInsets(corners, endAt, sidewalk, cx, cy)
+function ROADS.ringInsets(corners, endAt, sidewalk, cx, cy, seated)
   local n, at, base, dir, mouth = #corners, {}, nil, {}, {}
   for k = 1, n do
     local a, b = corners[k], corners[k % n + 1]
@@ -9036,27 +9637,41 @@ function ROADS.ringInsets(corners, endAt, sidewalk, cx, cy)
   end
   if not next(at) then return nil end
   -- out.mouth[k]: the edge k -> k+1 is a road's mouth
-  local out = {mouth = mouth}
+  -- out.straight[k]: the corner moves this way instead of away from the node: straight across
+  -- its street, where the corner next to it past no mouth is the same street's (the far side of
+  -- a T junction). Away from the node the two reached RING_REACH of the paving's width at
+  -- most, and the paving had a notch of grass opposite every side road.
+  local out = {mouth = mouth, straight = {}}
   for k = 1, n do
     local v, u = at[k], dir[k]
-    if not v then
-      -- edge k-1 -> k and edge k -> k+1: a mouth on one side, round the corner on the other.
-      -- Taken round the corner, the paving reaches the neighbour's paving edge (its direction),
-      -- not as far again along the drive: the corner fills up to the street's footway line.
+    if seated and v and u then
       local before, after = mouth[(k - 2) % n + 1], mouth[k]
-      local p, q = at[(k - 2) % n + 1], at[k % n + 1]
-      if before and not after then v, u = q or 0, dir[k % n + 1]
-      elseif after and not before then v, u = p or 0, dir[(k - 2) % n + 1]
-      else v = p and q and math.min(p, q) or 0 end
+      local j = before and not after and k % n + 1 or after and not before and (k - 2) % n + 1 or nil
+      local w = j and at[j] and dir[j]
+      if w and u[1] * w[1] + u[2] * w[2] > .95 then
+        out.straight[k], out[k] = u, math.max(base or 0, v)
+      end
     end
-    v = math.max(base or 0, v)
-    local q = corners[k]
-    if v > 0 and u then
-      local rx, ry = q[1] - cx, q[2] - cy
-      local l = math.sqrt(rx * rx + ry * ry)
-      if l > EPS then v = v / math.max(ROADS.RING_REACH, (rx * u[1] + ry * u[2]) / l) end
+    if not out[k] then
+      if not v then
+        -- edge k-1 -> k and edge k -> k+1: a mouth on one side, round the corner on the other.
+        -- Taken round the corner, the paving reaches the neighbour's paving edge (its direction),
+        -- not as far again along the drive: the corner fills up to the street's footway line.
+        local before, after = mouth[(k - 2) % n + 1], mouth[k]
+        local p, q = at[(k - 2) % n + 1], at[k % n + 1]
+        if before and not after then v, u = q or 0, dir[k % n + 1]
+        elseif after and not before then v, u = p or 0, dir[(k - 2) % n + 1]
+        else v = p and q and math.min(p, q) or 0 end
+      end
+      v = math.max(base or 0, v)
+      local q = corners[k]
+      if v > 0 and u then
+        local rx, ry = q[1] - cx, q[2] - cy
+        local l = math.sqrt(rx * rx + ry * ry)
+        if l > EPS then v = v / math.max(ROADS.RING_REACH, (rx * u[1] + ry * u[2]) / l) end
+      end
+      out[k] = v
     end
-    out[k] = v
   end
   return out
 end
@@ -9406,7 +10021,8 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
       if footway and prop.curb then return end
     end
     local c = propFootprint(prop)
-    local off, onGround = offset(c)
+    -- beyond: metres past the paving's edge, for a prop on the verge
+    local off, onGround, beyond = offset(c)
     if not off then return end
     local x = a[1] + ux * t - uy * off * side
     local y = a[2] + uy * t + ux * off * side
@@ -9435,6 +10051,9 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
           segment.width / 2 + .3 + r) then return end
     end
     local height = onGround and ground(x, y) or z(x, y)
+    -- on a seated road's verge (ROADS.VERGE): the verge's own height there, not the ground's
+    -- under it (a bin stood sunk to its lid in the slope from the kerb)
+    if onGround and beyond and context.beside then height = context.beside(height, z(x, y), beyond) end
     if prop.kind == 'lamp' and ROADS.lampUnderDeck(segmentBins, x, y, height, lift, walkWidth) then return end
     candidates[#candidates + 1] = {name = name, shape = shape, x = x, y = y, z = height, yaw = yaw,
       ax = ax, ay = ay, bx = bx, by = by, mx = mx, my = my, hl = hl, r = r,
@@ -9464,7 +10083,11 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
                 local t = d - dist[k]
                 place(seed, d + start, a, t, ux, uy, side, function(c) return offset(c, k, side) end,
                   -- a street's own prop stands on its sidewalk, a curb over the road (ROADS.curbSlab)
-                  z or function() return (a[3] or 0) + t / seg * ((b[3] or 0) - (a[3] or 0)) + lift + ROADS.CURB.height end,
+                  -- (and leans with it: context.cross, ROADS.FALL)
+                  z or function(x, y)
+                    return (a[3] or 0) + t / seg * ((b[3] or 0) - (a[3] or 0)) + lift + ROADS.CURB.height
+                      + (x and context.cross and context.cross(x, y) or 0)
+                  end,
                   prefix .. '_' .. math.floor(d + start + .5) .. '_' .. side, footway, fixed)
               end
             end
@@ -9489,7 +10112,9 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
         joints[1] and 3 or 6, joints[2] and 3 or 6, strip.start or 0, function(prop, k, side)
           local width = paved(k, side) or walkWidth
           -- A continuous 1.2 m pedestrian corridor; large objects use the outer verge.
-          if prop.near + prop.far + (prop.curb and .35 or .1) + 1.2 > width then return hw + width + .35 + prop.near, true end
+          if prop.near + prop.far + (prop.curb and .35 or .1) + 1.2 > width then
+            return hw + width + .35 + prop.near, true, .35 + prop.near
+          end
           return hw + (prop.curb and math.max(.45, .35 + prop.near) or width - math.max(.45, .1 + prop.far))
         end, nil, 'prop_' .. id)
       local major = tags.highway == 'primary' or tags.highway == 'secondary' or tags.highway == 'tertiary' or tags.highway == 'trunk'
@@ -12690,34 +13315,54 @@ local function build(cells, i, j, options)
     if gridStep <= FINE_DEM.grid then tune.pullFull, tune.pullZero = FINE_DEM.pullFull, FINE_DEM.pullZero end
   end
   if options.terrainStep then tune.terrainStep = options.terrainStep end
-  for name, value in pairs(options.tune or NONE) do tune[name] = value end
+  -- seated roads are the real pack's, in every kind of tile: near, far and horizon shape one ground
+  if options.realStyle == false or ((options.tune or NONE).seat or tune.seat) == 0 then
+    tune.seat = 0
+  else
+    tune.groundDrop, tune.margin = tune.seatDrop, tune.seatMargin
+    -- the ground by the nearest road (pulled) and pressed corner by corner (press)
+    tune.near, tune.pressEven = true, 2
+    -- and on a lattice of seatStep: a triangle of 25 m cannot lie along two driveways 15 m
+    -- apart at different heights (the land 20 cm and more under an edge: 10 % of a yard
+    -- tile's driveways at 12.5 m, 35 % at 25 m). A vista block keeps its own step.
+    if not options.terrainStep and tune.terrainStep > tune.seatStep then tune.terrainStep = tune.seatStep end
+  end
+  for name, value in pairs(options.tune or NONE) do if name ~= 'seat' then tune[name] = value end end
+  if tune.near == 0 then tune.near = nil end
   if not visualRoads or options.realStyle == false then tune.lanes = 0 end
   local lift, step = tune.roadLift, tune.terrainStep
   -- Arcs for the plan corners, before the ground, the junction mouths, the strips or the navgraph
   -- read a point: all of them follow the same line. The source cells are cached across tiles, so
   -- the curved roads are copies in a list of this build's own. Near, far and horizon alike: they
   -- shape the same ground along their shared edges.
-  if tune.smooth ~= 0 then
+  if tune.smooth ~= 0 or tune.seat ~= 0 then
     local own = {}
     for k, v in pairs(lists) do own[k] = v end
-    own.roads = ROADS.smoothRoads(lists.roads, pause)
+    -- a seated yard's driveways at their built widths (ROADS.YARD), before anything reads one
+    if tune.seat ~= 0 then own.roads = ROADS.YARD.widen(own.roads) end
+    if tune.smooth ~= 0 then own.roads = ROADS.smoothRoads(own.roads, pause) end
     lists = own
   end
   -- A road shapes the ground up to pullZero from its edge, and the ground lattice reaches one
   -- step past the tile (its border nodes are lowered for roads in the neighbour's cells too).
-  local reach = tune.pullZero + step + 5
+  -- (a seated road's lean at a point is read off the roads FALL.side beside it and FALL.reach
+  -- along it: the segments that far past the ones that shape the tile's ground are kept too)
+  local reach = tune.pullZero + step + 5 + (tune.seat ~= 0 and ROADS.FALL.side + ROADS.FALL.reach or 0)
   local segments, segmentBins, nav, bestSpawn, bestDistance = {}, {}, {segments = {}, names = {}, byRoad = {}}, nil, math.huge
   for _, road in ipairs(lists.roads) do
     local tags, points, width = road.tags or {}, road.points or {}, math.max(.5, math.min(80, road.width or 7))
+    local run = 0   -- metres of the road before the segment (s0: a crown comes in along it, ROADS.SHAPE)
     for index = 1, #points - 1 do
       local a, b = points[index], points[index + 1]
       local dx, dy = b[1] - a[1], b[2] - a[2]
       local length = math.sqrt(dx * dx + dy * dy)
+      run = run + length
       if length > EPS then
         local bounds = {math.min(a[1], b[1]), math.min(a[2], b[2]), math.max(a[1], b[1]), math.max(a[2], b[2])}
         if boundsTouch(rect, bounds, width / 2 + reach) then
           -- a track lies on the ground (ROADS.trackRuns): it does not shape it
-          local segment = {a = a, b = b, dx = dx, dy = dy, len2 = length * length, width = width, road = road,
+          local segment = {a = a, b = b, dx = dx, dy = dy, len2 = length * length, len = length, index = index,
+            width = width, road = road, s0 = run - length,
             tags = tags, waterTunnel = ROADS.tunnel(tags), surface = not road.track and not ROADS.bridge(tags) and not ROADS.tunnel(tags)}
           segments[#segments + 1] = segment
           local margin = width / 2 + tune.pullZero
@@ -12800,6 +13445,33 @@ local function build(cells, i, j, options)
     if z == nil then return 0 end
     return z
   end
+  -- the roads' lean (ROADS.FALL): every segment round the tile takes the slope at its two ends,
+  -- for the ground that is pulled to it, the press under it and whatever is laid on it
+  -- (tune.cross); kept in `tune`, this build's own table (build() is at LuaJIT's 200 locals)
+  tune.cross = function() return 0 end
+  -- shapes[road]: a crowned road's crown and where it comes in (ROADS.SHAPE), set with its strip
+  tune.shapes = {}
+  if tune.seat ~= 0 then
+    tune.fall = ROADS.FALL.new(segmentBins, lists.roads)
+    for n, segment in ipairs(segments) do
+      local fall = segment.surface and ROADS.FALL.of(tune.fall, segment.road)
+      if fall then segment.fa, segment.fb = fall.f[segment.index], fall.f[segment.index + 1] end
+      if n % 256 == 0 then pause() end
+    end
+    tune.cross = function(x, y) return ROADS.FALL.cross(segmentBins, x, y, tune.pullFull, tune.shapes) end
+  end
+  -- a polygon laid on a road at its profile's height, leant with the road under each corner
+  -- (a copy: an island's wall and its top share their corners)
+  tune.lean = function(poly)
+    if not tune.fall then return poly end
+    local out = {}
+    for k, p in ipairs(poly) do
+      local q = {p[1], p[2], (p[3] or 0) + ROADS.FALL.cross(segmentBins, p[1], p[2], tune.pullFull, tune.shapes)}
+      for n = 4, 9 do q[n] = p[n] end
+      out[k] = q
+    end
+    return out
+  end
   -- The DEM pulled to the roads round a point (fast.ground_corners): fully at a road's profile
   -- within pullFull of its edge, the DEM alone from pullZero. Nearer roads weigh more in the
   -- height, the strongest pull wins. Bridges and tunnels do not pull, and water stays where the
@@ -12842,8 +13514,24 @@ local function build(cells, i, j, options)
         if d < tune.pullZero then
           local s = math.max(0, math.min(1, (tune.pullZero - d) / span))
           local w = s * s * (3 - 2 * s)
-          local weight = w / math.max(d, 1)
-          sa, sz = sa + weight, sz + weight * ((a[3] or 0) + t * ((segment.b[3] or 0) - (a[3] or 0)))
+          -- seated (tune.near): by the square of the distance, the nearest road nearly alone.
+          -- By the distance itself, a node 5 m from a driveway took half its height from the six
+          -- streets 15-60 m round it: on a hillside of terraced yards (Kyiv, Pryluzhna: 3-5 m
+          -- between neighbouring driveways) the driveway stood on a dike of 2-3 m.
+          local dd = math.max(d, 1)
+          local weight = tune.near and w / (dd * dd) or w / dd
+          local z = (a[3] or 0) + t * ((segment.b[3] or 0) - (a[3] or 0))
+          -- a leaning road's land goes on in its plane to pullFull past the edge (ROADS.FALL),
+          -- less with the pull itself: far from the road the lean is nothing (and two tiles
+          -- that know different stretches of a far road still agree on a node)
+          local fa = segment.fa
+          if fa then
+            local o = ((y - py) * segment.dx - (x - px) * segment.dy) / segment.len
+            local cap = segment.width / 2 + tune.pullFull
+            if o > cap then o = cap elseif o < -cap then o = -cap end
+            z = z + (fa + (segment.fb - fa) * t) * o * w
+          end
+          sa, sz = sa + weight, sz + weight * z
           if w > pull then pull = w end
           if d < near then near = d end
         end
@@ -12913,7 +13601,13 @@ local function build(cells, i, j, options)
     if excess <= 0 then return end
     local ha, hb, hc = math.max(0, za - target), math.max(0, zb - target), math.max(0, zc - target)
     local f = excess / (wa * ha + wb * hb + wc * hc)
-    if tune.pressEven > 0 then ha, hb, hc, f = 1, 1, 1, excess end
+    if tune.pressEven == 2 then
+      -- seated: each corner by its share of the point (the least the three can move to bring
+      -- the point down). All three by the whole excess let one low driveway take the ground
+      -- from under a higher one that crossed the same 25 m triangle.
+      ha, hb, hc = wa, wb, wc
+      f = excess / (wa * wa + wb * wb + wc * wc)
+    elseif tune.pressEven > 0 then ha, hb, hc, f = 1, 1, 1, excess end
     -- unrolled: a {{k, h}, ...} list per sample was four tables of garbage
     local drop = ha * f
     if drop > (lower[ka] or 0) then lower[ka] = drop end
@@ -13317,7 +14011,7 @@ local function build(cells, i, j, options)
         local z, near = nodes[key], nodes.near[key]
         if z and near and near >= 0 then
           local x, y = gx * step, gy * step
-          nodes[key] = z + RELIEF.lift(x, y, near, builtAt(x, y), demAt(x, y) or z, seaLevel)
+          nodes[key] = z + RELIEF.lift(x, y, near, builtAt(x, y), demAt(x, y) or z, seaLevel, tune.seat ~= 0)
         end
       end
       pause()
@@ -13439,6 +14133,7 @@ local function build(cells, i, j, options)
           local vote = votes[mat] or {n = 0, rank = -1}
           votes[mat], vote.n = vote, vote.n + 1
           vote.rank = math.max(vote.rank, ROADS.rankOf(m.road.tags or NONE))
+          if not votes.best or ROADS.rankOf(m.road.tags or NONE) > ROADS.rankOf(votes.best) then votes.best = m.road.tags or NONE end
           if vote.n * 100 + vote.rank > top then material, top = mat, vote.n * 100 + vote.rank end
           local points, dist = m.road.points, m.dist
           local length = dist[#points]
@@ -13451,8 +14146,11 @@ local function build(cells, i, j, options)
           local dx, dy = f[1] - b[1], f[2] - b[2]
           local l = math.max(EPS, math.sqrt(dx * dx + dy * dy))
           local nx, ny = -dy / l * m.width / 2, dx / l * m.width / 2
-          corners[#corners + 1] = {p[1] + nx, p[2] + ny, p[3] or 0}
-          corners[#corners + 1] = {p[1] - nx, p[2] - ny, p[3] or 0}
+          -- the mouth leans as its road's end does (ROADS.FALL): the fan takes the land's slope
+          local fall = tune.fall and ROADS.FALL.of(tune.fall, m.road)
+          local lean = fall and ROADS.FALL.at(fall, s) * m.width / 2 or 0
+          corners[#corners + 1] = {p[1] + nx, p[2] + ny, (p[3] or 0) + lean}
+          corners[#corners + 1] = {p[1] - nx, p[2] - ny, (p[3] or 0) - lean}
           if ROADS.bridge(m.road.tags or NONE) then raised = true end
           if not ROADS.tunnel(m.road.tags or NONE) then allTunnel = false end
         end
@@ -13465,7 +14163,7 @@ local function build(cells, i, j, options)
         for _, c in ipairs(corners) do angle[c] = math.atan2(c[2] - node[2], c[1] - node[1]) end
         table.sort(corners, function(a, b) return angle[a] < angle[b] end)
         stars[#stars + 1] = {node = {node[1], node[2]}, height = node[3] or 0, rings = {corners}, raised = raised,
-          material = material, waterTunnel = allTunnel}
+          material = material, waterTunnel = allTunnel, tags = votes.best}
       end
     end
     lists.signMouths, lists.signOrder = mouths, order   -- SIGNS.plan, in the scene
@@ -13528,8 +14226,12 @@ local function build(cells, i, j, options)
       -- it is built up (walkAt).
       -- walk.kerb[k]: the sides with only a kerb, their sidewalk a footway way of its own
       local sides, walk = ROADS.walkSides(tags), {kerb = {}}
+      -- a seated road among buildings is kerbed where it has no sidewalk (ROADS.YARD)
       for k = 1, #points - 1 do
         walk[k], walk.kerb[k] = walkAt(tags, sides, points[k], points[k + 1], builtAt, lists.mappedWalks, hw)
+        if tune.seat ~= 0 and grade <= 1 and not road.track and surfaceRoad then
+          walk.kerb[k] = ROADS.YARD.stones(tags, walk[k], walk.kerb[k], points[k], points[k + 1], builtAt, tune.curb)
+        end
       end
       ROADS.fillKerbs(walk)
       -- start: metres of the road cut off before points[1] (street props keep the road's lattice);
@@ -13539,6 +14241,19 @@ local function build(cells, i, j, options)
         start = cuts and cuts[1] or 0, joints = joints, taper = tune.taper ~= 0 and ROADS.taper(joints, dist, hw) or nil}
       strips[#strips + 1] = strip
       trimmed[road] = points
+      -- the lean at every point (ROADS.FALL), per metre left of the centre line, and the length
+      -- of the normal there (a mitre reaches further than the offset it carries)
+      do
+        local fall = tune.fall and surfaceRoad and ROADS.FALL.of(tune.fall, road)
+        if fall then
+          local slope, span, start = {}, {}, strip.start
+          for k = 1, #points do
+            slope[k] = ROADS.FALL.at(fall, start + dist[k])
+            span[k] = math.sqrt(normals[k][1] ^ 2 + normals[k][2] ^ 2)
+          end
+          strip.slope, strip.span = slope, span
+        end
+      end
       -- A cut mouth's corridor back to its node, a centimetre under the junction fan: drawn only
       -- where the junction's star misses this mouth (an odd star, e.g. a short wide link between
       -- two carriageways, whose fan leaves gaps).
@@ -13558,8 +14273,9 @@ local function build(cells, i, j, options)
             zp = (zp + zn) * .5
             zn = zp
           end
-          local quad = {{p[1] + ux, p[2] + uy, zp}, {p[1] - ux, p[2] - uy, zp},
-            {node[1] - ux, node[2] - uy, zn}, {node[1] + ux, node[2] + uy, zn}}
+          local lean = strip.slope and strip.slope[k] * hw or 0
+          local quad = {{p[1] + ux, p[2] + uy, zp + lean}, {p[1] - ux, p[2] - uy, zp - lean},
+            {node[1] - ux, node[2] - uy, zn - lean}, {node[1] + ux, node[2] + uy, zn + lean}}
           strip.corridors[k] = quad
         end
       end
@@ -13584,13 +14300,36 @@ local function build(cells, i, j, options)
           local centre, side = pulled(p[1], p[2]), pulled(x, y)
           if centre and side then cross = side - centre end
         end
+        -- a seated road leans with its land (ROADS.FALL)
+        local slope = strip.slope
+        if slope then cross = slope[k] * offset * widen * strip.span[k] end
+        -- and is crowned, or driven into ruts (ROADS.SHAPE)
+        local shape = strip.shape
+        if shape then cross = cross + ROADS.SHAPE.dz(shape, k, offset * widen, half and half < hw and half or hw) end
         return {x, y, (p[3] or 0) + lift + (dz or 0) + cross}
       end
       strip.edge = edge
+      if tune.seat ~= 0 then
+        strip.shape = ROADS.SHAPE.of(strip, road.track, ROADS.oneway(tags), tune.crown, tune.ruts ~= 0)
+        -- for what is laid on the road later (tune.cross): where its crown comes in and goes out
+        if strip.shape and strip.shape.crown then
+          tune.shapes[road] = {crown = strip.shape.crown, lo = strip.start, hi = strip.start + dist[#points], hw = hw}
+        end
+      end
       -- the asphalt as lanes with the texture along them (ROADS.laneBands), on a near tile
       local laneKind = tune.lanes ~= 0 and grade == 0 and not road.track and ROADS.LANE.kinds[material]
       local bands = laneKind and ROADS.laneBands(tags, width)
       local ups = bands and ROADS.stripUp(points, dist)
+      -- the offsets the carriageway is cut at across, left to right (ROADS.onStrip): its lane
+      -- bands and the crown's ridge, a rutted bed's rows, or its two edges
+      strip.rows = strip.shape and strip.shape.rows or {hw, -hw}
+      if bands then
+        strip.rows = {bands[1].from}
+        for _, band in ipairs(bands) do
+          if strip.shape and strip.shape.crown and band.from > 1e-6 and band.to < -1e-6 then strip.rows[#strip.rows + 1] = 0 end
+          strip.rows[#strip.rows + 1] = band.to
+        end
+      end
       for k = 1, #points - 1 do
         local a, b = points[k], points[k + 1]
         local quad = {edge(k, hw), edge(k, -hw), edge(k + 1, -hw), edge(k + 1, hw)}
@@ -13600,7 +14339,14 @@ local function build(cells, i, j, options)
           if drawn(strip) and BOX.hit(rect, bx0, by0, bx1, by1, 0) and (farRoads or not road.deckGroup) then
             if bands then
               ROADS.laneQuads(roads.polygon, bands, edge, k, ups, laneKind, material,
-                (strip.start + dist[k]) / ROADS.LANE.metres, (strip.start + dist[k + 1]) / ROADS.LANE.metres)
+                (strip.start + dist[k]) / ROADS.LANE.metres, (strip.start + dist[k + 1]) / ROADS.LANE.metres,
+                strip.shape and strip.shape.crown)
+            elseif strip.shape then
+              -- row by row across: the crown's two halves, a rutted bed's ruts and humps (ROADS.SHAPE)
+              local rows = strip.shape.rows
+              for r = 1, #rows - 1 do
+                emitSurface(strip.material, {edge(k, rows[r]), edge(k, rows[r + 1]), edge(k + 1, rows[r + 1]), edge(k + 1, rows[r])})
+              end
             else
               emitSurface(strip.material, quad)
             end
@@ -13616,6 +14362,10 @@ local function build(cells, i, j, options)
               and not ROADS.foot(tags) then
             bestDistance = distance
             local pz = (a[3] or 0) + ((b[3] or 0) - (a[3] or 0)) * t
+            -- (on the crown of a crowned road, ROADS.SHAPE: the car is set down on the asphalt, not in it)
+            if strip.shape and strip.shape.crown then
+              pz = pz + ROADS.SHAPE.dz(strip.shape, k, 0, hw) + (ROADS.SHAPE.dz(strip.shape, k + 1, 0, hw) - ROADS.SHAPE.dz(strip.shape, k, 0, hw)) * t
+            end
             bestSpawn = {pos = {px, py, pz + lift}, yaw = math.atan2(dx, dy)}
           end
         end
@@ -13835,7 +14585,7 @@ local function build(cells, i, j, options)
       local list = stripEnds[key] or {}
       local corridor = strip.corridors and strip.corridors[e[3]]
       stripEnds[key], list[#list + 1] = list, {p = p, dx = dx / l, dy = dy / l, corridor = corridor,
-        walk = ROADS.endWalks(strip, e[3] ~= 1, tune.sidewalk)}
+        walk = ROADS.endWalks(strip, e[3] ~= 1, tune.sidewalk, tune.seat ~= 0)}
       if corridor then
         local node = strip.nodes[e[3]]
         local c = {quad = corridor, material = strip.material}
@@ -13914,7 +14664,8 @@ local function build(cells, i, j, options)
         end
         corners = out
       end
-      local plate = {ring = corners, centre = {cx, cy, centre}}
+      -- (tags: its most important road's, for the paving of its sidewalk ring)
+      local plate = {ring = corners, centre = {cx, cy, centre}, tags = junction.tags}
       plates[#plates + 1] = plate
       local touches = BOX.touch(rect, ring, 0)
       for k = 1, #corners do
@@ -13926,21 +14677,36 @@ local function build(cells, i, j, options)
       -- sidewalks meets here, then the verge down to the ground, both away from the node
       if not junction.raised then
         -- per corner: how far the ring reaches (nil: no street here is paved)
-        local walks = ROADS.ringInsets(corners, stripEndAt, tune.sidewalk, cx, cy)
+        local walks = ROADS.ringInsets(corners, stripEndAt, tune.sidewalk, cx, cy, tune.seat ~= 0)
         local mids, outs = {}, {}
         for k, q in ipairs(corners) do
           local dx, dy = q[1] - cx, q[2] - cy
           local l = math.max(EPS, math.sqrt(dx * dx + dy * dy))
           dx, dy = dx / l, dy / l
+          -- (straight across its street on the far side of a T junction, ROADS.ringInsets)
+          local straight = walks and walks.straight and walks.straight[k]
+          if straight then dx, dy = straight[1], straight[2] end
           local inset = walks and walks[k] or 0
           mids[k] = {q[1] + dx * inset, q[2] + dy * inset, q[3]}
-          outs[k] = {q[1] + dx * (inset + tune.shoulder), q[2] + dy * (inset + tune.shoulder), 0}
+          -- (a seated junction's verge reaches as its roads' verges mostly do, ROADS.VERGE)
+          local reach = tune.seat ~= 0 and ROADS.VERGE.least * 1.5 or tune.shoulder
+          outs[k] = {q[1] + dx * (inset + reach), q[2] + dy * (inset + reach), 0}
         end
         plate.mids, plate.walks, plate.verges = mids, {}, {}
         for k = 1, #corners do
           local n = k % #corners + 1
           if walks and (walks[k] > 0 or walks[n] > 0) then
-            plate.walks[#plate.walks + 1] = {corners[k], corners[n], mids[n], mids[k]}
+            local quad = {corners[k], corners[n], mids[n], mids[k]}
+            -- no wider than the kerb stone (a seated yard's corner, ROADS.YARD): the stone
+            -- itself, in the curb's row of the trim sheet along the corner
+            if math.max(walks[k], walks[n]) <= tune.curb * 1.5 then
+              local run = math.sqrt((corners[n][1] - corners[k][1]) ^ 2 + (corners[n][2] - corners[k][2]) ^ 2) / DECAL.curbRepeat
+              for c, p in ipairs(quad) do
+                quad[c] = {p[1], p[2], p[3], (c == 2 or c == 3) and run or 0, DECAL.curbRow[c <= 2 and 1 or 2]}
+              end
+              quad.stone = true
+            end
+            plate.walks[#plate.walks + 1] = quad
           end
           -- the verge starts at the raised ring's outer edge (ROADS.curbSlab); none across a
           -- paved ring's mouth: it lay over the road's own paving there (grass bands, w3)
@@ -14047,15 +14813,22 @@ local function build(cells, i, j, options)
   end
   -- whether any asphalt polygon covers (x, y) (ROADS.curbSlab); in `lists`: build() is at
   -- LuaJIT's 200 locals
+  -- By the triangles a piece is drawn as (a fan from its first corner), whichever way each
+  -- turns: on the inside of a tight bend a short chord's quad folds over itself, and taken as
+  -- one convex outline it held no point at all (a kerb's stone stood on its own road there).
   lists.onAsphalt = function(x, y)
     for _, entry in ipairs(asphaltBins[(floor(x / ABIN) + 32768) * 65536 + floor(y / ABIN) + 32768] or NONE) do
-      local c, ccw, inside = entry.poly, entry.ccw, not entry.deck
-      for k = 1, #c do
-        local a, b = c[k], c[k % #c + 1]
-        local sd = (b[1] - a[1]) * (y - a[2]) - (b[2] - a[2]) * (x - a[1]) -- side() without a {x, y}
-        if (ccw and sd < 0) or (not ccw and sd > 0) then inside = false; break end
+      local c, box = entry.poly, entry.bounds
+      if not entry.deck and x >= box[1] and x <= box[3] and y >= box[2] and y <= box[4] then
+        local a = c[1]
+        for k = 2, #c - 1 do
+          local b, d = c[k], c[k + 1]
+          local s1 = (b[1] - a[1]) * (y - a[2]) - (b[2] - a[2]) * (x - a[1])
+          local s2 = (d[1] - b[1]) * (y - b[2]) - (d[2] - b[2]) * (x - b[1])
+          local s3 = (a[1] - d[1]) * (y - d[2]) - (a[2] - d[2]) * (x - d[1])
+          if (s1 >= 0 and s2 >= 0 and s3 >= 0) or (s1 <= 0 and s2 <= 0 and s3 <= 0) then return true end
+        end
       end
-      if inside then return true end
     end
     return false
   end
@@ -14175,10 +14948,22 @@ local function build(cells, i, j, options)
           local z = p[3] or 0
           if (p[9] or 0) > 0.9 then z = ground(p[1], p[2]) end
           local q = {p[1], p[2], z}
-          q[6], q[7], q[8] = groundNormal(p[1], p[2])
+          -- a bank's corner comes with the bank's own normal (ROADS.VERGE); a cut's point has
+          -- the mean of its two corners' (zero where they had none)
+          local nx, ny, nz = p[6], p[7], p[8]
+          if type(nz) == 'number' and nz > .05 then
+            local l = math.sqrt(nx * nx + ny * ny + nz * nz)
+            q[6], q[7], q[8] = nx / l, ny / l, nz / l
+          else
+            q[6], q[7], q[8] = groundNormal(p[1], p[2])
+          end
           shaded[i] = q
           cx, cy = cx + p[1], cy + p[2]
         end
+        -- A seated verge starts at the kerb's top, over the asphalt. Where its quad folds (the
+        -- sharp corner between two mouths, the inside of a tight bend of its own road) the cut
+        -- above cannot take it apart: a piece whose middle is on a carriageway is left out.
+        if tune.seat ~= 0 and #shaded >= 3 and lists.onAsphalt(cx / #shaded, cy / #shaded) then shaded = NONE end
         -- a verge is the place's own ground: desert, alpine turf or snow, not a green band
         local kind = material
         if bio.on and #shaded >= 3 then kind = surfaceKind(cx / #shaded, cy / #shaded, 'ground') end
@@ -14228,20 +15013,26 @@ local function build(cells, i, j, options)
                 if visualRoads then ROADS.curbSlab(roads.polygon, 'curb', subtract(band, near, true), band, {[4] = true}, nil, lists.onAsphalt) end
               end
               if visualRoads and walk > curb then
-                ROADS.curbSlab(roads.polygon, 'sidewalk', subtract(paved, near, true), paved, {[4] = curb <= 0}, nil, lists.onAsphalt)
+                ROADS.curbSlab(roads.polygon, ROADS.YARD.paving(strip.tags, tune.seat ~= 0 and postsoviet),
+                  subtract(paved, near, true), paved, {[4] = curb <= 0}, nil, lists.onAsphalt)
               end
             end
           end
           if strip.surface and tune.shoulder > 0 then
-            local inner = {edge(k, sign * outer, (walk > 0 and ROADS.CURB.height or 0) - tune.vergeSink),
-              edge(k + 1, sign * outer, (walk > 0 and ROADS.CURB.height or 0) - tune.vergeSink)}
+            local top = (walk > 0 and ROADS.CURB.height or 0) - tune.vergeSink
+            local inner = {edge(k, sign * outer, top), edge(k + 1, sign * outer, top)}
             local o1, o2 = edge(k, sign * (outer + tune.shoulder)), edge(k + 1, sign * (outer + tune.shoulder))
             local verge = {inner[1], o1, o2, inner[2]}
             -- a carriageway edge (no sidewalk) also gets an edge decal once the ground is final;
             -- its part over the asphalt can reach a tile whose rect the verge misses
-            if BOX.touch(rect, verge, walk == 0 and DECAL.edgeIn or 0) then
+            -- (a seated road's verge is shaped once the ground is final, and may reach further)
+            local slack = tune.seat ~= 0 and ROADS.VERGE.most - tune.shoulder or 0
+            if BOX.touch(rect, verge, math.max(slack, walk == 0 and DECAL.edgeIn or 0)) then
               strip.verges = strip.verges or {}
-              strip.verges[#strip.verges + 1] = {verge, own, k = k, edge = walk == 0}
+              -- (a seated verge starts at the kerb's top: where the road doubles back on itself,
+              -- a hairpin or the loop at a yard's end, its own far chords cut it as any road's do)
+              strip.verges[#strip.verges + 1] = {verge, tune.seat ~= 0 and near or own, k = k, edge = walk == 0,
+                sign = sign, outer = outer, top = top}
             end
           end
         end
@@ -14255,7 +15046,8 @@ local function build(cells, i, j, options)
     for _, quad in ipairs(plate.walks or NONE) do
       -- the ring's inner side (corner to corner) is the kerb round the corner
       if visualRoads and BOX.touch(rect, quad, 0) then
-        ROADS.curbSlab(roads.polygon, 'sidewalk', subtract(quad, nil, true), quad, {[1] = true}, nil, lists.onAsphalt)
+        ROADS.curbSlab(roads.polygon, quad.stone and 'curb' or ROADS.YARD.paving(plate.tags or NONE, tune.seat ~= 0 and postsoviet),
+          subtract(quad, nil, true), quad, {[1] = true}, nil, lists.onAsphalt)
       end
     end
   end
@@ -14273,14 +15065,22 @@ local function build(cells, i, j, options)
           local left = hw + (strip.walk[k][1] and tune.sidewalk or ((strip.walk.kerb or NONE)[k] or NONE)[1] or 0)
           local right = hw + (strip.walk[k][-1] and tune.sidewalk or ((strip.walk.kerb or NONE)[k] or NONE)[-1] or 0)
           local na, nb = strip.normals[k], strip.normals[k + 1]
-          local samples = math.max(1, math.ceil(length / 2))
+          local slope, span = strip.slope, strip.span
+          -- (seated, every metre: the ground is kept 5 cm under the road, not 12, and pressed
+          -- corner by corner; between samples 2 m apart open land's humps came 5 cm through a
+          -- country road on 3 % of its length)
+          local samples = math.max(1, math.ceil(length / (tune.seat ~= 0 and 1 or 2)))
           for s = 0, samples do
             local t = s / samples
             local x, y = a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t
             local nx, ny = na[1] + (nb[1] - na[1]) * t, na[2] + (nb[2] - na[2]) * t
             local z = (a[3] or 0) + ((b[3] or 0) - (a[3] or 0)) * t + lift - tune.margin
+            -- (under a rutted bed's deepest rut, ROADS.SHAPE)
+            if strip.shape and strip.shape.most then z = z - strip.shape.most end
+            -- the leaning surface's height an offset from its centre line (ROADS.FALL)
+            local lean = slope and (slope[k] + (slope[k + 1] - slope[k]) * t) * (span[k] + (span[k + 1] - span[k]) * t) or 0
             for _, offset in ipairs({-right, -hw, -hw * .5, 0, hw * .5, hw, left}) do
-              press(x + nx * offset, y + ny * offset, z)
+              press(x + nx * offset, y + ny * offset, z + lean * offset)
             end
             pressed = pressed + 1
             if pressed % 16 == 0 then pause() end
@@ -14444,30 +15244,73 @@ local function build(cells, i, j, options)
   -- The decal lies edgeLift over the road and over the verge as drawn: a point `metres` past
   -- the road's edge (negative: over the asphalt) on the line from the verge's inner corner a to
   -- its outer corner o, which is tune.shoulder away.
-  local function edgePoint(a, o, metres, lift, v)
-    local t = metres / tune.shoulder
-    local z = metres > 0 and a[3] + (o[3] - a[3]) * t or a[3] + tune.vergeSink
+  -- A seated road's verge (ROADS.VERGE) is `width` wide here, with a bank's break at m (or nil),
+  -- and its asphalt leans (ROADS.FALL): `inward` is the rise per metre in from the edge.
+  local function edgePoint(a, o, metres, lift, v, width, m, inward)
+    local t = metres / (width or tune.shoulder)
+    local z
+    if metres <= 0 then
+      z = a[3] + tune.vergeSink - metres * (inward or 0)
+    elseif m then
+      local B = ROADS.VERGE.berm
+      if t <= B then z = a[3] + (m[3] - a[3]) * t / B else z = m[3] + (o[3] - m[3]) * (t - B) / (1 - B) end
+    else
+      z = a[3] + (o[3] - a[3]) * t
+    end
     return {a[1] + (o[1] - a[1]) * t, a[2] + (o[2] - a[2]) * t, z + lift, DECAL.edgeAt + metres / DECAL.edgeWidth, v}
   end
-  local function emitEdge(kind, strip, item)
+  -- quads: the seated verge's own (ROADS.VERGE.quads), or nil for the straight verge of item[1]
+  local function emitEdge(kind, strip, item, quads)
     local verge, k = item[1], item.k
     local inside = math.min(DECAL.edgeIn, strip.hw * .25)
-    local out = math.min(DECAL.edgeWidth * (1 - DECAL.edgeAt), tune.shoulder)
     local v0 = strip.dist[k] / DECAL.edgeRepeat % 1
     local v1 = v0 + (strip.dist[k + 1] - strip.dist[k]) / DECAL.edgeRepeat
     local a, o, b, p = verge[1], verge[2], verge[4], verge[3]   -- inner and outer corners at k, k + 1
     local low, high = DECAL.edgeLift[1], DECAL.edgeLift[2]
-    emit(roadDecor, kind, {edgePoint(a, o, -inside, low, v0), edgePoint(a, o, 0, low, v0),
-      edgePoint(b, p, 0, low, v1), edgePoint(b, p, -inside, low, v1)}, item[2], 'flat')
-    emit(roadDecor, kind, {edgePoint(a, o, 0, low, v0), edgePoint(a, o, out, high, v0),
-      edgePoint(b, p, out, high, v1), edgePoint(b, p, 0, low, v1)}, item[2], true)
+    local wa, wb, ma, mb, ia, ib
+    if quads then
+      local last = quads[#quads]
+      a, b, o, p = quads[1][1], quads[1][4], last[2], last[3]
+      if #quads > 1 then ma, mb = quads[1][2], quads[1][3] end
+      wa = math.sqrt((o[1] - a[1]) ^ 2 + (o[2] - a[2]) ^ 2)
+      wb = math.sqrt((p[1] - b[1]) ^ 2 + (p[2] - b[2]) ^ 2)
+      local slope, span = strip.slope, strip.span
+      if slope then ia, ib = -item.sign * slope[k] * span[k], -item.sign * slope[k + 1] * span[k + 1] end
+    end
+    local out = math.min(DECAL.edgeWidth * (1 - DECAL.edgeAt), math.min(wa or tune.shoulder, wb or tune.shoulder))
+    emit(roadDecor, kind, {edgePoint(a, o, -inside, low, v0, wa, nil, ia), edgePoint(a, o, 0, low, v0, wa),
+      edgePoint(b, p, 0, low, v1, wb), edgePoint(b, p, -inside, low, v1, wb, nil, ib)}, item[2], 'flat')
+    local B = ROADS.VERGE.berm
+    if ma and (out > B * wa + .05 or out > B * wb + .05) then
+      -- over a bank's break: the berm's part, then the slope's
+      local ba, bb = math.min(out, B * wa), math.min(out, B * wb)
+      local la, lb = low + (high - low) * ba / out, low + (high - low) * bb / out
+      emit(roadDecor, kind, {edgePoint(a, o, 0, low, v0, wa, ma), edgePoint(a, o, ba, la, v0, wa, ma),
+        edgePoint(b, p, bb, lb, v1, wb, mb), edgePoint(b, p, 0, low, v1, wb, mb)}, item[2], true)
+      emit(roadDecor, kind, {edgePoint(a, o, ba, la, v0, wa, ma), edgePoint(a, o, out, high, v0, wa, ma),
+        edgePoint(b, p, out, high, v1, wb, mb), edgePoint(b, p, bb, lb, v1, wb, mb)}, item[2], true)
+    else
+      emit(roadDecor, kind, {edgePoint(a, o, 0, low, v0, wa, ma), edgePoint(a, o, out, high, v0, wa, ma),
+        edgePoint(b, p, out, high, v1, wb, mb), edgePoint(b, p, 0, low, v1, wb, mb)}, item[2], true)
+    end
   end
   local edgeOps = 0
   for _, strip in ipairs(strips) do
     local kind = edgeKind(strip)
     for _, item in ipairs(strip.verges or NONE) do
       local verge = item[1]
-      if not distant or vergeWanted(ringBounds({verge})) then
+      if tune.seat ~= 0 then
+        -- the seated road's verge, shaped by the ground as it now lies (ROADS.VERGE)
+        local quads = ROADS.VERGE.quads(strip, item.k, item.sign, item.outer, item.top, ground, groundNormal)
+        if not distant or vergeWanted(ringBounds(quads)) then
+          for _, quad in ipairs(quads) do emit(distant and scene or roads.verges, vergeKind, quad, item[2], true) end
+          if kind and item.edge then
+            emitEdge(kind, strip, item, quads)
+            edgeOps = edgeOps + 1
+            if edgeOps % 64 == 0 then pause() end
+          end
+        end
+      elseif not distant or vergeWanted(ringBounds({verge})) then
         verge[2][3], verge[3][3] = ground(verge[2][1], verge[2][2]), ground(verge[3][1], verge[3][2])
         -- [9] marks the outer edge. The clip resamples it from ground() so both tiles agree.
         verge[2][9], verge[3][9] = 1, 1
@@ -14494,6 +15337,7 @@ local function build(cells, i, j, options)
       if kind and BOX.touch(rect, strip.points, strip.hw * DECAL.rutsWide) then
         local own = function(entry) return entry.road == strip end
         ROADS.ruts(kind, {rect = rect, edge = strip.edge, hw = strip.hw, dist = strip.dist, points = strip.points, walk = strip.walk,
+          rows = strip.shape and strip.shape.rows,
           shoulder = tune.shoulder, ground = ground, normal = groundNormal, pause = pause,
           low = DECAL.rutsLift[1] + (hash('ruts:' .. tostring(strip.road.id)) % 3) * .002, high = DECAL.rutsLift[2],
           core = function(k, quad) roadDecor.polygon(k, quad, true) end,
@@ -14542,10 +15386,30 @@ local function build(cells, i, j, options)
               local v0 = start / DECAL.markRepeat % 1
               local v1 = v0 + (finish - start) / DECAL.markRepeat
               local zp, zq = (p[3] or 0) + lift + DECAL.markLift, (q[3] or 0) + lift + DECAL.markLift
-              roadDecor.polygon(markKind, {{p[1] + nx * (op - half), p[2] + ny * (op - half), zp, 0, v0},
-                {p[1] + nx * (op + half), p[2] + ny * (op + half), zp, 1, v0},
-                {q[1] + nx * (oq + half), q[2] + ny * (oq + half), zq, 1, v1},
-                {q[1] + nx * (oq - half), q[2] + ny * (oq - half), zq, 0, v1}}, 'flat')
+              -- on a leaning strip (ROADS.FALL) the paint leans with it. A chord along which the
+              -- lean changes is two triangles folded on its diagonal, not one plane: the paint
+              -- clears the fold by what it stands proud of the plane, a few millimetres.
+              local sp, sq = 0, 0
+              local slope = strip.slope
+              if slope then
+                local s0, s1 = slope[index], slope[index + 1]
+                sp, sq = s0 + (s1 - s0) * fp, s0 + (s1 - s0) * fq
+                local fold = math.abs(s1 - s0) * width / 4
+                zp, zq = zp + fold, zq + fold
+              end
+              -- and stands on its crown (ROADS.SHAPE): the height at the line's own middle (a
+              -- centre line lies across the ridge, a hair over its two sides)
+              local shape = strip.shape
+              if shape and shape.crown then
+                local e0, e1 = shape.ease[index], shape.ease[index + 1]
+                local most = ROADS.SHAPE.most
+                zp = zp + math.min(most, shape.crown * math.max(0, width / 2 - math.abs(op))) * (e0 + (e1 - e0) * fp)
+                zq = zq + math.min(most, shape.crown * math.max(0, width / 2 - math.abs(oq))) * (e0 + (e1 - e0) * fq)
+              end
+              roadDecor.polygon(markKind, {{p[1] + nx * (op - half), p[2] + ny * (op - half), zp + sp * (op - half), 0, v0},
+                {p[1] + nx * (op + half), p[2] + ny * (op + half), zp + sp * (op + half), 1, v0},
+                {q[1] + nx * (oq + half), q[2] + ny * (oq + half), zq + sq * (oq + half), 1, v1},
+                {q[1] + nx * (oq - half), q[2] + ny * (oq - half), zq + sq * (oq - half), 0, v1}}, 'flat')
             end
             for _, mark in ipairs(marks) do
               if narrowed and mark.lane then
@@ -14563,33 +15427,38 @@ local function build(cells, i, j, options)
     end
   end
 
-  if visualRoads and not distant and options.experimentalDetail and coversPresent() then
-    ROADS.covers(strips, rect, lift, roadDecor, pause, patchesPresent())
+  -- (a seated road's asphalt has its covers, patches and wear on every near tile: ROADS.covers)
+  if visualRoads and not distant and (options.experimentalDetail or (tune.seat ~= 0 and tune.wear ~= 0)) and coversPresent() then
+    ROADS.covers(strips, rect, lift, roadDecor, pause, patchesPresent(),
+      tune.seat ~= 0 and tune.wear ~= 0 and {maps = DECAL.wearPresent()} or nil)
   end
   if visualRoads and not distant then
+    -- (tune.lean: what is laid on a leaning road leans with it, ROADS.FALL)
     ROADS.aprons({roads = lists.roads, rect = rect, lift = lift, pause = pause,
-      polygon = function(material, poly, up) roads.polygon(material, poly, up) end})
+      polygon = function(material, poly, up) roads.polygon(material, tune.lean(poly), up) end})
   end
   for _, area in ipairs(visualRoads and not distant and lists.areas or NONE) do
     if area.kind == 'island' then
       ROADS.island({roads = lists.roads, rect = rect, lift = lift, pause = pause,
-        polygon = function(material, poly, up) roads.polygon(material, poly, up) end}, area)
+        polygon = function(material, poly, up) roads.polygon(material, tune.lean(poly), up) end}, area)
     end
   end
   if visualRoads and not distant then
     GORE.paint({roads = lists.roads, rect = rect, lift = lift, markZ = lift + DECAL.markLift, pause = pause,
       material = roadMaterial,
-      surface = function(material, poly) roads.polygon(material, poly, 'flat') end,
-      mark = function(poly) if markKind then roadDecor.polygon(markKind, poly, 'flat') end end})
+      surface = function(material, poly) roads.polygon(material, tune.lean(poly), 'flat') end,
+      mark = function(poly) if markKind then roadDecor.polygon(markKind, tune.lean(poly), 'flat') end end})
   end
   if visualRoads and markKind and not distant then
     DETAIL.paint({roads = lists.roads, points = lists.points, stars = stars, cutsOf = cutsOf, rect = rect,
       kinds = DETAIL.kinds, z = lift + DECAL.markLift,
-      emit = function(poly) roadDecor.polygon(markKind, poly, 'flat') end, pause = pause})
-    if options.experimentalDetail then
+      emit = function(poly) roadDecor.polygon(markKind, tune.lean(poly), 'flat') end, pause = pause})
+    -- (options.hyper: the game's real pack at full detail draws the road's own furniture that
+    -- a pack's experiment asked for one by one: lane arrows here, signs and lights in the scene)
+    if options.experimentalDetail or options.hyper then
       DETAIL.arrows({roads = lists.roads, cutsOf = cutsOf, rect = rect, z = lift + DECAL.markLift,
         report = type(options.detailReport) == 'table' and options.detailReport or nil,
-        emit = function(poly) roadDecor.polygon(markKind, poly, 'flat') end, pause = pause})
+        emit = function(poly) roadDecor.polygon(markKind, tune.lean(poly), 'flat') end, pause = pause})
     end
   end
   mark('marks')
@@ -15704,7 +16573,10 @@ local function build(cells, i, j, options)
             local t = math.max(0, math.min(1, ((p[1] - a[1]) * dx + (p[2] - a[2]) * dy) / len2))
             local qx, qy = a[1] + dx * t, a[2] + dy * t
             local d = (p[1] - qx) ^ 2 + (p[2] - qy) ^ 2
-            if d < best then best, hit = d, {strip = strip, k = k, x = qx, y = qy, dx = dx, dy = dy, len = math.sqrt(len2)} end
+            if d < best then
+              best, hit = d, {strip = strip, k = k, x = qx, y = qy, dx = dx, dy = dy, len = math.sqrt(len2),
+                z = (a[3] or 0) + ((b[3] or 0) - (a[3] or 0)) * t}
+            end
           end
         end
       end
@@ -15719,7 +16591,13 @@ local function build(cells, i, j, options)
     if x < rect[1] or x >= rect[3] or y < rect[2] or y >= rect[4] then return end
     shelters[#shelters + 1] = p
     local fx, fy = -nx * side, -ny * side
-    static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), BUS_STOP, x, y, ground(x, y) + .25,
+    -- on the verge 1.4 m past the paving: a quarter of a metre over the ground under the old
+    -- straight verge, the seated verge's own height (ROADS.VERGE) now
+    local z = ground(x, y) + .25
+    if tune.seat ~= 0 then
+      z = ROADS.VERGE.beside(ground(x, y), hit.z + lift + tune.cross(x, y) + (walk > 0 and ROADS.CURB.height or 0), 1.4)
+    end
+    static('point_' .. tostring(point.id):gsub('[^%w_]', '_'), BUS_STOP, x, y, z,
       math.atan2(fx, fy) + math.pi)
     if options.experimentalDetail then
       -- 3.6 m along the road from the shelter, on its curb side, the plate facing the road
@@ -15836,7 +16714,7 @@ local function build(cells, i, j, options)
       end
     end
     local bays = ROADS.streetParking(lists.roads, {rect = rect, cutsOf = cutsOf, points = lists.points,
-      nearestOn = OFFROAD.nearestOn, walkAt = OFFROAD.walkAt, ground = ground, pause = pause,
+      nearestOn = OFFROAD.nearestOn, walkAt = OFFROAD.walkAt, ground = ground, pause = pause, cross = tune.cross,
       clear = function(x, y, yaw)
         for _, corner in ipairs({{-2.2, -.9}, {2.2, -.9}, {2.2, .9}, {-2.2, .9}}) do
           local cx = x + corner[1] * math.cos(yaw) - corner[2] * math.sin(yaw)
@@ -15961,7 +16839,7 @@ local function build(cells, i, j, options)
       end}, lists.lines)
   end
   OFFROAD.signs = {}
-  OFFROAD.signRequests = options.experimentalDetail and not distant and lists.signMouths and
+  OFFROAD.signRequests = (options.experimentalDetail or options.hyper) and not distant and lists.signMouths and
     SIGNS.plan(lists.roads, lists.signMouths, lists.signOrder, lists.points, cutsOf, pause) or nil
   if OFFROAD.signRequests and #OFFROAD.signRequests > 0 then
     OFFROAD.signDecorBefore = #sceneDecor.items
@@ -16143,7 +17021,7 @@ local function build(cells, i, j, options)
     local _, reserved = VEG.streetProps(strips, lists.lines, lists.buildings, segmentBins, rect,
       options.propSpacing, lift, tune.sidewalk, ground, put, pause,
       {lamps = true, tree = tree, treeAt = treeAt, areas = lists.areas, points = lists.points, signs = OFFROAD.signs, manual = OFFROAD.manual, look = look,
-        shopLinks = shops.links})
+        shopLinks = shops.links, cross = tune.cross, beside = tune.seat ~= 0 and ROADS.VERGE.beside or nil})
     local yardCtx = {rect = rect, scene = scene, decor = sceneDecor, ground = ground, drapeRings = drapeRings,
       put = put, lists = lists, strips = strips, segmentBins = segmentBins, reserved = reserved,
       spacing = options.propSpacing or 0, parkedCars = options.parkedCars, lift = lift, pause = pause, have = VEG.have, lamp = LAMP, containers = containers,
@@ -17390,6 +18268,9 @@ M.shopHeight = BLD.height
 M.coverIndex, M.hiddenRuns, M.wallPieces = BLD.cover, BLD.hidden, BLD.pieces
 M.shopStyle = BLD.shopStyle
 M.seamLip = ROADS.seamLip
+-- a seated road's parts, for the tests (test_road_seat.py)
+M.VERGE, M.FALL, M.YARD_ROADS = ROADS.VERGE, ROADS.FALL, ROADS.YARD
+M.curbSlab = ROADS.curbSlab
 M.triangulate = triangulate
 M.clip = clip
 M.EDGE_MAPS = EDGE_MAPS

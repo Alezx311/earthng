@@ -281,10 +281,10 @@ class PinRuntimeTests(PinScene):
         self.assertEqual(sum(s.endswith('italy_clutter_dumpster.DAE') for s in shapes), 3, 'none on the carriageway')
         self.assertEqual(sum(s.endswith('hydrant1.dae') for s in shapes), 1)
         self.assertTrue(self.near(self.corners(scene, 'e2rf_sign_white'), 180, 70, 1), 'the H plate')
-        # a French flag: three stripes across; the gazebo's roof over 3 m above the ground (-0.25)
+        # a French flag: three stripes across; the gazebo's roof over 3 m above the ground (0.04)
         flag = [p for p in self.near(yard, 220, 70, 3) if p[2] > 5]
         self.assertGreater(max(p[0] for p in flag) - min(p[0] for p in flag) + max(p[1] for p in flag) - min(p[1] for p in flag), 1.4)
-        self.assertGreater(max(p[2] for p in self.near(yard, 270, 70, 3)), 3.0)
+        self.assertGreater(max(p[2] for p in self.near(yard, 270, 70, 3)), 3.29)
         # in a Ukrainian pack a buried hydrant's plate says ПГ in white
         ua = self.build([{'roads': [STREET], 'points': points}], country='ukraine')
         self.assertEqual(len(self.near(self.corners(ua, 'e2rf_glyphs'), 160, 70, 1)), 2 * 6 * 2)
@@ -346,8 +346,9 @@ class PinRuntimeTests(PinScene):
 
 class PinSiteTests(PinScene):
     """L3 sites (docs/POI.md): 'pin_site' outlines and the pins of their categories without one.
-    The street runs along y = 90 (carriageway 86..94); the ground lies at -0.25."""
-    GROUND = -.25
+    The street runs along y = 90 (carriageway 86..94); the ground lies at 0.04 (the DEM plus
+    the generator's TUNE.seatDrop: a seated road's land comes up to just under its asphalt)."""
+    GROUND = .04
 
     def test_a_dealer_lot_parks_cars_flies_flags_and_names_itself_on_a_pylon(self):
         site = {'id': 'dealer', 'kind': 'pin_site', 'tags': {'e2r_cat': 'car_dealer', 'name': 'Auto Plaza'},
