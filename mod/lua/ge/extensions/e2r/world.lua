@@ -3795,7 +3795,17 @@ local function beginArrival(job, early)
   if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
   S.stream = {region = job.region, country = job.country, tile = job.tileSize, generator = job.generator}
   -- the level's TimeOfDay at the landing: the sun of the place (Kyiv's at Los Angeles was hours off)
-  if job.lat and job.lon then pcall(function() core_environment.setTimeOfDay({latitude = job.lat, longitude = job.lon}) end) end
+  if job.lat and job.lon then
+    local lat, lon = job.lat, job.lon
+    -- a pack may name the sun it is lit by (its manifest's sun: the proving ground at Point Nemo
+    -- takes Kyiv's, proving_ground.py SUN)
+    for _, c in ipairs(S.status and S.status.countries or {}) do
+      if c.id == job.country and type(c.sun) == 'table' and tonumber(c.sun.lat) and tonumber(c.sun.lon) then
+        lat, lon = tonumber(c.sun.lat), tonumber(c.sun.lon)
+      end
+    end
+    pcall(function() core_environment.setTimeOfDay({latitude = lat, longitude = lon}) end)
+  end
   S.landing = manifest
   S.knownMats = {}
   S.lamps = {}
@@ -6918,6 +6928,291 @@ function M.optionsSet(key, value)
   if changed ~= true then M.optionsList() end   -- refused or the same: the page shows the value in force
 end
 
+-- --- the lab and the proving ground on the pause menu (ui/ui-vue/mods/earthng) -------------------
+-- The page calls these through bngApi.engineLua and hears the answers as hooks: EarthNGLab carries
+-- lab.payload() of the tile under the car, EarthNGPolygon the proving ground's tiles.
+-- docs/PROVING_GROUND.md.
+function M.labBind()
+  local lab = NATIVE and native.lab
+  if not lab then return end
+  local okG, generator = pcall(require, 'ge/extensions/e2r/generator')
+  local okK, kit = pcall(require, 'ge/extensions/e2r/kit')
+  local okC, cells = pcall(require, 'ge/extensions/e2r/kit_cells')
+  local styles, walls = {}, {}
+  for name in pairs(okK and type(kit) == 'table' and kit.styles or {}) do styles[#styles + 1] = name end
+  for name in pairs(okC and type(cells) == 'table' and cells.walls or {}) do walls[#walls + 1] = name end
+  table.sort(styles); table.sort(walls)
+  lab.bind{tune = okG and type(generator) == 'table' and generator.TUNE or {}, kitStyles = styles, kitWalls = walls,
+    look = function() return native.regionLook and native.regionLook() or nil end,
+    quality = function(key) return S.appliedTune and S.appliedTune[key] or (S.tune and S.tune[key]) end}
+  lab.storage = {
+    read = function() local ok, cfg = pcall(jsonReadFile, lab.path); return ok and type(cfg) == 'table' and cfg or nil end,
+    write = function(cfg) pcall(jsonWriteFile, lab.path, cfg, true) end}
+  local okF, there = pcall(function() return FS:fileExists(lab.path) end)
+  if okF and there then lab.load() end
+end
+
+-- the tile the lab's 'tile' scope means: the one under the car, or the one the page pinned
+function M.labTile()
+  if not (NATIVE and native.tileAt) then return nil end
+  if S.labPin then return S.labPin.key, S.labPin.scope, S.labPin.i, S.labPin.j end
+  return native.tileAt()
+end
+
+function M.labList()
+  local lab = NATIVE and native.lab
+  if not (lab and guihooks) then return end
+  local key, scope, i, j = M.labTile()
+  local payload = lab.payload(scope)
+  payload.lang = lang
+  payload.landed = S.state == 'driving'
+  payload.tile = key and {key = key, i = i, j = j, pinned = S.labPin ~= nil} or nil
+  local ground = M.polygonHere and M.polygonHere(i, j)
+  if ground then payload.tile.code, payload.tile.title, payload.tile.titleEn, payload.tile.tags = ground.code, ground.title, ground.titleEn, ground.tags end
+  local stream = S.status and S.status.stream
+  payload.stream = stream and {building = stream.building, queued = stream.queued, built = stream.built,
+    ready = key and stream.ready and stream.ready[key] and true or false,
+    scene = key and stream.scenes and stream.scenes[key] and true or false} or nil
+  guihooks.trigger('EarthNGLab', payload)
+end
+
+-- Build a tile (or, with no key, every tile there is) again from the ground up: its road, its
+-- scene and its far layer leave the renderer as they do when the car drives away, native.lua
+-- forgets them, and the stream builds what is wanted again, the nearest first. The road under a
+-- moving car is gone for the second its tile takes; on the pause menu nothing falls.
+function M.tileAgain(key)
+  if not (NATIVE and native.rebuild) then return 0 end
+  local size = S.stream and S.stream.tile or 500
+  local n = 0
+  local function drop(k, tile)
+    retireForest(tile)
+    LIMIT.bury('E2RT_' .. k, tile.i * size, tile.j * size, size)
+    buryGroup('E2RD_' .. k); buryGroup('E2RS_' .. k)
+    if M.signals then M.signals.dropTile(k) end
+    if tile.flowLights and #tile.flowLights > 0 then S.flowLightVersion = (S.flowLightVersion or 0) + 1 end
+    tile.dropped = true
+    S.tiles[k] = nil
+    n = n + 1
+  end
+  local function dropFar(k, far)
+    retireForest(far)
+    buryGroup('E2RF_' .. k)
+    far.dropped = true
+    S.far[k] = nil
+  end
+  -- what the spawn queue still holds of these tiles belongs to manifests that are gone
+  local keep = {}
+  for _, job in ipairs(S.queue or {}) do
+    if job.horizon or (key and job.key ~= key) then keep[#keep + 1] = job end
+  end
+  S.queue = keep
+  if S.job and not S.job.horizon and (not key or S.job.key == key) then S.co, S.job = nil, nil end
+  if key then
+    if S.tiles and S.tiles[key] then drop(key, S.tiles[key]) end
+    if S.far and S.far[key] then dropFar(key, S.far[key]) end
+  else
+    local keys = {}
+    for k in pairs(S.tiles or {}) do keys[#keys + 1] = k end
+    for _, k in ipairs(keys) do drop(k, S.tiles[k]) end
+    keys = {}
+    for k in pairs(S.far or {}) do keys[#keys + 1] = k end
+    for _, k in ipairs(keys) do dropFar(k, S.far[k]) end
+  end
+  native.rebuild(key)
+  S.navDirty, S.collisionDirty = true, true
+  result.labRebuilds = (result.labRebuilds or 0) + 1
+  return n
+end
+
+-- where: 'tile' (the tile under the car) or 'world'. A change builds what it touches again.
+function M.labSet(key, value, where)
+  local lab = NATIVE and native.lab
+  if not lab then return end
+  local tileKey, scope = M.labTile()
+  if where == 'tile' and not scope then M.labList(); return end
+  local _, changed = lab.set(key, value, where == 'tile' and scope or nil)
+  if changed then M.tileAgain(where == 'tile' and tileKey or nil) end
+  M.labList()
+end
+
+function M.labReset(key, where)
+  local lab = NATIVE and native.lab
+  if not lab then return end
+  local tileKey, scope = M.labTile()
+  local changed
+  if where == 'all' then
+    changed = lab.resetAll()
+    tileKey = nil
+  elseif where == 'tile' then
+    changed = scope and lab.reset(key, scope)
+  else
+    changed = lab.reset(key, nil)
+    tileKey = nil
+  end
+  if changed then M.tileAgain(tileKey) end
+  M.labList()
+end
+
+function M.labRebuild(what)
+  if not (NATIVE and native.rebuild) then return end
+  local tileKey = M.labTile()
+  if what == 'tile' and tileKey then M.tileAgain(tileKey) else M.tileAgain(nil) end
+  M.labList()
+end
+
+-- keep the lab on the tile under the car now (true), or let it follow the car again (false)
+function M.labPin(on)
+  if on and NATIVE and native.tileAt then
+    local key, scope, i, j = native.tileAt()
+    S.labPin = key and {key = key, scope = scope, i = i, j = j} or nil
+  else
+    S.labPin = nil
+  end
+  M.labList()
+end
+
+-- The proving ground (earthng/proving_ground.py): its plan in the pack's manifest, country.polygon.
+function M.polygonPlan()
+  local stream = S.status and S.status.stream
+  local id = stream and stream.country
+  for _, c in ipairs(S.status and S.status.countries or {}) do
+    if type(c.polygon) == 'table' and (not id or c.id == id) then return c.polygon, c end
+  end
+  return nil
+end
+
+function M.polygonHere(i, j)
+  local stream = S.status and S.status.stream
+  if not (stream and i) then return nil end
+  local plan, country = M.polygonPlan()
+  if not plan or country.id ~= stream.country then return nil end
+  S.polygonIndex = S.polygonIndex ~= nil and S.polygonFor == plan and S.polygonIndex or nil
+  if not S.polygonIndex then
+    S.polygonIndex, S.polygonFor = {}, plan
+    for _, t in ipairs(plan.tiles or {}) do S.polygonIndex[t.i .. '_' .. t.j] = t end
+  end
+  return S.polygonIndex[i .. '_' .. j]
+end
+
+function M.polygonList()
+  if not guihooks then return end
+  local plan, country = M.polygonPlan()
+  local _, _, i, j = M.labTile()
+  local here = plan and M.polygonHere(i, j)
+  guihooks.trigger('EarthNGPolygon', {lang = lang, mounted = plan ~= nil, title = country and country.title or nil,
+    landed = S.state == 'driving', here = here and here.code or nil, view = S.polygonView,
+    plan = plan and {cols = plan.cols, rows = plan.rows, zones = plan.zones, tiles = plan.tiles} or nil})
+end
+
+local function polygonTile(code)
+  local plan = M.polygonPlan()
+  for _, t in ipairs(plan and plan.tiles or {}) do
+    if t.code == code then return t end
+  end
+end
+
+-- land the car in a tile of the proving ground (a full landing: the tiles round it are built first)
+function M.polygonGo(code)
+  local t = polygonTile(code)
+  if not (t and type(t.at) == 'table') then return end
+  M.polygonViewOff()
+  S.pickerOpen = true
+  goTo(t.at[1], t.at[2], 15)
+  land('the proving ground, tile ' .. tostring(code))
+  M.polygonList()
+end
+
+-- a zone's own start (the plan's zones), by id
+function M.polygonZone(id)
+  local plan = M.polygonPlan()
+  for _, z in ipairs(plan and plan.zones or {}) do
+    if z.id == id and type(z.at) == 'table' then
+      M.polygonViewOff()
+      S.pickerOpen = true
+      goTo(z.at[1], z.at[2], 15)
+      land('the proving ground, zone ' .. tostring(id))
+      break
+    end
+  end
+  M.polygonList()
+end
+
+-- One of a tile's cameras: the free camera at the plan's eye, looking at its target. Heights are
+-- above the ground the game has there (a ray down; the pack's sea level where nothing is loaded).
+function M.polygonView(code, viewId)
+  local t = polygonTile(code)
+  if not (t and NATIVE and native.localPoint) then return end
+  local view
+  for _, v in ipairs(t.views or {}) do if v.id == viewId then view = v; break end end
+  if not view then return end
+  local function point(geo)
+    local x, y = native.localPoint(geo[1], geo[2])
+    if not x then return nil end
+    local z
+    pcall(function()
+      local from = vec3(x, y, 4000)
+      local d = castRayStatic(from, vec3(0, 0, -1), 8000)
+      if d and d > 0 and d < 8000 then z = 4000 - d end
+    end)
+    if not z then pcall(function() z = be:getSurfaceHeightBelow(vec3(x, y, 4000)) end) end
+    if not z or z < -1000 then z = 20 end
+    return vec3(x, y, z + (geo[3] or 0))
+  end
+  local eye, target = point(view.eye), point(view.target)
+  if not (eye and target) then return end
+  local ok = pcall(function()
+    local q = quatFromDir(target - eye, vec3(0, 0, 1))
+    commands.setFreeCamera()
+    core_camera.setPosRot(0, eye.x, eye.y, eye.z, q.x, q.y, q.z, q.w)
+    S.polygonFov0 = S.polygonFov0 or core_camera.getFovDeg()
+    core_camera.setFOV(0, view.fov or S.polygonFov0)
+  end)
+  if ok then S.polygonView = {code = code, id = viewId} end
+  M.polygonList()
+end
+
+function M.polygonViewOff()
+  if not S.polygonView then return end
+  S.polygonView = nil
+  pcall(function()
+    if S.polygonFov0 then core_camera.setFOV(0, S.polygonFov0) end
+    commands.setGameCamera()
+  end)
+  M.polygonList()
+end
+
+-- a still of what the camera sees now, into the user folder's screenshots/earthng
+function M.polygonShot()
+  local name = string.format('screenshots/earthng/%s-%s-%s', S.polygonView and S.polygonView.code or 'view',
+    S.polygonView and S.polygonView.id or 'free', os.date('%Y%m%d-%H%M%S'))
+  pcall(function() createScreenshot2({filename = name, writeJPG = false, superSampling = 1}) end)
+  if guihooks then guihooks.trigger('EarthNGShot', {path = name .. '.png'}) end
+end
+
+-- The pause menu's tab. The page's own index.js registers it when the UI loads; this is the same
+-- call for a Lua reload (Ctrl+L), which empties the game's list and leaves the page loaded.
+function M.pauseTab()
+  -- a game that has the pause menu's mod tabs (0.40.6) may not have loaded them yet; an older
+  -- game has no such file and is not asked for it
+  local okF, there = pcall(function() return FS:fileExists('/lua/ge/extensions/ui/pause/actions.lua') end)
+  if not (okF and there) then return false end
+  local actions = extensions.ui_pause_actions
+  if not actions then
+    pcall(extensions.load, 'ui_pause_actions')
+    actions = extensions.ui_pause_actions
+  end
+  if not (actions and actions.registerModTab and actions.registerModButton) then return false end
+  local dir = '/ui/ui-vue/mods/earthng/'
+  actions.registerModTab({id = 'earthng', label = 'EarthNG', icon = 'globe'})
+  actions.registerModButton({id = 'earthng-settings', tabId = 'earthng', label = lang == 'en' and 'Settings' or 'Налаштування',
+    icon = 'adjust', componentName = dir .. 'Settings.vue'})
+  actions.registerModButton({id = 'earthng-lab', tabId = 'earthng', label = lang == 'en' and 'Generator' or 'Генератор',
+    icon = 'wrench', componentName = dir .. 'Lab.vue'})
+  actions.registerModButton({id = 'earthng-polygon', tabId = 'earthng', label = lang == 'en' and 'Proving ground' or 'Полігон',
+    icon = 'mapWithEmitter', componentName = dir .. 'Polygon.vue'})
+  return true
+end
+
 function M.onExtensionLoaded()
   setExtensionUnloadMode(M, 'manual')
   loadLang()
@@ -6932,6 +7227,8 @@ function M.onExtensionLoaded()
     M.options.restore(nil, true)   -- locationOff (the rest is read above)
     M.optionsList()                -- an open UI app redraws after a Lua reload
   end
+  pcall(M.labBind)
+  pcall(M.pauseTab)
   log('I', logTag, 'Earth2Road planet extension loaded')
 end
 

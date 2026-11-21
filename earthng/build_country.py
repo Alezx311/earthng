@@ -1045,7 +1045,7 @@ def _export_region(archive, country_id, region, bbox, emit, jobs=1, landcover=()
 
 def build_country(country_id, title, version, regions, out, bbox=None, emit=print, jobs=1, landing=None, landcover=(), vegetation=None,
                   look=None, include=None, cancel=None, map_data=None, section=None, credits=(), experiments=None,
-                  photo_index=None, require_far=False, real_colour=False):
+                  photo_index=None, require_far=False, real_colour=False, extra=None):
     """Stream source blocks to ZIP64 and atomically replace the completed archive.
     real_colour: also the land's real colour from Sentinel-2 (s2_colour.py: the far map and the
     near sheets), read from the open archive while building; a build that cannot reach it keeps
@@ -1054,7 +1054,9 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
     (earthng_<country>_<section>.zip with sections/<id>/section.json and no country manifest),
     which the game joins with the country's other mounted sections.
     credits: the optional sources' credits ({source, data, license, url}), after CREDITS in the
-    manifest and in CREDITS.txt beside it."""
+    manifest and in CREDITS.txt beside it.
+    extra: more top-level fields of the country manifest (the proving ground's plan); they never
+    replace a field the exporter writes."""
     _identifier(country_id, 'country id')
     if not isinstance(title, str) or not title.strip() or not isinstance(version, str) or not version.strip():
         raise ValueError('country title and version must be nonempty strings')
@@ -1193,6 +1195,8 @@ def build_country(country_id, title, version, regions, out, bbox=None, emit=prin
             if include:
                 manifest['include'] = include
             manifest['credits'] = [*CREDITS, *(credits or ())]
+            for key, value in (extra or {}).items():
+                manifest.setdefault(key, value)
             if photo_index is not None:
                 import build_area_photos
                 manifest['credits'].append({'source': build_area_photos.ATTRIBUTION,

@@ -18273,6 +18273,8 @@ M.VERGE, M.FALL, M.YARD_ROADS = ROADS.VERGE, ROADS.FALL, ROADS.YARD
 M.curbSlab = ROADS.curbSlab
 M.triangulate = triangulate
 M.clip = clip
+-- the defaults of options.tune, for the lab's sliders (lab.lua bind)
+M.TUNE = TUNE
 M.EDGE_MAPS = EDGE_MAPS
 M.STREET_PROPS = VEG.props
 return M

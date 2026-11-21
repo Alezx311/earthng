@@ -328,7 +328,9 @@ function M.plan(ctx)
   if not M.uses[tags.building or ''] or tags.e2r_part or height < M.MIN.height or (ctx.footprint or 0) < M.MIN.area then return nil end
   if options.detail and options.detail < M.MIN.detail then return nil end
   local h = ctx.h
-  local name = M.styleOf(tags, height, h, ctx.block, ctx.rings)
+  -- options.kitStyle, options.kitWall: one style or one wall for every building of the tile (lab.lua)
+  local name = options.kitStyle and M.styles[options.kitStyle] and options.kitStyle
+    or M.styleOf(tags, height, h, ctx.block, ctx.rings)
   local S = M.styles[name]
   if not S then return nil end
   local usable = height - S.plinth - S.attic
@@ -336,7 +338,7 @@ function M.plan(ctx)
   n = n and floor(n + .5) or nil
   if not n or n < 1 or usable / n < 2.45 or usable / n > 4.6 then n = max(1, floor(usable / S.floor + .5)) end
   if usable / n < 2.3 then return nil end
-  local wall = pick(S.walls, ih(h, 1))
+  local wall = options.kitWall and DATA.walls[options.kitWall] and options.kitWall or pick(S.walls, ih(h, 1))
   local detail = options.detail or 65
   local plan = {style = S, name = name, h = h, rect = ctx.rect, floors = n, fh = usable / n, plinth = S.plinth,
     wall = wall, wallM = DATA.walls[wall] or 3, ground = ctx.ground, shop = ctx.shop,

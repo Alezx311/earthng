@@ -9,6 +9,12 @@ local coordinates = require('ge/extensions/e2r/coordinates')
 local cellformat = require('ge/extensions/e2r/cellformat')
 local manual = require('ge/extensions/e2r/manual')
 local manualEditor = require('ge/extensions/e2r/manual_editor')
+-- the generator's knobs for the world and for single tiles (lab.lua); a host without the module
+-- (the benches' own require) builds as before
+do
+  local ok, lab = pcall(require, 'ge/extensions/e2r/lab')
+  M.lab = ok and type(lab) == 'table' and type(lab.resolve) == 'function' and lab or nil
+end
 -- the far view's colour maps, draped over the horizon tiles once far.lua has loaded them
 local okFarModule, farModule = pcall(require, 'ge/extensions/e2r/far')
 local FARMAP = okFarModule and type(farModule) == 'table' and farModule.mapAt
@@ -1280,6 +1286,19 @@ local function buildTile(key, wanted)
   local center = active.landing and {active.landing.x, active.landing.y} or nil
   local tune = active.tune or {}
   local st = state.stream
+  -- The lab's word on this tile (lab.lua): a tile of the usual size answers to its own knobs,
+  -- near and far alike (they shape one ground); the horizon and the vista only to the world's.
+  local lab, labScope = M.lab, nil
+  if lab and size == r.data.tileSize and not wanted.horizon and not wanted.vista then
+    labScope = r.descriptor.id .. ':' .. key
+  end
+  local knobs = lab and lab.resolve(labScope) or NONE_LIST
+  local knob = knobs.option or NONE_LIST
+  local function switch(value, first)
+    if value == 'on' then return true end
+    if value == 'off' then return false end
+    return first
+  end
   local function stamp(road, nav)
     if road.spawn and not finite(road.spawn.yaw) and vector(road.spawn.dir, 3) then
       road.spawn.yaw = math.atan2(-road.spawn.dir[1], road.spawn.dir[2])
@@ -1352,13 +1371,18 @@ local function buildTile(key, wanted)
       terrainStep = wanted.vista and 100 or nil,
       farStep = 100, adaptiveFar = not wanted.horizon, horizonStep = wanted.step or 100,
       latitude = r.data.geo and r.data.geo[4], geo = r.data.geo, nature = r.data.nature,
-      look = r.data.look, country = r.country and r.country.id, realStyle = realStyle,
+      look = lab and lab.lookOf(r.data.look, labScope) or r.data.look,
+      country = r.country and r.country.id, realStyle = realStyle,
+      tune = knobs.tune, kit = switch(knob.kit, nil),
+      kitStyle = knob.kitStyle ~= 'auto' and knob.kitStyle or nil,
+      kitWall = knob.kitWall ~= 'auto' and knob.kitWall or nil,
       leftHand = generator.keepsLeft and generator.keepsLeft(r.country and r.country.id, r.data.look) or nil,
       seaLevel = finite(r.data.seaLevel) and r.data.seaLevel or nil,
-      maxTrees = tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = tune.maxGrass,
-      maxRocks = tune.maxRocks, forestSpacing = tune.forestSpacing, groundSpacing = tune.groundSpacing,
-      groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = tune.propSpacing,
-      detail = tune.detail, roadReady = roadReady or nil, sceneReady = sceneReady or nil,
+      maxTrees = knob.maxTrees or tune.maxTrees, maxFarTrees = tune.maxFarTrees, maxGrass = knob.maxGrass or tune.maxGrass,
+      maxRocks = knob.maxRocks or tune.maxRocks, forestSpacing = knob.forestSpacing or tune.forestSpacing,
+      groundSpacing = knob.groundSpacing or tune.groundSpacing,
+      groundTrees = tune.groundTrees, parkedCars = tune.parkedCars, propSpacing = knob.propSpacing or tune.propSpacing,
+      detail = knob.detail or tune.detail, roadReady = roadReady or nil, sceneReady = sceneReady or nil,
       -- a wood's floor is the engine's grass alone (turf.lua): no squares for it where that is off
       woodFloor = realStyle ~= false and package.loaded['ge/extensions/e2r/turf'] ~= nil
         and package.loaded['ge/extensions/e2r/turf'].active() or false,
@@ -1390,12 +1414,14 @@ local function buildTile(key, wanted)
         return accepted
       end or nil,
       -- the storefront experiment: only a pack whose data asks for it (docs/BILYCHI_EXPERIMENT.md)
-      experimentalShopfront = type(r.data.experiments) == 'table' and r.data.experiments.shopfront == true or nil,
-      experimentalDetail = type(r.data.experiments) == 'table' and r.data.experiments.detail == true or nil,
+      experimentalShopfront = switch(knob.experimentalShopfront,
+        type(r.data.experiments) == 'table' and r.data.experiments.shopfront == true or nil) or nil,
+      experimentalDetail = switch(knob.experimentalDetail,
+        type(r.data.experiments) == 'table' and r.data.experiments.detail == true or nil) or nil,
       -- The real pack at full detail (generator.lua options.hyper): road signs, traffic lights and
       -- lane arrows in every pack, not only where a pack's experiment asks. The one mode there is
       -- yet: detail by the car's speed (full under 60 km/h, the road alone over 250) comes later.
-      hyper = realStyle or nil,
+      hyper = switch(knob.hyper, realStyle or nil) or nil,
       cellSize = s})
   if type(road) ~= 'table' or type(road.items) ~= 'table' or type(road.mats) ~= 'table'
     or type(scene) ~= 'table' or type(scene.items) ~= 'table' then error('generator returned an invalid tile manifest') end
@@ -2196,7 +2222,43 @@ end
 
 M.unload = unload
 M.setTune = setTune
+-- The tile under a point of the landing's frame (the car when no point is given): its key, the
+-- lab's name for it and its indices; nil before a landing.
+M.tileAt = function(x, y)
+  if not active then return nil end
+  local p = active.pose or active.landing
+  x, y = x or (p and p.x), y or (p and p.y)
+  if not finite(x) or not finite(y) then return nil end
+  local size = active.region.data.tileSize
+  local i, j = math.floor(x / size), math.floor(y / size)
+  local key = keyOf(i, j)
+  return key, active.region.descriptor.id .. ':' .. key, i, j
+end
+-- Build tiles again with the lab's values of now: one tile (its near and far layers), or every
+-- tile there is when no key is given. The scheduler builds what is wanted again, the nearest
+-- first; world.lua drops a tile's objects when its layers leave the status. Returns how many.
+M.rebuild = function(key)
+  if not active then return 0 end
+  if active.work and not active.workHorizon and (key == nil or active.workKey == key) then
+    active.work, active.workKey, state.stream.building = nil, nil, 0
+  end
+  local keys = {}
+  if key then
+    keys[1] = key
+  else
+    for k in pairs(active.tiles) do keys[#keys + 1] = k end
+  end
+  local n = 0
+  for _, k in ipairs(keys) do
+    local a, b = unload(k), unload(k, 'far')
+    if a or b then n = n + 1 end
+  end
+  active.prioritiesDirty = true
+  return n
+end
 M.localPoint = function(lat, lon) if active then return localPoint(active.region, lat, lon) end end
+-- the landing region's look (looks.py): the lab's defaults for its slots
+M.regionLook = function() return active and active.region.data.look or nil end
 -- what far.lua reads: the landing region, every mounted region and the frame conversions
 M.farSource = function()
   if not active then return nil end
