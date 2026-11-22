@@ -20,7 +20,7 @@ from lupa.luajit21 import LuaRuntime
 LUA = ROOT / 'mod/lua/ge/extensions/e2r'
 
 
-def runtime(pack, game_structs=False, kit=False):
+def runtime(pack, game_structs=False, kit=False, houses=False):
     archive = zipfile.ZipFile(pack)
     names = {'/' + n for n in archive.namelist()}
     lua = LuaRuntime(unpack_returned_tuples=True)
@@ -80,6 +80,11 @@ def runtime(pack, game_structs=False, kit=False):
         lua.execute("package.loaded['ge/extensions/e2r/kit_cells'] = kit_cells")
         g.kit = load((LUA / 'kit.lua').read_text(encoding='utf8'), 'kit.lua')
         lua.execute("package.loaded['ge/extensions/e2r/kit'] = kit")
+    if houses:
+        # the houses' library as the game requires it (houses.lua reads the kit's cells too)
+        for name in ('kit_cells', 'house_lib', 'houses'):
+            g.module_ = load((LUA / f'{name}.lua').read_text(encoding='utf8'), f'{name}.lua')
+            lua.execute(f"package.loaded['ge/extensions/e2r/{name}'] = module_")
     for name in ('countries', 'coordinates', 'cellformat', 'generator', 'quality', 'manual', 'manual_editor'):
         mods[name] = load((LUA / f'{name}.lua').read_text(encoding='utf8'), f'{name}.lua')
     g.mods = convert({})
@@ -134,11 +139,11 @@ for di = -radius, radius do
         local t1 = clock()
         local road, scene, farM = generator.build({cells[ck]}, i, j, {tileSize = 500, far = far,
           pause = function() pauses = pauses + 1 end, seaLevel = d.seaLevel, propSpacing = PROP_SPACING,
-          kit = KIT, country = COUNTRY, detail = DETAIL, look = d.look, kitReport = KIT and not far and KIT_REPORT or nil})
+          kit = KIT, houseArt = HOUSES, ownArt = HOUSES or nil, country = COUNTRY, detail = DETAIL, look = d.look, kitReport = KIT and not far and KIT_REPORT or nil})
         local ms = (clock() - t1) * 1000
         local kb = collectgarbage('count') - kb0
         collectgarbage('restart')
-        local tris, verts, items, statics, tables, props = 0, 0, 0, 0, 0, 0
+        local tris, verts, items, statics, tables, props, mats, kinds = 0, 0, 0, 0, 0, 0, 0, {}
         for _, m in ipairs({road, scene, farM}) do
           for _, it in ipairs(m and m.items or {}) do
             items = items + 1
@@ -146,6 +151,7 @@ for di = -radius, radius do
             if it.prop then props = props + 1 end
             for _, mesh in ipairs(it.meshes or {}) do
               verts = verts + #mesh.verts; tris = tris + #mesh.faces / 3
+              if not kinds[mesh.material] then kinds[mesh.material] = true; mats = mats + 1 end
               local seen, n = {}, 0
               for _, f in ipairs(mesh.faces) do if not seen[f] then seen[f] = true; n = n + 1 end end
               tables = tables + #mesh.verts + #mesh.normals + #mesh.uvs + n
@@ -153,7 +159,7 @@ for di = -radius, radius do
           end
         end
         out[#out + 1] = {key = i .. '_' .. j, far = far, ms = ms, decodeMs = far and 0 or decodeMs, decodeKb = far and 0 or decodeKb, kb = kb,
-          tris = tris, verts = verts, tables = tables, items = items, statics = statics, props = props, pauses = pauses}
+          tris = tris, verts = verts, tables = tables, items = items, mats = mats, statics = statics, props = props, pauses = pauses}
       end
     end
   end
@@ -271,13 +277,15 @@ def main():
     p.add_argument('--skip-tiles', action='store_true')
     p.add_argument('--json', type=Path)
     p.add_argument('--kit', action='store_true', help='the building kit on in the tile bench (kit.lua)')
+    p.add_argument('--houses', action='store_true', help='the houses of the region in the tile bench (houses.lua)')
     p.add_argument('--country', help='country id for the tile bench (the region of its buildings)')
     p.add_argument('--detail', type=float, help='quality 0..100 for the tile bench')
     p.add_argument('--prop-spacing', type=float, default=0, help='street props every this many metres of sidewalk (0: none)')
     a = p.parse_args()
-    lua, mods, io_stats = runtime(a.pack, kit=a.kit)
+    lua, mods, io_stats = runtime(a.pack, kit=a.kit, houses=a.houses)
     g = lua.globals()
     g.KIT, g.COUNTRY, g.DETAIL, g.KIT_REPORT = a.kit, a.country, a.detail, lua.table()
+    g.HOUSES = a.houses
     lua.globals().PROP_SPACING = a.prop_spacing or None
     native = mods['native']
     st = native.refresh()
@@ -304,7 +312,9 @@ def main():
                 print(f'{name}: tiles {len(group)}, ms mean {sum(r["ms"] for r in group) / len(group):.1f} '
                       f'max {max(r["ms"] for r in group):.1f}, KB mean {sum(r["kb"] for r in group) / len(group):.0f}, '
                       f'verts/tri {sum(r["verts"] for r in group) / max(1, sum(r["tris"] for r in group)):.2f}, '
-                      f'tables/tri {sum(r["tables"] for r in group) / max(1, sum(r["tris"] for r in group)):.2f}')
+                      f'tables/tri {sum(r["tables"] for r in group) / max(1, sum(r["tris"] for r in group)):.2f}, '
+                      f'tris mean {sum(r["tris"] for r in group) / len(group):.0f}, '
+                      f'materials mean {sum(r.get("mats", 0) for r in group) / len(group):.1f} max {max(r.get("mats", 0) for r in group):.0f}')
         if a.kit:
             kr = g.KIT_REPORT
             print('kit:', kr.buildings or 0, 'buildings,', int(kr.tris or 0), 'triangles,',

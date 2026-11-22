@@ -129,7 +129,8 @@ def surface(kind):
 def sheet_source(kind):
     """The older pixel surface that stands in for a plain sheet's kind."""
     if kind.startswith('roof_'):
-        return 'roof_metal' if 'prof' in kind or kind in ('roof_tin', 'roof_zinc') else 'roof_tile'
+        metal = 'prof' in kind or '_seam_' in kind or '_corr_' in kind or kind in ('roof_tin', 'roof_zinc')
+        return 'roof_metal' if metal else 'roof_tile'
     if kind.startswith('fence_'):
         return 'fence_wall'
     return 'road' if kind == 'road_sett' else 'wall_plaster'

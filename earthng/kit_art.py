@@ -443,7 +443,13 @@ def _runs(mask, least):
 def cut_sheet(name):
     """The cells of one sheet as [(cell, RGB array, background mask, width m, height m)]."""
     cols, rows, _, cells = SHEETS[name]
-    im = np.asarray(Image.open(SRC / f'sheet_{name}.png').convert('RGB')).astype(np.int32)
+    return cut_cells(SRC / f'sheet_{name}.png', cols, rows, cells, name)
+
+
+def cut_cells(path, cols, rows, cells, name=''):
+    """The objects of a sheet on magenta (`cols` a row, or a tuple of them row by row) as
+    [(cell, RGB array, background mask, width m, height m)]; house_art's sheets are cut by it too."""
+    im = np.asarray(Image.open(path).convert('RGB')).astype(np.int32)
     r, g, b = im[..., 0], im[..., 1], im[..., 2]
     bg = (r > 150) & (b > 150) & (g < 120) & ((r + b) // 2 - g > 70)
     bands = _runs((~bg).mean(axis=1) > .02, 40)
@@ -473,10 +479,11 @@ def _dilate(mask, n):
     return np.asarray(im) > 127
 
 
-def cell_maps(cell, rgb, bg, glass=True):
-    """(colour, glass mask 0..1) of one cell at the slot's inner size."""
+def cell_maps(cell, rgb, bg, glass=True, fill=None):
+    """(colour, glass mask 0..1) of one cell at the slot's inner size. fill: the magenta inside
+    the object is glass (None: by GLASS_FILL)."""
     h, w = bg.shape
-    fill_glass = cell in GLASS_FILL
+    fill_glass = cell in GLASS_FILL if fill is None else fill
     out = rgb.astype(np.float64)
     # the magenta and what it has bled into: pink pixels within a few of it
     pink = (out[..., 0] + out[..., 2]) / 2 - out[..., 1] > 34

@@ -543,6 +543,10 @@ OWN_SHEETS = {
 }
 if own_art.ready():
     SHEETS.update(OWN_SHEETS)
+# The houses' library (house_art.py: walls and roofs of the world's houses), where all of it is
+# there. Sheets of their own stage (fast_art.house_art): a new surface does not redraw the facades.
+import house_art
+HOUSE_SHEETS = house_art.sheets() if house_art.ready() and own_art.ready() else {}
 SHEET_PX, SHEET_NORMAL_PX = 1024, 512
 # Photos too dark for a baseColorFactor (at most 1) to bring up: their own colour times this. A
 # 'grey' sheet is levelled to GREY_MEAN (linear), which its kinds' factors count from.
@@ -552,17 +556,20 @@ GREY_MEAN = .6
 
 def sheet(name):
     """(colour, normal) PIL images of a plain sheet, as the game wants them."""
-    source, fit = SHEETS[name]
+    source, fit = SHEETS.get(name) or HOUSE_SHEETS[name]
     src = photo.TEXTURES / source
     colour = Image.open(src / 'albedo.jpg').convert('RGB').resize((SHEET_PX, SHEET_PX), Image.LANCZOS)
     normal = Image.open(src / 'normal.jpg').convert('RGB').resize((SHEET_NORMAL_PX, SHEET_NORMAL_PX), Image.LANCZOS)
+    if name in HOUSE_SHEETS and source.startswith(('hs_', 'hr_')):
+        colour, normal = house_art.toned(source, colour, normal)
     if 'turn' in fit:
         colour = colour.transpose(Image.ROTATE_90)
         r, g, b = normal.transpose(Image.ROTATE_90).split()
         normal = Image.merge('RGB', (g.point(lambda v: 255 - v), r, b))
     if 'grey' in fit:
         grey = (np.asarray(colour.convert('L'), np.float32) / 255) ** 2.2
-        grey = np.clip(grey * GREY_MEAN / max(float(grey.mean()), .01), 0, 1) ** (1 / 2.2)
+        level = house_art.GREY if name in HOUSE_SHEETS else GREY_MEAN
+        grey = np.clip(grey * level / max(float(grey.mean()), .01), 0, 1) ** (1 / 2.2)
         colour = Image.fromarray((grey * 255 + .5).astype('uint8')).convert('RGB')
     elif name in SHEET_LEVEL:
         k = SHEET_LEVEL[name]

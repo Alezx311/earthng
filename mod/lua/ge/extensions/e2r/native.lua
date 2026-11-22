@@ -1402,6 +1402,8 @@ local function buildTile(key, wanted)
       land = was.land,
       kitStyle = knob.kitStyle ~= 'auto' and knob.kitStyle or nil,
       kitWall = knob.kitWall ~= 'auto' and knob.kitWall or nil,
+      houseStyle = knob.houseStyle ~= 'auto' and knob.houseStyle or nil,
+      houseCountry = knob.houseCountry ~= 'auto' and knob.houseCountry or nil,
       leftHand = generator.keepsLeft and generator.keepsLeft(r.country and r.country.id, r.data.look) or nil,
       seaLevel = finite(r.data.seaLevel) and r.data.seaLevel or nil,
       maxTrees = density('maxTrees'), maxFarTrees = tune.maxFarTrees, maxGrass = density('maxGrass'),

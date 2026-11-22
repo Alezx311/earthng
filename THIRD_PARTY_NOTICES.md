@@ -153,6 +153,20 @@ regional types, not photographs of real buildings or places.
 Upstream model pages: [PATINA](https://fal.ai/models/fal-ai/patina/material),
 [Nano Banana 2](https://fal.ai/models/fal-ai/nano-banana-2). Provider terms apply.
 
+## Houses' library (fal, 22 November 2026)
+
+The walls and roofs of one- and two-storey houses by region and their windows and doors
+(`sh_h_*`, `sh_hr_*`, `house_cells` and `house_cells2` in the planet's art; recipes in
+`earthng/house_art.py`) were generated through fal: seamless colour, normal, roughness and
+height with `fal-ai/patina/material`, and thirteen sheets of windows and doors with
+`fal-ai/nano-banana-2`. The prompts are in `house_art.py`; endpoints, request IDs and seeds are
+logged in `data/textures/house/fal_manifest.jsonl` beside the generated originals. Sheets, their
+tone, paints and the atlases are computed from those originals at art build. They are invented
+surfaces, windows and doors of regional types, not photographs of real buildings or places.
+
+Upstream model pages: [PATINA](https://fal.ai/models/fal-ai/patina/material),
+[Nano Banana 2](https://fal.ai/models/fal-ai/nano-banana-2). Provider terms apply.
+
 The blood stains (`blood_*` in the planet's `art/people`) are drawn by `earthng/blood_art.py`:
 the project's own, no third-party art.
 

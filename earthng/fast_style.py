@@ -1225,8 +1225,39 @@ for _k in ('fence_brick', 'fence_stone'):
     EXTRA[_k] = {'doubleSided': True}
 # a street of granite setts: what the tyres feel stays asphalt, as the worn road it replaces
 KINDS['road_sett'] = ('sh_setts', [.45, .44, .42, 1], 'ASPHALT', 3.0, 'plan')
+# The houses' library (house_art.py, fast_facade.HOUSE_SHEETS), where its paid sources are there:
+# the walls and roofs of the world's one- and two-storey houses (houses.lua's styles), a grey
+# sheet in each of its paints, and two atlases of windows and doors whose glass mirrors the sky.
+import house_art as _house
+HOUSE_KINDS = ()
+_HOUSE_ROUGH = {'sh_h_tile_white': (.3, 0), 'sh_h_tile_strip': (.38, 0), 'sh_h_slate_hung': (.6, 0), 'sh_h_tinpatch': (.66, .4),
+                'sh_h_jp_siding': (.7, 0), 'sh_h_yakisugi': (.75, 0), 'sh_hr_kawara': (.36, 0), 'sh_hr_seam': (.5, .55),
+                'sh_hr_corr': (.5, .6), 'sh_hr_stone': (.8, 0)}
+if _facade.HOUSE_SHEETS:
+    for _s in _facade.HOUSE_SHEETS:
+        _rough, _metal = _HOUSE_ROUGH.get(_s, (.92, 0))
+        TEXTURES.setdefault(_s, {'baseColorMap': f'{ART}/real/{_s}.color.png', 'normalMap': f'{ART}/real/{_s}.normal.png',
+                                 'roughnessFactor': _rough, 'metallicFactor': _metal})
+    _means = _house.means()
+    for _k, (_tex, _rgb, _m, _painted) in _house.wall_kinds().items():
+        _flat = _rgb or _means[_tex]
+        KINDS[_k] = (_tex, [_c / 255 for _c in _flat] + [1], 'METAL' if _tex in ('sh_h_tinpatch', 'sh_profile') else 'ROCK', _m, 'wall')
+        if _painted:
+            TINT[_k] = _factor(_rgb, _house.GREY if _tex in _facade.HOUSE_SHEETS else _G)
+    for _k, (_tex, _rgb, _m, _painted) in _house.roof_kinds().items():
+        _flat = _rgb or _means[_tex]
+        KINDS[_k] = (_tex, [_c / 255 for _c in _flat] + [1], 'METAL' if _tex in ('sh_hr_seam', 'sh_hr_corr') else 'ROCK', _m, 'roof')
+        if _painted:
+            TINT[_k] = _factor(_rgb, _house.GREY if _tex in _facade.HOUSE_SHEETS else _G)
+        EXTRA[_k] = {'doubleSided': True}
+    ROOFS += tuple(_house.roof_kinds())
+    for _k in _house.ATLASES:
+        TEXTURES[_k] = {'baseColorMap': f'{ART}/real/{_k}.color.png', 'roughnessMap': f'{ART}/real/{_k}_r.data.png',
+                        'metallicMap': f'{ART}/real/{_k}_m.data.png', 'metallicFactor': .5}
+        KINDS[_k] = (_k, [.62, .64, .66, 1], 'ROCK', 3.0, 'wall')
+    HOUSE_KINDS = (*_house.wall_kinds(), *_house.roof_kinds(), *_house.ATLASES)
 SHEET_KINDS = (*SHEET_WALLS, *SHEET_ROOFS, *OWN_WALLS, *OWN_ROOFS, 'fence_prof_green', 'fence_prof_brown', 'fence_prof_grey',
-               'fence_brick', 'fence_stone', 'fence_boards', 'road_sett')
+               'fence_brick', 'fence_stone', 'fence_boards', 'road_sett', *HOUSE_KINDS)
 # The building kit (kit.lua, generator.lua BLD.kit): its walls, each a generated PBR surface and
 # some in several paints; one atlas of windows and doors whose glass mirrors the sky; one sheet
 # of trim bands. Only where its paid sources are present (kit_art.ready): a checkout without

@@ -486,6 +486,16 @@ function M.bind(host)
     M.define{key = 'kitStyle', target = 'option', kind = 'enum', group = 'buildings', default = 'auto', values = choices(named(host.kitStyles)),
       label = {uk = 'Стиль усіх будинків тайла', en = 'Style of every building'}}
   end
+  -- houses of one and two storeys (houses.lua): a country's lists in place of the place's own,
+  -- or one style for every house of a tile
+  if host.houseCountries and #host.houseCountries > 0 then
+    M.define{key = 'houseCountry', target = 'option', kind = 'enum', group = 'buildings', default = 'auto', values = choices(named(host.houseCountries)),
+      label = {uk = 'Хати за країною', en = 'Houses as in the country'}}
+  end
+  if host.houseStyles and #host.houseStyles > 0 then
+    M.define{key = 'houseStyle', target = 'option', kind = 'enum', group = 'buildings', default = 'auto', values = choices(named(host.houseStyles)),
+      label = {uk = 'Стиль усіх хат тайла', en = 'Style of every house'}}
+  end
   if host.kitWalls and #host.kitWalls > 0 then
     M.define{key = 'kitWall', target = 'option', kind = 'enum', group = 'buildings', default = 'auto', values = choices(named(host.kitWalls)),
       label = {uk = 'Стіна всіх будинків тайла', en = 'Wall of every building'}}

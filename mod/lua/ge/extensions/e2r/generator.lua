@@ -5879,6 +5879,12 @@ function BLD.height(building, tags, area, h)
   if BLD.low[b] then return BLD.low[b] end
   if b == 'yes' or b == 'residential' or BLD.houses[b] then
     if area < 30 and not BLD.houses[b] then return 2.6 end
+    -- a region's houses have an upper floor as often as its styles say (houses.lua): a British
+    -- semi or a Japanese house of 70 m2 has two floors, a khata of the same size one
+    if BLD.hsNow and area < 260 and not tags.shop and not tags.amenity and not tags.office then
+      local floors = BLD.hsNow.H.floors(BLD.houseStyle(building, h) or NONE, area, h)
+      if floors then return floors * BLD.floor end
+    end
     if area < 140 then return BLD.floor end
     if area < 260 then return h % 4 == 0 and 2 * BLD.floor or BLD.floor end
     if area < 450 then return 2 * BLD.floor end
@@ -6162,7 +6168,7 @@ end
 -- An outbuilding's plan: {wall, roof, shape, rise (m over the walls' top: flat and lean roofs),
 -- pitch (degrees: gables), front}, or nil for any other building and for a planet without the
 -- own surfaces. width: the footprint's shorter side. area: m2.
-function BLD.small(tags, h, height, area, width)
+function BLD.small(tags, h, height, area, width, building)
   if not BLD.ownArt() or tags.e2r_part or height > 7 then return nil end
   local use, S = tags.building or 'yes', BLD.SMALL
   local spec = S[use]
@@ -6177,6 +6183,15 @@ function BLD.small(tags, h, height, area, width)
   local L = spec.lists
   local plan = {wall = S.material[tostring(tags['building:material'] or '')] or L.walls[h % #L.walls + 1],
     roof = L.roofs[math.floor(h / 7) % #L.roofs + 1], shape = L.shapes[math.floor(h / 13) % #L.shapes + 1], front = spec.front}
+  -- outside the post-Soviet yard a garage, a shed or a barn is built of what the houses round it
+  -- are (houses.lua: the style of the place), unless OSM names its material
+  if building and BLD.hsNow and use ~= 'greenhouse' and use ~= 'kiosk' then
+    local style = BLD.houseStyle(building, h)
+    if style and not style.yard then
+      if not S.material[tostring(tags['building:material'] or '')] then plan.wall = BLD.hs.wall(style, '', h + 7) or plan.wall end
+      plan.roof = BLD.hs.roofOf(style, h + 7, plan.shape)
+    end
+  end
   -- a roof OSM names keeps its shape (pitchedRoof, BLD.skillion); ours only where it names none
   if tags['roof:shape'] then
     plan.shape = 'mapped'
@@ -6257,7 +6272,7 @@ function BLD.region(look)
   return r
 end
 
-function BLD.roof(tags, h, postsoviet, region)
+function BLD.roof(tags, h, postsoviet, region, dress)
   local m, colour = tags['roof:material'], BLD.colour[tostring(tags['roof:colour'] or ''):lower()]
   local r = region or NONE
   if m == 'metal' or m == 'tin' or m == 'metal_sheet' then
@@ -6277,6 +6292,7 @@ function BLD.roof(tags, h, postsoviet, region)
   if m == 'roof_tiles' or m == 'tile' or m == 'clay' then return 'roof_tile' end
   if m == 'eternit' or m == 'asbestos' or (m == 'slate' and postsoviet) then return 'roof_sheet' end
   if colour then return colour end
+  if dress and dress.roof then return dress.roof end          -- its style's (houses.lua)
   if r.roofs then return r.roofs[math.floor(h / 13) % #r.roofs + 1] end
   if postsoviet then return BLD.mix[math.floor(h / 13) % #BLD.mix + 1] end
   return 'roof_tile'
@@ -6332,12 +6348,93 @@ BLD.windows = {
   win_wood = {w = 1.0, h = 1.55, cells = {{.013, .025, .134, .215}, {.139, .025, .260, .214},
     {.264, .025, .386, .214}, {.632, .116, .753, .306}, {.503, .307, .624, .496}, {.629, .308, .751, .5}}}}
 BLD.doors = {w = 1.0, h = 2.05, cells = {{0, 0, .25, .5}, {.252, 0, .498, .5}, {.752, 0, 1, .5}}}
+-- the material of an atlas cell by its seventh number: the kit's two, the houses' two (houses.lua)
+BLD.cellKind = {[0] = 'kit_cells', 'kit_cells2', 'house_cells', 'house_cells2'}
 
-function BLD.house(tags, height, h, region)
+-- The scope of a build's houses (houses.lua), or nil where the planet has no library of them, in
+-- a pack that is not the real one, and in a region the library has no styles for: the block and
+-- the country's lists, the pack's geographic frame for the climate, whether the kit's cells are
+-- there. One a build (BLD.hsNow; kept across yields with the build's context).
+function BLD.houseScope(options, look)
+  local H = BLD.hs
+  if not H or options.realStyle == false or not H.enabled(options) then return nil end
+  -- options.houseCountry, options.houseStyle (lab.lua): a country's lists in place of the
+  -- place's own, one style for every house
+  local region = H.region(look.block or BLD.packBlock, options.houseCountry or options.country)
+  local one = options.houseStyle and H.styles[options.houseStyle] or nil
+  if not region and not one then return nil end
+  local geo = type(options.geo) == 'table' and tonumber(options.geo[8]) and VEG.biome ~= nil and VEG.biome.available() and options.geo or nil
+  return {H = H, region = region, one = one, geo = geo, places = {},
+    climate = geo and type(options.climate) == 'table' and VEG.biome.forcedAt and options.climate or nil,
+    kit = BLD.kit ~= nil and BLD.kit.enabled(options)}
+end
+
+-- The style of a house (houses.lua M.styles) by where it stands and its hash; nil without a scope.
+-- The climate is read once a 500 m square.
+function BLD.houseStyle(building, h)
+  local scope = BLD.hsNow
+  if not scope then return nil end
+  if scope.one then return scope.one end
+  local p = building.rings and building.rings[1] and building.rings[1][1]
+  local x, y, place = p and p[1], p and p[2], nil
+  if scope.geo and x then
+    local k = (floor(x / 500) + 32768) * 65536 + floor(y / 500) + 32768
+    place = scope.places[k]
+    if place == nil then
+      if scope.climate then place = VEG.biome.forcedAt(scope.climate, scope.geo, x, y)
+      else place = VEG.biome.at(scope.geo, x, y) end
+      place = place or false
+      scope.places[k] = place
+    end
+  end
+  return scope.H.pick(scope.region, place or nil, h, x, y)
+end
+
+-- A flat-roofed house of a style (dress.shape 'flat'): its roof's kind, or nil for any other
+-- house and on a far tile, whose lid stays the plain one.
+function BLD.flatKind(dress, far)
+  return dress and not far and dress.shape == 'flat' and dress.flat or nil
+end
+
+-- The corner of a flat roof's triangle: a style's roof lies inside its parapet, dress.rim under
+-- the walls' top, and is mapped by the ground (4 m a repeat).
+function BLD.flatTop(dress, top, p, far)
+  if not BLD.flatKind(dress, far) then return top end
+  p[4], p[5] = p[1] / 4, p[2] / 4
+  return top - dress.rim
+end
+
+-- The parapet of a flat-roofed house: the walls rise dress.rim over the roof, so each gets its
+-- inner face and a coping a wall's thickness wide. Four triangles a wall, the outer ring only.
+function BLD.houseParapet(scene, rings, top, kind, dress, base)
+  local ring, t, scale = BLD.orient(rings[1], rings), .22, BLD.facadeScale(kind)
+  local P, z0, along = BLD.wallPoint, top - dress.rim, 0
+  for k, a in ipairs(ring) do
+    local b = ring[k % #ring + 1]
+    local length = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+    if length > .5 then
+      local u0, u1 = along / scale, (along + length) / scale
+      scene.polygon(kind, {P(a, b, length, length, -t, z0, u1, (z0 - base) / scale), P(a, b, length, 0, -t, z0, u0, (z0 - base) / scale),
+        P(a, b, length, 0, -t, top, u0, (top - base) / scale), P(a, b, length, length, -t, top, u1, (top - base) / scale)}, false)
+      scene.polygon(kind, {P(a, b, length, 0, 0, top, u0, 0), P(a, b, length, length, 0, top, u1, 0),
+        P(a, b, length, length, -t, top, u1, t / scale), P(a, b, length, 0, -t, top, u0, t / scale)}, true)
+    end
+    along = along + length
+  end
+end
+
+function BLD.house(tags, height, h, region, building)
   if height >= 8 or not BLD.homes[tags.building or 'yes'] then return nil end
   local m = tostring(tags['building:material'] or tags['facade:material'] or '')
   if m == 'panel' or m == 'concrete' or m == 'reinforced_concrete' or m == 'glass' or m == 'metal' then return nil end
   local colour = BLD.wallColour[(tostring(tags['building:colour'] or ''):lower():gsub('[%s_]', ''))]
+  -- the region's styles (houses.lua): the wall of this house's style, of the material OSM names
+  -- where it names one; a mapped colour of plaster and a material the style lacks go on below
+  if building and BLD.hsNow and not (colour and (m == 'plaster' or m == 'stucco' or m == '')) then
+    local style = BLD.houseStyle(building, h)
+    local kind = style and BLD.hsNow.H.wall(style, m, h)
+    if kind then return kind end
+  end
   local r = region or NONE
   if r.houses then
     if m == 'adobe' or m == 'mud' or m == 'clay' then return 'hw_adobe' end
@@ -6369,7 +6466,8 @@ function BLD.house(tags, height, h, region)
 end
 
 -- One house's openings: its window style and cell, door cell, plinth, gable and roof guesses.
-function BLD.dress(kind, h)
+function BLD.dress(kind, h, style, tags)
+  if style then return BLD.hs.dress(BLD.dress(kind, h), style, kind, h, BLD.hsNow and BLD.hsNow.kit, tags) end
   local old = kind == 'hw_wood' or kind == 'hw_aged' or kind == 'hw_blue' or kind == 'hw_green'
     or kind == 'hw_limewash' or kind == 'hw_log' or kind:find('hw_bd_', 1, true) == 1
     or kind == 'hw_oldbrick' or kind == 'hw_flatbrick' or kind == 'hw_stone' or kind == 'hw_boards'
@@ -6445,6 +6543,14 @@ function BLD.openings(scene, a, b, length, base, height, dress, door, detail)
   local n = BLD.bays(length, detail)
   if n == 0 then return end
   local style = BLD.windows[dress.win]
+  -- a styled house's windows and door are their cells' own size (a shuttered window is two
+  -- metres wide, a slit half a metre high), fitted to the bay; their heads level at 2.35 m
+  local ww, wh, sill, dw, dh, atlas = style.w, style.h, .85, BLD.doors.w, BLD.doors.h, BLD.cellKind
+  if dress.style and dress.kitWin then
+    ww, wh = BLD.hs.fit(dress.kitWin, math.min(2.4, length / n - .45), 1.95)
+    sill = math.max(.3, 2.35 - wh)
+  end
+  if dress.style and dress.kitDoor then dw, dh = BLD.hs.fit(dress.kitDoor, math.min(1.9, length / n - .3), 2.45) end
   local dx, dy = (b[1] - a[1]) / length, (b[2] - a[2]) / length
   local ox, oy = dy * .03, -dx * .03
   local function quad(kind, s, w, z0, z1, cell)
@@ -6457,17 +6563,18 @@ function BLD.openings(scene, a, b, length, base, height, dress, door, detail)
   local floors = math.max(1, math.floor((height + .3) / BLD.floor))
   local doorSlot = door and BLD.slot(n, dress.shape)
   for f = 0, floors - 1 do
-    local z0 = base + f * BLD.floor + .85
-    if z0 + style.h > base + height - .15 then break end
+    local z0 = base + f * BLD.floor + sill
+    if z0 + wh > base + height - .15 then break end
     for i = 1, n do
       local s = (i - .5) * length / n
       if f == 0 and i == doorSlot then
-        quad(dress.kitDoor and (dress.kitDoor[7] == 1 and 'kit_cells2' or 'kit_cells') or 'door_house', s, BLD.doors.w,
-          base + .1, base + .1 + BLD.doors.h, dress.kitDoor or dress.door)
+        quad(dress.kitDoor and atlas[dress.kitDoor[7]] or 'door_house', s, dw, base + .1, base + .1 + dh, dress.kitDoor or dress.door)
       else
-        quad(dress.kitWin and (dress.kitWin[7] == 1 and 'kit_cells2' or 'kit_cells') or dress.win, s, style.w, z0, z0 + style.h,
-          dress.kitWin or dress.cell)
-        if dress.mass then BLD.frame(scene, a, b, length, s, style.w, z0, z0 + style.h, dress.win == 'win_wood', detail) end
+        quad(dress.kitWin and atlas[dress.kitWin[7]] or dress.win, s, ww, z0, z0 + wh, dress.kitWin or dress.cell)
+        -- (a styled house's cell has its own casing drawn: a sill alone, and none under shutters)
+        if dress.mass and not (dress.style and ww > 1.7) then
+          BLD.frame(scene, a, b, length, s, ww, z0, z0 + wh, dress.win == 'win_wood' and not dress.style, detail)
+        end
       end
     end
   end
@@ -6514,7 +6621,7 @@ local function wallMaterial(building, look, height, footprint)
   if tags['building:cladding'] == 'metal' and (not material or material == 'metal' or material == 'steel') then return 'clad_metal' end
   if BLD.isMonument(tags) then return 'hw_ashlar' end
   local region = BLD.region(look)
-  local house = not tags.e2r_part and BLD.house(tags, height, h, region)
+  local house = not tags.e2r_part and BLD.house(tags, height, h, region, building)
   if house then return house end
   if material == 'glass' or b == 'office' or b == 'commercial' or b == 'retail' or b == 'hotel' or tags.office then
     local family = height > 20 and {'off_blue', 'off_green', 'off_grey', 'off_ribbon'} or {'off_ribbon', 'off_ribbon_dark'}
@@ -8267,11 +8374,17 @@ end
 
 -- One attic window in the gable at the long-axis end, when the triangle is tall enough.
 function BLD.gableWin(scene, frame, top, rise, dress)
-  if rise < 1.55 or not dress.win or not dress.cell then return end
+  if rise < 1.55 or not dress.win or not dress.cell or dress.attic == false then return end
   local mid = (frame.v0 + frame.v1) / 2
-  local cell, hw = dress.cell, .34
+  local cell, hw, kind, tall = dress.cell, .34, dress.win, .72
+  -- a styled house's attic window is its own window, small
+  if dress.style and dress.kitWin then
+    cell, kind = dress.kitWin, BLD.cellKind[dress.kitWin[7]]
+    tall = math.min(.9, 2 * hw * cell[6] / cell[5])
+    hw = tall * cell[5] / cell[6] / 2
+  end
   local z0 = top + math.max(.4, rise * .3)
-  local z1 = z0 + .72
+  local z1 = z0 + tall
   if z1 > top + rise - .2 then return end
   local ox, oy = frame.ax * .03, frame.ay * .03
   local function p(v, z, uu, vv)
@@ -8284,7 +8397,7 @@ function BLD.gableWin(scene, frame, top, rise, dress)
     local ux, uy = (b[1] - a[1]) / length, (b[2] - a[2]) / length
     if math.abs((x - a[1]) * uy - (y - a[2]) * ux) < .1 and BLD.coveredAt(w[4], (x - a[1]) * ux + (y - a[2]) * uy) then return end
   end
-  scene.polygon(dress.win, {p(mid - hw, z0, cell[1], cell[4]), p(mid + hw, z0, cell[3], cell[4]),
+  scene.polygon(kind, {p(mid - hw, z0, cell[1], cell[4]), p(mid + hw, z0, cell[3], cell[4]),
     p(mid + hw, z1, cell[3], cell[2]), p(mid - hw, z1, cell[1], cell[2])}, false)
 end
 
@@ -8570,6 +8683,7 @@ local function pitchedRoof(scene, rings, tags, top, base, kind, height, material
   if width < 3 or length < 3 or frame.area / math.max(EPS, length * width) < .82 then return false end
   if not explicit and width > 18 then return false end
   guess = guess or NONE
+  if not explicit and guess.shape == 'flat' then return false end       -- a style's flat roof (houses.lua)
   local shape = explicit or guess.shape
   local pitch = guess.pitch or (house and 35 or 28)
   local rise = math.max(.5, math.min(10, number(tags['roof:height'], math.min(6, width / 2 * math.tan(math.rad(pitch))))))
@@ -8577,7 +8691,7 @@ local function pitchedRoof(scene, rings, tags, top, base, kind, height, material
   -- Eaves: the roof runs on past the walls (a box under a lid read as a toy, bld-hatne-01) and
   -- drops by the pitch; the material is double sided, so the overhang shows from below.
   local slope = rise / math.max(EPS, width / 2)
-  local eave = width < 5 and .25 or .5
+  local eave = guess.eave and math.min(guess.eave, width / 6) or (width < 5 and .25 or .5)
   local mid = (frame.v0 + frame.v1) / 2
   local u0, u1, v0, v1 = frame.u0 - eave, frame.u1 + eave, frame.v0 - eave, frame.v1 + eave
   local low = top - eave * slope
@@ -13459,6 +13573,16 @@ do
   local ok, kit = pcall(require, 'ge/extensions/e2r/kit')
   BLD.kit = ok and type(kit) == 'table' and kit or nil
 end
+-- The houses' library (houses.lua): styles of one- and two-storey houses by region, where the
+-- planet has their art. Its walls' and roofs' metres a repeat join the generator's own.
+do
+  local ok, houses = pcall(require, 'ge/extensions/e2r/houses')
+  BLD.hs = ok and type(houses) == 'table' and houses or nil
+  if BLD.hs then
+    for kind, metres in pairs(BLD.hs.lib.walls or NONE) do BLD.wallScale[kind] = metres end
+    for kind, metres in pairs(BLD.hs.lib.roofs or NONE) do BLD.repeats[kind] = metres end
+  end
+end
 function BLD.kitFor(building, tags, rings, height, footprint, h, block, options, rect, ground, bins)
   if not BLD.kit or tags.amenity == 'place_of_worship' or tags.man_made or tags['bridge:support'] or tags['tower:type']
     or BLD.worship[tags.building or ''] or BLD.isMonument(tags) then return nil end
@@ -13809,6 +13933,7 @@ local function build(cells, i, j, options)
   local mark = options.mark or function() end
   local look = type(options.look) == 'table' and options.look or NONE
   BLD.packBlock = BLD.blockOf(options.country)
+  BLD.hsNow = BLD.houseScope(options, look)
   BLD.neutral = BLD.neutralSigns(lists, options.country)
   -- the country's road signs (signstyle.lua): by the pack, else where the tile is
   if SIGNS.styles then
@@ -16707,7 +16832,7 @@ local function build(cells, i, j, options)
       BLD.smallPlan = nil
       if options.realStyle ~= false and not lifted and tags.building ~= 'roof' and (BLD.low[tags.building or ''] or footprint < BLD.SMALL.tiny) then
         BLD.frameOf = #rings == 1 and #exterior >= 3 and BLD.footprintFrame(exterior) or nil
-        BLD.smallPlan = BLD.small(tags, h, height, footprint, BLD.frameOf and (BLD.frameOf.v1 - BLD.frameOf.v0) or nil)
+        BLD.smallPlan = BLD.small(tags, h, height, footprint, BLD.frameOf and (BLD.frameOf.v1 - BLD.frameOf.v0) or nil, building)
         if BLD.smallPlan then kind = BLD.smallPlan.wall end
       end
       -- a far box of a building the kit draws near keeps the kit's wall colour (kit.lua M.far)
@@ -16755,16 +16880,17 @@ local function build(cells, i, j, options)
       -- doors along a row's long walls, or a single garage's short ones.
       local plinth = not lifted and height <= 13 and (kind:find('wall_brk_', 1, true) == 1 or kind:find('wall_pls_', 1, true) == 1)
       -- a house (BLD.house): its plinth colour, windows, door, gables and roof guesses
-      local dress = kind:find('hw_', 1, true) == 1 and not BLD.isMonument(tags) and BLD.dress(kind, h) or nil
-      -- with the kit's art, a house's window and door are its region's (kit.lua M.houses)
-      if dress and BLD.kit and not distant and BLD.kit.enabled(options) then
+      local dress = kind:find('hw_', 1, true) == 1 and not BLD.isMonument(tags) and BLD.dress(kind, h, BLD.houseStyle(building, h), tags) or nil
+      -- with the kit's art, a house's window and door are its region's (kit.lua M.houses), unless
+      -- its style has dealt it its own
+      if dress and not dress.kitWin and BLD.kit and not distant and BLD.kit.enabled(options) then
         dress.kitWin, dress.kitDoor = BLD.kit.house(look.block or BLD.packBlock, h)
       end
       if dress then plinth = not lifted and dress.plinth end
       -- Grammar v0, near tiles at Balanced and above: cornice, porch, one balcony, chimney.
       if dress and not options.far and BLD.mass(options.detail) then
         dress.mass = true
-        dress.balcony = height >= BLD.floor * 2 - .2 and h % 4 == 1
+        dress.balcony = height >= BLD.floor * 2 - .2 and h % 4 == 1 and not dress.noBalcony
       end
       local plinthKind = type(plinth) == 'string' and plinth or 'plinth'
       local use = tags.building
@@ -16843,7 +16969,7 @@ local function build(cells, i, j, options)
                 {b[1], b[2], z0, (along + length) / sc, (z0 - base) / sc},
                 {b[1], b[2], top, (along + length) / sc, height / sc},
                 {a[1], a[2], top, along / sc, height / sc}}, false)
-              if dress and dress.mass and length > .4 then BLD.cornice(scene, a, b, length, top) end
+              if dress and dress.mass and dress.cornice ~= false and length > .4 then BLD.cornice(scene, a, b, length, top) end
             end
             if BLD.plane then BLD.skillionWall(scene, wallKind, a, b, top, along, length, base, scale) end
             if type(options.detailReport) == 'table' then BLD.note('hidden_wall', a, b, length, 0, hide) end
@@ -16918,7 +17044,7 @@ local function build(cells, i, j, options)
             BLD.windowExtras(scene, a, b, length, along, base, height, wallKind, h, spans)
             BLD.balconies(scene, a, b, length, along, base, height, wallKind, h, spans)
           end
-          if dress and dress.mass and length > .4 then BLD.cornice(scene, a, b, length, top) end
+          if dress and dress.mass and dress.cornice ~= false and length > .4 then BLD.cornice(scene, a, b, length, top) end
           if BLD.smallWall and BLD.smallWall > 0 and length * length >= BLD.smallWall - 1e-6 then
             BLD.smallFront(scene, a, b, length, base, height, BLD.smallPlan, h)
             BLD.smallWall = nil
@@ -16932,7 +17058,7 @@ local function build(cells, i, j, options)
           if doorWall > 0 then
             local isDoor = length * length >= doorWall - 1e-6
             BLD.openings(scene, a, b, length, base, height, dress, isDoor, options.detail)
-            if dress.mass and isDoor then BLD.porch(scene, a, b, length, base, dress, options.detail) end
+            if dress.mass and isDoor and dress.porch ~= false then BLD.porch(scene, a, b, length, base, dress, options.detail) end
             if dress.balcony and not isDoor and length >= 5 then BLD.balcony(scene, a, b, length, base, h); dress.balcony = false end
             if isDoor then doorWall = math.huge end
           end
@@ -16966,18 +17092,20 @@ local function build(cells, i, j, options)
           scene.polygon(BLD.smallPlan.roof, tri, true)
         end
       elseif options.far or open or not BLD.pitchedRoof(scene, rings, tags, top, base, kind, height,
-          BLD.smallPlan and BLD.smallPlan.roof or BLD.roof(tags, h, postsoviet, BLD.region(look)), dress) then
+          BLD.smallPlan and BLD.smallPlan.roof or BLD.roof(tags, h, postsoviet, BLD.region(look), dress), dress) then
+        -- (a styled house's flat roof lies inside its parapet: BLD.flatTop, BLD.houseParapet)
         for _, tri in ipairs(triangulate(rings, pause, rect)) do
-          for _, p in ipairs(tri) do p[3] = BLD.plane and BLD.plane(p[1], p[2]) or top end
-          scene.polygon(BLD.kitPlan and 'kw_bitumen' or 'roof', tri, true)
+          for _, p in ipairs(tri) do p[3] = BLD.plane and BLD.plane(p[1], p[2]) or BLD.flatTop(dress, top, p, options.far or open) end
+          scene.polygon(not BLD.plane and BLD.flatKind(dress, options.far or open) or (BLD.kitPlan and 'kw_bitumen' or 'roof'), tri, true)
         end
+        if not BLD.plane and BLD.flatKind(dress, options.far or open) then BLD.houseParapet(scene, rings, top, kind, dress, base) end
         if open then BLD.shopCanopy(scene, rings, base, top, shops.roofs[building], ground, pause, rect) end
         if BLD.city then
           BLD.parapets(scene, rings, top, height, h)
           BLD.crown(scene, rings, top, height, h, footprint)
           if detailed then BLD.roofClutter(scene, rings, top, height, h) end
         end
-      elseif dress and dress.mass then
+      elseif dress and dress.mass and dress.chimney ~= false then
         BLD.chimney(scene, rings[1], top, dress, h, tags)
       end
       if BLD.city and not BLD.kitPlan then BLD.canopies(scene, h, height) end   -- the kit has its own porches
@@ -19043,6 +19171,7 @@ function M.resumeBuild(co)
   if ctx then
     ROADS.leftHand, ROADS.waters = ctx.leftHand, ctx.waters
     BLD.packBlock, BLD.city, BLD.face, BLD.faces = ctx.packBlock, ctx.city, ctx.face, ctx.faces
+    BLD.hsNow = ctx.hsNow
     BLD.plane, BLD.bare, BLD.report = ctx.plane, ctx.bare, ctx.report
     BLD.probe, BLD.onroad = ctx.probe, ctx.onroad
     BLD.smallPlan, BLD.frameOf, BLD.smallWall, BLD.smallRoof = ctx.smallPlan, ctx.frameOf, ctx.smallWall, ctx.smallRoof
@@ -19054,6 +19183,7 @@ function M.resumeBuild(co)
     ctx = ctx or {}
     ctx.leftHand, ctx.waters = ROADS.leftHand, ROADS.waters
     ctx.packBlock, ctx.city, ctx.face, ctx.faces = BLD.packBlock, BLD.city, BLD.face, BLD.faces
+    ctx.hsNow = BLD.hsNow
     ctx.plane, ctx.bare, ctx.report = BLD.plane, BLD.bare, BLD.report
     ctx.probe, ctx.onroad = BLD.probe, BLD.onroad
     ctx.smallPlan, ctx.frameOf, ctx.smallWall, ctx.smallRoof = BLD.smallPlan, BLD.frameOf, BLD.smallWall, BLD.smallRoof

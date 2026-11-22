@@ -7434,7 +7434,13 @@ function M.labBind()
   for name in pairs(okK and type(kit) == 'table' and kit.styles or {}) do styles[#styles + 1] = name end
   for name in pairs(okC and type(cells) == 'table' and cells.walls or {}) do walls[#walls + 1] = name end
   table.sort(styles); table.sort(walls)
+  local okH, houses = pcall(require, 'ge/extensions/e2r/houses')
+  local houseStyles, houseCountries = {}, {}
+  for name in pairs(okH and type(houses) == 'table' and houses.styles or {}) do houseStyles[#houseStyles + 1] = name end
+  for name in pairs(okH and type(houses) == 'table' and houses.countries or {}) do houseCountries[#houseCountries + 1] = name end
+  table.sort(houseStyles); table.sort(houseCountries)
   lab.bind{tune = okG and type(generator) == 'table' and generator.TUNE or {}, kitStyles = styles, kitWalls = walls,
+    houseStyles = houseStyles, houseCountries = houseCountries,
     universes = native.universes and native.universes.choices() or nil,
     climates = native.universes and native.universes.climates or nil,
     floraZones = M.floraZones(),

@@ -792,6 +792,11 @@ def prebuild(distributable=False):
         if not stamp.exists() or stamp.read_text() != FACADE_ART_VERSION + own_tag():
             facade_art(shared)
             to_dds(shared)
+        # and the houses' library (house_art, houses.lua): its sheets and its atlases of windows
+        stamp = shared / 'real' / 'house.version'
+        if fast_facade.HOUSE_SHEETS and (not stamp.exists() or stamp.read_text() != house_tag()):
+            house_stage(shared / 'real')
+            to_dds(shared / 'real')
         # and the building kit's walls, cells and trim (kit_art, generator.lua BLD.kit)
         stamp = shared / 'real' / 'kit.version'
         if kit_art.ready() and (not stamp.exists() or stamp.read_text() != kit_art.VERSION):
@@ -885,6 +890,8 @@ def build(r, game_assets=True):
     fast_packs.build(r, base)
     fast_pixel.build(r)
     facade_art(r)
+    if fast_facade.HOUSE_SHEETS:
+        house_stage(r / 'real')
     if kit_art.ready():
         kit_art.build(r / 'real')
     if street_art.ready():
@@ -922,6 +929,22 @@ def facade_art(r):
     gaps.save(real / 'fence_boards_o.data.png')
     fast_packs.layout_glows(r)
     (real / 'facade.version').write_text(FACADE_ART_VERSION + own_tag())
+
+
+def house_tag():
+    import house_art
+    return f'{house_art.VERSION}:{len(fast_facade.HOUSE_SHEETS)}'
+
+
+def house_stage(real):
+    """The houses' library (house_art.py): its plain sheets and the atlases of windows and doors."""
+    import house_art
+    for name in fast_facade.HOUSE_SHEETS:
+        im, nm = fast_facade.sheet(name)
+        im.save(real / f'{name}.color.png')
+        nm.save(real / f'{name}.normal.png')
+    house_art.build(real)
+    (real / 'house.version').write_text(house_tag())
 
 
 # alphaRef per opacity map whose mips keep its coverage (fast_dds.keep_coverage)
