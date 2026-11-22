@@ -300,6 +300,8 @@ function M.lines(L)
 end
 
 function M.active() return nav.state ~= 'none' end
+-- the route's line (flat x, y world metres) while one is followed: world.lua predicts along it
+function M.routePoints() return nav.route and nav.route.points or nil end
 function M.destination() return nav.dest end
 
 -- The line on a map at zoom z: merc(lat, lon, z) -> pixels; ox, oy shift them to the screen.

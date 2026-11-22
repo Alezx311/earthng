@@ -16,6 +16,7 @@ import zipfile
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
+import far_tree_art
 import fast_facade
 import fast_packs
 import fast_pixel
@@ -765,6 +766,11 @@ def prebuild(distributable=False):
         if not (shared / 'real' / 'railing_o.data.dds').exists():
             yard_art(shared / 'real')
             to_dds(shared / 'real')
+        # and the far trees' cards (generator.lua VEG.CARD)
+        stamp = shared / 'real' / 'far_trees.version'
+        if not stamp.exists() or stamp.read_text() != far_tree_art.VERSION:
+            far_tree_art.write(shared / 'real')
+            to_dds(shared / 'real')
         # and the track bed (generator.lua RAIL)
         if not (shared / 'real' / 'track_o.data.dds').exists():
             rail_art(shared / 'real')
@@ -949,7 +955,7 @@ def house_stage(real):
 
 # alphaRef per opacity map whose mips keep its coverage (fast_dds.keep_coverage)
 MIP_REFS = {'chainlink_o.data.png': style.CHAINLINK_MIP_REF, 'line_o.data.png': style.EXTRA['mark']['alphaRef'],
-            'railing_o.data.png': style.RAILING_MIP_REF, 'fence_boards_o.data.png': style.FENCE_BOARDS_MIP_REF,
+            'railing_o.data.png': style.RAILING_MIP_REF, 'far_trees_o.data.png': style.FAR_TREE_MIP_REF, 'fence_boards_o.data.png': style.FENCE_BOARDS_MIP_REF,
             'track_o.data.png': style.TRACK_MIP_REF, 'land_blend_o.data.png': 'uniform', 'land_blend_inv_o.data.png': 'uniform',
             'ruts_o.data.png': style.RUTS_REF, 'ruts_two_o.data.png': style.RUTS_REF,
             # the signs' letters: a box filter thins their strokes away from the 16 px level on

@@ -40,6 +40,31 @@ car (or a free camera) has been under 50 km/h for about a second:
 The ground cover goes back to the fast set once the car has held more than 60 km/h for two
 seconds; what was planted stays until its tile unloads.
 
+### By climate
+
+The engine's ground cover (the lawn, the wood's floor and the layers that fill up under 50 km/h)
+is one of ten sets, picked by the climate under the car: the temperate continent, the oceanic
+west, the humid subtropics, the taiga, the steppe, the Mediterranean, the Pacific's dry summer,
+a desert, a savanna and the wet tropics. Every set is made of the game's own ground cover
+(Italy, Utah, Johnson Valley, Jungle Rock Island, Small Island, Cliff, West and East Coast),
+read from the player's installation; `turf.lua` `M.SETS` lists them. A steppe, a savanna and a
+desert grow their dry cover only with the engine's grass on.
+
+### Beside a road
+
+The lawn comes up to the edge of the paving: within three metres of a road it is short trodden
+grass with weeds, rising from a hand's height at the asphalt to the meadow's own. The verge under
+it has its own sheet. `earthng/verge_census.py --turf` counts, outside the game, how much of the
+land beside a tile's roads has lawn on it.
+
+### From afar and at speed
+
+A far tile's trees are cards cut out of one drawn sheet, four triangles a tree, at the places
+the near tile's trees will stand; they stay until those are planted. The game's detail scale
+follows the car's speed (the player's own under 50 km/h, 0.45 of it from 150 km/h), so at speed
+the trees of the middle distance stay billboards instead of changing model on the way. The
+option "Model detail by speed" turns it off.
+
 ## The flora pack (FoliMesh)
 
 FoliMesh is a procedural vegetation generator: a species, a seed and an age make one model with

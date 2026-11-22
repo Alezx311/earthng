@@ -11029,6 +11029,117 @@ function VEG.streetProps(strips, lines, buildings, segmentBins, rect, spacing, l
   return count, reserved
 end
 
+-- A far tile's trees as cards (22.11, the user: imitate the trees on the far tiles too, for a
+-- mountain view, and swap the models on the way with less to see). A far tile planted the
+-- first few hundred of the near tile's crowns as Forest items, and only while the car was slow:
+-- a Forest change costs the engine by the crown and by the kind, and at speed the far ring had
+-- no trees at all. Now every crown of a far tile is two crossed quads cut out of one drawn
+-- sheet (earthng/far_tree_art.py; cells: a round broadleaf, a tall one, a pine, a spruce), in
+-- one mesh of the tile: four triangles a tree, no Forest, so a far tile can stand as many
+-- trees as its near tile will, at the same places (the same lattice and order, so the far
+-- trees are the first of the near ones). The renderer keeps the cards until the near tile's
+-- own crowns are planted (world.lua LIMIT.cardsStep).
+-- height: m of a model at scale 1 by its class, where the flora did not say (bio.cardHeight)
+VEG.CARD = {n = 4, pad = .004, sink = .5, kind = 'far_tree',
+  cells = {broad = {0, 1}, pine = {2}, spruce = {3}}, height = {broad = 16, pine = 21, spruce = 22}}
+-- the class of a tree's shape by its file's name; nil: not drawn from afar (a bush, a prop)
+function VEG.cardClass(shape)
+  local s = shape:lower():match('([^/]+)$') or ''
+  if s:find('bush', 1, true) or s:find('shrub', 1, true) or s:find('hazel', 1, true) or s:find('elder', 1, true)
+      or s:find('young', 1, true) or s:find('log', 1, true) or s:find('stump', 1, true) or s:find('snag', 1, true) then return nil end
+  if s:find('spruce', 1, true) or s:find('fir', 1, true) or s:find('thuja', 1, true) or s:find('larch', 1, true)
+      or s:find('cypress', 1, true) or s:find('juniper', 1, true) or s:find('redwood', 1, true) or s:find('hemlock', 1, true) then
+    return 'spruce'
+  end
+  if s:find('pine', 1, true) or s:find('cedar', 1, true) or s:find('palm', 1, true) then return 'pine' end
+  return 'broad'
+end
+-- One tree into a collector: `height` m tall at (x, y, z), turned by yaw; `hash` picks its cell.
+function VEG.card(mesh, class, x, y, z, yaw, height, hash)
+  local C = VEG.CARD
+  local cells = C.cells[class]
+  local cell = cells[hash % #cells + 1]
+  local u0, u1 = (cell + C.pad) / C.n, (cell + 1 - C.pad) / C.n
+  local half, z0 = height * .5, z - C.sink
+  local z1 = z0 + height
+  for k = 0, 1 do
+    local a = yaw + k * math.pi / 2
+    local cx, sy = math.cos(a) * half, math.sin(a) * half
+    -- lit as the ground is (the normal up): a card has no dark side
+    local p1, p2 = {x - cx, y - sy, z0, u0, 1, 0, 0, 1}, {x + cx, y + sy, z0, u1, 1, 0, 0, 1}
+    local p3, p4 = {x + cx, y + sy, z1, u1, 0, 0, 0, 1}, {x - cx, y - sy, z1, u0, 0, 0, 0, 1}
+    mesh.triangle(C.kind, p1, p2, p3)
+    mesh.triangle(C.kind, p1, p3, p4)
+  end
+end
+
+-- The lawn beside a road (22.11, the user: nearly everywhere a band of bare grass sheet runs
+-- along the road). The engine's grass grows on the 2 m squares of the hidden terrain block
+-- (turf.lua), and a square stood off the carriageway by 1.5 m at its middle: with the square's
+-- own metre that left 0.5 to 2.5 m of sheet, more where the road has a sidewalk or a bank.
+-- With the turf in force a square's middle may lie up to -`pad` m inside the paving's outer edge
+-- (the carriageway's, a sidewalk's or a kerb's: VEG.roadEdges), so whatever the lattice's place,
+-- one square reaches the edge; such a square
+--   stands on the verge's own surface where the road is seated (ROADS.VERGE.beside), not on the
+--     ground under it;
+--   leans down to the road within `ramp` m: `hide` m under the surface `into` m inside the
+--     edge, its far corner on it, so the blades come up out of the verge from the edge on (a
+--     hand high at the asphalt, whole a metre and a half out) and none stands in the road;
+--   within `band` m (its middle) is the roadside's own layer (`flag`: short trodden grass and weeds,
+--     turf.lua e2rTurfVerge) where it was the common lawn.
+VEG.verge = {reach = 6.5, pad = -.6, ramp = 1.7, band = 2.2, hide = .26, into = .2, flag = 2048}
+-- The outer edges of a tile's paving by 10 m bin: {ax, ay, az, dx, dy, dz, len2, nx, ny}, the
+-- unit vector (nx, ny) away from the road.
+function VEG.roadEdges(strips, rect, tune, pause)
+  local V, bins = VEG.verge, {}
+  for index, strip in ipairs(strips) do
+    local points, hw, walkOf = strip.points, strip.hw, strip.walk or NONE
+    if strip.surface and strip.edge then
+      for k = 1, #points - 1 do
+        if BOX.segment(rect, points[k], points[k + 1], hw + tune.sidewalk + V.reach + 2) then
+          for sign = 1, -1, -2 do
+            local walk = (walkOf[k] or NONE)[sign] and tune.sidewalk or ((walkOf.kerb or NONE)[k] or NONE)[sign] or 0
+            local top = (walk > 0 and ROADS.CURB.height or 0) - tune.vergeSink
+            local a, b = strip.edge(k, sign * (hw + walk), top), strip.edge(k + 1, sign * (hw + walk), top)
+            local dx, dy = b[1] - a[1], b[2] - a[2]
+            local len2 = dx * dx + dy * dy
+            local ox, oy = a[1] - points[k][1], a[2] - points[k][2]
+            local ol = math.sqrt(ox * ox + oy * oy)
+            if len2 > 1e-6 and ol > 1e-6 then
+              local e = {a[1], a[2], a[3], dx, dy, b[3] - a[3], len2, ox / ol, oy / ol}
+              for gx = floor((math.min(a[1], b[1]) - V.reach) / 10), floor((math.max(a[1], b[1]) + V.reach) / 10) do
+                for gy = floor((math.min(a[2], b[2]) - V.reach) / 10), floor((math.max(a[2], b[2]) + V.reach) / 10) do
+                  local key = (gx + 32768) * 65536 + gy + 32768
+                  local bin = bins[key]
+                  if not bin then bin = {}; bins[key] = bin end
+                  bin[#bin + 1] = e
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+    if pause and index % 16 == 0 then pause() end
+  end
+  return bins
+end
+-- The paving nearest (x, y): metres outside its edge (negative: on the paving's side of it), the
+-- unit vector away from the road and the edge's height there; nil when none is within `reach`.
+function VEG.roadside(bins, x, y, reach)
+  local best, bx, by, bz, inside
+  for _, e in ipairs(bins[(floor(x / 10) + 32768) * 65536 + floor(y / 10) + 32768] or NONE) do
+    local t = math.max(0, math.min(1, ((x - e[1]) * e[4] + (y - e[2]) * e[5]) / e[7]))
+    local ex, ey = x - e[1] - t * e[4], y - e[2] - t * e[5]
+    local d = ex * ex + ey * ey
+    if d < reach * reach and (not best or d < best) then
+      best, bx, by, bz, inside = d, e[8], e[9], e[3] + t * e[6], ex * e[8] + ey * e[9] < 0
+    end
+  end
+  if not best then return nil end
+  best = math.sqrt(best)
+  return inside and -best or best, bx, by, bz
+end
 function VEG.streetBlocked(bins, x, y)
   for _, s in ipairs(bins[math.floor(x / 50) * 65536 + math.floor(y / 50)] or NONE) do
     if pointSegment2(x, y, s.a[1], s.a[2], s.a[1] + s.dx, s.a[2] + s.dy) < s.r * s.r then return true end
@@ -15729,7 +15840,13 @@ local function build(cells, i, j, options)
           collectorOf.polygon(real, VEG.real.poly(bio.s2, shaded), up)
         elseif #shaded >= 3 then
           local under, over, level = bio.landOf(cx / #shaded, cy / #shaded, kind)
-          if over then
+          -- a seated road's verge near the car is the roadside's own sheet (fast_photo.GROUND
+          -- verge: coarse dusty grass, plantain, grit), not the open land's: where the land is
+          -- the common grass or thin on dry ground
+          if not distant and tune.seat ~= 0 and options.vergeSheet and kind == 'ground'
+              and (under == 'grass' or under == 'dry' or under == 'ground') then
+            collectorOf.polygon('verge', shaded, up)
+          elseif over then
             collectorOf.polygon('cut_' .. under .. level, shaded, up)
             ;(distant and collectorOf or roadDecor).polygon('fade_' .. over .. level, shaded, up)
           else
@@ -17924,7 +18041,7 @@ local function build(cells, i, j, options)
   -- options.sceneReady(scene) (native.lua, while driving): the buildings, trees and props go out
   -- before the grass, flowers and loose stones, which are ~40% of a central Kyiv tile and drawn
   -- only within ~100 m of the car. The rest of the build collects them into a 'grass' layer.
-  if decor then
+  if decor or (options.far and not options.horizon and options.farCards) then
     local WALL = 3
     local blockers = {}
     for index, building in ipairs(lists.buildings) do
@@ -18165,7 +18282,9 @@ local function build(cells, i, j, options)
       if not species then return false end
       local shape, scale, materials = F.plant(species, height, h)
       if not shape then return false end
+      bio.cardHeight = height
       static(string.format('tree_%s_%d', kind, c.key), shape, x, y, z, h % 6283 / 1000, scale, materials)
+      bio.cardHeight = nil
       if bio.fill then scene.items[#scene.items].fill = true end
       return true
     end
@@ -18273,7 +18392,9 @@ local function build(cells, i, j, options)
       local shape, scale, materials
       if species then shape, scale, materials = F.plant(species, height, h) end
       if not shape then return false end
+      bio.cardHeight = height
       static(string.format('tree_row_%d', position), shape, x, y, z, h % 6283 / 1000, scale, materials)
+      bio.cardHeight = nil
       return true
     end
     -- Grass, flowers, ferns, understory and stones of the decor scatter at a place: another
@@ -18533,7 +18654,8 @@ local function build(cells, i, j, options)
     local coniferStart = tonumber(config.coniferStart) or (latitude > 55 and 0 or 1000)
     -- 0 is a real cap. `or` would also keep it (0 is truthy in Lua); optNum clamps it.
     local maxTrees = optNum('maxTrees', 2400, 0, 2400)
-    if distant then maxTrees = math.min(maxTrees, optNum('maxFarTrees', 800, 0, 1200)) end
+    -- (cards are four triangles a tree: a far tile of them stands twice the Forest's far crowns)
+    if distant then maxTrees = math.min(maxTrees, optNum('maxFarTrees', 800, 0, 1200) * (options.farCards and 2 or 1)) end
     -- A global hash prefix spends the whole cap on whichever grove hashed lowest,
     -- so the next street or hillside stays a green sheet. Round-robin gives every
     -- 25 m cell a turn. Far stops earlier on that same sequence, so it stays a prefix.
@@ -18618,6 +18740,21 @@ local function build(cells, i, j, options)
     -- go before the lattice and spend its cap first; far plants a prefix of the same rows.
     -- A crown stands where the row crosses a ROW_STEP grid line of its main axis, so a row
     -- read from two cells or tiles keeps one rhythm.
+    -- A far tile's trees are cards (VEG.CARD): what the tree pass plants goes into one mesh
+    -- instead of the Forest. bio.cardHeight: the height the flora asked for, set by its callers.
+    if distant and options.farCards then
+      bio.plainStatic = static
+      static = function(name, shape, x, y, z, yaw, scale, materials)
+        local class = VEG.cardClass(shape)
+        if class then
+          bio.cards = bio.cards or collector(rect, key .. '_trees', layerName, pause)
+          VEG.card(bio.cards, class, x, y, z, yaw, bio.cardHeight or VEG.CARD.height[class] * (scale or 1),
+            floor(math.abs(x) * 7 + math.abs(y) * 13))
+          bio.cardCount = (bio.cardCount or 0) + 1
+        end
+        bio.cardHeight = nil
+      end
+    end
     local ROW_STEP, rowPlanted, rowSeen = 8, 0, {}
     for _, line in ipairs(maxTrees > 0 and lists.lines or NONE) do
       if line.kind == 'tree_row' then
@@ -18738,6 +18875,18 @@ local function build(cells, i, j, options)
       return true
     end
     spread(candidates, maxTrees - rowPlanted, 25, bio.accept, true)
+    if bio.plainStatic then
+      -- the far tile's cards are whole: its own items from here on
+      static, bio.plainStatic = bio.plainStatic, nil
+      if bio.cards then
+        bio.cards.finish()
+        for _, item in ipairs(bio.cards.items) do
+          item.cards = true
+          scene.items[#scene.items + 1] = item
+        end
+        for material in pairs(bio.cards.used) do scene.used[material] = true end
+      end
+    end
     -- the rest of a wood's lattice, for a car that stands in it (VEG.layers.fill)
     if bio.flora and not distant and options.fill ~= false and maxTrees > 0 then
       local rest = {}
@@ -18887,9 +19036,17 @@ local function build(cells, i, j, options)
         local p = bio.at(x, y)
         if not p then return true end
         local g = p.group
-        if g ~= 'temperate' and g ~= 'boreal' and g ~= 'rainforest' and not (options.realStyle ~= false and g == 'mediterranean') then return false end
+        -- The dry lands grow the engine's own cover of their climate (turf.lua M.SETS: feather
+        -- grass on a steppe, a bunch and a dead bush every few metres in a desert), where the
+        -- turf block is in force (options.aridLawn); they had no ground cover at all. Without
+        -- it they keep their scatter, and the Mediterranean its watered parks and yards.
+        local dry = g == 'steppe' or g == 'savanna' or g == 'desert'
+        if g ~= 'temperate' and g ~= 'boreal' and g ~= 'rainforest'
+            and not (options.realStyle ~= false and (g == 'mediterranean' or (dry and options.aridLawn))) then return false end
         return rawHeight(x, y) - bio.sea < bio.treeline(p) - 80, g
       end
+      -- the paving's edges, for the lawn that comes up to the road (VEG.verge): with the turf only
+      local V, edges = VEG.verge, options.turf and VEG.roadEdges(strips, rect, tune, pause) or nil
       local shapes = {VEG.grass[1], VEG.grass[2], VEG.grass[3]}
       local mesh = VEG.grassMesh
       local spans = {mesh[shapes[1]].span, mesh[shapes[2]].span, mesh[shapes[3]].span}
@@ -18903,9 +19060,18 @@ local function build(cells, i, j, options)
               for sx = 0, 3 do
                 local x, y = ox + sx * step + 1, oy + sy * step + 1
                 local wild = x >= rect[1] and x < rect[3] and y >= rect[2] and y < rect[4] and lawnAt(x, y)
-                if wild and climateGroup == 'mediterranean' then
+                if wild and (climateGroup == 'mediterranean' or climateGroup == 'steppe' or climateGroup == 'savanna'
+                    or climateGroup == 'desert') then
+                  -- a park is watered (the set's own lawn), and a yard by the Mediterranean; the
+                  -- rest is the dry layer where the turf grows it, nothing on rock, scree or a dune
                   local kind = coverAt(x, y)
-                  if kind ~= 'park' and kind ~= 'residential' then wild = false end
+                  if type(wild) == 'number' then
+                    -- (a field's crop, a wood's floor: the set has its own)
+                    if not options.aridLawn then wild = false end
+                  elseif kind ~= 'park' and not (kind == 'residential' and climateGroup == 'mediterranean') then
+                    local surface = options.aridLawn and surfaceKind(x, y, kind)
+                    wild = surface and not bio.bare[surface] and surface ~= 'dune' and 32 or false
+                  end
                 end
                 if wild then
                   -- the land under it (VEG.land): no grass on bare loam, thin on dry ground and
@@ -18925,13 +19091,36 @@ local function build(cells, i, j, options)
                   local z = wild and ground(x, y)
                   local nx, ny, nz = groundNormal(x, y)
                   -- squares from 1.5 m off a road's edge: the verge grows to the road (2.4 m left
-                  -- a mown strip beside every track, seen from the car)
-                  if wild and nz >= .72 and (not sea or z > sea) and not blocked(x, y, 1.5) then
+                  -- a mown strip beside every track, seen from the car). With the turf they come
+                  -- to the paving itself (VEG.verge).
+                  local side, ex, ey, ez
+                  if wild and edges then
+                    side, ex, ey, ez = VEG.roadside(edges, x, y, V.reach)
+                    if side and side < V.pad then wild = false end
+                  end
+                  -- (a track and a bridge have no paving's edge: the lawn stands off them as before)
+                  if wild and nz >= .72 and (not sea or z > sea) and not blocked(x, y, side and V.pad or 1.5) then
                     local n = #samples
+                    local gx, gy = nz > 1e-4 and -nx / nz or 0, nz > 1e-4 and -ny / nz or 0
+                    if side then
+                      -- on the seated verge: its surface from the paving's edge to the ground
+                      if tune.seat ~= 0 then
+                        local delta = z - ez
+                        local reach = math.max(ROADS.VERGE.least, math.min(ROADS.VERGE.most, math.abs(delta) * ROADS.VERGE.run))
+                        if side < reach then
+                          z, gx, gy = ez + delta * math.max(0, side) / reach, delta / reach * ex, delta / reach * ey
+                        end
+                      end
+                      if side < V.ramp then
+                        local e = math.abs(ex) + math.abs(ey)
+                        local s = V.hide / (side + e + V.into)
+                        gx, gy, z = gx + s * ex, gy + s * ey, z - s * e
+                      end
+                      if side < V.band and (flag == 0 or flag == 16) then flag = V.flag end
+                    end
                     if flag == 32 then dryAny = true end
                     samples[n + 1], samples[n + 2] = sy * 4 + sx + flag, z
-                    samples[n + 3] = nz > 1e-4 and -nx / nz or 0
-                    samples[n + 4] = nz > 1e-4 and -ny / nz or 0
+                    samples[n + 3], samples[n + 4] = gx, gy
                     if not anchor then anchor = {x, y, z} end
                   end
                 end
@@ -19219,6 +19408,9 @@ M.shopStyle = BLD.shopStyle
 M.seamLip = ROADS.seamLip
 -- a seated road's parts, for the tests (test_road_seat.py)
 M.VERGE, M.FALL, M.YARD_ROADS = ROADS.VERGE, ROADS.FALL, ROADS.YARD
+-- the lawn beside a road and a far tile's tree cards (earthng/test_ahead.py)
+M.roadEdges, M.roadside, M.verge = VEG.roadEdges, VEG.roadside, VEG.verge
+M.card, M.cardClass, M.CARD = VEG.card, VEG.cardClass, VEG.CARD
 M.curbSlab = ROADS.curbSlab
 M.triangulate = triangulate
 M.clip = clip

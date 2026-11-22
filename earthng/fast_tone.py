@@ -43,7 +43,7 @@ RULES = (
     # (not a wood's floor: it lies in the canopy's shade, lit by the sky alone, and under the
     # land's cap of saturation its leaf litter was grey-blue beside green ferns: flora-04)
     ('land', re.compile(r'^(cut_|fade_|edge_grass|edge_dirt|ground$|meadow|grass_|dry_grass|earth$|scrub|'
-                        r'heath|orchard|park$|steppe|vineyard|wetland|bare_ground|road_track|tundra)')),
+                        r'heath|orchard|park$|steppe|vineyard|wetland|bare_ground|road_track|tundra|verge$)')),
     ('wall', re.compile(r'^(hw_|wall_|gable|plinth|chimney|fence_|clad_|parapet)')),
     ('roof', re.compile(r'^roof_')),
     ('pave', re.compile(r'^(sidewalk|curb|footway$|trodden|yard$|paved$|track$|manhole|drain)')),
@@ -52,7 +52,7 @@ RULES = (
 _MEANS = None
 # kind -> the cover class of ground_targets.json whose colour it takes
 SATELLITE = {'ground': 'ground', 'meadow': 'meadow', 'park': 'park', 'orchard': 'orchard', 'scrub': 'scrub',
-             'wetland': 'wetland'}
+             'wetland': 'wetland', 'verge': 'ground'}
 GRASS_MAP = 'art/real/macro_grass.color.png'      # the common grass every other land is drawn beside
 GREEN = re.compile(r'^(cut_grass|fade_grass|cut_lush|fade_lush|grass_lush|edge_grass|road_track)')
 _TARGETS, _GAIN = None, None

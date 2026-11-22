@@ -427,6 +427,12 @@ for _k, _rgb in RAILINGS.items():
     KINDS[_k] = ('railing', [_c / 255 for _c in _rgb] + [1], 'METAL', 1.0, 'wall')
     EXTRA[_k] = {'alphaTest': True, 'alphaRef': 60, 'doubleSided': True, 'castShadows': False}
 RAILING_MIP_REF = 80
+# A far tile's trees (generator.lua VEG.CARD): cards cut out of one drawn sheet of four tree
+# silhouettes (far_tree_art.py), seen from both sides. 'strip': the generator's own UVs.
+TEXTURES['far_tree'] = {'baseColorMap': f'{ART}/real/far_trees.color.png', 'opacityMap': f'{ART}/real/far_trees_o.data.png'}
+KINDS['far_tree'] = ('far_tree', [.22, .30, .16, 1], 'GRASS', 1.0, 'strip')
+EXTRA['far_tree'] = {'alphaTest': True, 'alphaRef': 96, 'doubleSided': True, 'castShadows': False}
+FAR_TREE_MIP_REF = 96
 # a playground's sand: a flat colour (the beach sheet read as grey asphalt in the yard)
 KINDS['sand'] = (None, [.80, .71, .53, 1], 'SAND', 3.0, 'plan')
 # the photo ground covers a 24 m sheet (fast_photo.GROUND_M)
@@ -914,7 +920,11 @@ for _k, _ground in BIOME_GROUND.items():
                                               'snow': (232, 236, 242), 'snow_edge': (206, 212, 204)}[_k]), 1],
                  _ground, _photo.GROUND_M, 'plan')
 KINDS['glacier'] = KINDS['glacier'][:3] + (_photo.GROUND_M,) + KINDS['glacier'][4:]
-PHOTO_GROUND = ('ground', 'park', 'forest', *BIOME_GROUND, 'glacier')
+# A seated road's verge near the car (generator.lua emit, options.vergeSheet): the roadside's own
+# sheet of coarse dusty grass, plantain and grit (fast_photo.GROUND verge, EarthNG's own sets)
+# under the short grass that grows on it. It was the open land's sheet, and read as a bare band.
+KINDS['verge'] = (None, [.36, .36, .26, 1], 'GRASS', _photo.GROUND_M, 'plan')
+PHOTO_GROUND = ('ground', 'park', 'forest', *BIOME_GROUND, 'glacier', 'verge')
 
 # Lawns, parks and meadows are soil with a fine relief, not the flat lawn photo. The mesh UV
 # repeats every COVER_SCALE metre (generator.lua, 24). The detail maps tile every 2 m, the same

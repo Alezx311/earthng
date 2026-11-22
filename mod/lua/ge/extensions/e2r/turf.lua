@@ -49,7 +49,9 @@ M.PERIOD = 1.5       -- s between two moves at the least
 M.NEAR, M.NEAR_CELL = 170, 32
 M.BUDGET = 1.5       -- ms a frame for gathering the next block
 -- the block's layers (earthng/turf_art.py LAYERS, the same order): its layer map holds index - 1
-M.LAYERS = {'e2rTurfNone', 'e2rTurfGrass', 'e2rTurfLush', 'e2rTurfDry', 'e2rTurfCrop', 'e2rTurfForest', 'e2rTurfPine'}
+-- (the last is the roadside's: the squares within 3 m of a road, generator.lua VEG.verge)
+M.LAYERS = {'e2rTurfNone', 'e2rTurfGrass', 'e2rTurfLush', 'e2rTurfDry', 'e2rTurfCrop', 'e2rTurfForest', 'e2rTurfPine',
+  'e2rTurfVerge'}
 M.STILL = {slow = 13.9, fast = 16.7, after = 1.2, leave = 2, step = 2, crawl = 2.5, pace = .25}
 M.enabled = true
 -- element count factor (the settings: grass density) and draw distance factor
@@ -59,6 +61,8 @@ local HIROCHI, WCUSA, TRAINING, ECA = '/levels/hirochi_raceway/', '/levels/west_
   '/levels/east_coast_usa/'
 local HIROCHI_GC, TRAINING_GC = HIROCHI .. 'art/shapes/groundcover/main.materials.json',
   TRAINING .. 'art/shapes/groundcover/main.materials.json'
+local ITALY = '/levels/italy/'
+local ITALY_GC = ITALY .. 'art/shapes/groundcover/main.materials.json'
 M.SOURCES = {
   hirochi = {materials = HIROCHI_GC, items = HIROCHI .. 'main/MissionGroup/vegetation/terrain_grass/items.level.json'},
   hirochi2 = {materials = HIROCHI_GC, items = HIROCHI .. 'main/MissionGroup/vegetation/terrain_grass2/items.level.json'},
@@ -73,6 +77,26 @@ M.SOURCES = {
     items = ECA .. 'main/MissionGroup/Level_object/vegetation/terrain_grass/items.level.json'},
   eca2 = {materials = ECA .. 'art/shapes/groundcover/main.materials.json',
     items = ECA .. 'main/MissionGroup/Level_object/vegetation/terrain_grass2/items.level.json'},
+  -- The other climates' own (M.SETS): Italy's dry hills, Utah's and Johnson Valley's deserts,
+  -- the jungle island, the small island's dry coast, the cliff's meadow.
+  italy = {materials = ITALY_GC, items = ITALY .. 'main/MissionGroup/Level_objects/vegetation/terrain_Grass/items.level.json'},
+  italy2 = {materials = ITALY_GC, items = ITALY .. 'main/MissionGroup/Level_objects/vegetation/terrain_Grass2/items.level.json'},
+  italy3 = {materials = ITALY_GC, items = ITALY .. 'main/MissionGroup/Level_objects/vegetation/terrain_Grass3/items.level.json'},
+  italy4 = {materials = ITALY_GC, items = ITALY .. 'main/MissionGroup/Level_objects/vegetation/terrain_Grass4/items.level.json'},
+  italyFloor = {materials = ITALY_GC, items = ITALY .. 'main/MissionGroup/Level_objects/vegetation/terrain_forest_floor/items.level.json'},
+  italyDusty = {materials = ITALY_GC,
+    items = ITALY .. 'main/MissionGroup/Level_objects/vegetation/terrain_dirt_loose_dusty/items.level.json'},
+  utah = {materials = '/levels/Utah/art/shapes/groundcover/main.materials.json',
+    items = '/levels/Utah/main/MissionGroup/Level_objects/vegetation/items.level.json'},
+  valley = {materials = '/levels/johnson_valley/art/shapes/groundcover/main.materials.json',
+    items = '/levels/johnson_valley/main/MissionGroup/level_object/vegetation/items.level.json'},
+  jungle = {materials = {'/levels/jungle_rock_island/art/shapes/groundcover/main.materials.json',
+      '/levels/jungle_rock_island/art/shapes/groundcover/grass/main.materials.json'},
+    items = '/levels/jungle_rock_island/main/MissionGroup/Level_objects/vegetation/items.level.json'},
+  island = {materials = '/levels/small_island/art/shapes/groundcover/main.materials.json',
+    items = '/levels/small_island/main/MissionGroup/Level_objects/vegetation/items.level.json'},
+  cliff = {materials = '/levels/Cliff/art/shapes/groundcover/main.materials.json',
+    items = '/levels/Cliff/main/MissionGroup/Level_objects/vegetation/items.level.json'},
 }
 -- stock GroundCover (source, src) -> our layer, with the share of its elements; `name` names a
 -- second use of one definition; `fields` override stock fields.
@@ -123,6 +147,217 @@ M.DEFS = {
   {source = 'floor', src = 'Purple_flowers', name = 'Purple_flowers_pine', layer = 'e2rTurfPine', share = .35, still = true},
   {source = 'hirochi', src = 'small_grass_close', name = 'small_grass_pine', layer = 'e2rTurfPine', share = .3, still = true},
 }
+-- The same layers in the plants of other climates (22.11, the user: the layers that come at low
+-- speed are fine, and the same in every country). A set is a list as M.DEFS is; the place of the
+-- car names it (M.setOf: the climate group of biome.lua, the oceanic and the humid subtropical
+-- kinds of the temperate one apart), and M.setPlace puts it in force: the covers are made again.
+-- M.DEFS itself is the temperate continent's (Ukraine, the Midwest, Ontario), as before.
+-- Stock counts differ by level, and the shares are over them.
+local function D(source, src, layer, share, more)
+  local d = {source = source, src = src, layer = layer, share = share}
+  for k, v in pairs(more or {}) do d[k] = v end
+  return d
+end
+local G, LU, DR, CR, FO, PI = 'e2rTurfGrass', 'e2rTurfLush', 'e2rTurfDry', 'e2rTurfCrop', 'e2rTurfForest', 'e2rTurfPine'
+local STILL = {still = true}
+local function S(name) return {still = true, name = name} end
+local function N(name) return {name = name} end
+local function LONG(name, still) return {name = name, still = still, fields = M.LONG} end
+local CROP = D('wcusa', 'grass_dry_1', CR, 3, N('grass_dry_1_crop'))
+M.SETS = {
+  temperate = M.DEFS,
+  -- The oceanic west (Britain, the Low Countries, New Zealand): a short green sward with daisies
+  -- and buttercups in it at any speed, bluebells under the trees.
+  atlantic = {
+    D('hirochi', 'small_grass_close', G, 2.1), D('hirochi', 'long_grass_distant', G, .7, LONG()),
+    D('eca2', 'buttercups_distant', G, .3),
+    D('hirochi', 'small_grass_close', LU, 1.3, N('small_grass_close_lush')),
+    D('hirochi', 'long_grass_distant', LU, 2, LONG('long_grass_distant_lush')),
+    D('hirochi', 'small_grass_close', DR, 1.1, N('small_grass_close_dry')), D('wcusa', 'grass_dry_1', DR, .9),
+    CROP,
+    D('floor', 'fern1', FO, 1.7), D('floor', 'Forest_weed', FO, 1.2),
+    D('floor', 'Forest_weed', PI, .9, N('Forest_weed_pine')), D('floor', 'fern1', PI, .7, N('fern1_pine')),
+    D('eca', 'Daisies', G, 1.8, STILL), D('cliff', 'Buttercup1', G, .7, STILL), D('cliff', 'Daisies', G, .9, S('Daisies_cliff')),
+    D('eca', 'long_grass_clump_close_03', G, .5, STILL), D('hirochi', 'medium_grass_close', G, 1, STILL),
+    D('wet', 'wet_weed_01', LU, .2, STILL), D('eca2', 'buttercups_close', LU, 1.8, S('buttercups_lush')),
+    D('hirochi', 'medium_grass_close', LU, 2, S('medium_grass_lush')),
+    D('eca', 'long_grass_clump_close_03', DR, .6, S('seeded_dry')),
+    D('floor', 'Purple_flowers', FO, 1.4, STILL), D('nettles', 'Nettles_01', FO, .25, STILL), D('forest', 'Weed2', FO, .5, STILL),
+    D('forest', 'Weed2', PI, .6, S('Weed2_pine')), D('floor', 'Purple_flowers', PI, .5, S('Purple_flowers_pine')),
+  },
+  -- The humid subtropics (the American South, southern Japan, eastern China): coarse tall
+  -- grass and weeds, broad leaves under the trees.
+  subtropic = {
+    D('hirochi', 'small_grass_close', G, 1.4), D('hirochi', 'long_grass_distant', G, 1.5, LONG()),
+    D('wcusa', 'weed3', G, .5),
+    D('hirochi', 'small_grass_close', LU, 1, N('small_grass_close_lush')),
+    D('hirochi', 'long_grass_distant', LU, 2.2, LONG('long_grass_distant_lush')),
+    D('hirochi', 'small_grass_close', DR, .75, N('small_grass_close_dry')), D('wcusa', 'grass_dry_1', DR, 1.8),
+    CROP,
+    D('floor', 'fern1', FO, 1.6), D('floor', 'Forest_weed', FO, 1),
+    D('floor', 'Forest_weed', PI, .8, N('Forest_weed_pine')), D('wcusa', 'forest_grass', PI, 6),
+    D('jungle', 'Road_edges_grass', G, .2, STILL), D('eca', 'long_grass_clump_close_03', G, .9, STILL),
+    D('hirochi', 'medium_grass_close', G, 1.5, STILL), D('island', 'white flowers', G, 2, STILL),
+    D('jungle', 'Tall_grasses', LU, .12, STILL), D('wet', 'wet_weed_01', LU, .2, STILL),
+    D('jungle', 'Road_edges_plants', LU, .2, STILL),
+    D('eca', 'long_grass_clump_close_03', DR, .6, S('seeded_dry')),
+    D('jungle', 'Forest_bushes', FO, .2, STILL), D('forest', 'Weed2', FO, .5, STILL), D('nettles', 'Nettles_01', FO, .3, STILL),
+    D('forest', 'Weed2', PI, .6, S('Weed2_pine')), D('floor', 'fern1', PI, .5, S('fern1_pine')),
+  },
+  -- The taiga and the tundra's edge: a thin sward, sedge in the wet, herbs and ferns on moss.
+  taiga = {
+    D('hirochi', 'small_grass_close', G, 1.2), D('cliff', 'weed1', G, .5), D('cliff', 'grass_dry_7', G, .2),
+    D('hirochi', 'small_grass_close', LU, 1.1, N('small_grass_close_lush')),
+    D('hirochi', 'long_grass_distant', LU, 1.5, LONG('long_grass_distant_lush')),
+    D('hirochi', 'small_grass_close', DR, .6, N('small_grass_close_dry')), D('wcusa', 'grass_dry_1', DR, 1.2),
+    CROP,
+    D('floor', 'Forest_weed', FO, 1.5), D('floor', 'fern1', FO, 1),
+    D('floor', 'Forest_weed', PI, 1.1, N('Forest_weed_pine')), D('floor', 'fern1', PI, .6, N('fern1_pine')),
+    D('cliff', 'Buttercup1', G, .5, STILL), D('eca', 'Daisies', G, .5, STILL), D('utah', 'Grass_green', G, .04, STILL),
+    D('hirochi', 'medium_grass_close', G, .7, STILL),
+    D('wet', 'wet_weed_01', LU, .3, STILL), D('hirochi', 'medium_grass_close', LU, 1.4, S('medium_grass_lush')),
+    D('eca', 'long_grass_clump_close_03', DR, .5, S('seeded_dry')),
+    D('forest', 'Weed2', FO, .9, STILL), D('floor', 'Purple_flowers', FO, .4, STILL), D('cliff', 'weed2', FO, .15, STILL),
+    D('forest', 'Weed2', PI, .9, S('Weed2_pine')), D('cliff', 'weed2', PI, .15, S('weed2_pine')),
+    D('hirochi', 'small_grass_close', PI, .3, S('small_grass_pine')),
+  },
+  -- The steppe: feather grass and dry bunches with a few flowers; green only where it is watered.
+  steppe = {
+    D('hirochi', 'small_grass_close', G, 1.2), D('italy', 'small_grass_dry_close', G, 3),
+    D('hirochi', 'small_grass_close', LU, 1, N('small_grass_close_lush')),
+    D('hirochi', 'long_grass_distant', LU, 1.3, LONG('long_grass_distant_lush')),
+    D('italy2', 'long_dry_grass_distant', DR, .9), D('italy3', 'small_grass_dry_close_02', DR, .6),
+    D('wcusa', 'grass_dry_1', DR, .9),
+    CROP,
+    D('floor', 'Forest_weed', FO, 1), D('italyFloor', 'shrub_grass_02', FO, 1),
+    D('floor', 'Forest_weed', PI, .6, N('Forest_weed_pine')), D('wcusa', 'forest_grass', PI, 6),
+    D('italy', 'flowers', G, 1.2, STILL), D('italy2', 'medium_grass_dry_close', G, .8, STILL),
+    D('hirochi', 'medium_grass_close', LU, 1, S('medium_grass_lush')), D('wet', 'wet_weed_01', LU, .1, STILL),
+    D('italy4', 'long_dry_grass', DR, 1, STILL), D('italy4', 'shrub_grass', DR, .8, STILL), D('italy3', 'weed_03', DR, 1.2, STILL),
+    D('italy2', 'flowers_03', DR, 1.5, STILL), D('utah', 'Grass_green', DR, .04, STILL),
+    D('nettles', 'Nettles_01', FO, .2, STILL), D('italyFloor', 'weed_04', FO, .5, STILL), D('forest', 'Weed2', FO, .3, STILL),
+    D('hirochi', 'small_grass_close', PI, .3, S('small_grass_pine')),
+  },
+  -- The Mediterranean: dry and green grass together, flowers in drifts, low shrubs on the slopes.
+  mediterranean = {
+    D('italy', 'small_grass_green_close', G, 1.2), D('italy', 'small_grass_dry_close', G, 3),
+    D('italy', 'long_grass_green_distant', G, .5, LONG()),
+    D('italy', 'small_grass_green_close', LU, 1.6, N('small_grass_green_lush')),
+    D('italy', 'long_grass_green_distant', LU, 1.2, LONG('long_grass_green_lush')),
+    D('italy2', 'long_dry_grass_distant', DR, 1), D('italy3', 'small_grass_dry_close_02', DR, .7),
+    CROP,
+    D('italyFloor', 'small_grass_green_close_03', FO, .8), D('italyFloor', 'shrub_grass_02', FO, 1),
+    D('italyFloor', 'weed_04', PI, .6), D('wcusa', 'forest_grass', PI, 6),
+    D('italy', 'flowers', G, 1.6, STILL), D('italy4', 'flowers_02', G, 1.2, STILL),
+    D('italy2', 'medium_grass_dry_close', G, .8, STILL), D('italy3', 'weed_03', G, 1, STILL),
+    D('italy', 'flowers', LU, 1.5, S('flowers_lush')), D('hirochi', 'medium_grass_close', LU, 1.2, S('medium_grass_lush')),
+    D('italy3', 'shrubs', DR, .08, STILL), D('italy4', 'shrub_grass', DR, 1, STILL), D('italy4', 'long_dry_grass', DR, 1, STILL),
+    D('italyDusty', 'flowers_04', DR, .8, STILL),
+    D('italyFloor', 'shrubs_02', FO, 1, STILL), D('floor', 'fern1', FO, .4, STILL),
+    D('italyFloor', 'shrub_grass_02', PI, .8, S('shrub_grass_pine')), D('italyFloor', 'shrubs_02', PI, .5, S('shrubs_pine')),
+  },
+  -- The Pacific's dry summer (California, central Chile): mown gold, weeds, sage scrub.
+  pacific = {
+    D('wcusa', 'mown_grass_dry', G, .35), D('hirochi', 'small_grass_close', G, .8), D('wcusa', 'weed3', G, .8),
+    D('hirochi', 'small_grass_close', LU, 1.2, N('small_grass_close_lush')),
+    D('hirochi', 'long_grass_distant', LU, 1.4, LONG('long_grass_distant_lush')),
+    D('wcusa', 'grass_dry_1', DR, 1.8), D('wcusa', 'weed1', DR, .2),
+    CROP,
+    D('wcusa', 'forest_grass', FO, 8), D('wcusa', 'grass_dry_1', FO, .6, N('grass_dry_1_wood')),
+    D('wcusa', 'forest_grass', PI, 6, N('forest_grass_pine')), D('floor', 'Forest_weed', PI, .5, N('Forest_weed_pine')),
+    D('wcusa', 'weed1', G, .15, S('weed1_lawn')), D('hirochi2', 'flowers_01', G, .8, STILL), D('island', 'white flowers', G, 2, STILL),
+    D('hirochi', 'medium_grass_close', LU, 1.4, S('medium_grass_lush')), D('wet', 'wet_weed_01', LU, .1, STILL),
+    D('wcusa', 'grass_dry_2', DR, 1.5, STILL), D('wcusa', 'shrubs_near', DR, .12, STILL), D('wcusa', 'weed2', DR, .6, STILL),
+    D('wcusa', 'shrubs_near', FO, .1, S('shrubs_wood')), D('wcusa', 'weed2', FO, .8, S('weed2_wood')), D('floor', 'fern1', FO, .3, STILL),
+    D('wcusa', 'shrubs_near', PI, .06, S('shrubs_pine')),
+  },
+  -- A desert: a dry bunch every few metres, dead and grey brush, pebbles; a lawn only where it
+  -- is watered.
+  desert = {
+    D('italy', 'small_grass_dry_close', G, 3), D('hirochi', 'small_grass_close', G, .6),
+    D('hirochi', 'small_grass_close', LU, 1, N('small_grass_close_lush')),
+    D('hirochi', 'long_grass_distant', LU, .8, LONG('long_grass_distant_lush')),
+    D('valley', 'dirt_grass_dry', DR, .12), D('utah', 'Dry_grass_clump', DR, .12),
+    CROP,
+    D('floor', 'Forest_weed', FO, .5), D('utah', 'Weed', FO, .1),
+    D('wcusa', 'forest_grass', PI, 4), D('utah', 'Weed', PI, .08, N('Weed_pine')),
+    D('italy2', 'medium_grass_dry_close', G, .6, STILL),
+    D('hirochi', 'medium_grass_close', LU, .8, S('medium_grass_lush')),
+    D('valley', 'dirt_bush_dry', DR, .5, STILL), D('valley', 'dirt_bush_dead', DR, .6, STILL), D('utah', 'grey_bush', DR, .05, STILL),
+    D('utah', 'plants', DR, .2, STILL), D('utah', 'pebbles', DR, .2, STILL), D('valley', 'dirt_plant_dry', DR, .3, STILL),
+  },
+  -- A savanna: dry short grass, tall dry bunches, low brush and a Spanish bayonet now and then.
+  savanna = {
+    D('island', 'small_grass_close', G, 1.5), D('island', 'small_grass_distant', G, .5), D('island', 'long_grass_01', G, .4),
+    D('hirochi', 'small_grass_close', LU, 1.2, N('small_grass_close_lush')),
+    D('hirochi', 'long_grass_distant', LU, 1.6, LONG('long_grass_distant_lush')),
+    D('island', 'small_grass_distant', DR, .8, N('small_grass_distant_dry')), D('island', 'weed_02', DR, .25),
+    CROP,
+    D('island', 'weed_01', FO, .3), D('island', 'bush_close', FO, .15),
+    D('wcusa', 'forest_grass', PI, 4), D('floor', 'Forest_weed', PI, .5, N('Forest_weed_pine')),
+    D('island', 'weed_01', G, .3, S('weed_01_lawn')), D('island', 'white flowers', G, 2, STILL),
+    D('island', 'medium_grass_close', G, 1, STILL), D('island', 'bush_close', G, .1, S('bush_lawn')),
+    D('jungle', 'Tall_grasses', LU, .1, STILL), D('hirochi', 'medium_grass_close', LU, 1.2, S('medium_grass_lush')),
+    D('island', 'bush_close', DR, .12, S('bush_dry')), D('island', 'spanish_bayonet', DR, .5, STILL),
+    D('island', 'long_grass_01', DR, .5, S('long_grass_dry')), D('valley', 'dirt_bush_dead', DR, .3, STILL),
+    D('jungle', 'Forest_bushes', FO, .1, STILL), D('jungle', 'Tall_grasses2', FO, .08, STILL),
+  },
+  -- The wet tropics: broad leaves, tall grasses and brush wherever nothing is paved.
+  tropics = {
+    D('jungle', 'small_grass_close', G, 3), D('jungle', 'small_grass_distant', G, .7),
+    D('jungle', 'long_grass_distant', G, .8, LONG()),
+    D('jungle', 'long_grass_distant', LU, 1.2, LONG('long_grass_distant_lush')), D('jungle', 'Tall_grasses', LU, .15),
+    D('hirochi', 'small_grass_close', DR, .75, N('small_grass_close_dry')), D('wcusa', 'grass_dry_1', DR, 1.2),
+    CROP,
+    D('jungle', 'forest_plants', FO, .35), D('jungle', 'Forest_bushes', FO, .3),
+    D('jungle', 'forest_plants', PI, .2, N('forest_plants_pine')), D('floor', 'Forest_weed', PI, .6, N('Forest_weed_pine')),
+    D('jungle', 'Road_edges_grass', G, .25, STILL), D('jungle', 'Road_edges_plants', G, .25, STILL),
+    D('jungle', 'medium_grass_close', G, 1, STILL), D('jungle', 'Beach_grass', G, .15, STILL),
+    D('jungle', 'Tall_grasses2', LU, .2, STILL), D('jungle', 'Road_edges_plants', LU, .3, S('edges_lush')),
+    D('wet', 'wet_weed_01', LU, .15, STILL),
+    D('jungle', 'Beach_grass', DR, .2, S('Beach_grass_dry')),
+    D('jungle', 'Forest_bushes2', FO, .8, STILL), D('jungle', 'Tall_grasses', FO, .25, S('Tall_grasses_wood')),
+    D('jungle', 'Tall_grasses2', FO, .25, S('Tall_grasses2_wood')), D('floor', 'fern1', FO, 1, STILL),
+    D('jungle', 'Forest_bushes', PI, .15, S('Forest_bushes_pine')),
+  },
+}
+-- The roadside (e2rTurfVerge): short trodden grass at any speed; slow enough to look, its
+-- weeds: daisies, dandelion yellow, seeded heads, a nettle. The dry lands' is dry.
+M.VERGE = {
+  -- (look-hatne2: the short grass alone left the first two metres a flat sheet with a tuft here
+  -- and there, seen along the road; the medium grass stands over the square's lean)
+  green = {D('hirochi', 'small_grass_close', 'e2rTurfVerge', 3, N('small_grass_verge')),
+    D('hirochi', 'medium_grass_close', 'e2rTurfVerge', 1.1, N('medium_grass_verge')),
+    D('eca', 'Daisies', 'e2rTurfVerge', .9, S('Daisies_verge')), D('hirochi2', 'flowers_01', 'e2rTurfVerge', 1.1, S('flowers_verge')),
+    D('eca', 'long_grass_clump_close_03', 'e2rTurfVerge', .35, S('seeded_verge')),
+    D('nettles', 'Nettles_01', 'e2rTurfVerge', .1, S('nettles_verge'))},
+  dry = {D('italy', 'small_grass_dry_close', 'e2rTurfVerge', 4, N('small_dry_verge')),
+    D('italy2', 'medium_grass_dry_close', 'e2rTurfVerge', .8, N('medium_dry_verge')),
+    D('hirochi', 'small_grass_close', 'e2rTurfVerge', .8, N('small_grass_verge')),
+    D('italy3', 'weed_03', 'e2rTurfVerge', 1, S('weed_verge')), D('italy2', 'flowers_03', 'e2rTurfVerge', 1.2, S('flowers_verge'))},
+  drySets = {steppe = true, mediterranean = true, pacific = true, desert = true, savanna = true},
+}
+for name, defs in pairs(M.SETS) do
+  for _, d in ipairs(M.VERGE.drySets[name] and M.VERGE.dry or M.VERGE.green) do defs[#defs + 1] = d end
+end
+
+-- climate group (biome.lua) -> set; the temperate group by its class (14 Cfa humid subtropical,
+-- 15 and 16 Cfb and Cfc oceanic), the Mediterranean by its ocean
+M.GROUP_SET = {rainforest = 'tropics', savanna = 'savanna', desert = 'desert', steppe = 'steppe', boreal = 'taiga',
+  tundra = 'taiga', ice = 'taiga'}
+-- Pure: the set of a place (biome.lua's {group, class, west}); no place: the temperate continent's
+function M.setOf(place)
+  if type(place) ~= 'table' then return 'temperate' end
+  local g = place.group
+  if g == 'mediterranean' then return place.west and 'pacific' or 'mediterranean' end
+  if g == 'temperate' or g == nil then
+    if place.class == 14 then return 'subtropic' end
+    if place.class == 15 or place.class == 16 then return 'atlantic' end
+    return 'temperate'
+  end
+  return M.GROUP_SET[g] or 'temperate'
+end
+
 -- The grass's colour. The stock lawn materials are a racing circuit's watered green; over land
 -- whose sheet is the colour the place has from above (fast_tone.SATELLITE: 91 91 63 round Kyiv)
 -- the blades stood as a second, louder green (own-01: the lawn read 70 125 35 in the sun). The
@@ -131,7 +366,7 @@ M.DEFS = {
 -- green, more red and blue. Flowers, ferns and the dry grass keep their materials.
 M.TINT = {1.18, .96, 1.3}
 M.TINTED = {m_grass_green_short_01 = true, m_grass_green_long_01 = true}
-M.TINT_LAYERS = {e2rTurfGrass = true, e2rTurfLush = true}
+M.TINT_LAYERS = {e2rTurfGrass = true, e2rTurfLush = true, e2rTurfVerge = true}
 
 -- Pure: the copy of a stock material definition `m` under `name` with its colour factor tinted.
 function M.tinted(m, name, tint)
@@ -179,6 +414,8 @@ M.stats = stats
 -- the layer (0-based index into M.LAYERS) of a lawn sample's flags (generator.lua lawnCarpet:
 -- 16 a lush hollow, 32 thin on dry ground, 64 ripe wheat, 128 a field's rows)
 function M.layerOf(flags)
+  -- the roadside (0: the planet has no such layer yet, the common lawn then)
+  if flags >= 2048 then return M.vergeLayer == false and 1 or 7 end
   -- a wood's floor: under conifers, under broadleaves (0: the planet has no such layers yet)
   if flags >= 512 then return M.woodLayers == false and 0 or (flags >= 1024 and 6 or 5) end
   if flags >= 128 then return 2 end
@@ -298,6 +535,7 @@ function M.ready()
       and scenetree.findObject(M.LAYERS[2]) ~= nil or false
     -- an older planet has the lawn's layers only: the block is written without the wood's
     M.woodLayers = M.readyState and scenetree.findObject(M.LAYERS[6]) ~= nil
+    M.vergeLayer = M.readyState and scenetree.findObject(M.LAYERS[8]) ~= nil
   end
   return M.readyState
 end
@@ -367,6 +605,7 @@ end
 function M.wanted(d)
   if d.still and not M.still then return false end
   if M.woodLayers == false and (d.layer == M.LAYERS[6] or d.layer == M.LAYERS[7]) then return false end
+  if M.vergeLayer == false and d.layer == M.LAYERS[8] then return false end
   return true
 end
 
@@ -629,6 +868,23 @@ end
 
 function M.active() return M.enabled and M.real ~= false and not M.failed and ffi ~= nil and M.ready() end
 
+-- The set of the place the car is in (M.SETS; world.lua says it every few seconds). A new set:
+-- the covers of the old one go and the new one's are made, as after a move of the block.
+function M.setPlace(name)
+  local defs = M.SETS[name] or M.SETS.temperate
+  if defs == M.DEFS then return false end
+  M.DEFS, M.placeSet = defs, M.SETS[name] and name or 'temperate'
+  stats.set = M.placeSet
+  defsCache = {}
+  if scenetree then
+    removeCovers()
+    if block and ensureCovers() and flushGroundCoverGrids then flushGroundCoverGrids() end
+  else
+    covers, coverSet = {}, {}
+  end
+  return true
+end
+
 local function clear()
   removeCovers()
   local tb = scenetree and scenetree.findObject(M.NAME)
@@ -663,6 +919,7 @@ function M.reset()
   covers, coverSet, defsCache, loadedMaterials = {}, {}, {}, {}
   M.readyState, M.at, M.failed, M.tune, M.off, M.woodLayers = nil, nil, nil, nil, nil, nil
   M.still, M.speed, M.lastP, M.slowSince, M.fastSince, M.coversLeft, M.coverAt = nil, nil, nil, nil, nil, nil, nil
+  M.DEFS, M.placeSet, stats.set = M.SETS.temperate, nil, nil
   stats.moves, stats.patches, stats.squares, stats.error = 0, 0, 0, nil
 end
 

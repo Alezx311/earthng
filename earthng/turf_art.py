@@ -21,7 +21,9 @@ TEXTURE_SET = 'e2rTurfTextureSet'
 LAYERS = (('e2rTurfNone', 'DIRT'), ('e2rTurfGrass', 'GRASS'), ('e2rTurfLush', 'GRASS'), ('e2rTurfDry', 'GRASS'),
           ('e2rTurfCrop', 'GRASS'),
           # a wood's floor under broadleaves and under conifers (generator.lua lawnCarpet)
-          ('e2rTurfForest', 'DIRT'), ('e2rTurfPine', 'DIRT'))
+          ('e2rTurfForest', 'DIRT'), ('e2rTurfPine', 'DIRT'),
+          # the roadside: the squares within 3 m of a road (generator.lua VEG.verge)
+          ('e2rTurfVerge', 'GRASS'))
 MAPS = {'b': (96, 104, 70), 'nm': (128, 128, 255), 'r': (236, 236, 236), 'ao': (255, 255, 255), 'h': (128, 128, 128)}
 _SLOTS = (('baseColor', 'b'), ('normal', 'nm'), ('roughness', 'r'), ('ao', 'ao'), ('height', 'h'))
 

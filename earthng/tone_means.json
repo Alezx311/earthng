@@ -47,6 +47,7 @@
   "art/real/ground_snow_edge.color.png": [0.3532, 0.3712, 0.4045],
   "art/real/ground_steppe.color.png": [0.5698, 0.4862, 0.2495],
   "art/real/ground_tundra.color.png": [0.1216, 0.0862, 0.0338],
+  "art/real/ground_verge.color.png": [0.178, 0.1613, 0.0536],
   "art/real/kit_cells.color.png": [0.2423, 0.2372, 0.2377],
   "art/real/kit_cells2.color.png": [0.2488, 0.2356, 0.2382],
   "art/real/kit_trim.color.png": [0.4588, 0.4024, 0.3451],

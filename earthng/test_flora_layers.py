@@ -39,7 +39,7 @@ class TurfLayersTest(unittest.TestCase):
         self.assertGreater(factor[2], .82)
         self.assertEqual(list(stock.Stages[1].baseColorFactor.values()), [.88, .89, .82, 1])
         # only the common and the lush grass: flowers, ferns and dry grass keep their materials
-        self.assertEqual(set(self.turf.TINT_LAYERS), {'e2rTurfGrass', 'e2rTurfLush'})
+        self.assertEqual(set(self.turf.TINT_LAYERS), {'e2rTurfGrass', 'e2rTurfLush', 'e2rTurfVerge'})
         self.assertEqual(set(self.turf.TINTED), {'m_grass_green_short_01', 'm_grass_green_long_01'})
 
     def test_every_definition_names_a_layer_and_a_source(self):

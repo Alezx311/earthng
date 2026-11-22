@@ -27,6 +27,8 @@ M.pins = NATIVE and require('ge/extensions/e2r/pins') or nil   -- points of inte
 M.pinBox = {}
 -- the route to a point picked on the map (docs/NAVIGATION.md); on M for the same reason
 M.navigator = NATIVE and require('ge/extensions/e2r/navigator') or nil
+-- where the car will be in the next seconds (predict.lua): sent to native.lua with the pose
+M.predict = NATIVE and require('ge/extensions/e2r/predict') or nil
 M.location = NATIVE and require('ge/extensions/e2r/location') or nil
 M.compass = NATIVE and require('ge/extensions/e2r/compass') or nil
 -- the world map on M: points of interest, filters, OSM facts on hover (worldmap.lua)
@@ -201,7 +203,16 @@ local LIMIT = {pairsDriving = 3, pairsCatch = 6, pairsLanding = 24, plantBatch =
   -- while driving at speed the generator's 4 ms left the road behind the car; the native cap is 8
   driveNativeMs = 8,
   -- stopped, the far ring was capped at 2 ms and a minute of waiting barely moved it
-  parkNativeMs = 12}
+  parkNativeMs = 12,
+  -- The predicted path (predict.lua, native.lua PATH): m past native.lua's own look
+  -- (stream.look) the path is read, its length before native has said, s of driving it runs
+  -- straight on past the last road known, the weight of the roads off a planned route, and the
+  -- s a near tile stays after native.lua stops wanting it (a turn back, a tile at the bubble's
+  -- rim): nearHoldS at speed, nearHoldSlowS under 15 m/s
+  pathPad = 200, pathM = 1000, pathStraightS = 12, pathOffRoute = 1.5, nearHoldS = 4, nearHoldSlowS = 20,
+  -- s a far tile's cards stay after the near tile's scene is in (the Forest plants its crowns
+  -- a kind every forestKind s)
+  cardsKeep = 3.5}
 -- Read-only view for the development probe (earthng/probe.py); nothing in the mod calls it.
 function M.dbg() return {S = S, result = result, native = native, detail = detailStream, test = test} end
 
@@ -642,17 +653,46 @@ local function spawnForestItem(it, tile)
   if it.prop then result.propsQueued = (result.propsQueued or 0) + 1 end
   local kind = forestFor(tile) and plantDataFor(key)
   if not kind then return false end
+  -- the far crowns of this kind that stood here go in the commit this one comes in (M.farSwap)
+  if tile.farItems then M.farSwap(tile, key) end
   local adds = forestQueue(key).adds
   M.fifo.push(adds, {it, tile, tile.forestGen or 0})
   return true
+end
+
+-- A far tile's crowns under the near tile that replaces it. They used to go the moment the
+-- near ground was in, and the near tile's own crowns came with its scene, seconds later (at
+-- speed tens of seconds, or never): every tree on the way vanished and stood up again. Now the
+-- far crowns stay with the near tile (retireForest's heir) and a kind's go in the Forest commit
+-- that brings the near tile's first crown of that kind: a commit takes its removals and its
+-- adds in one call, so the tree is replaced in one frame. The kinds the near tile has no crown
+-- of go when its scene is whole. key: one kind, nil: all that is left.
+function M.farSwap(tile, key)
+  local stash = tile.farItems
+  if not stash then return end
+  for shape, list in pairs(stash) do
+    if not key or shape == key then
+      local q = forestQueue(shape)
+      for _, item in ipairs(list) do
+        local id = item:getKey()
+        if not q.removing[id] then
+          q.removing[id] = true
+          M.fifo.push(q.removes, item)
+        end
+      end
+      stash[shape] = nil
+    end
+  end
+  if next(stash) == nil then tile.farItems = nil end
 end
 
 -- A tile does not keep its crowns: OASIS held ~160k ForestItem userdata in Lua for the
 -- game's collector to walk, and a full collection took 294 ms (night-route-oasis). The
 -- crowns a tile planted are found again in the Forest by its rectangle when it goes; a
 -- crown of this tile still waiting for a commit is skipped there instead (forestGen).
--- Near and far crowns of one key never stand at once, so the rectangle is the tile's.
-local function retireForest(tile)
+-- Near and far crowns of one key stand at once only while a near tile holds its far tile's
+-- crowns (heir: the near tile that takes them, M.farSwap); the rectangle is the tile's.
+local function retireForest(tile, heir)
   if detailStream and tile then detailStream:remove(tile) end
   if not tile then return end
   if tile.grassEarlyOwner then
@@ -661,6 +701,8 @@ local function retireForest(tile)
     tile.grassEarlyOwner, tile.grassEarlyVersion = nil, nil
   end
   tile.forestGen = (tile.forestGen or 0) + 1
+  -- (the far crowns it held are in its rectangle: they go with its own)
+  tile.farItems = nil
   M.fillDrop(tile)
   -- its knockable props leave knock.lua's hash, its debris the scene (they stand again when it is rebuilt)
   if S.knock then M.knock.unregisterTile(S.knock.K, tile, S.knock.api) end
@@ -683,7 +725,13 @@ local function retireForest(tile)
     local okData, itemData = pcall(item.getData, item)
     local shape = okData and itemData and plantShape[itemData:getName()]
     local okPos, pos = pcall(item.getPosition, item)
-    if shape and okPos and pos and math.floor(pos.x / t) == tile.i and math.floor(pos.y / t) == tile.j then
+    if shape and okPos and pos and math.floor(pos.x / t) == tile.i and math.floor(pos.y / t) == tile.j
+        and heir and not shape:find('#', 1, true) then
+      heir.farItems = heir.farItems or {}
+      local list = heir.farItems[shape]
+      if not list then list = {}; heir.farItems[shape] = list end
+      list[#list + 1] = item
+    elseif shape and okPos and pos and math.floor(pos.x / t) == tile.i and math.floor(pos.y / t) == tile.j then
       local q, key = forestQueue(shape), item:getKey()
       -- Near/far retirement can query the same tile before a batch drains.
       -- Passing an already-removed ForestItem back to C++ is unsafe.
@@ -1316,6 +1364,96 @@ local function tileOf(x, y)
   return math.floor(x / t), math.floor(y / t)
 end
 
+-- The predicted path for native.lua (pose.path, x/y/cost triples): the planned route ahead (the
+-- test's autopilot or replay, the navigator's) at its own distance, and the roads ahead of the car
+-- in the navgraph's segments (S.nav), the roads off the route weighing pathOffRoute more.
+function LIMIT.pathAhead(p, v)
+  local P = M.predict
+  if not P then return nil end
+  local speed = v and math.sqrt(v.x * v.x + v.y * v.y) or 0
+  local ux, uy = 0, 0
+  if speed > 1 then ux, uy = v.x / speed, v.y / speed end
+  local line
+  local planned = (AP and AP.pts and {AP.pts, AP.idx}) or (S.replay and S.replay.points and {S.replay.points, S.replay.idx})
+  if planned then
+    line = {}
+    for k = math.max(1, (planned[2] or 1) - 1), #planned[1] do
+      line[#line + 1], line[#line + 2] = planned[1][k][1], planned[1][k][2]
+      if #line > 4000 then break end
+    end
+  elseif M.navigator and M.navigator.routePoints then
+    line = M.navigator.routePoints()
+  end
+  if S.predictRev ~= (S.navVersion or 0) or not S.predictIndex then
+    S.predictIndex, S.predictRev = P.index(S.nav), S.navVersion or 0
+  end
+  local st = S.status and S.status.stream
+  local length = (st and st.look or LIMIT.pathM) + LIMIT.pathPad
+  local out = P.ahead(S.predictIndex, p.x, p.y, ux, uy, length, math.max(P.EXTEND, speed * LIMIT.pathStraightS))
+  if line and #line >= 4 then
+    for k = 3, #out, 3 do out[k] = out[k] * LIMIT.pathOffRoute end
+    local route = P.along(line, p.x, p.y, length)
+    for k = 1, #route do out[#out + 1] = route[k] end
+  end
+  return out
+end
+
+-- The models' levels of detail by the car's speed (22.11, the user: driving, every tree changes
+-- its model three or four times). A tree of the flora pack is a billboard and four meshes, each
+-- drawn from a size on screen, so a car that drives up to it sees every one of them in turn,
+-- and at speed that is every tree of the roadside at once. The engine picks a level by the
+-- model's size in pixels times its detail scale ($pref::TS::detailAdjust, the game's "mesh
+-- quality"): the scale goes down with the speed, from the player's own under `slow` m/s to
+-- `least` of it from `fast` m/s. At speed the trees of the middle distance stay billboards and
+-- the meshes come in close to the car, where they pass in a blink; standing, the player's own
+-- scale and every level are back. It moves `rate` of the player's scale a second, so a touch
+-- of the pedal does not swap a wood's models. The value found changed by another hand (the
+-- game's options) is the player's new one.
+LIMIT.lod = {slow = 14, fast = 42, least = .45, rate = .2, every = .2, var = '$pref::TS::detailAdjust'}
+function LIMIT.lodScale(base, current, speed, dt)
+  local L = LIMIT.lod
+  local w = math.max(0, math.min(1, (speed - L.slow) / (L.fast - L.slow)))
+  local want = base * (1 - w * (1 - L.least))
+  local step = L.rate * base * dt
+  return current + math.max(-step, math.min(step, want - current))
+end
+function LIMIT.lodStep(speed)
+  local L = LIMIT.lod
+  if S.lodOff or not (TorqueScriptLua and TorqueScriptLua.getVar and TorqueScriptLua.setVar) then return end
+  if S.lodAt and S.now - S.lodAt < L.every then return end
+  local dt = S.lodAt and math.min(1, S.now - S.lodAt) or 0
+  S.lodAt = S.now
+  local now = tonumber(TorqueScriptLua.getVar(L.var))
+  if not now or now <= 0 then return end
+  if not S.lodSet or math.abs(now - S.lodSet) > 1e-3 then S.lodBase, S.lodSet = now, nil end
+  local next = LIMIT.lodScale(S.lodBase, S.lodSet or S.lodBase, speed or 0, dt)
+  if math.abs(next - now) > 1e-3 then
+    TorqueScriptLua.setVar(L.var, tostring(next))
+    S.lodSet = next
+    result.lodScale = math.floor(next / S.lodBase * 100 + .5) / 100
+  end
+end
+-- the player's own scale back (the level ends, the option goes off)
+function LIMIT.lodRestore()
+  if S.lodBase and S.lodSet and TorqueScriptLua and TorqueScriptLua.setVar then
+    pcall(TorqueScriptLua.setVar, LIMIT.lod.var, tostring(S.lodBase))
+  end
+  S.lodSet, S.lodBase, S.lodAt = nil, nil, nil
+end
+
+-- The ground cover's set by the climate under the car (turf.lua M.SETS), asked every 5 s.
+function LIMIT.turfPlace(p)
+  local T = detail.turf
+  if not (T and T.setPlace and NATIVE and native.placeAt and p) then return end
+  if S.turfPlaceAt and S.now - S.turfPlaceAt < 5 then return end
+  S.turfPlaceAt = S.now
+  local ok, place = pcall(native.placeAt, p.x, p.y)
+  if ok then
+    T.setPlace(T.setOf(place))
+    result.turfSet = T.placeSet or 'temperate'
+  end
+end
+
 local function writePose()
   if S.now - S.poseAt < 0.5 then return end
   S.poseAt = S.now
@@ -1345,7 +1483,13 @@ local function writePose()
   local pose = {x = p.x, y = p.y, z = p.z, vx = v.x, vy = v.y, t = os.time(), seq = S.poseSeq,
     region = S.stream and S.stream.region, state = S.state, ahead = ahead,
     active = active, deliveryP99 = S.deliveryP99 or 2}
-  if NATIVE then native.pose(pose); return end
+  if NATIVE then
+    local ok, path = pcall(LIMIT.pathAhead, p, v)
+    pose.path = ok and path or nil
+    if not ok then result.pathError = tostring(path) end
+    native.pose(pose)
+    return
+  end
   -- a UDP datagram to the companion never blocks; writing pose.json once held a frame 5.2 s
   -- (fast-replay-game-05). The file stays as the fallback for an older companion.
   local port = S.status and S.status.posePort
@@ -3080,12 +3224,20 @@ local function updateTiles()
     local held = (tile.i == underI and tile.j == underJ)
       or (S.heldCar and (cx - S.heldCar[1]) ^ 2 + (cy - S.heldCar[2]) ^ 2 <= 600 * 600)
       or (dueNear(key) and not isBehind)
-    if not held and (d > unloadR or isBehind) then
+    -- natively a near tile lives while native.lua wants it near (the car's tile, the bubble round
+    -- it, the predicted path) and nearHoldS s after (longer at a town's pace: a turn back is a
+    -- rebuild); no disk of loadR
+    if NATIVE and dueNear(key) then tile.unwantedAt = nil
+    elseif NATIVE then tile.unwantedAt = tile.unwantedAt or S.now end
+    local unwanted = NATIVE and S.state == 'driving' and tile.unwantedAt
+      and S.now - tile.unwantedAt >= (speed >= 15 and LIMIT.nearHoldS or LIMIT.nearHoldSlowS)
+    if not held and (d > unloadR or isBehind or unwanted) then
       retireForest(tile)
       -- bury roads too: dropGroup on a dense tile hitching the frame; digGraves drains them.
       -- The ground waits while the far view in sight still has its hole over it.
       LIMIT.bury('E2RT_' .. key, tile.i * tileSize, tile.j * tileSize, tileSize)
       buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
+      if tile.cardsName then buryGroup(tile.cardsName); tile.cardsName = nil end
       if M.signals then M.signals.dropTile(key) end
       if tile.flowLights and #tile.flowLights > 0 then S.flowLightVersion = (S.flowLightVersion or 0) + 1 end
       S.tiles[key] = nil
@@ -3097,6 +3249,14 @@ local function updateTiles()
       -- unload (and per scene piece) made rebuilds back to back at 300 km/h
       if not (S.stream and S.stream.generator) then S.removedCollision = true end
       result.unloaded = (result.unloaded or 0) + 1
+    end
+  end
+  -- a near tile's scene is in: the far tile's cards it held go, once the Forest has had the
+  -- time to plant the scene's crowns (LIMIT.cardsKeep s, two commits of a kind)
+  for key, tile in pairs(S.tiles) do
+    if tile.cardsDue and S.now >= tile.cardsDue then
+      if tile.cardsName then buryGroup(tile.cardsName) end
+      tile.cardsName, tile.cardsDue = nil, nil
     end
   end
   -- start the nearest ready tile in range (one per call keeps the material loads apart);
@@ -3114,9 +3274,9 @@ local function updateTiles()
       local d = math.min(dp, math.sqrt((cx - ax) ^ 2 + (cy - ay) ^ 2))
       local due = dueNear(key)
       local rank = due or d
-      -- at speed the native wanted set is the corridor + keep bubble; a ready tile still
-      -- inside the old load disk but outside that set must not start (side/back clutter)
-      local inRange = due or (d <= loadR and (not NATIVE or speed < 15))
+      -- natively only what native.lua wants near starts (the car's tile, the bubble, the
+      -- predicted path); a ready tile outside that set is side clutter
+      local inRange = due or (not NATIVE and d <= loadR)
       if inRange and not behind(cx, cy, dp, i, j) and (not bestRank or rank < bestRank) then
         best, bestD, bestRank = {key, i, j}, d, rank
       end
@@ -3162,14 +3322,20 @@ local function updateTiles()
       local cx, cy = tileCentre(far.i, far.j)
       local d = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
       local near = S.tiles[key]
-      -- The far canopy used to stay up until the near scene finished, so the same
-      -- trees were drawn twice and z-fought for the whole spawn. Drop the far
-      -- forest as soon as the near scene starts; its ground mesh stays until the
-      -- near ground has replaced it.
+      -- The far tile goes when the near ground has replaced it. Its crowns do not: drawn until
+      -- the near scene finished they stood twice and z-fought for the whole spawn, dropped with
+      -- the ground they left the land bare until the scene came. Each kind goes in the commit
+      -- that plants the near tile's crowns of that kind (M.farSwap).
       local groundReady = near and near.roadComplete and not near.failed and not near.dropped
-      if near and near.sceneStarted then retireForest(far); far.vegetationDropped = true end
       if d > farR + 500 or groundReady or behind(cx, cy, d) then
-        retireForest(far)
+        -- under a near tile its crowns stay until the near tile's own are in (M.farSwap)
+        if groundReady and not near.sceneComplete then retireForest(far, near) else retireForest(far) end
+        -- and its cards (LIMIT.cardsKeep); with no near tile to take them they go with the ground
+        if far.cardsName then
+          if groundReady and not near.sceneComplete and not near.cardsName then near.cardsName = far.cardsName
+          else buryGroup(far.cardsName) end
+          far.cardsName = nil
+        end
         if groundReady then
           LIMIT.hideFarGround(far.group)
           buryGroup('E2RF_' .. key)
@@ -3184,6 +3350,7 @@ local function updateTiles()
       if spawned and type(token) == 'number' and spawned.serial ~= token then
         retireForest(spawned)
         buryGroup('E2RF_' .. key)
+        if spawned.cardsName then buryGroup(spawned.cardsName); spawned.cardsName = nil end
         spawned.dropped = true
         S.far[key] = nil
       end
@@ -3200,8 +3367,10 @@ local function updateTiles()
           i, j = tonumber(i), tonumber(j)
           local cx, cy = tileCentre(i, j)
           local d = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
-          if d <= farLoadR and not behind(cx, cy, d) and (not bestFD or d < bestFD) then
-            bestF, bestFD = {key, i, j}, d
+          -- natively by native.lua's own order: at speed the ground ahead of the car first
+          local order = NATIVE and wantedNow[key] or d
+          if d <= farLoadR and not behind(cx, cy, d) and (not bestFD or order < bestFD) then
+            bestF, bestFD = {key, i, j}, order
           end
         end
       end
@@ -3214,6 +3383,16 @@ local function updateTiles()
           loadNewMaterials(manifest.materials, manifest.stockMaterials)
           local far = {i = i, j = j, left = #manifest.items, group = tileGroup('E2RF_' .. key, true), far = true,
             serial = type(st.far[key]) == 'number' and st.far[key] or 1}
+          -- its trees' cards (generator.lua VEG.CARD) in a group of their own: they outlive the
+          -- far ground under a near tile (LIMIT.cardsKeep)
+          for _, it in ipairs(manifest.items) do
+            if it.cards then
+              S.cardSeq = (S.cardSeq or 0) + 1
+              far.cardsName = 'E2RC_' .. key .. '_' .. S.cardSeq
+              far.cards = tileGroup(far.cardsName, true)
+              break
+            end
+          end
           S.far[key] = far
           far.left = queueItems(manifest.items, far, key, 'far')
           if NATIVE and far.left == 0 then native.release(key, 'far') end
@@ -3357,8 +3536,8 @@ local function stepQueue(burst)
       if not job then break end
       if job.item.kind == 'proc' and pairsLeft() <= 0 then table.insert(S.queue, 1, job); break end
       S.job = job
-      local group = ((job.far or job.horizon) and job.tile.group) or (job.item.decor and job.tile.decor)
-        or (job.scene and job.tile.sceneGroup) or job.tile.group
+      local group = ((job.far or job.horizon) and ((job.item.cards and job.tile.cards) or job.tile.group))
+        or (job.item.decor and job.tile.decor) or (job.scene and job.tile.sceneGroup) or job.tile.group
       local layer = not (job.far or job.horizon) and ((job.scene or job.grass) and 'scene' or 'road') or nil
       S.co = coroutine.create(function(p) spawnItem(job.item, group, p, job.tile, layer) end)
     end
@@ -3397,6 +3576,19 @@ local function stepQueue(burst)
       if S.job.scene then
         tile.sceneLeft = tile.sceneLeft - 1
         tile.sceneComplete = tile.sceneLeft == 0 and not tile.failed
+        if tile.sceneComplete and tile.i then
+          -- on time: the pose (the car) has not passed the middle of the tile yet
+          local fp, fv = focus()
+          local size = S.stream and S.stream.tile or 500
+          local past = fp and fv and ((tile.i + .5) * size - fp.x) * fv.x + ((tile.j + .5) * size - fp.y) * fv.y < 0
+          local here = fp and math.floor(fp.x / size) == tile.i and math.floor(fp.y / size) == tile.j
+          local name = (past and not here) and 'scenesBehind' or (past and 'scenesLate' or 'scenesOnTime')
+          result[name] = (result[name] or 0) + 1
+        end
+        -- the far crowns no crown of the scene replaced
+        if tile.sceneLeft == 0 and tile.farItems then M.farSwap(tile) end
+        -- the far tile's cards go once the scene's own crowns are planted (LIMIT.cardsKeep)
+        if tile.sceneLeft == 0 and tile.cardsName then tile.cardsDue = S.now + LIMIT.cardsKeep end
         if NATIVE and tile.sceneComplete then native.release(S.job.key, 'scene') end
       end
       if tile.roadLeft <= 0 and not tile.dropped and not tile.failed and not tile.roadComplete then
@@ -5963,6 +6155,7 @@ end
 function M.onExtensionUnloaded()
   M.gc.step(false)
   restorePackState()
+  pcall(LIMIT.lodRestore)
   if S.park then pcall(parking.clear, S.park) end
   if S.navSerial and map.getMap().buildSerial == S.navSerial then
     map.reset({})
@@ -5976,6 +6169,7 @@ function M.onClientEndMission()
   -- the real-colour sheets' materials went with the level (s2.lua), and the grass's block (turf.lua)
   pcall(function() require('ge/extensions/e2r/s2').reset() end)
   if detail.turf then detail.turf.reset() end
+  LIMIT.lodRestore()
   if NATIVE then native.refresh() end
   if S.ocean then pcall(function() S.ocean:delete() end); S.ocean = nil end
   if M.waterfx.reset then M.waterfx.reset() end
@@ -6571,6 +6765,40 @@ local function runTest()
   end
 end
 
+-- A replay's measure of the land ahead (22.11): the tiles the pose reaches in `seconds` s along
+-- the route (its own points, not the heading): frames in which that tile has no road, no scene,
+-- and, at 2 km, no ground at all (neither its near road nor its far layer). The scene of a tile
+-- that came in when the pose had passed its tile's middle is counted late (stepQueue).
+function M.replayAhead(r, p, d)
+  local A = result.ahead
+  if not A then
+    A = {frames = 0, road4 = 0, scene4 = 0, road8 = 0, scene8 = 0, road12 = 0, scene12 = 0, ground2km = 0}
+    result.ahead = A
+  end
+  A.frames = A.frames + 1
+  local pts, size = r.points, S.stream and S.stream.tile or 500
+  local function at(dist)
+    local k, left = r.idx, dist + (r.distance - r.along)
+    while k < #pts do
+      local a, b = pts[k], pts[k + 1]
+      local len = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+      if left <= len then return a[1] + (b[1] - a[1]) * left / math.max(len, 1e-6), a[2] + (b[2] - a[2]) * left / math.max(len, 1e-6) end
+      left, k = left - len, k + 1
+    end
+    return pts[#pts][1], pts[#pts][2]
+  end
+  for _, s in ipairs({4, 8, 12}) do
+    local x, y = at(r.speed * s)
+    local t = S.tiles[math.floor(x / size) .. '_' .. math.floor(y / size)]
+    if not (t and t.roadComplete) then A['road' .. s] = A['road' .. s] + 1 end
+    if not (t and t.sceneComplete) then A['scene' .. s] = A['scene' .. s] + 1 end
+  end
+  local x, y = at(2000)
+  local key = math.floor(x / size) .. '_' .. math.floor(y / size)
+  local t, f = S.tiles[key], S.far[key]
+  if not ((t and t.roadComplete) or (f and f.left == 0)) then A.ground2km = A.ground2km + 1 end
+end
+
 local function replayStep(dt)
   local r = S.replay
   if not r then return end
@@ -6643,6 +6871,8 @@ local function replayStep(dt)
     if not result.sceneViewMissTiles[bare] then result.sceneViewMissTiles[bare] = math.floor((S.now - S.testDriving) * 10) / 10 end
   end
   result.replayDistanceM = r.distance
+  local okA, errA = pcall(M.replayAhead, r, p, d)
+  if not okA then result.aheadError = tostring(errA) end
 end
 
 -- Where a frame's Lua time goes (automation report): sums and maxima per part, and the Lua heap
@@ -6915,7 +7145,10 @@ function M.tick(dt)
       end
       local detailTimer = hptimer()
       if getDetailStream():step(p, S.appliedTune or TUNE_DEFAULT, S.now, detailTimer, gate and 3 or 1) then changed = true end
-      -- the engine's grass follows the car on its hidden block (turf.lua)
+      -- the engine's grass follows the car on its hidden block (turf.lua), in the plants of the
+      -- climate the car is in
+      LIMIT.turfPlace(p)
+      if S.state == 'driving' then LIMIT.lodStep(vel and vel:length() or 0) end
       if detail.turf and detail.turf.step(p, S.now, S.appliedTune or TUNE_DEFAULT) then changed = true end
       -- and a wood fills up round a car that stands in it
       M.fillStep(p, S.now)
@@ -7372,6 +7605,15 @@ function M.optionsBind()
       S.realColour = v
       pcall(function() require('ge/extensions/e2r/s2').enabled = v end)
       if M.far then M.far.realColour = v end
+    end}
+  o.define{key = 'lodSpeed', kind = 'bool', group = 'quality', default = true, path = {'lodSpeed'},
+    label = {uk = 'Деталізація моделей за швидкістю', en = 'Model detail by speed'},
+    hint = {uk = 'На швидкості дерева середньої відстані лишаються білбордами й не міняють модель на ходу; на місці повертається повна деталізація',
+      en = 'At speed the trees of the middle distance stay billboards and do not change their model on the way; standing, full detail is back'},
+    read = function() return not S.lodOff end,
+    apply = function(v)
+      S.lodOff = not v
+      if not v then LIMIT.lodRestore() end
     end}
   o.define{key = 'turf', kind = 'bool', group = 'quality', default = true, path = {'turf'},
     label = {uk = 'Густа трава рушія', en = 'Dense engine grass'},

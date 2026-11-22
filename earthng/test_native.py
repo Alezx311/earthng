@@ -736,7 +736,8 @@ class NativeTests(unittest.TestCase):
         mod.land(cv(dict(seq=7, lat=lat, lon=lon)))
         self.assertEqual(self.pump(mod).state, 'ready')
         lua.globals().fakeTriangles = 130000
-        mod.pose(cv(dict(x=1750, y=1750, vx=0, vy=0, state='driving')))
+        # (two tiles on: the bubble round a standing car needs six tiles the landing did not build)
+        mod.pose(cv(dict(x=2750, y=1750, vx=0, vy=0, state='driving')))
         for _ in range(2000):
             mod.update(.016, 2)
         stream = mod.status().stream
@@ -1115,16 +1116,22 @@ class NativeV2Tests(NativeTests.__base__):
         mod.pose(cv(dict(x=2750, y=5250, vx=100, vy=0, state='driving')))
         mod.update(.016, 2)
         wanted = mod.status().stream.wanted
-        # at speed the near set is the forward corridor plus a keep bubble, not a full disk:
-        # 750 m ahead stays near; 1000 m beside leaves the 450 m bubble and is only far ground
+        # at speed the near set is the path ahead (here the heading's own line) and a small bubble,
+        # and the far ground a sleeve along it: 750 m ahead is near, 500 m beside is far ground,
+        # 1000 m beside is not wanted at all
         self.assertAlmostEqual(wanted['7_10'], 7.5)
-        self.assertGreaterEqual(wanted['5_12'], 1_000_000)
-        self.assertGreaterEqual(wanted['5_8'], 1_000_000)
-        # past the 1 km radius the 18 s corridor ahead is near; past its end is not
+        self.assertGreaterEqual(wanted['5_11'], 1_000_000)
+        self.assertGreaterEqual(wanted['5_9'], 1_000_000)
+        self.assertIsNone(wanted['5_12'])
+        self.assertIsNone(wanted['5_8'])
+        # the path is read 24 s ahead (2400 m at 100 m/s); past its end is not near
         self.assertAlmostEqual(wanted['8_10'], 12.5)
         self.assertAlmostEqual(wanted['9_10'], 17.5)
         near = {k for k, p in wanted.items() if p is not None and p < 1_000_000}
-        self.assertNotIn('10_10', near)
+        self.assertIn('10_10', near)
+        self.assertNotIn('11_10', near)
+        # the ground the car drives towards goes before the ground beside it
+        self.assertLess(wanted['9_11'], wanted['5_11'])
         # standing still it is the distance again, the same all round
         mod.pose(cv(dict(x=2750, y=5250, vx=0, vy=0, state='driving')))
         mod.update(.016, 2)
