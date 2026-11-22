@@ -1,6 +1,12 @@
 """A light physical pedestrian, our own, to take a walker's place (walkers.lua) just before a car hits
 it (pedhit.lua; as handoff.lua does for flow cars). In the planet as vehicles/e2r_ped/ (vehicle_files).
 
+Two kinds of body. Where the walkers are the fal figures (traffic_art.py), each figure has its own:
+vehicles/e2r_<figure>/, the figure's own mesh and map in the pose of its walk's first step, its
+nodes at the figure's joints (traffic_art.cook_body), so the walker struck is the same person a
+moment later. Else, and in a planet without the fal models, the drawn mannequin e2r_ped painted in
+the walker's colours.
+
 A soft-body "vehicle" of 41 nodes: the standing pose of people_art.py as a node skeleton, its mesh cut
 into body parts, each a flexbody on that part's own nodes (one flexbody over the whole skeleton tore into
 slivers once the joints came loose, p16). A limb segment has two joint nodes and two light FIN nodes beside
@@ -9,6 +15,12 @@ it: a flexbody needs a node off the line of the other two ("VY node not found" w
 It stands as a statue: the limbs are stiff beams, and the joints are held
 by LOCK beams (diagonals across the hip, knee, ankle, shoulder and neck) that break at a moderate
 force. A car breaks the locks and the body falls loose; nothing else (no controller, no brain).
+Loose is not limp string, though: TISSUE beams across every joint, soft and heavily damped inside
+their bounds and hard beyond them, keep a knee from folding forward and a head from turning
+round, and take the swing out of the limbs, so the body drops and rolls as a weight and lies
+still. The mass is a person's, shared as a person's (the trunk more than half), and the trunk and
+the limbs have collision triangles, so a car's own nodes meet them: the car is what throws the
+body, with no speed added by hand (pedhit.lua).
 Shirt, pants and skin are the vehicle's paints 1-3 through the same palette masks as the fake walker,
 so the swap keeps the colours.
 
@@ -29,9 +41,10 @@ import people_art as pa
 
 MODEL = 'e2r_ped'
 MASS = 70.0
-# share of the mass by node: torso and pelvis carry most of it
-WEIGHT = {'p': 4.0, 'c': 4.0, 'n': 2.5, 'hd': 3.4, 'hb': .6, 'k': 2.5, 'a': 1.2, 't': .6, 'h': .6, 'e': 1.0,
-          'w': .7, 'q': .3, 's': .3, 'u': .3, 'f': .3, 'o': .2}
+# share of the mass by node (kg of a 69 kg body): pelvis 11, chest and belly 24, head and neck 5.7,
+# a leg 10.5 (thigh 6.6 with its knee, shin 3, foot 0.9), an arm 3.6
+WEIGHT = {'p': 2.75, 'c': 6.0, 'n': 1.0, 'hd': 3.5, 'hb': 1.2, 'k': 3.0, 'q': 1.8, 'a': 1.2, 's': .9, 't': .35,
+          'h': .35, 'o': .2, 'e': 1.0, 'u': .6, 'w': .6, 'f': .4}
 
 
 def weight(name):
@@ -134,35 +147,88 @@ for t in 'lr':
     LOCKS += [('q' + t, 'pf'), ('s' + t, 't' + t), ('u' + t, 'cf'), ('f' + t, 'cf')]
 
 
-def jbeam(nodes, lock_strength):
+# Tissue: what holds a joint once its locks are broken. Each is a beam between two nodes no bone or
+# lock joins, soft and heavily damped while its length stays within (short, long) of its length at
+# rest (shares of it), hard beyond. (pair, short, long):
+TISSUE = [(('cf', 'hb'), .25, .2), (('cl', 'hb'), .25, .25), (('cr', 'hb'), .25, .25),      # the neck
+          (('qlx', 'qrx'), .55, 1.3)]                                                         # the legs apart
+for t in 'lr':
+    TISSUE += [(('q' + t, 's' + t), .5, .04),         # knee: folds back, does not fold forward
+               (('cf', 'q' + t), .6, .1),             # hip: the thigh up to the chest, a little way back
+               (('s' + t, 'o' + t), .3, .2),          # ankle
+               (('cb', 'u' + t), .6, .8),             # shoulder
+               (('n', 'u' + t + 'x'), .7, .9),
+               (('u' + t + 'x', 'f' + t + 'x'), .6, .06)]   # elbow
+
+
+def collision_triangles(nodes):
+    """The body's faces a car's nodes can meet: the trunk's hull, a tetrahedron a limb segment and a
+    foot. Each is wound so that it faces away from the middle of its solid."""
+    solids = [['pf', 'pl', 'pb', 'pr', 'cf', 'cl', 'cb', 'cr', 'n']]
+    faces = [[('pf', 'pl', 'cl'), ('pf', 'cl', 'cf'), ('pl', 'pb', 'cb'), ('pl', 'cb', 'cl'), ('pb', 'pr', 'cr'),
+              ('pb', 'cr', 'cb'), ('pr', 'pf', 'cf'), ('pr', 'cf', 'cr'), ('cf', 'cl', 'n'), ('cl', 'cb', 'n'),
+              ('cb', 'cr', 'n'), ('cr', 'cf', 'n'), ('pf', 'pb', 'pl'), ('pf', 'pr', 'pb')]]
+    for t in 'lr':
+        for a, b, c, d in (('p', 'k', 'q', 'q@x'), ('k', 'a', 's', 's@x'), ('c', 'e', 'u', 'u@x'), ('e', 'w', 'f', 'f@x'),
+                           ('a', 't', 'h', 'o')):
+            four = [(n[0] + t + 'x') if n.endswith('@x') else n + t for n in (a, b, c, d)]
+            solids.append(four)
+            faces.append([(four[0], four[1], four[2]), (four[0], four[1], four[3]), (four[0], four[2], four[3]),
+                          (four[1], four[2], four[3])])
+    out = []
+    for solid, tris in zip(solids, faces):
+        mid = [sum(nodes[n][i] for n in solid) / len(solid) for i in range(3)]
+        for a, b, c in tris:
+            pa, pb, pc = nodes[a], nodes[b], nodes[c]
+            u = [pb[i] - pa[i] for i in range(3)]
+            v = [pc[i] - pa[i] for i in range(3)]
+            n = (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0])
+            away = sum(n[i] * ((pa[i] + pb[i] + pc[i]) / 3 - mid[i]) for i in range(3))
+            out.append([a, b, c] if away >= 0 else [a, c, b])
+    return out
+
+
+def jbeam(nodes, lock_strength, model=MODEL, mass=MASS, name='EarthNG pedestrian'):
     total = sum(weight(name) for name in nodes)
     rows = [['id', 'posX', 'posY', 'posZ']]
-    rows.append({'collision': True, 'selfCollision': False, 'frictionCoef': 1.0, 'nodeMaterial': '|NM_RUBBER'})
+    # (clothes on paint and on asphalt slide: with the grip of rubber a body stayed draped over the
+    # bonnet of a car braking to a stand, hit-c1)
+    rows.append({'collision': True, 'selfCollision': False, 'frictionCoef': .62, 'nodeMaterial': '|NM_RUBBER'})
     groups = {}
     for part, names in part_nodes().items():
-        for name in names:
-            groups.setdefault(name, []).append(f'{MODEL}_{part}')
-    for name, p in nodes.items():
-        w = weight(name) / total * MASS
-        rows.append({'nodeWeight': round(w, 3), 'group': groups.get(name, '')})
-        rows.append([name, *(round(x, 4) for x in p)])
+        for node in names:
+            groups.setdefault(node, []).append(f'{model}_{part}')
+    for node, p in nodes.items():
+        w = weight(node) / total * mass
+        rows.append({'nodeWeight': round(w, 3), 'group': groups.get(node, '')})
+        rows.append([node, *(round(x, 4) for x in p)])
     beams = [['id1:', 'id2:']]
-    beams.append({'beamType': '|NORMAL', 'beamSpring': 300000, 'beamDamp': 60, 'beamDeform': 1.0e9,
+    beams.append({'beamType': '|NORMAL', 'beamSpring': 300000, 'beamDamp': 90, 'beamDeform': 1.0e9,
                   'beamStrength': 'FLT_MAX', 'deformLimitExpansion': ''})
     beams += [list(b) for b in BONES]
-    beams.append({'beamSpring': 300000, 'beamDamp': 60, 'beamDeform': lock_strength * .7,
+    beams.append({'beamSpring': 300000, 'beamDamp': 90, 'beamDeform': lock_strength * .7,
                   'beamStrength': lock_strength})
     beams += [list(b) for b in LOCKS]
-    return {MODEL: {
-        'information': {'name': 'EarthNG pedestrian (prototype)', 'authors': 'EarthNG'},
+    for pair, short, long in TISSUE:
+        beams.append({'beamType': '|BOUNDED', 'beamSpring': TISSUE_SPRING, 'beamDamp': TISSUE_DAMP,
+                      'beamLimitSpring': 120000, 'beamLimitDamp': 600, 'beamShortBound': short, 'beamLongBound': long,
+                      'beamDeform': 1.0e9, 'beamStrength': 'FLT_MAX'})
+        beams.append(list(pair))
+    tris = [['id1:', 'id2:', 'id3:'], {'dragCoef': 0, 'liftCoef': 0}] + collision_triangles(nodes)
+    return {model: {
+        'information': {'name': name, 'authors': 'EarthNG'},
         'slotType': 'main',
         'refNodes': [['ref:', 'back:', 'left:', 'up:'], ['pf', 'pb', 'pl', 'cf']],
         'nodes': rows,
         'beams': beams,
-        'flexbodies': [['mesh', '[group]:', 'nonFlexMaterials']] + [[f'{MODEL}_{part}', [f'{MODEL}_{part}']]
+        'triangles': tris,
+        'flexbodies': [['mesh', '[group]:', 'nonFlexMaterials']] + [[f'{model}_{part}', [f'{model}_{part}']]
                                                                      for part in part_nodes()],
         'paints': [],
     }}
+
+
+TISSUE_SPRING, TISSUE_DAMP = 1500, 260
 
 
 def body_dae():
@@ -238,9 +304,40 @@ def files(lock_strength=1500):   # p17: 1500 N gives a loose body at 30-50 km/h,
     }
 
 
+def figure_files(lock_strength=1500):
+    """The bodies of the fal figures (traffic_art.cook_body), a vehicle each: {path in the planet:
+    text or bytes}. {} without the cooked models."""
+    import traffic_art
+    out = traffic_art.cooked()
+    index = out / 'models.json'
+    if not index.is_file():
+        return {}
+    result = {}
+    for ped in json.loads(index.read_text(encoding='utf8'))['peds']:
+        body = ped.get('body')
+        if not body:
+            continue
+        model, root = body['model'], f'vehicles/{body["model"]}/'
+        nodes = {name: tuple(p) for name, p in body['nodes'].items()}
+        result[root + f'{model}.jbeam'] = json.dumps(jbeam(nodes, lock_strength, model, body['mass'],
+                                                           f'EarthNG pedestrian {ped["name"]}'), indent=1)
+        result[root + f'{model}.dae'] = (out / traffic_art.BODY_DIR / body['dae']).read_bytes()
+        picture = out / traffic_art.PEOPLE_DIR / (ped['name'] + '.color.png')
+        packed = picture.with_suffix('.dds') if picture.with_suffix('.dds').is_file() else picture
+        result[root + packed.name] = packed.read_bytes()
+        label = body['material']
+        result[root + 'main.materials.json'] = json.dumps({label: {
+            'name': label, 'mapTo': label, 'class': 'Material', 'version': 1.5,
+            'Stages': [{'baseColorMap': f'/{root}{picture.name}', 'roughnessFactor': .86}, {}, {}, {}]}}, indent=1)
+        result[root + 'info.json'] = json.dumps({'Name': f'EarthNG pedestrian {ped["name"]}', 'Brand': 'EarthNG',
+                                                 'Type': 'Prop', 'default_pc': 'base', 'Author': 'EarthNG'}, indent=2)
+        result[root + 'base.pc'] = json.dumps({'format': 2, 'model': model, 'parts': {}, 'vars': {}}, indent=2)
+    return result
+
+
 def vehicle_files():
-    """The body for the planet ZIP (build_mod.py)."""
-    return {f'vehicles/{MODEL}/{name}': text for name, text in files().items()}
+    """The bodies for the planet ZIP (build_mod.py): the mannequin and the figures' own."""
+    return {**{f'vehicles/{MODEL}/{name}': text for name, text in files().items()}, **figure_files()}
 
 
 if __name__ == '__main__':

@@ -54,12 +54,6 @@ function fakeApi()
     b.x, b.y, b.z, b.vx, b.vy, b.active = x, y, z, vx, vy, true
     api.calls[#api.calls + 1] = 'place ' .. id
   end
-  function api.nudge(id, x, y) local b = api.bodies[id]; if b then b.x, b.y = x, y end; api.calls[#api.calls + 1] = 'nudge ' .. id end
-  function api.eject(id, dvx, dvy, dvz)
-    local b = api.bodies[id]
-    if b then b.vx, b.vy = b.vx + dvx, b.vy + dvy end
-    api.calls[#api.calls + 1] = 'eject ' .. id
-  end
   function api.splat(x, y, z, h, kind)
     api.calls[#api.calls + 1] = string.format('splat %.1f %.1f', x, y) .. (kind and ' ' .. kind or '')
   end
@@ -456,8 +450,9 @@ class WalkerTests(unittest.TestCase):
         self.assertEqual(final, 'idle')
         self.assertEqual(freed_slot, 1)
         self.assertIn('place 1', calls)
-        self.assertIn('eject 1', calls)
         self.assertIn('splat', calls)
+        # carried on by the car, it leaves a trail of blood, but not one without end
+        self.assertEqual(calls.count(' trail'), 9)
         self.assertIn('reset 1', calls)
         self.assertIn('park 1', calls)
 
@@ -677,7 +672,7 @@ class WalkerTests(unittest.TestCase):
         self.assertEqual(out[6], 0)
         self.assertLess(out[7], 0)
 
-    def test_an_embedded_body_is_forced_out_on_hit(self):
+    def test_a_body_the_car_is_already_over_is_struck_and_left_to_the_physics(self):
         out = self.lua().execute('''
           local W = walkers.new{seed = 2}
           walkers.sync(W, grid(3, 100), 100, 0)
@@ -697,15 +692,15 @@ class WalkerTests(unittest.TestCase):
           pedhit.step(P, walkers, W, {car}, .2, api, car.x, car.y)
           local dx, dy = b.x - car.x, b.y - car.y
           local along = dx * car.fx + dy * car.fy
-          return {P.stats.hit, P.pool[1].state, P.stats.eject, along, table.concat(api.calls, ',')}
+          return {P.stats.hit, P.pool[1].state, b.vx == car.vx and b.vy == car.vy, along, table.concat(api.calls, ',')}
         ''')
         self.assertEqual(out[1], 1)
         self.assertEqual(out[2], 'down')
-        self.assertEqual(out[3], 1)
-        # nudged outward along the car's forward (or back) so it is no longer at the centre
-        self.assertGreater(abs(out[4]), .2)
-        self.assertIn('nudge 1', out[5])
-        self.assertIn('eject 1', out[5])
+        # no speed added and no move by hand: a body wrapped over the hood stands inside the car's
+        # box seen from above, and a push out of it would tear it off the car
+        self.assertTrue(out[3])
+        self.assertAlmostEqual(out[4], 0, places=6)
+        self.assertIn('splat', out[5])
 
     def test_the_count_changes_in_place_and_is_clamped(self):
         out = self.lua().execute('''

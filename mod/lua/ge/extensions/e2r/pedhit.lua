@@ -1,6 +1,13 @@
 -- A physical body in a walker's place just before a vehicle hits it, as handoff.lua makes flow cars
--- real round the player. Walkers (walkers.lua) have no collision; the body (earthng/ped_body.py,
--- vehicle e2r_ped: a 41-node soft body whose joints are breakable beams) falls when a car strikes it.
+-- real round the player. Walkers (walkers.lua) have no collision; the body (earthng/ped_body.py:
+-- a 41-node soft body whose joints are breakable beams) falls when a car strikes it. Where the
+-- walkers are the fal figures each figure has its own body, its own mesh in the pose of a step
+-- (vehicles e2r_ped_<figure>), and a struck walker gets its figure's; else the mannequin e2r_ped
+-- in the walker's colours. The pool holds bodies of every figure in turn (M.prewarmOne), and a hit
+-- that finds none of its figure idle takes another's and asks for its own (P.wantFig).
+-- The car is what throws the body: it is placed standing with the walker's own speed and nothing
+-- is added to it by hand. A push upwards and outwards at the hit (there was one) carried the body
+-- off as a statue ahead of the bumper, its joints whole, for as long as the car drove on (hit-01).
 --   - A pool of up to SIZE bodies: 4 at switch-on, then one more every 2 s at most, only when fewer
 --     than 2 are idle or a hit found none, and only near a stop (a spawn is ~0.2 s, p15; two a frame
 --     at speed was ~4 s of 3 fps), parked switched
@@ -10,9 +17,10 @@
 --   - Every step, for every vehicle with physics that moves (the player's car, the real cars of the
 --     hand-off, the game's traffic), the walkers near its path (walkers.near) are swept against its
 --     box: a walker it will touch within LEAD s gets a body. The body is placed outside the vehicle
---     box with the walker's velocity; it is only kicked after a confirmed hit. Hit, or already
---     overlapping the box after settle: eject + blood (api.splat: on
---     the ground, along the way, on a wall ahead and on the car, world.lua BLOOD).
+--     box with the walker's velocity. Hit (its speed changed beside the box), or already
+--     overlapping the box after settle: blood (api.splat: on the ground, along the way, on a wall
+--     ahead and on the car, world.lua BLOOD), and while it slides or rolls on, a trail of it
+--     (kind 'trail', every TRAIL_STEP m for TRAIL_T s).
 --   - Not hit within MISS_T s (the driver braked or swerved): the body goes back to the pool and the
 --     walker walks on. Hit: it lies, and once still (POOL_T, POOL_V) a pool of blood spreads under
 --     it (api.splat kind 'pool'); out of FREE_R from the player it is reset
@@ -31,10 +39,10 @@ local SETTLE_T = .08    -- s after the placing before the body's velocity means 
 local HIT_DV = 1.0      -- m/s over its walk: a placed body moving this much faster was struck...
 local TOUCH_R = .35     -- m: velocity change counts only very close to the vehicle's box
 local CLEAR_R = .75     -- m: no body is put where another one stands
-local OUT_PAD = .22     -- m outside the vehicle box when placing / ejecting (soft body thickness)
-local KICK_MIN = 2.5    -- m/s outward kick on place, so the body is not born inside the bumper
-local EJECT_GAIN = .55  -- share of closing speed added on a confirmed hit
-local EJECT_LIFT = .35  -- upward share of eject speed
+local OUT_PAD = .22     -- m outside the vehicle box when placing (soft body thickness)
+local TRAIL_T, TRAIL_STEP, TRAIL_V = 7, .55, .8   -- s after the hit, m between marks, m/s: the body's trail of blood
+local TRAIL_MAX, TRAIL_LOW = 9, .75              -- marks a body at most; m its pelvis is over the ground while it leaves them
+local TRAIL_GROW = 1.22                          -- each mark this much further from the last than that one was (it runs dry)
 local RECLAIM_R = 55    -- m: a 'down' body this far from the player may be recycled for a new hit
 local GHOST_LEAD = .04  -- s: no body available; wait until immediately before contact
 local POOL_T, POOL_V = 1.5, .6   -- s after the hit and m/s below which a body lies still: its pool of blood
@@ -42,15 +50,28 @@ local POOL_T, POOL_V = 1.5, .6   -- s after the hit and m/s below which a body l
 function M.new(opts)
   opts = opts or {}
   return {size = opts.size or M.SIZE, pool = {},
-    stats = {placed = 0, hit = 0, missed = 0, noBody = 0, freed = 0, ghost = 0, reclaimed = 0, eject = 0}}
+    stats = {placed = 0, hit = 0, missed = 0, noBody = 0, freed = 0, ghost = 0, reclaimed = 0, otherFig = 0}}
 end
 
 -- one body into the pool (world.lua: on demand near a stop, so a large SIZE does not hitch)
 function M.prewarmOne(P, api, fx, fy)
   if #P.pool >= P.size then return false end
-  local id = api.spawn(fx, fy)
+  -- the figure a hit went without, else the one the pool has fewest bodies of (nil: the mannequin)
+  local figures = api.figures and api.figures() or 0
+  local fig
+  if figures > 0 then
+    local count = {}
+    for _, e in ipairs(P.pool) do if e.fig then count[e.fig] = (count[e.fig] or 0) + 1 end end
+    fig = P.wantFig
+    if not fig or fig > figures then
+      fig = 1
+      for k = 2, figures do if (count[k] or 0) < (count[fig] or 0) then fig = k end end
+    end
+    P.wantFig = nil
+  end
+  local id = api.spawn(fx, fy, fig)
   if not id then return false end
-  P.pool[#P.pool + 1] = {id = id, state = 'idle'}
+  P.pool[#P.pool + 1] = {id = id, state = 'idle', fig = fig}
   return true
 end
 
@@ -103,8 +124,17 @@ function M.boxHit(x, y, r, h)
   return inside, nx, ny, depth, u, w
 end
 
-local function free(P)
-  for _, e in ipairs(P.pool) do if e.state == 'idle' then return e end end
+-- an idle body of the figure (nil: any), else any idle one
+local function free(P, fig)
+  local any
+  for _, e in ipairs(P.pool) do
+    if e.state == 'idle' then
+      if e.fig == fig then return e end
+      any = any or e
+    end
+  end
+  if any and fig then P.wantFig, P.stats.otherFig = fig, (P.stats.otherFig or 0) + 1 end
+  return any
 end
 
 local function standingAt(P, api, x, y)
@@ -153,15 +183,9 @@ local function markHit(P, e, now, info)
   P.log[#P.log + 1] = info or e.info
 end
 
-local function ejectBody(P, e, api, nx, ny, vn)
-  if not (api and api.eject) then return end
-  local speed = math.max(KICK_MIN, math.abs(vn) * EJECT_GAIN + KICK_MIN)
-  api.eject(e.id, nx * speed, ny * speed, math.max(1.2, speed * EJECT_LIFT))
-  P.stats.eject = P.stats.eject + 1
-end
-
-local function splatAt(api, x, y, z, h, kind)
-  if api and api.splat then api.splat(x, y, z, h, kind) end
+-- kind: nil the hit, 'pool' under a body at rest, 'trail' where a struck body slides (dx, dy: its way)
+local function splatAt(api, x, y, z, h, kind, dx, dy)
+  if api and api.splat then api.splat(x, y, z, h, kind, dx, dy) end
 end
 
 -- ghost hit: no free soft body left, but the walker still dies so the car never passes "through" it
@@ -201,15 +225,7 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
           (h and inside))
         if struck then
           markHit(P, e, now, e.info)
-          local rvx = (h and h.vx or 0) - (e.vx or 0)
-          local rvy = (h and h.vy or 0) - (e.vy or 0)
-          local vn = rvx * nx + rvy * ny
-          if vn < 1 then vn = math.max(math.sqrt((h and h.vx or 0) ^ 2 + (h and h.vy or 0) ^ 2) * .4, KICK_MIN) end
-          -- push out of the mesh first when already embedded
-          if inside and depth > 0 and api.nudge then
-            api.nudge(e.id, bx + nx * (depth + OUT_PAD), by + ny * (depth + OUT_PAD))
-          end
-          ejectBody(P, e, api, nx, ny, vn)
+          e.tx, e.ty = bx, by
           splatAt(api, bx, by, e.z or 0, h or e.hitter)
         elseif now - e.at > MISS_T then
           -- not hit: the walker walks on, the body goes back
@@ -223,8 +239,24 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
     elseif e.state == 'down' then
       local bx, by, bvx, bvy, bz = api.pose(e.id)
       local far = not bx or not px or (bx - px) ^ 2 + (by - py) ^ 2 > FREE_R * FREE_R
+      -- sliding or rolling on after the hit: a trail of blood where it goes
+      if bx and e.tx and now - e.at < TRAIL_T then
+        local dx, dy = bx - e.tx, by - e.ty
+        local d = math.sqrt(dx * dx + dy * dy)
+        if d > TRAIL_STEP * TRAIL_GROW ^ (e.trail or 0) then
+          -- on the ground (not carried on the hood), still moving, and not without end
+          if bvx * bvx + bvy * bvy > TRAIL_V * TRAIL_V and (e.trail or 0) < TRAIL_MAX
+              and (not bz or not api.groundUnder or bz - (api.groundUnder(bx, by, bz) or bz) < TRAIL_LOW) then
+            e.trail = (e.trail or 0) + 1
+            splatAt(api, bx, by, bz or e.z or 0, nil, 'trail', dx / d, dy / d)
+          end
+          e.tx, e.ty = bx, by
+        end
+      end
       -- come to rest: a pool of blood under it, once
-      if bx and not e.pooled and now - e.at > POOL_T and bvx * bvx + bvy * bvy < POOL_V * POOL_V then
+      -- (lying on the ground, not on a bonnet)
+      if bx and not e.pooled and now - e.at > POOL_T and bvx * bvx + bvy * bvy < POOL_V * POOL_V
+          and (not bz or not api.groundUnder or bz - (api.groundUnder(bx, by, bz) or bz) < TRAIL_LOW) then
         e.pooled = true
         splatAt(api, bx, by, bz or e.z or 0, nil, 'pool')
       end
@@ -275,7 +307,7 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
     local row = pending[i]
     local w, h = row.w, row.h
     if not w.taken and not w.free then
-      local e = free(P)
+      local e = free(P, api.figOf and api.figOf(w) or nil)
       if not e then e = reclaim(P, walkers, W, api, px, py) end
       if not e then
         if row.t <= GHOST_LEAD then
@@ -297,7 +329,7 @@ function M.step(P, walkers, W, hitters, now, api, px, py)
         local ivx, ivy = row.wvx, row.wvy
         walkers.take(W, w)
         api.place(e.id, sx, sy, walkers.standZ(w), w.hx, w.hy, row.speed, w, {vx = ivx, vy = ivy, vz = 0})
-        e.state, e.at, e.walker, e.pooled = 'placed', now, w, nil
+        e.state, e.at, e.walker, e.pooled, e.trail, e.tx = 'placed', now, w, nil, nil, nil
         e.vx, e.vy, e.nx, e.ny, e.z = ivx, ivy, nx, ny, walkers.standZ(w)
         e.hitter = {x = h.x, y = h.y, vx = h.vx, vy = h.vy, fx = h.fx, fy = h.fy, hl = h.hl, hw = h.hw,
           id = h.id, player = h.player, z = h.z}
@@ -342,8 +374,12 @@ function M.parkAll(P, api)
 end
 
 -- --- the game side ------------------------------------------------------------------------------
--- looks: the walkers module (its SHIRTS, PANTS, SKIN palettes)
-local REF_Z = .99   -- setPositionRotation places the ref node (the front of the pelvis, 0.97 m) + 2 cm
+-- looks: the walkers module (its SHIRTS, PANTS, SKIN palettes; its CHARS where the walkers are the
+-- fal figures, each with its body: {model, refZ, refAhead})
+-- setPositionRotation places the ref node, the front of the pelvis: the mannequin's stands 0.97 m
+-- up and 0.09 m ahead of the middle, a figure's where its body says. LIFT over the ground: the
+-- soles' nodes just clear of it (a body born 5 cm up dropped onto its feet in sight).
+local REF_Z, REF_AHEAD, LIFT = .97, .09, .012
 
 -- a vehicle's half length and width, from its spawn box (once per vehicle, kept in boxes)
 -- {half length, half width, offset of the box's centre along the heading from getPosition}: the
@@ -440,13 +476,28 @@ end
 
 function M.gameApi(looks)
   local api = {}
-  function api.spawn(fx, fy)
-    local ok, veh = pcall(core_vehicles.spawnNewVehicle, 'e2r_ped', {
-      config = 'vehicles/e2r_ped/base.pc', pos = vec3(fx, fy, -2000), rot = quat(0, 0, 0, 1),
+  local figOfBody = {}     -- body id: its figure's number
+  -- the figures that have a body of their own (0: the mannequin for all)
+  function api.figures()
+    local chars = looks.CHARS
+    return chars and chars[1] and chars[1].body and #chars or 0
+  end
+  -- the figure of a walker, where figures have bodies
+  function api.figOf(w)
+    local chars = looks.CHARS
+    if not (chars and chars[1] and chars[1].body) then return nil end
+    return (w.look or 0) % #chars + 1
+  end
+  function api.spawn(fx, fy, fig)
+    local char = fig and looks.CHARS and looks.CHARS[fig]
+    local model = char and char.body and char.body.model or 'e2r_ped'
+    local ok, veh = pcall(core_vehicles.spawnNewVehicle, model, {
+      config = 'vehicles/' .. model .. '/base.pc', pos = vec3(fx, fy, -2000), rot = quat(0, 0, 0, 1),
       autoEnterVehicle = false, canSpawnAnotherVehicleCheck = false, vehicleName = 'e2r_ped_body'})
     if not ok or not veh then return end
     veh:setActive(0)
     pcall(function() veh.playerUsable = false end)
+    figOfBody[veh:getID()] = char and char.body and fig or nil
     return veh:getID()
   end
   function api.pose(id)
@@ -461,33 +512,32 @@ function M.gameApi(looks)
     local obj = getObjectByID(id)
     if not obj then return end
     obj:setActive(1)
-    -- its figure's own colours where the walkers are the fal people (walkers.coloursOf)
-    local cols
-    if looks.coloursOf then cols = {looks.coloursOf(w)} else cols = {looks.SHIRTS[w.shirt], looks.PANTS[w.pants], looks.SKIN[w.skin]} end
-    for k, field in ipairs({'color', 'colorPalette0', 'colorPalette1'}) do
-      local c = cols[k]
-      if c then pcall(function() obj[field] = ColorF(c[1], c[2], c[3], 1):asLinear4F() end) end
+    local fig = figOfBody[id]
+    local body = fig and looks.CHARS and looks.CHARS[fig] and looks.CHARS[fig].body
+    if not body then
+      -- the mannequin: its figure's own colours where the walkers are the fal people (walkers.coloursOf)
+      local cols
+      if looks.coloursOf then cols = {looks.coloursOf(w)} else cols = {looks.SHIRTS[w.shirt], looks.PANTS[w.pants], looks.SKIN[w.skin]} end
+      for k, field in ipairs({'color', 'colorPalette0', 'colorPalette1'}) do
+        local c = cols[k]
+        if c then pcall(function() obj[field] = ColorF(c[1], c[2], c[3], 1):asLinear4F() end) end
+      end
     end
     -- the body faces -y (vehicle space): its forward along the walker's heading
     local q = quatFromDir(vec3(-hx, -hy, 0), vec3(0, 0, 1))
-    obj:setPositionRotation(x, y, z + REF_Z, q.x, q.y, q.z, q.w)
+    local ahead = body and body.refAhead or REF_AHEAD
+    obj:setPositionRotation(x + hx * ahead, y + hy * ahead, z + (body and body.refZ or REF_Z) + LIFT, q.x, q.y, q.z, q.w)
     local vx = opts and opts.vx or (hx * v)
     local vy = opts and opts.vy or (hy * v)
     local vz = opts and opts.vz or 0
     obj:applyClusterVelocityScaleAdd(obj:getRefNodeId(), 0, vx, vy, vz)
   end
-  -- slide the body in XY without a full re-place (out of an embedded car mesh)
-  function api.nudge(id, x, y)
-    local obj = getObjectByID(id)
-    if not obj then return end
-    local p = obj:getPosition()
-    local d = obj:getDirectionVector()
-    local q = quatFromDir(vec3(d.x, d.y, 0), vec3(0, 0, 1))
-    obj:setPositionRotation(x, y, p.z, q.x, q.y, q.z, q.w)
-  end
-  function api.eject(id, dvx, dvy, dvz)
-    local obj = getObjectByID(id)
-    if obj then obj:applyClusterVelocityScaleAdd(obj:getRefNodeId(), 0, dvx, dvy, dvz or 0) end
+  -- the ground under a point (a body's pelvis), or nil
+  local under = vec3(0, 0, 0)
+  function api.groundUnder(x, y, z)
+    under.x, under.y, under.z = x, y, z + .5
+    local h = be:getSurfaceHeightBelow(under)
+    if h and h > -1e6 then return h end
   end
   -- back to its standing shape (the vehicle's Lua does it in a frame or two)
   function api.reset(id)
@@ -504,6 +554,7 @@ function M.gameApi(looks)
   function api.delete(id)
     local obj = getObjectByID(id)
     if obj then obj:delete() end
+    figOfBody[id] = nil
   end
   return api
 end

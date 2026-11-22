@@ -1095,17 +1095,23 @@ end
 -- paintable shape (shapes.paintable[body], flow_art.py PAINTABLE) takes the paint as the copy's
 -- colour (PAINT_RGB, sRGB as the handoff's real cars get it): four batches, made at the start
 -- (finalizeShape is 13-25 ms each). A copy is turned by the direction of its +y axis and stands
--- level: the slope is not drawn (shapebatch.lua); a car within ~90 m of the player is real anyway.
+-- level: the slope is not drawn (shapebatch.lua).
+-- A batch's copy casts no shadow (shapebatch.lua), and a car without one hangs over the road for
+-- all its model: within FAR_IN m a car is a solid copy (a TSStatic from a pool: a shadow, the
+-- slope), the batches draw the cars beyond, where a shadow is a few pixels.
 local function batchView(F, V, shapes, batches)
   local kinds, colours = {}, {}
+  local farOf = shapes.far or {}
   for b, paths in ipairs(shapes.paintable) do
     -- a body's models: one shape, or several (the fal models of traffic_art.py) the cars of that
     -- body are shared among
     if type(paths) ~= 'table' then paths = {paths} end
     kinds[b] = {}
     for k, path in ipairs(paths) do
-      kinds[b][k] = batches:kind(path)
-      batches:warm(kinds[b][k])
+      -- with a far shape that has the batch, the model itself is only ever a solid copy
+      local K = batches:kind(path, nil, nil, not farOf[b])
+      kinds[b][k] = K
+      if farOf[b] then batches:warmSolid(K) else batches:warm(K) end
     end
   end
   for k, rgb in ipairs(M.PAINT_RGB) do colours[k] = ColorF(rgb[1], rgb[2], rgb[3], 1) end
@@ -1116,7 +1122,7 @@ local function batchView(F, V, shapes, batches)
     far[b] = batches:kind(path)
     batches:warm(far[b])
   end
-  V.far = next(far) and far or nil
+  V.far = far
   -- a car's copy; none yet while its model's batch is not made (shapebatch.lua: one a frame, and
   -- after its primer), M.draw then asks again
   V.place = function(car, close)
@@ -1125,10 +1131,14 @@ local function batchView(F, V, shapes, batches)
     -- its model by its number, unless it came back from the hand-off as the model it left as
     if not (car.variant and models[car.variant]) then car.variant = (car.id - 1) % #models + 1 end
     -- (a new car is far: it starts out of sight)
-    local K = not close and far[car.body or 1] or models[car.variant]
-    car.batch, car.slot = batches:add(K, x, y, z + (close and car.dz or 0), -math.sin(yaw), math.cos(yaw), 0,
-      colours[car.paint] or colours[1])
-    car.close = car.batch and K == models[car.variant] or nil
+    if close then
+      car.batch, car.slot = batches:addSolid(models[car.variant], x, y, z + (car.dz or 0), -math.sin(yaw), math.cos(yaw), 0,
+        colours[car.paint] or colours[1], pitch)
+    else
+      car.batch, car.slot = batches:add(far[car.body or 1] or models[car.variant], x, y, z, -math.sin(yaw), math.cos(yaw), 0,
+        colours[car.paint] or colours[1])
+    end
+    car.close = car.batch and close or nil
     car.drawnYaw, car.drawnPitch, car.drawnX, car.drawnY = yaw, pitch, x, y
     car.drawnS, car.drawnLink, car.drawnLane = car.s, car.link, car.lane
   end
@@ -1208,7 +1218,7 @@ function M.draw(F, V, fx, fy, ground)
       local went = car.s ~= car.drawnS or car.link ~= car.drawnLink or car.lane ~= car.drawnLane
       -- its model or its far shape, by how far it is: the copy of the other one is made first,
       -- then this one goes (a model's batch not made yet: it stays as it is)
-      if V.far and V.far[car.body or 1] and fx and dx then
+      if batches and fx and dx then
         local close = d2 < (car.close and FAR_OUT * FAR_OUT or FAR_IN * FAR_IN)
         if close ~= (car.close or false) then
           local oldB, oldI, was = obj, car.slot, car.close
@@ -1237,7 +1247,7 @@ function M.draw(F, V, fx, fy, ground)
           car.gs = nil
         end
         if batches then
-          batches:move(obj, car.slot, x, y, z, -math.sin(yaw), math.cos(yaw), 0)
+          batches:move(obj, car.slot, x, y, z, -math.sin(yaw), math.cos(yaw), 0, nil, pitch)
         else
           local qx, qy, qz, qw = M.quat(yaw, pitch)
           obj:setPosRot(x, y, z, qx, qy, qz, qw)

@@ -21,6 +21,7 @@ import flow_art  # noqa: E402 (earthng/ is on sys.path for every caller)
 import people_art  # noqa: E402
 import traffic_art  # noqa: E402
 import ped_body  # noqa: E402
+import blood_art  # noqa: E402
 import turf_art  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -150,6 +151,8 @@ def level_files(lang='uk'):
                         'baseColorFactor': [0.55, 0.55, 0.5, 1], 'roughnessFactor': 0.9}, {}, {}, {}]}}, indent=2),
         **flow_art.level_files(LEVEL),
         **people_art.level_files(LEVEL),
+        # the blood stains (their atlas takes the place of people_art's drawn one)
+        **blood_art.level_files(LEVEL),
         # the fal models of the flow and the walkers, when they are cooked (data/traffic-art)
         **traffic_art.level_files(LEVEL),
         **ped_body.vehicle_files(),

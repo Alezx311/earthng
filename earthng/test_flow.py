@@ -113,6 +113,7 @@ class FlowTests(unittest.TestCase):
             if dz ~= 0 or math.abs(dx * dx + dy * dy - 1) > 1e-9 then self.level = false end
             return {shape = K.shape, colour = colour}, self.adds
           end
+          P.addSolid = P.add
           function P:move(B, i, x, y, z, dx, dy, dz)
             self.moves = self.moves + 1
             if dz ~= 0 or math.abs(dx * dx + dy * dy - 1) > 1e-9 then self.level = false end
@@ -150,7 +151,9 @@ class FlowTests(unittest.TestCase):
           local yaw, nose, seen = flow.poseCheck(F, V, 40)
           local live = P.live
           flow.setTarget(F, 0)
-          return {warmed, cars, live, wrongShape, P.moves == placed, placed < cars * frames, seen, P.live, P.adds - P.drops,
+          -- placed: the moves, and the copies made again as a car came near or went far
+          return {warmed, cars, live, wrongShape, P.moves <= placed and placed <= P.moves + P.adds - cars,
+            placed < cars * frames, seen, P.live, P.adds - P.drops,
             P.ticks == frames, P.level}
         ''')
         warmed, cars, live, wrong, moves_match, fewer, seen, live_after, net, ticked, level = list(out.values())
@@ -1253,6 +1256,8 @@ class FlowTests(unittest.TestCase):
           local batches = {tick = function() frame = frame + 1 end, warm = function() end, drop = function() end,
             move = function() end, kind = function(_, path) return path end,
             add = function(_, K) if frame < 20 then return nil end copies = copies + 1; return K, copies end}
+          batches.drop = function() copies = copies - 1 end
+          batches.addSolid = batches.add
           local F = flow.new{seed = 6}
           flow.sync(F, grid(4, 150))
           local V = flow.view(F, {paintable = {'sedan'}}, nil, batches)
@@ -1282,6 +1287,7 @@ class FlowTests(unittest.TestCase):
             kind = function(_, path) return path end,
             add = function(_, K, x, y, z) placed[#placed + 1] = {x, y, z}; return placed, #placed end,
             move = function(_, B, i, x, y, z) B[i] = {x, y, z} end}
+          batches.addSolid = batches.add
           local F = flow.new{seed = 6}
           flow.sync(F, grid(8, 150))
           local V = flow.view(F, {paintable = {'sedan'}}, nil, batches)
@@ -1328,8 +1334,16 @@ class FlowTests(unittest.TestCase):
           local live, adds, drops = {}, 0, 0
           local batches = {tick = function() end, warm = function() end, kind = function(_, path) return path end,
             add = function(_, K) adds = adds + 1; live[adds] = K; return K, adds end,
-            move = function() end,
+            move = function() end, warmSolid = function() end,
             drop = function(_, B, i) drops = drops + 1; live[i] = nil end}
+          -- a model is a solid copy (a TSStatic: its shadow), never a batch's
+          local solid, batched = 0, 0
+          batches.addSolid = function(self, K, ...) solid = solid + 1; return self.add(self, K, ...) end
+          local add = batches.add
+          batches.add = function(self, K, ...)
+            if K ~= 'far_shape' then batched = batched + 1 end
+            return add(self, K, ...)
+          end
           local F = flow.new{seed = 6}
           flow.sync(F, grid(8, 150))
           local V = flow.view(F, {paintable = {{'model_a', 'model_b'}}, far = {'far_shape'}}, nil, batches)
@@ -1348,9 +1362,11 @@ class FlowTests(unittest.TestCase):
             if d > 120 then if model then farModel = farModel + 1 else farFar = farFar + 1 end end
           end
           for _ in pairs(live) do copies = copies + 1 end
-          return {nearModel, nearFar, farModel, farFar, copies, F.count, adds - drops}
+          return {nearModel, nearFar, farModel, farFar, copies, F.count, adds - drops, solid, batched - solid}
         ''')
-        near_model, near_far, far_model, far_far, copies, count, held = list(out.values())
+        near_model, near_far, far_model, far_far, copies, count, held, solid, batched = list(out.values())
+        self.assertGreater(solid, 1)
+        self.assertEqual(batched, 0)         # the batches hold far shapes only
         self.assertGreater(near_model, 1)
         self.assertEqual(near_far, 0)        # its model within FAR_IN
         self.assertEqual(far_model, 0)       # its far shape beyond FAR_OUT

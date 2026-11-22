@@ -31,6 +31,14 @@
 -- keeps the vec3 it was placed with: the engine reads those vectors when it draws, after the call
 -- has returned, and one shared vec3 left every copy on the last place written that frame (the
 -- crowd blinked). A freed slot keeps its vectors for the next copy.
+-- A batch's copies cast no shadow: they are not drawn into the shadow maps at all, and what is
+-- seen under one is the screen's own contact shadow, a hand wide (a row of test copies beside the
+-- same shape as a TSStatic, shadow-01: on the ground, lifted, scaled, any draw distance). So the
+-- copies near the player are "solid" ones (M.addSolid): a TSStatic each from a pool a kind, with
+-- the copy's colour as its instance colour and, unlike a batch's copy, its nose up a slope. They
+-- answer M.move and M.drop as a batch's copies do. A kind that has a batch as well (K.batchToo)
+-- gets no TSStatic before that batch is made (the trap of a TSStatic loading the shape first,
+-- above): M.addSolid gives a batch copy until then.
 -- M.available() is false where the class or its calls are missing (an older game): the callers
 -- keep a TSStatic per copy there. Pure Lua with a stand-in createObject: earthng/test_shapebatch.py.
 local M = {}
@@ -45,6 +53,8 @@ M.PER_FRAME = 1           -- new batches a frame (each ~13-25 ms of finalizeShap
 -- copies is made PRIME_FRAMES later, the primer deleted once that one is there. 0: no primer (the
 -- tests; world.lua sets it for the game).
 M.PRIME_FRAMES = 0
+M.SOLID_PER_FRAME = 6     -- new TSStatics of solid copies a frame (~0.1 ms each of a loaded shape)
+local SOLID_SPARE, SOLID_TRIM_AFTER = 4, 600   -- hidden ones kept a kind; frames unused before the rest go
 
 -- the class is there and takes the calls this module makes (checked once a session)
 function M.available()
@@ -63,16 +73,18 @@ end
 local Pool = {__index = M}
 function M.new(group)
   return setmetatable({group = group, kinds = {}, list = {}, frame = 0, made = 0, objects = 0, live = 0, resizes = 0,
-    waits = 0, finalMs = 0, finalMax = 0, timer = hptimer and hptimer() or nil, white = ColorF(1, 1, 1, 1)}, Pool)
+    waits = 0, finalMs = 0, finalMax = 0, timer = hptimer and hptimer() or nil, white = ColorF(1, 1, 1, 1),
+    solids = {}, solidMade = 0, solidObjects = 0, solidLive = 0, trimAt = 0}, Pool)
 end
 
 -- A kind: shape with its materials remapped ({from, to, from2, to2, ...}; nil: none), the same
--- table for the same key (make the kinds once, not per copy).
-function M.kind(P, shape, remap, key)
+-- table for the same key (make the kinds once, not per copy). batchToo: its solid copies
+-- (M.addSolid) wait for its batch, which its other copies are in.
+function M.kind(P, shape, remap, key, batchToo)
   key = key or shape
   local K = P.kinds[key]
   if not K then
-    K = {shape = shape, remap = remap, key = key}
+    K = {shape = shape, remap = remap, key = key, batchToo = batchToo}
     P.kinds[key] = K
   end
   return K
@@ -136,9 +148,34 @@ function M.warm(P, K)
   return batchOf(P, K)
 end
 
--- every frame: the budget of new batches starts again
+-- every frame: the budgets of new batches and new solid copies start again; now and then the
+-- hidden TSStatics a kind has not needed for a while go (one kind a call)
 function M.tick(P)
-  P.frame, P.made = P.frame + 1, 0
+  P.frame, P.made, P.solidMade = P.frame + 1, 0, 0
+  local solids = P.solids
+  if #solids > 0 and P.frame % 30 == 0 then
+    local at = P.trimAt % #solids + 1
+    P.trimAt = at
+    local B = solids[at]
+    if P.frame - B.usedAt > SOLID_TRIM_AFTER then
+      local cut = 0
+      while B.nfree > SOLID_SPARE and cut < 4 do
+        -- the highest slot only, while it is a free one: the slots below keep their numbers
+        local i, at = B.top, nil
+        for k = B.nfree, 1, -1 do
+          if B.free[k] == i then at = k break end
+        end
+        if not at then break end
+        B.free[at] = B.free[B.nfree]
+        B.free[B.nfree] = nil
+        B.nfree, B.top, cut = B.nfree - 1, B.top - 1, cut + 1
+        local o = B.objs[i]
+        B.objs[i], B.c[i] = nil, nil
+        pcall(function() o:delete() end)
+        P.solidObjects = P.solidObjects - 1
+      end
+    end
+  end
 end
 
 local function place(P, B, i, x, y, z, dx, dy, dz)
@@ -205,9 +242,114 @@ function M.add(P, K, x, y, z, dx, dy, dz, colour)
   return B, i
 end
 
+-- --- solid copies: a TSStatic each (they cast shadows) ------------------------------------------
+local function solidOf(P, K)
+  local B = K.solid
+  if not B then
+    B = {static = true, kind = K, objs = {}, free = {}, nfree = 0, on = {}, c = {}, top = 0, live = 0, usedAt = P.frame}
+    K.solid = B
+    P.solids[#P.solids + 1] = B
+  end
+  return B
+end
+
+local function solidMake(P, B)
+  local o = createObject('TSStatic')
+  o:setField('shapeName', 0, B.kind.shape)
+  o:setField('collisionType', 0, 'None')
+  o:setField('decalType', 0, 'None')
+  o.useInstanceRenderData = true
+  o.canSave = false
+  o:setPosRot(0, 0, -5000, 0, 0, 0, 1)
+  o:registerObject('')
+  o:setHidden(true)
+  if P.group then P.group:addObject(o) end
+  P.solidObjects = P.solidObjects + 1
+  return o
+end
+
+-- the TSStatic turned so that the shape's +y points along (dx, dy), its +x (the nose of a car)
+-- pitch radians up: the rotation setPosRot takes (flow.quat: the conjugate of the textbook one)
+local function solidPlace(o, x, y, z, dx, dy, pitch)
+  local h = math.atan2(-dx, dy) / 2
+  if pitch and pitch ~= 0 then
+    local cy, sy, ca, sa = math.cos(h), math.sin(h), math.cos(-pitch / 2), math.sin(-pitch / 2)
+    o:setPosRot(x, y, z, sy * sa, -cy * sa, -sy * ca, cy * ca)
+  else
+    o:setPosRot(x, y, z, 0, 0, -math.sin(h), math.cos(h))
+  end
+end
+
+-- the copy's colour as the TSStatic's instance colour (linear, made once a ColorF)
+local function solidColour(P, o, colour)
+  local lin = P.lin
+  if not lin then lin = setmetatable({}, {__mode = 'k'}); P.lin = lin end
+  local c = lin[colour]
+  if not c then
+    c = colour.asLinear4F and colour:asLinear4F() or colour
+    lin[colour] = c
+  end
+  o.instanceColor = c
+  if o.updateInstanceRenderData then o:updateInstanceRenderData() end
+end
+
+-- the kind's shape loaded by a hidden TSStatic now (a layer's start), for a kind without a batch
+function M.warmSolid(P, K)
+  local B = solidOf(P, K)
+  if B.top == 0 then
+    B.top, B.nfree = 1, 1
+    B.objs[1] = solidMake(P, B)
+    B.free[1] = 1
+  end
+end
+
+-- As M.add, the copy a TSStatic: it casts a shadow and takes pitch (radians, the shape's +x up).
+-- Returns its bucket and slot for M.move / M.drop, or nothing when this frame made its
+-- SOLID_PER_FRAME already. A kind with a batch as well whose batch is not there yet: a batch copy.
+function M.addSolid(P, K, x, y, z, dx, dy, dz, colour, pitch)
+  if K.batchToo and not K.batch then return M.add(P, K, x, y, z, dx, dy, dz, colour) end
+  local B = solidOf(P, K)
+  local i
+  if B.nfree > 0 then
+    i = B.free[B.nfree]
+    B.free[B.nfree] = nil
+    B.nfree = B.nfree - 1
+  else
+    if P.solidMade >= M.SOLID_PER_FRAME then
+      P.waits = P.waits + 1
+      return nil
+    end
+    P.solidMade = P.solidMade + 1
+    i = B.top + 1
+    B.top = i
+    B.objs[i] = solidMake(P, B)
+  end
+  local o = B.objs[i]
+  colour = colour or P.white
+  if B.c[i] ~= colour then
+    B.c[i] = colour
+    solidColour(P, o, colour)
+  end
+  solidPlace(o, x, y, z, dx, dy, pitch)
+  o:setHidden(false)
+  B.on[i], B.usedAt = true, P.frame
+  B.live, P.solidLive = B.live + 1, P.solidLive + 1
+  return B, i
+end
+
 -- the copy placed again (colour nil: as it was). setInstance leaves a hidden slot hidden, so a
--- copy that is already shown is enabled again: a step must not blink it off.
-function M.move(P, B, i, x, y, z, dx, dy, dz, colour)
+-- copy that is already shown is enabled again: a step must not blink it off. pitch: a solid
+-- copy's nose up (a batch's copy stands level).
+function M.move(P, B, i, x, y, z, dx, dy, dz, colour, pitch)
+  if B.static then
+    local o = B.objs[i]
+    if colour and B.c[i] ~= colour then
+      B.c[i] = colour
+      solidColour(P, o, colour)
+    end
+    solidPlace(o, x, y, z, dx, dy, pitch)
+    return
+  end
   if colour then B.c[i] = colour end
   place(P, B, i, x, y, z, dx, dy, dz)
   if B.on[i] then B.obj:setInstanceEnabled(i, true) end
@@ -216,6 +358,14 @@ end
 -- the copy hidden and its slot free
 function M.drop(P, B, i)
   if not B.on[i] then return end
+  if B.static then
+    B.objs[i]:setHidden(true)
+    B.on[i] = nil
+    B.nfree = B.nfree + 1
+    B.free[B.nfree] = i
+    B.live, P.solidLive, B.usedAt = B.live - 1, P.solidLive - 1, P.frame
+    return
+  end
   B.obj:setInstanceEnabled(i, false)
   B.on[i], B.c[i] = nil, nil
   B.nfree = B.nfree + 1
@@ -236,7 +386,15 @@ function M.clear(P)
       K.primer = nil
     end
   end
+  for _, B in ipairs(P.solids) do
+    for i = 1, B.top do
+      local o = B.objs[i]
+      if o then pcall(function() o:delete() end) end
+    end
+    B.kind.solid = nil
+  end
   P.list, P.objects, P.live = {}, 0, 0
+  P.solids, P.solidObjects, P.solidLive = {}, 0, 0
 end
 
 -- the direction of a +x shape's +y axis for heading yaw (radians about z)

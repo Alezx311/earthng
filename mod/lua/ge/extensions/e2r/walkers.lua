@@ -67,6 +67,7 @@ local PERIOD_MAX = 10     -- ...at most this many
 local HIDDEN_PERIOD = 20  -- frames between the turns of a walker beyond DRAW_R (not drawn)
 local NEAR_R, NEAR_OUT = 60, 70     -- m: posed within NEAR_R, back to one shape beyond NEAR_OUT
 local DRAW_R, DRAW_OUT = 200, 215   -- m: one shape within DRAW_R, none beyond DRAW_OUT
+local SOLID_R, SOLID_OUT = 38, 46   -- m: a figure's copy within is a solid one (shapebatch.lua: it casts a shadow)
 local NEAR_SETS = 96      -- posed walkers at most (SHAPES objects each)
 local FAR_POSE = 0        -- the shape of a walker between NEAR_R and DRAW_R (left leg mid swing)
 local MAKE_PER_FRAME = 10 -- objects created in a frame: 200 walkers' 1800 at once were a 204 ms frame (walk-01)
@@ -1551,7 +1552,7 @@ end
 function M.view(W, shapes, group, batches)
   return {frame = 0, shapes = shapes, group = group, far = {}, near = {}, farFree = {}, nearFree = {}, top = 0,
     objects = 0, sets = 0, needAt = 0, colours = {{}, {}, {}}, farUsed = 0, nearUsed = 0, shown = {}, farLook = {},
-    batches = batches, kinds = {}, shirts = {}, bmode = {}, bkind = {}, bb = {}, bi = {}, blook = {},
+    batches = batches, kinds = {}, shirts = {}, bmode = {}, bkind = {}, bb = {}, bi = {}, blook = {}, bsolid = {},
     retireN = 0, retireB = {}, retireI = {}}
 end
 
@@ -1674,7 +1675,8 @@ local function charKind(V, char, key)
   local shape = char.shapes[key]
   local K = V.kinds[shape]
   if not K then
-    K = V.batches:kind(shape, nil, shape)
+    -- the batch of a pose first, the solid copies of it after (shapebatch.lua)
+    K = V.batches:kind(shape, nil, shape, true)
     V.kinds[shape] = K
   end
   return K
@@ -1706,37 +1708,47 @@ local function batchDraw(W, V, fx, fy, ground)
     V.retireN = 0
   end
   local near2, nearOut2, draw2, drawOut2 = NEAR_R * NEAR_R, NEAR_OUT * NEAR_OUT, DRAW_R * DRAW_R, DRAW_OUT * DRAW_OUT
-  local slots, bmode, bkind, bb, bi, blook = W.slots, V.bmode, V.bkind, V.bb, V.bi, V.blook
-  local moved, top, farUsed, nearUsed = 0, 0, 0, 0
+  local solid2, solidOut2 = SOLID_R * SOLID_R, SOLID_OUT * SOLID_OUT
+  local slots, bmode, bkind, bb, bi, blook, bsolid = W.slots, V.bmode, V.bkind, V.bb, V.bi, V.blook, V.bsolid
+  local moved, top, farUsed, nearUsed, solidUsed = 0, 0, 0, 0, 0
   for slot = 1, math.max(W.target, V.top) do
     local w = slots[slot]
     local was = bmode[slot] or 0
-    -- 0: none, 1: the one pose, 2: posed as it walks
+    -- 0: none, 1: the one pose, 2: posed as it walks, 3: posed, a solid copy (a figure near the focus)
     local mode = 0
     if w and not w.free and not w.taken and not w.inside and slot <= W.target then
       local d2 = (w.x - fx) ^ 2 + (w.y - fy) ^ 2
-      if d2 < (was == 2 and nearOut2 or near2) then mode = 2
+      if V.chars and d2 < (was == 3 and solidOut2 or solid2) then mode = 3
+      elseif d2 < (was >= 2 and nearOut2 or near2) then mode = 2
       elseif d2 < (was > 0 and drawOut2 or draw2) then mode = 1 end
     end
     if mode == 0 then
       if bb[slot] then P:drop(bb[slot], bi[slot]) end
-      bb[slot], bi[slot], bkind[slot], blook[slot] = nil, nil, nil, nil
+      bb[slot], bi[slot], bkind[slot], blook[slot], bsolid[slot] = nil, nil, nil, nil, nil
     else
       top = slot
-      if mode == 2 then nearUsed = nearUsed + 1 else farUsed = farUsed + 1 end
-      local pose = (mode == 2 or w.stay) and poseOf(w) or FAR_POSE
+      if mode >= 2 then nearUsed = nearUsed + 1 else farUsed = farUsed + 1 end
+      local posed = mode >= 2 or w.stay
+      local pose = posed and poseOf(w) or FAR_POSE
       local char = V.chars and M.charOf(w)
       local K
       if char then
-        K = charKind(V, char, (mode == 2 or w.stay) and POSE_KEYS[pose] or 'far')
+        K = charKind(V, char, posed and POSE_KEYS[pose] or 'far')
       else
         K = kindOf(V, pose, w.skin)
       end
+      local solid = mode == 3 and char and true or nil
+      if solid then solidUsed = solidUsed + 1 end
       local hx, hy = w.hx or 1, w.hy or 0
       local len = math.sqrt(hx * hx + hy * hy)
       if len > 1e-9 then hx, hy = hx / len, hy / len else hx, hy = 1, 0 end
-      if K ~= bkind[slot] or blook[slot] ~= w.look then
-        local B, i = P:add(K, w.x, w.y, groundZ(w, ground), -hy, hx, 0, not char and shirtOf(V, w.shirt) or nil)
+      if K ~= bkind[slot] or blook[slot] ~= w.look or bsolid[slot] ~= solid then
+        local B, i
+        if solid then
+          B, i = P:addSolid(K, w.x, w.y, groundZ(w, ground), -hy, hx, 0)
+        else
+          B, i = P:add(K, w.x, w.y, groundZ(w, ground), -hy, hx, 0, not char and shirtOf(V, w.shirt) or nil)
+        end
         -- the kind's batch not made yet (one a frame): the old copy stays until it is
         if B then
           -- keep the previous pose one frame: dropping it here left a blank frame every step
@@ -1744,12 +1756,12 @@ local function batchDraw(W, V, fx, fy, ground)
             local r = V.retireN + 1
             V.retireN, V.retireB[r], V.retireI[r] = r, bb[slot], bi[slot]
           end
-          bb[slot], bi[slot], bkind[slot], blook[slot] = B, i, K, w.look
+          bb[slot], bi[slot], bkind[slot], blook[slot], bsolid[slot] = B, i, K, w.look, solid
           moved = moved + 1
         elseif bb[slot] and blook[slot] ~= w.look then
           -- another walker in the slot: the old one's copy goes now
           P:drop(bb[slot], bi[slot])
-          bb[slot], bi[slot], bkind[slot], blook[slot] = nil, nil, nil, nil
+          bb[slot], bi[slot], bkind[slot], blook[slot], bsolid[slot] = nil, nil, nil, nil, nil
         end
       elseif w.dirty then
         P:move(bb[slot], bi[slot], w.x, w.y, groundZ(w, ground), -hy, hx, 0)
@@ -1759,7 +1771,7 @@ local function batchDraw(W, V, fx, fy, ground)
     bmode[slot] = mode
     if w then w.dirty = nil end
   end
-  V.top, V.farUsed, V.nearUsed, V.objects = top, farUsed, nearUsed, P.objects
+  V.top, V.farUsed, V.nearUsed, V.solidUsed, V.objects = top, farUsed, nearUsed, solidUsed, P.objects + P.solidObjects
   return moved
 end
 
@@ -1872,6 +1884,7 @@ function M.clear(W, V)
   if V and V.batches then
     V.batches:clear()
     V.bmode, V.bkind, V.bb, V.bi, V.blook, V.top, V.objects, V.farUsed, V.nearUsed = {}, {}, {}, {}, {}, 0, 0, 0, 0
+    V.bsolid = {}
     V.retireN = 0
   elseif V then
     for _, o in pairs(V.far) do o:delete() end

@@ -1,6 +1,7 @@
 """Copies of a shape in DynamicShapeBatch objects (mod/lua/ge/extensions/e2r/shapebatch.lua) against
 a stand-in batch that behaves as the game's did (capacity/dsb3-5.lua): resize keeps the copies, a
 slot enabled before it was ever placed stays unseen, remaps count only before finalizeShape."""
+import math
 import unittest
 from pathlib import Path
 
@@ -36,8 +37,21 @@ function B:setInstanceEnabled(i, on)
 end
 function B:delete() BATCH.alive = BATCH.alive - 1; self.deleted = true end
 function B:shown() local n = 0; for i in pairs(self.on) do if self.at[i] then n = n + 1 end end; return n end
+-- a TSStatic: where it stands, how it is turned, hidden or not, its instance colour
+STATIC = {made = 0, alive = 0, moves = 0}
+local T = {}
+T.__index = T
+function T:setField(k, _, v) self.fields[k] = v end
+function T:registerObject() self.registered = true end
+function T:setPosRot(x, y, z, qx, qy, qz, qw) STATIC.moves = STATIC.moves + 1; self.at = {x, y, z, qx, qy, qz, qw} end
+function T:setHidden(h) self.hidden = h end
+function T:delete() STATIC.alive = STATIC.alive - 1; self.deleted = true end
 CLASS = 'DynamicShapeBatch'
 function createObject(kind)
+  if kind == 'TSStatic' then
+    STATIC.made, STATIC.alive = STATIC.made + 1, STATIC.alive + 1
+    return setmetatable({fields = {}}, T)
+  end
   if kind ~= CLASS then error('no class ' .. kind) end
   BATCH.made, BATCH.alive = BATCH.made + 1, BATCH.alive + 1
   return setmetatable({size = 0, on = {}, at = {}, pref = {}, dref = {}}, B)
@@ -237,6 +251,97 @@ class ShapeBatchTests(unittest.TestCase):
         self.assertEqual(list(counts.values()), [2, 1, 1])
         self.assertTrue(warmed)
         self.assertEqual(list(cleared.values()), [0, True])
+
+    def test_a_solid_copy_is_a_pooled_static_turned_like_the_batch_copy_with_its_colour_and_pitch(self):
+        out = self.lua().execute('''
+          local P = sb.new(GROUP)
+          local K = P:kind('car.dae')
+          local red = ColorF(1, 0, 0, 1)
+          P:tick()
+          -- heading east (+x): the shape's +y points north
+          local B, i = P:addSolid(K, 1, 2, 3, 0, 1, 0, red)
+          local o = B.objs[i]
+          local out = {}
+          out[1] = {BATCH.made, STATIC.made, GROUP.n, o.hidden == false, o.fields.shapeName, o.fields.collisionType}
+          out[2] = {o.at[1], o.at[2], o.at[3], o.at[6], o.at[7]}
+          out[3] = o.instanceColor == red
+          -- heading north (+y): the shape's +y points west; BeamNG's quaternion is the conjugate
+          P:move(B, i, 4, 5, 6, -1, 0, 0)
+          out[4] = {o.at[1], o.at[6], o.at[7]}
+          -- the nose up a slope
+          P:move(B, i, 4, 5, 6, 0, 1, 0, nil, .1)
+          out[5] = {o.at[4], o.at[5], o.at[6], o.at[7]}
+          -- dropped: hidden, and the next copy of the kind takes the same object
+          P:drop(B, i)
+          P:drop(B, i)
+          out[6] = {o.hidden, P.solidLive, B.nfree}
+          local B2, i2 = P:addSolid(K, 7, 8, 9, 0, 1, 0)
+          out[7] = {B2 == B, i2 == i, STATIC.made, o.hidden == false, o.instanceColor == P.white, P.solidObjects, P.solidLive}
+          P:clear()
+          out[8] = {STATIC.alive, P.solidObjects, K.solid == nil}
+          return out
+        ''')
+        made, flat, red, north, slope, dropped, again, cleared = [list(v.values()) if hasattr(v, 'values') else v for v in out.values()]
+        self.assertEqual(made, [0, 1, 1, True, 'car.dae', 'None'])
+        self.assertEqual(flat[:3], [1, 2, 3])
+        self.assertAlmostEqual(flat[3], 0)
+        self.assertAlmostEqual(flat[4], 1)
+        self.assertTrue(red)
+        self.assertEqual(north[0], 4)
+        self.assertAlmostEqual(north[1], -math.sin(math.pi / 4))
+        self.assertAlmostEqual(north[2], math.cos(math.pi / 4))
+        # flow.quat(0, .1): (0, sin(.05), 0, cos(.05))
+        self.assertAlmostEqual(slope[0], 0)
+        self.assertAlmostEqual(slope[1], math.sin(.05))
+        self.assertAlmostEqual(slope[2], 0)
+        self.assertAlmostEqual(slope[3], math.cos(.05))
+        self.assertEqual(dropped, [True, 0, 1])
+        self.assertEqual(again, [True, True, 1, True, True, 1, 1])
+        self.assertEqual(cleared, [0, 0, True])
+
+    def test_solid_copies_are_made_a_few_a_frame_and_a_kind_with_a_batch_waits_for_it(self):
+        out = self.lua().execute('''
+          sb.SOLID_PER_FRAME = 2
+          local P = sb.new(nil)
+          local K = P:kind('ped.dae')
+          P:tick()
+          local got = 0
+          for k = 1, 5 do if P:addSolid(K, k, 0, 0, 0, 1, 0) then got = got + 1 end end
+          local first = got
+          P:tick()
+          for k = 1, 5 do if P:addSolid(K, k, 0, 0, 0, 1, 0) then got = got + 1 end end
+          -- a kind that is batched too: a batch copy until its batch is there, a static after
+          local L = P:kind('pose.dae')
+          L.batchToo = true
+          P:tick()
+          local B1 = P:addSolid(L, 0, 0, 0, 0, 1, 0)
+          local B2 = P:addSolid(L, 0, 0, 0, 0, 1, 0)
+          -- warmed: one hidden static, which the first copy takes
+          local W = P:kind('van.dae')
+          P:warmSolid(W)
+          local made = STATIC.made
+          local B3 = P:addSolid(W, 0, 0, 0, 0, 1, 0)
+          return first, got, P.waits, B1.static == nil, B1 == L.batch, B2.static == true, STATIC.made == made, B3.live
+        ''')
+        self.assertEqual(tuple(out), (2, 4, 6, True, True, True, True, 1))
+
+    def test_unused_solid_copies_go_after_a_while_but_a_few(self):
+        out = self.lua().execute('''
+          local P = sb.new(nil)
+          local K = P:kind('car.dae')
+          local h = {}
+          for f = 1, 4 do
+            P:tick()
+            for k = 1, 5 do local B, i = P:addSolid(K, k, 0, 0, 0, 1, 0); if B then h[#h + 1] = {B, i} end end
+          end
+          local made = STATIC.alive
+          for k = #h, 1, -1 do P:drop(h[k][1], h[k][2]) end
+          for f = 1, 3000 do P:tick() end
+          local B, i = P:addSolid(K, 1, 0, 0, 0, 1, 0)
+          return made, STATIC.alive, P.solidObjects, B.objs[i].deleted == nil
+        ''')
+        self.assertEqual(tuple(out), (20, 4, 4, True))
+
 
 if __name__ == '__main__':
     unittest.main()

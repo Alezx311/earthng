@@ -35,7 +35,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 SRC = ROOT / 'data' / 'fal' / 'traffic'
 OUT = ROOT / 'data' / 'traffic-art'
-VERSION = '2'          # change whenever a file this module cooks changes
+VERSION = '3'          # change whenever a file this module cooks changes
 
 IMAGE_MODEL = 'fal-ai/nano-banana-2'
 MESH_MODEL = 'tripo3d/h3.1/image-to-3d'
@@ -204,6 +204,7 @@ def generate(only=None, stage='rig'):
 
 # --- the cook: sources to shapes ------------------------------------------------------------------
 FLOW_DIR, PEOPLE_DIR = 'art/flow', 'art/people'
+BODY_DIR = 'bodies'    # the figures' physical bodies (ped_body.figure_files puts them into vehicles/)
 CAR_MAT, PED_MAT = 'e2r_flowm_', 'e2r_pedm_'
 MAP = 1024             # px of a model's maps
 POSES = 8              # walk poses (walkers.lua M.POSES)
@@ -492,6 +493,145 @@ def look_of(image, q, forward):
             'skin': pick((z > .86) & (z < .95) & front & (side < .08) & skin) or [.8, .62, .5]}
 
 
+# A figure's physical body (ped_body.py): the part of the body each joint of Meshy's rig moves
+BODY_PART = {'Hips': 'trunk', 'Spine02': 'trunk', 'Spine01': 'trunk', 'Spine': 'trunk', 'LeftShoulder': 'trunk',
+             'RightShoulder': 'trunk', 'neck': 'head', 'Head': 'head', 'head_end': 'head', 'headfront': 'head'}
+BODY_LIMBS = {'Arm': 'upper_', 'ForeArm': 'fore_', 'Hand': 'fore_', 'UpLeg': 'thigh_', 'Leg': 'shin_', 'Foot': 'foot_',
+              'ToeBase': 'foot_'}
+
+
+def cook_body(name, rig, at, scale, yaw, q, out, height):
+    """The figure as the body that takes its place when a car hits it: the nodes of ped_body's
+    skeleton at the figure's own joints in the pose `at` of the clip (q: that pose's shape), and the
+    shape cut into the body's parts, a mesh a part named for its flexbody. A vertex belongs to the
+    part its weights favour; a face that spans two parts is in both, so a bent joint shows no gap.
+    Vehicle space: forward -y, up +z. Returns the manifest entry."""
+    import ped_body
+    model = 'e2r_' + name
+    pos, _, places = rig.pose(at)
+    hips = places['Hips']
+    c, s = math.cos(yaw), math.sin(yaw)
+    low = float((pos[:, 2] * scale).min())
+
+    def at_joint(joint):
+        p = (places[joint] - [hips[0], hips[1], 0]) * scale
+        return np.array([c * p[0] - s * p[1], s * p[0] + c * p[1], p[2] - low])
+
+    J = {n.get('name'): at_joint(n.get('name')) for n in (rig.nodes[j] for j in rig.joints)}
+    fwd, up = np.array([1., 0, 0]), np.array([0, 0, 1.])
+    unit = lambda v: v / max(np.linalg.norm(v), 1e-9)
+    mid = lambda a, b: (a + b) / 2
+    # which of the rig's sides is the figure's left (+y, as it faces +x)
+    sides = {('l' if J[pre + 'UpLeg'][1] > J[other + 'UpLeg'][1] else 'r'): pre
+             for pre, other in (('Left', 'Right'), ('Right', 'Left'))}
+    N, part_of = {}, dict(BODY_PART)
+    for tag, pre in sides.items():
+        side = 1 if tag == 'l' else -1
+        for joint, part in BODY_LIMBS.items():
+            part_of[pre + joint] = part + tag
+        h, k, a, toe = J[pre + 'UpLeg'], J[pre + 'Leg'], J[pre + 'Foot'], J[pre + 'ToeBase']
+        foot = toe - a
+        foot[2] = 0
+        foot = unit(foot) if np.linalg.norm(foot) > 1e-3 else fwd
+        across = np.cross(up, foot) * side
+        sole = toe - up * min(.025, toe[2])
+        N['p' + tag], N['k' + tag], N['a' + tag] = h, k, a
+        N['t' + tag] = sole + foot * .06
+        heel = a - foot * .06
+        N['h' + tag] = np.array([heel[0], heel[1], max(min(sole[2], a[2] - .05), 0)])
+        N['o' + tag] = mid(N['t' + tag], N['h' + tag]) + across * .05 + up * .03
+        sh, e, w = J[pre + 'Arm'], J[pre + 'ForeArm'], J[pre + 'Hand']
+        N['c' + tag], N['e' + tag] = sh, e
+        N['w' + tag] = w + unit(w - e) * .05
+        # two fins a segment, off its line: one forward, one outward
+        for fin, a0, a1, r in (('q', h, k, .08), ('s', k, a, .09), ('u', sh, e, .07), ('f', e, N['w' + tag], .06)):
+            seg = unit(a1 - a0)
+            ahead = unit(fwd - seg * (fwd @ seg))
+            out_ = unit(np.cross(seg, ahead)) * (1 if np.cross(seg, ahead)[1] * side > 0 else -1)
+            first, second = (ahead, out_) if fin in 'qs' else (out_, ahead)
+            N[fin + tag] = mid(a0, a1) + first * r
+            N[fin + tag + 'x'] = mid(a0, a1) + second * r
+    pelvis, chest = mid(N['pl'], N['pr']), J['Spine']
+    N['pf'], N['pb'] = pelvis + fwd * .10 + up * .05, pelvis - fwd * .10 + up * .05
+    N['cf'], N['cb'] = chest + fwd * .12 - up * .05, chest - fwd * .11 - up * .05
+    N['n'] = J['neck'] + up * .03
+    N['hd'] = mid(J['Head'], J['head_end']) + fwd * .01
+    N['hb'] = N['hd'] - fwd * .09 - up * .03
+    order = list(ped_body.skeleton())
+    assert set(order) == set(N), sorted(set(order) ^ set(N))
+    nodes = {n: [round(float(v), 4) for v in ped_body.to_vehicle(N[n])] for n in order}
+
+    # the mesh by part
+    names = [rig.nodes[j].get('name') for j in rig.joints]
+    parts = sorted(set(part_of.values()))
+    share = np.zeros((len(rig.w), len(parts)))
+    for column in range(rig.jidx.shape[1]):
+        index = np.array([parts.index(part_of[names[j]]) for j in rig.jidx[:, column]])
+        np.add.at(share, (np.arange(len(index)), index), rig.w[:, column])
+    vertex_part = share.argmax(1)
+    face_parts = vertex_part[q.faces]
+    meshes = {}
+    for k, part in enumerate(parts):
+        faces = q.faces[(face_parts == k).any(1)]
+        used, inverse = np.unique(faces, return_inverse=True)
+        v = lambda a: np.stack([a[:, 1], -a[:, 0], a[:, 2]], 1)
+        meshes[f'{model}_{part}'] = fal_mesh.Primitive(v(q.positions[used]), v(q.normals[used]), q.uv[used],
+                                                       inverse.reshape(-1, 3), 0)
+    label = 'e2r_pedv_' + name
+    folder = out.parent.parent / BODY_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f'{model}.dae').write_bytes(parts_collada(meshes, label))
+    return {'model': model, 'dae': f'{model}.dae', 'material': label, 'nodes': nodes,
+            # a person's weight for the height (a body mass index of 22.5)
+            'mass': round(22.5 * height * height, 1),
+            'refZ': round(float(N['pf'][2]), 3), 'refAhead': round(float(N['pf'][0]), 3),
+            'triangles': int(sum(len(m.faces) for m in meshes.values()))}
+
+
+def parts_collada(meshes, label):
+    """A Collada of named meshes (a vehicle's flexbodies find theirs by name), one material."""
+    import xml.etree.ElementTree as ET
+    NS = fal_mesh.NS
+    ET.register_namespace('', NS)
+
+    def add(parent, tag, text=None, **attrs):
+        node = ET.SubElement(parent, f'{{{NS}}}{tag}', {k: str(v) for k, v in attrs.items()})
+        node.text = text
+        return node
+    root = ET.Element(f'{{{NS}}}COLLADA', version='1.4.1')
+    asset = add(root, 'asset')
+    add(asset, 'unit', name='meter', meter='1')
+    add(asset, 'up_axis', 'Z_UP')
+    effect = add(add(root, 'library_effects'), 'effect', id=f'{label}-fx')
+    technique = add(add(effect, 'profile_COMMON'), 'technique', sid='common')
+    add(add(add(technique, 'lambert'), 'diffuse'), 'color', '1 1 1 1')
+    add(add(add(root, 'library_materials'), 'material', id=label, name=label), 'instance_effect', url=f'#{label}-fx')
+    geometries = add(root, 'library_geometries')
+    visual = add(add(root, 'library_visual_scenes'), 'visual_scene', id='Scene')
+    for name, q in meshes.items():
+        mesh = add(add(geometries, 'geometry', id=f'{name}-g', name=name), 'mesh')
+        for suffix, array, params in (('pos', q.positions, 'XYZ'), ('nrm', q.normals, 'XYZ'), ('uv', q.uv, 'ST')):
+            src = add(mesh, 'source', id=f'{name}-{suffix}')
+            add(src, 'float_array', ' '.join(format(float(v), '.6g') for v in array.ravel()),
+                id=f'{name}-{suffix}-array', count=array.size)
+            accessor = add(add(src, 'technique_common'), 'accessor', source=f'#{name}-{suffix}-array',
+                           count=len(array), stride=len(params))
+            for param in params:
+                add(accessor, 'param', name=param, type='float')
+        add(add(mesh, 'vertices', id=f'{name}-vtx'), 'input', semantic='POSITION', source=f'#{name}-pos')
+        triangles = add(mesh, 'triangles', material=label, count=len(q.faces))
+        add(triangles, 'input', semantic='VERTEX', source=f'#{name}-vtx', offset=0)
+        add(triangles, 'input', semantic='NORMAL', source=f'#{name}-nrm', offset=1)
+        add(triangles, 'input', semantic='TEXCOORD', source=f'#{name}-uv', offset=2, set=0)
+        add(triangles, 'p', ' '.join(map(str, np.repeat(q.faces.ravel(), 3))))
+        node = add(visual, 'node', id=name, name=name)
+        bind = add(add(add(node, 'instance_geometry', url=f'#{name}-g'), 'bind_material'), 'technique_common')
+        add(add(bind, 'instance_material', symbol=label, target=f'#{label}'), 'bind_vertex_input',
+            semantic='UVMap', input_semantic='TEXCOORD', input_set=0)
+    add(add(root, 'scene'), 'instance_visual_scene', url='#Scene')
+    return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+
 def cook_ped(name, out):
     height = PEDS[name][0]
     folder = SRC / 'rig' / name
@@ -547,6 +687,9 @@ def cook_ped(name, out):
     # the clip's first moment: upright, hands on the thighs (later it leans on its knees)
     shapes['sit'] = shape(seat, 0, scale, facing(seat, 0))
     shapes['far'] = far_shape(shapes['walk0'])
+    # the body that takes the walker's place when it is hit: the first step of the walk (the leg
+    # passing, the arms by the sides: the pose nearest to all the others)
+    body = cook_body(name, walk, start % max(walk.duration, 1e-6), scale, yaw, shapes['walk0'], out, height)
     files = {}
     for key, q in shapes.items():
         file = f'{name}_{key}.dae'
@@ -554,7 +697,7 @@ def cook_ped(name, out):
         files[key] = file
     return {'name': name, 'height': height, 'material': label, 'shapes': files, 'triangles': int(len(stand.faces)),
             'farTriangles': int(len(shapes['far'].faces)), 'stride': round(stride, 3),
-            'look': look_of(image, stand, np.array([1., 0, 0]))}
+            'look': look_of(image, stand, np.array([1., 0, 0])), 'body': body}
 
 
 def materials(manifest):
@@ -626,6 +769,9 @@ def level_files(level):
     files[f'levels/{level}/art/traffic_models.json'] = json.dumps({
         'cars': [{'name': c['name'], 'body': c['body'], 'shape': f'/levels/{level}/{FLOW_DIR}/{c["shape"]}'} for c in manifest['cars']],
         'peds': [{'name': q['name'], 'look': q['look'],
+                  # its physical body (ped_body.figure_files): the vehicle, and where its ref node stands
+                  'body': q.get('body') and {'model': q['body']['model'], 'refZ': q['body']['refZ'],
+                                             'refAhead': q['body']['refAhead']},
                   'shapes': {k: f'/levels/{level}/{PEOPLE_DIR}/{v}' for k, v in q['shapes'].items()}} for q in manifest['peds']]})
     return files
 
@@ -746,7 +892,7 @@ def main():
     if a.build:
         manifest = build(only)
         for item in manifest['cars'] + manifest['peds']:
-            print(json.dumps({k: v for k, v in item.items() if k != 'shapes'}))
+            print(json.dumps({k: v for k, v in item.items() if k not in ('shapes', 'body')}))
         if a.sheet:
             sheet(manifest, a.sheet)
 

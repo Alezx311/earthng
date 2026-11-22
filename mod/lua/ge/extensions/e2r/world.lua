@@ -1985,6 +1985,8 @@ function M.batchStats(r, B)
   local rb = r.batches or {}
   r.batches, rb.objects, rb.live, rb.resizes, rb.finalMs, rb.finalMax, rb.waits =
     rb, B.objects, B.live, B.resizes, B.finalMs, B.finalMax, B.waits
+  -- the copies that are a TSStatic each (they cast shadows): made and shown
+  rb.solidObjects, rb.solidLive = B.solidObjects, B.solidLive
 end
 
 -- the next obstacle of the flow's list (fl.obs), in a record of fl.obsPool; returns the new count
@@ -2210,7 +2212,7 @@ function M.walkersSet(n, now)
     -- a few bodies now so the first hit works; more on demand near a stop (SIZE=24 at once would hitch ~5 s)
     local t = hptimer()
     if q then
-      for _ = 1, math.min(4, wk.P.size) do
+      for _ = 1, math.min(wk.P.size, math.max(4, wk.api.figures())) do
         if not ph.prewarmOne(wk.P, wk.api, q.x, q.y) then break end
       end
     end
@@ -2218,6 +2220,30 @@ function M.walkersSet(n, now)
     if veh and getPlayerVehicle(0) ~= veh then pcall(function() be:enterVehicle(0, veh) end) end
   elseif wk.api and not wk.api.splat then
     M.walkBloodBind(wk)
+  end
+end
+
+-- The pool of bodies a body at a time while a landing loads, when walkers will come with the
+-- drive: a body of every figure (pedhit.prewarmOne takes them in turn), so the first walker struck
+-- is itself a moment later and not another figure's body. Eight spawns at the touch-down would
+-- be ~2 s of one frame (0.23 s each with the figure's mesh).
+function M.walkPoolWarm()
+  local ws, ph, wk = M.walkSim, M.pedHit, S.walk
+  if not wk or not wk.parked or wk.P or (wk.W.target or 0) <= 0 then return end
+  local pool = S.walkPool
+  if not pool then
+    -- (the figures are known to the walkers from their view on; the pool comes before it)
+    local models = M.useBatches and M.shapeBatch.available() and M.trafficModels()
+    ws.CHARS = models and models.peds and #models.peds > 0 and models.peds or nil
+    pool = {api = ph.gameApi(ws), P = ph.new{size = S.walkBodies or ph.SIZE}}
+    S.walkPool = pool
+  end
+  if #pool.P.pool < math.min(pool.P.size, math.max(4, pool.api.figures())) and S.now - (pool.at or -1e9) > .3 then
+    local veh = getPlayerVehicle(0)
+    local q = veh and veh:getPosition() or focus()
+    if q then ph.prewarmOne(pool.P, pool.api, q.x, q.y) end
+    pool.at = S.now
+    if veh and getPlayerVehicle(0) ~= veh then pcall(function() be:enterVehicle(0, veh) end) end
   end
 end
 
@@ -2234,9 +2260,117 @@ end
 -- the player is BLOOD.farR m away, or until the oldest go past BLOOD.max. A car stain hangs on three
 -- of the car's nodes, the top of its body where it struck (bumper, hood, windscreen), so it moves,
 -- tilts and dents with the car; it goes when the car is reset (M.onVehicleResetted) or gone.
+-- With the stains of earthng/blood_art.py (blood.json in the people art: impact, spray, pool,
+-- smear, drops, run) the ground's stains are the engine's dynamic decals, as its ground markers
+-- are: blended into the road with a soft edge, lit and shaded as the road is, lying on kerbs and
+-- slopes, and not drawn over a car that stands on one (BLOOD.stain; they are handed to the engine
+-- again every frame, those within BLOOD.decR m). A hit throws more and longer sprays the faster
+-- the car was, a struck body that slides on leaves smears along its way (kind 'trail'), its pool
+-- spreads, and all of it darkens as it dries (BLOOD.dry s). A dynamic decal does not lie on a
+-- vehicle or a wall (blood-07): there the stains stay cut-out quads, and a car gets several small
+-- ones round where it struck instead of one large one that stood off its curves.
 -- one table, not locals: the main chunk is at LuaJIT's 200 locals
 local BLOOD = {dir = '/levels/e2r_world/art/people/', max = 96, ttl = 1200, carTtl = 900, farR = 1500,
-  carMax = 6, lift = .025, carLift = .06}
+  carMax = 10, lift = .025, carLift = .06, maxDec = 200, decR = 170, decDepth = 3, dry = 200, tint = .46}
+
+-- the stains by kind, read once; false without them (the two drawn quads of people_art then)
+function BLOOD.load()
+  if BLOOD.art ~= nil then return BLOOD.art end
+  local art = false
+  local data = jsonReadFile and jsonReadFile(BLOOD.dir .. 'blood.json')
+  if data and data.stains and #data.stains > 0 and Engine and Engine.Render and Engine.Render.DynamicDecalMgr then
+    art = {}
+    for _, s in ipairs(data.stains) do
+      local list = art[s.kind]
+      if not list then list = {}; art[s.kind] = list end
+      list[#list + 1] = {kind = s.kind, texture = s.texture, shape = s.shape, box = s.box or {1, 1}}
+    end
+    if not art.impact then art = false end
+  end
+  BLOOD.art = art
+  return art
+end
+
+function BLOOD.pick(kind, other)
+  local art = BLOOD.art
+  local list = art[kind] or art[other or 'impact'] or art.impact
+  return list[math.random(#list)]
+end
+
+-- A stain on the ground: the picture st, its middle at (x, y, z), its +x along (dx, dy), len m
+-- long as seen (the picture's square is larger by what the stain leaves empty of it). grow: it
+-- spreads from a third of its size (a pool).
+function BLOOD.stain(B, st, x, y, z, dx, dy, len, grow)
+  if B.nd >= BLOOD.maxDec then
+    table.remove(B.dec, 1)
+    B.nd = B.nd - 1
+  end
+  local l = math.sqrt(dx * dx + dy * dy)
+  if l < 1e-6 then dx, dy, l = 1, 0, 1 end
+  dx, dy = dx / l, dy / l
+  local side = len / math.max(st.box[1], .3)
+  local k = grow and .3 or 1
+  -- the decal's forward is the picture's up: its +x is that turned a quarter to the right
+  local s = {x = x, y = y, at = S.now, grow = grow and S.now or nil, side = side, kind = st.kind,
+    -- (the picture's own colours in full sun read as red paint: blood-08. BLOOD.tint takes them down)
+    d = {texture = st.texture, position = vec3(x, y, z), forwardVec = vec3(-dy, dx, 0),
+      color = ColorF(BLOOD.tint, BLOOD.tint, BLOOD.tint, 1),
+      scale = vec3(side * k, side * k, BLOOD.decDepth), fadeStart = BLOOD.decR, fadeEnd = BLOOD.decR + 30}}
+  B.nd = B.nd + 1
+  B.dec[B.nd] = s
+  B.actAt = nil
+  return s
+end
+
+-- every frame: the stains near the player handed to the engine; twice a second the list of them
+-- is made again, the old and far ones go and the rest dry a shade
+function BLOOD.decals(B, px, py)
+  if B.nd == 0 then return end
+  if not B.actAt or S.now - B.actAt > .5 then
+    B.actAt = S.now
+    local act, n, r2, far2 = B.act, 0, (BLOOD.decR + 30) ^ 2, BLOOD.farR * BLOOD.farR
+    -- A dynamic decal is drawn in its own colour whatever lights it (a pool glowed red in a black
+    -- street, blood-09): its colour follows the day, in ten steps, down to a tenth by night.
+    local light = 10
+    pcall(function()
+      local tod = core_environment.getTimeOfDay().time      -- 0 noon, .5 midnight
+      local night = math.min(tod, 1 - tod)                   -- 0 noon .. .5 midnight
+      light = math.floor(math.max(0, math.min(1, (.285 - night) / .07)) * 10 + .5)
+    end)
+    local keep, kn = B.dec, 0
+    for i = 1, B.nd do
+      local s = keep[i]
+      local d2 = px and (s.x - px) ^ 2 + (s.y - py) ^ 2 or 0
+      if S.now - s.at < BLOOD.ttl and d2 < far2 then
+        kn = kn + 1
+        keep[kn] = s
+        if d2 < r2 then n = n + 1; act[n] = s.d end
+        -- drying: darker and browner, in eight steps; and the daylight (a new colour only at a step)
+        local step = math.min(8, math.floor((S.now - s.at) / BLOOD.dry * 8)) + light * 16
+        if step ~= s.step then
+          s.step = step
+          local t = step % 16 / 8
+          local k = BLOOD.tint * (.1 + .9 * light / 10)
+          s.d.color = ColorF(k * (1 - .42 * t), k * (1 - .5 * t), k * (1 - .45 * t), 1)
+        end
+      end
+    end
+    for i = kn + 1, B.nd do keep[i] = nil end
+    for i = n + 1, B.na do act[i] = nil end
+    B.nd, B.na = kn, n
+  end
+  for i = 1, B.nd do
+    local s = B.dec[i]
+    if s.grow then
+      -- a pool spreads over 10 s, fast at first
+      local t = math.min(1, (S.now - s.grow) / 10)
+      local k = .3 + .7 * (1 - (1 - t) * (1 - t))
+      s.d.scale = vec3(s.side * k, s.side * k, BLOOD.decDepth)
+      if t >= 1 then s.grow = nil end
+    end
+  end
+  if B.na > 0 then Engine.Render.DynamicDecalMgr.addDecals(B.act, B.na) end
+end
 
 function BLOOD.take(B, shape)
   local pool = B.pool[shape]
@@ -2376,14 +2510,16 @@ end
 -- a car stain: the highest node of the car within .25 m (seen from above) of a point on its hood
 -- (0.3 to 1.2 m behind the front), across where it struck, and two nodes near it on the same
 -- surface (one across, one along) to tilt the stain with; nil where the car has no node there
-function BLOOD.carAnchor(veh, h, x, y)
+function BLOOD.carAnchor(veh, h, x, y, spread, reach)
   local okN, count = pcall(function() return veh:getNodeCount() end)
   if not okN or not count or count < 4 then return end
   local o = veh:getPosition()
   local fx, fy, lx, ly = h.fx, h.fy, -h.fy, h.fx
   local dx, dy = x - h.x, y - h.y
-  local across = math.max(-h.hw + .2, math.min(h.hw - .2, dx * lx + dy * ly))
-  local along = h.hl - .3 - math.random() * .9
+  -- spread: m to either side of where it struck; reach: m back from the front (the bonnet, then the glass)
+  local across = dx * lx + dy * ly + (math.random() - .5) * 2 * (spread or 0)
+  across = math.max(-h.hw + .2, math.min(h.hw - .2, across))
+  local along = h.hl - .25 - math.random() * (reach or .9)
   local cx, cy = h.x + fx * along + lx * across - o.x, h.y + fy * along + ly * across - o.y
   local pos, a, az = {}, nil, -1e9
   for id = 0, count - 1 do
@@ -2423,10 +2559,104 @@ function BLOOD.onCar(s, veh)
   return o.x + pa.x, o.y + pa.y, o.z + pa.z, nx, ny, nz, -f.x, -f.y, -f.z
 end
 
-function BLOOD.hit(B, x, y, z, h, kind)
+-- the stains of a hit with the pictures of blood_art.py (BLOOD.load): see the note above BLOOD
+function BLOOD.hitArt(B, x, y, z, h, kind, dx, dy)
+  local rnd = math.random
+  z = z or 0
+  local px, py, pz = BLOOD.ground(x, y, z)
+  if kind == 'trail' then
+    -- where a struck body slides on: a smear along its way (they overlap into one drag), drops now and then
+    if px then
+      local smear = rnd() < .7
+      BLOOD.stain(B, BLOOD.pick(smear and 'smear' or 'drops', 'spray'), px, py, pz, dx or 1, dy or 0,
+        smear and .8 + rnd() * .5 or .7 + rnd() * .4)
+    end
+    return
+  end
+  if kind == 'pool' then
+    if px then
+      local a = rnd() * 6.283
+      BLOOD.stain(B, BLOOD.pick('pool'), px, py, pz, math.cos(a), math.sin(a), 1.0 + rnd() * .6, true)
+    end
+    return
+  end
+  local fx, fy
+  if h and h.fx then fx, fy = h.fx, h.fy else local a = rnd() * 6.283; fx, fy = math.cos(a), math.sin(a) end
+  -- how hard: the car's speed, 0 at a walking pace, 1 from 70 km/h
+  local hard = h and h.vx and math.min(1, math.sqrt(h.vx * h.vx + h.vy * h.vy) / 19.5) or .4
+  -- a wall, pole or fence ahead within 4 m: a stain about chest height (its runs go down), and the
+  -- sprays stop short of it
+  local wx, wy, wz, wnx, wny, wnz, wd = BLOOD.wall(x, y, z + .8 + rnd() * .6, fx, fy, 4)
+  B.walls = B.walls or {rays = 0, hits = 0}
+  B.walls.rays, B.walls.hits = B.walls.rays + 1, B.walls.hits + (wx and 1 or 0)
+  if wx then
+    local st = BLOOD.pick(rnd() < .5 and 'run' or 'impact')
+    local r = (.6 + rnd() * .4) / math.max(st.box[1], .4)
+    if st.kind == 'run' then
+      BLOOD.lay(B, {kind = 'wall', shape = st.shape, len = r, wid = r}, wx, wy, wz, wnx, wny, wnz, 0, 0, -1)
+    else
+      BLOOD.lay(B, {kind = 'wall', shape = st.shape, len = r, wid = r}, wx, wy, wz, wnx, wny, wnz, fx, fy, -.3)
+    end
+  end
+  -- where it struck
+  if px then
+    local a = rnd() * 6.283
+    BLOOD.stain(B, BLOOD.pick('impact'), px, py, pz, math.cos(a), math.sin(a), .7 + rnd() * .3 + hard * .5)
+  end
+  -- thrown along the car's way: sprays further on, more and longer the harder the hit
+  for k = 1, 1 + math.floor(rnd() * 2 + hard * 1.5) do
+    local d, side = .7 + k * 1.2 + rnd() * 1.2 + hard * 1.5, (rnd() - .5) * 1.5
+    if wd then d = math.min(d, wd - .9) end
+    if d > .6 then
+      local l, a = 1.0 + rnd() * .7 + hard * 1.0, (rnd() - .5) * .5
+      local ax, ay = fx * math.cos(a) - fy * math.sin(a), fy * math.cos(a) + fx * math.sin(a)
+      -- (its middle half its length on from where it starts)
+      local gx, gy, gz = BLOOD.ground(x + fx * d - fy * side + ax * l * .5, y + fy * d + fx * side + ay * l * .5, z)
+      if gx then BLOOD.stain(B, BLOOD.pick('spray'), gx, gy, gz, ax, ay, l) end
+    end
+  end
+  -- and drops beyond them
+  if rnd() < .6 + hard * .4 then
+    local d, side = 3 + rnd() * 3 + hard * 4, (rnd() - .5) * 2.4
+    if not wd or d < wd - 1 then
+      local gx, gy, gz = BLOOD.ground(x + fx * d - fy * side, y + fy * d + fx * side, z)
+      if gx then BLOOD.stain(B, BLOOD.pick('drops'), gx, gy, gz, fx, fy, 1.0 + rnd() * .7) end
+    end
+  end
+  -- on the car: a stain where it struck and smaller ones round it, each on its own nodes with
+  -- its own lift over the skin, so they follow the bonnet's curve
+  local veh = h and h.id and getObjectByID(h.id)
+  if not veh then return end
+  local n = 0
+  for i = 1, B.n do if B.list[i].vid == h.id then n = n + 1 end end
+  for k = 1, 2 + math.floor(rnd() * 2 + hard * 2.5) do
+    if n >= BLOOD.carMax then break end
+    local a, b, c = BLOOD.carAnchor(veh, h, x, y, k == 1 and 0 or .55, k == 1 and .6 or 1.5)
+    if a then
+      local st = BLOOD.pick(k == 1 and 'impact' or (rnd() < .45 and 'run' or (rnd() < .5 and 'drops' or 'spray')))
+      local l = ((k == 1 and .3 or .17) + rnd() * .14) / math.max(st.box[1], .45)
+      local s = {kind = 'car', shape = st.shape, len = l, wid = l, vid = h.id, a = a, b = b, c = c}
+      local qx, qy, qz, qnx, qny, qnz = BLOOD.onCar(s, veh)
+      s.lift, s.skin = BLOOD.skin(h.id, qx, qy, qz, qnx, qny, qnz)
+      BLOOD.lay(B, s, BLOOD.onCar(s, veh))
+      n = n + 1
+    end
+  end
+end
+
+function BLOOD.hit(B, x, y, z, h, kind, dx, dy)
+  if BLOOD.load() then return BLOOD.hitArt(B, x, y, z, h, kind, dx, dy) end
   local rnd = math.random
   z = z or 0
   local px, py, pz, nx, ny, nz = BLOOD.ground(x, y, z)
+  if kind == 'trail' then
+    -- where a struck body slides on: a smear along its way
+    if px then
+      local l = .5 + rnd() * .5
+      BLOOD.lay(B, {kind = 'ground', shape = 'blood_spray', len = l, wid = l * .45}, px, py, pz, nx, ny, nz, dx or 1, dy or 0, 0)
+    end
+    return
+  end
   if kind == 'pool' then
     if px then
       local r, a = 1.1 + rnd() * .6, rnd() * 6.283
@@ -2491,18 +2721,19 @@ function M.walkBloodClear(wk)
   B.n = 0
   dropGroup('E2R_blood')
   B.pool = {}
+  B.dec, B.nd, B.act, B.na, B.actAt = {}, 0, {}, 0, nil
 end
 
 function M.walkBloodBind(wk)
   if not wk or not wk.api then return end
   local B = wk.blood
   if not B then
-    B = {list = {}, pool = {}, n = 0}
+    B = {list = {}, pool = {}, n = 0, dec = {}, nd = 0, act = {}, na = 0}
     wk.blood = B
   end
   -- (x, y, z) where it struck, h the vehicle (pedhit's hitter) or nil; kind 'pool' under a body at rest
-  function wk.api.splat(x, y, z, h, kind)
-    local ok, err = pcall(BLOOD.hit, B, x, y, z, h, kind)
+  function wk.api.splat(x, y, z, h, kind, dx, dy)
+    local ok, err = pcall(BLOOD.hit, B, x, y, z, h, kind, dx, dy)
     if not ok then B.err = tostring(err) end
   end
 end
@@ -2521,7 +2752,12 @@ end
 
 function M.walkBloodStep(wk, px, py)
   local B = wk.blood
-  if not B or B.n == 0 then return end
+  if not B then return end
+  if B.nd > 0 then
+    local ok, err = pcall(BLOOD.decals, B, px, py)
+    if not ok then B.err = tostring(err) end
+  end
+  if B.n == 0 then return end
   local keep, kn = {}, 0
   for i = 1, B.n do
     local s = B.list[i]
@@ -2562,6 +2798,14 @@ end
 function M.bloodState()
   local B = S.walk and S.walk.blood
   local r = {n = B and B.n or 0, err = B and B.err, resets = B and B.resets, walls = B and B.walls, kinds = {}, list = {}}
+  -- the ground's stains that are decals: counted as 'ground', by their picture's kind in decals
+  if B and B.nd > 0 then
+    r.kinds.ground, r.decals, r.shown = B.nd, {}, B.na
+    for i = 1, B.nd do
+      local k = B.dec[i].kind
+      r.decals[k] = (r.decals[k] or 0) + 1
+    end
+  end
   for i = 1, r.n do
     local s = B.list[i]
     r.kinds[s.kind] = (r.kinds[s.kind] or 0) + 1
@@ -2638,7 +2882,8 @@ function M.walkersStep()
     local idle = 0
     for _, e in ipairs(P.pool) do if e.state == 'idle' then idle = idle + 1 end end
     local veh = getPlayerVehicle(0)
-    if (idle < 2 or P.stats.noBody > (wk.noBodySeen or 0)) and (not veh or veh:getVelocity():length() < 8) then
+    -- (or a hit took another figure's body for want of its own: P.wantFig)
+    if (idle < 2 or P.wantFig or P.stats.noBody > (wk.noBodySeen or 0)) and (not veh or veh:getVelocity():length() < 8) then
       ph.prewarmOne(P, wk.api, p.x, p.y)
       wk.fillAt, wk.noBodySeen = S.now, P.stats.noBody
     end
@@ -2665,7 +2910,7 @@ function M.walkersStep()
   M.batchStats(r, wk.batches)
   r.stats, r.hit, r.bodies, r.pool, r.spawnMs = wk.W.stats, wk.P.stats, ph.activeCount(wk.P), #wk.P.pool, wk.spawnMs
   r.hitLog = wk.P.log
-  r.blood = wk.blood and wk.blood.n or 0
+  r.blood = wk.blood and wk.blood.n + wk.blood.nd or 0
 end
 
 -- The widget's pedestrians and knockable-props rows, through the registry (options.lua) like the
@@ -6559,6 +6804,8 @@ function M.tick(dt)
     if not test and (S.state == 'warmup' or S.state == 'spawning') then
       local ok, err = pcall(M.flowPoolWarm)
       if not ok and not S.flowPoolFailed then S.flowPoolFailed = true; log('E', logTag, 'the pool of real cars: ' .. tostring(err)) end
+      ok, err = pcall(M.walkPoolWarm)
+      if not ok and not S.walkPoolFailed then S.walkPoolFailed = true; log('E', logTag, 'the pool of bodies: ' .. tostring(err)) end
     end
     local owed = loading and (S.state ~= 'spawning' or S.landOwed ~= false)
     local genBudget = test and test.genBudget or (owed and LIMIT.loadNativeMs) or BUDGET_MS
