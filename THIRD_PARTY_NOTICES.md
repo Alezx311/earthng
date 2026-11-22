@@ -139,6 +139,29 @@ These are artistic regional types, not photographs or surveys of real buildings.
 Upstream model pages: [PATINA](https://fal.ai/models/fal-ai/patina/material),
 [Nano Banana 2](https://fal.ai/models/fal-ai/nano-banana-2). Provider terms apply.
 
+## Own surface library (fal, 22-23 November 2026)
+
+The surfaces of outbuildings and of the open land (`sh_o_*` and `ob_cells` in the planet's art,
+and the sets under the ground, field and wood sheets; recipes in `earthng/own_art.py`) were
+generated through fal: seamless colour, normal, roughness and height with
+`fal-ai/patina/material`, and one sheet of garage and shed doors with `fal-ai/nano-banana-2`.
+The prompts are in `own_art.py`; endpoints, request IDs and seeds are logged in
+`data/textures/own/fal_manifest.jsonl` beside the generated originals. Sheets, tints and the
+door atlas are computed from those originals at art build. They are invented surfaces of
+regional types, not photographs of real buildings or places.
+
+Upstream model pages: [PATINA](https://fal.ai/models/fal-ai/patina/material),
+[Nano Banana 2](https://fal.ai/models/fal-ai/nano-banana-2). Provider terms apply.
+
+The blood stains (`blood_*` in the planet's `art/people`) are drawn by `earthng/blood_art.py`:
+the project's own, no third-party art.
+
+The colours the open land is toned to (`earthng/ground_targets.json`, written by
+`earthng/ground_colour.py`) are medians of the ESA WorldCover 2021 annual composite of
+Sentinel-2 by cover class over a built pack. © ESA WorldCover project 2021 / Contains modified
+Copernicus Sentinel data (2021) processed by ESA WorldCover consortium.
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+
 ## Traffic and pedestrian models (fal, 22 November 2026)
 
 The cars of the traffic flow and the pedestrians without physics (`car_*`, `ped_*` shapes and
