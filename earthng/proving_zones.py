@@ -1592,6 +1592,11 @@ THEMES = {
     'junctions': ('Перехрестя', 'Junctions',
                   'Світлофор, кільця, STOP, зебри, зміщені й косі з’їзди: як сходяться дороги, тротуари й розмітка.',
                   'Lights, roundabouts, a stop sign, zebras, offset and skewed arms: how roads, sidewalks and paint meet.'),
+    'spans': ('Мости й тунелі', 'Bridges and tunnels',
+              'Один міст або тунель на тайл: над водою, над дорогою, у рельєфі, за тегами, під землею й крізь будинки. '
+              'Дивитися збоку: лінію настилу, його товщину, опори, стик із дорогою, портал.',
+              'One bridge or tunnel a tile: over water, over a road, in relief, by its tags, under the ground and through '
+              'houses. Look from the side: the deck’s line and depth, its piers, where it meets the road, the portal.'),
     'wild': ('Земля всесвіту', 'The universe’s own land',
              'Рельєф і природа, заради яких блок існує: тут видно клімат, підміну матеріалів і фізику ґрунту всесвіту.',
              'The relief and nature the block exists for: the universe’s climate, swapped materials and ground physics show here.'),
@@ -1627,3 +1632,5 @@ def build(plan):
         plan.zones.insert(0, {'id': 'studio', 'title': 'Студія', 'titleEn': 'Studio', 'start': studio['at']})
     import proving_universes
     proving_universes.build(plan)
+    import proving_spans
+    proving_spans.build(plan)

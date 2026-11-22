@@ -280,11 +280,31 @@ local function profile(pts, bridge, tunnel, layer)
     along[i] = acc
   end
   local z0, z1 = pts[1].z, pts[#pts].z
+  local function chordAt(i) return z0 + (z1 - z0) * (acc > 0 and along[i] / acc or 0) end
+  -- As the pack's height solve (fast_profile): a deck stands the clearance over the lowest
+  -- ground under it, so it does not rise over each bank and fall back over the water; ground
+  -- over the line between its abutments is cleared where it stands. A tunnel runs straight
+  -- between its mouths and dives only under ground lower than that line.
+  local drop = 0
+  for i = 2, #pts - 1 do drop = math.max(drop, chordAt(i) - (pts[i].dem + LIFT)) end
+  local rise = math.max(0, BRIDGE_CLEAR * layer - drop)
   for i = 2, #pts - 1 do
-    local chord = z0 + (z1 - z0) * (acc > 0 and along[i] / acc or 0)
-    if tunnel then pts[i].z = pts[i].dem + LIFT - TUNNEL_DEPTH * layer
-    else pts[i].z = math.max(chord, pts[i].dem + LIFT + BRIDGE_CLEAR * layer) end
+    local chord, ground = chordAt(i), pts[i].dem + LIFT
+    if tunnel then pts[i].z = math.min(chord, ground - TUNNEL_DEPTH * layer)
+    else
+      local over = math.max(0, math.min(1, ground - chord))
+      pts[i].z = math.max(chord + rise, ground + BRIDGE_CLEAR * layer * over)
+    end
     pts[i].interior = true
+  end
+  if not tunnel then
+    -- no dip between two higher parts of the deck
+    local top, back = pts[1].z, {}
+    for i = #pts, 1, -1 do back[i] = math.max(pts[i].z, back[i + 1] or pts[i].z) end
+    for i = 2, #pts - 1 do
+      top = math.max(top, pts[i].z)
+      pts[i].z = math.max(pts[i].z, math.min(top, back[i]))
+    end
   end
 end
 

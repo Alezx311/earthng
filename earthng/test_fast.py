@@ -469,6 +469,113 @@ class ProfileTests(unittest.TestCase):
                 profiles, _ = fast_profile.solve(segments, lambda xy: np.full(len(xy), 40.))
                 self.assertTrue(all(np.isfinite(h).all() for _, h in profiles))
 
+    @staticmethod
+    def along(segs, prof):
+        """The chain's solved line: metres from its first point, heights."""
+        s = np.concatenate([p[0] + segs[k]['xy'][0][0] for k, p in enumerate(prof[:len(segs)])])
+        h = np.concatenate([p[1] for p in prof[:len(segs)]])
+        order = np.argsort(s, kind='stable'); s, h = s[order], h[order]
+        keep = np.r_[True, np.diff(s) > .01]
+        return s[keep], h[keep]
+
+    def test_a_bridge_over_a_flood_plain_does_not_dip_over_the_water(self):
+        # Kyiv's Paton bridge: 600 m of deck, the river a part of it. Pulled to the clearance over
+        # the ground under every station the deck rose over each bank and fell back over the
+        # water, the letter M from the side; mapped in pieces it did the same
+        river = lambda xy: 100 - 5. * (np.abs(np.asarray(xy, dtype=float)[:, 0] - 500) < 50)
+        for xs in ([0, 200, 800, 1000], [0, 200, 400, 600, 800, 1000]):
+            with self.subTest(pieces=len(xs) - 3):
+                segs = self.chain(xs, lambda k: {'bridge': 'yes', 'layer': '1'} if 0 < k < len(xs) - 2 else {})
+                s, h = self.along(segs, fast_profile.solve(segs, river)[0])
+                deck = (s >= 200) & (s <= 800)
+                self.assertLess((fast_profile.brim(h[deck]) - h[deck]).max(), .05)
+                # it stands the clearance over the water, not over its banks as well
+                self.assertGreater(np.interp(500, s, h) - 95, fast_profile.BRIDGE_CLEAR - .5)
+                self.assertLess(h.max() - 100, fast_profile.BRIDGE_CLEAR - 4)
+
+    def test_a_deck_over_two_roads_does_not_sag_between_them(self):
+        flat = lambda xy: np.full(len(xy), 100.)
+        segs = self.chain([0, 200, 1000, 1200], lambda k: {'highway': 'secondary', **({'bridge': 'yes', 'layer': '1'} if k == 1 else {})})
+        under = [{'xy': [[x, -300], [x, 300]], 'nodes': [20 + n, 30 + n], 'tags': {'highway': 'secondary'}}
+                 for n, x in enumerate((300, 900))]
+        s, h = self.along(segs, fast_profile.solve(segs + under, flat)[0])
+        deck = (s >= 200) & (s <= 1000)
+        self.assertLess((fast_profile.brim(h[deck]) - h[deck]).max(), fast_profile.SAG_TOL)
+
+    def test_a_tunnel_runs_straight_under_the_hill_it_passes(self):
+        # pulled to TUNNEL_DEPTH under the surface everywhere, the floor climbed 11 m with the
+        # ridge; mapped in pieces, every split of the way came up to the ridge's top
+        ridge = lambda xy: 100 + 34. * np.clip(1 - np.abs(np.asarray(xy, dtype=float)[:, 0] - 500) / 115, 0, 1)
+        for xs in ([0, 200, 400, 600, 800, 1000], [0, 200, 400, 470, 530, 600, 800, 1000]):
+            with self.subTest(pieces=len(xs) - 5):
+                segs = self.chain(xs, lambda k: {'tunnel': 'yes', 'layer': '-1'} if 1 < k < len(xs) - 3 else {})
+                s, h = self.along(segs, fast_profile.solve(segs, ridge)[0])
+                tube = (s >= 400) & (s <= 600)
+                self.assertLess(h[tube].max() - h[tube][[0, -1]].max(), 2.)       # no climb inside
+                self.assertGreater(134 - np.interp(500, s, h), 25)               # the ridge stays over it
+        # under level ground it still dives, as an underpass does
+        flat = lambda xy: np.full(len(xy), 100.)
+        segs = self.chain([0, 200, 350, 650, 800, 1000], lambda k: {'tunnel': 'yes', 'layer': '-1'} if k == 2 else {})
+        s, h = self.along(segs, fast_profile.solve(segs, flat)[0])
+        self.assertLess(np.interp(500, s, h), 100 - fast_profile.TUNNEL_DEPTH + 2)
+
+    def test_a_tunnel_passes_under_the_street_over_it(self):
+        # an underpass shorter than two stations has none of its own inside to be pulled down:
+        # it stayed level with the street it should pass under, a box across it in the game
+        flat = lambda xy: np.full(len(xy), 100.)
+        for length in (16, 30, 60):
+            with self.subTest(length=length):
+                xs = [0, 300, 500 - length / 2, 500 + length / 2, 700, 1000]
+                segs = self.chain(xs, lambda k: {'highway': 'secondary', **({'tunnel': 'yes', 'layer': '-1'} if k == 2 else {})})
+                street = [{'xy': [[500, -300], [500, 300]], 'nodes': [21, 22], 'tags': {'highway': 'primary'}, 'width': 14.}]
+                prof, _ = fast_profile.solve(segs + street, flat)
+                s, h = self.along(segs, prof)
+                self.assertAlmostEqual(np.interp(300, *prof[5]), 100, delta=.05)          # the street stays
+                self.assertLess(np.interp(500, s, h), 100 - fast_profile.UNDERPASS + .1)   # the tunnel dives
+                self.assertLess(np.abs(np.diff(h) / np.diff(s)).max(), .07)                # by a ramp a car drives
+        # a street that only meets the tunnel's mouth is not over it
+        segs = self.chain([0, 300, 485, 515, 700, 1000], lambda k: {'tunnel': 'yes', 'layer': '-1'} if k == 2 else {})
+        side = [{'xy': [[485, 0], [485, 300]], 'nodes': [3, 22], 'tags': {}}]
+        s, h = self.along(segs, fast_profile.solve(segs + side, flat)[0])
+        self.assertGreater(h.min(), 100 - fast_profile.UNDERPASS + 3)     # its own dive, not a street's clearance
+
+    def test_an_arch_tagged_as_a_tunnel_is_not_dug_into_its_yard(self):
+        # the houses are not known to the solve: a short tunnel, or a yard's way, keeps the soft pull
+        flat = lambda xy: np.full(len(xy), 100.)
+        for length, highway in ((22, 'service'), (60, 'residential'), (140, 'service')):
+            with self.subTest(length=length, highway=highway):
+                xs = [0, 300, 500 - length / 2, 500 + length / 2, 700, 1000]
+                segs = self.chain(xs, lambda k: {'highway': highway, **({'tunnel': 'yes'} if k == 2 else {})})
+                s, h = self.along(segs, fast_profile.solve(segs, flat)[0])
+                self.assertGreater(h.min(), 100 - 2.5)
+        # a street's tunnel 300 m long under level ground is a real one: all the way down
+        segs = self.chain([0, 200, 350, 650, 800, 1000], lambda k: {'highway': 'secondary', **({'tunnel': 'yes'} if k == 2 else {})})
+        s, h = self.along(segs, fast_profile.solve(segs, flat)[0])
+        self.assertLess(h.min(), 100 - fast_profile.TUNNEL_DEPTH + .5)
+
+    def test_the_grade_runs_smoothly_through_an_abutment(self):
+        # a bridge's ends are nodes of two roads: with the change of grade held inside a segment
+        # alone, the road broke at each of them (7 % at the worst tenth of Bern's bridges)
+        valley = lambda xy: 100 - 12. * (np.abs(np.asarray(xy, dtype=float)[:, 0] - 500) < 150) + .03 * np.asarray(xy, dtype=float)[:, 0]
+        segs = self.chain([0, 200, 350, 650, 800, 1000], lambda k: {'bridge': 'yes', 'layer': '1'} if k == 2 else {})
+        s, h = self.along(segs, fast_profile.solve(segs, valley)[0])
+        grade = np.diff(h) / np.diff(s)
+        for x in (350, 650):
+            k = int(np.argmin(np.abs(s - x)))
+            self.assertLess(abs(grade[k] - grade[k - 1]), .01, x)
+
+    def test_spans_mapped_in_pieces_are_joined_in_order(self):
+        tags = [{}, {'bridge': 'yes'}, {'bridge': 'yes'}, {}, {'bridge': 'yes'}]
+        segs = [{'xy': [[0, 0], [1, 0]], 'nodes': list(n), 'tags': t}
+                for n, t in zip((('a', 'b'), ('c', 'b'), ('c', 'd'), ('d', 'e'), ('e', 'f')), tags)]
+        index = {n: k for k, n in enumerate('abcdef')}
+        kinds = np.array([fast_profile.kind(seg['tags']) == 'bridge' for seg in segs], dtype=int)
+        found = sorted(fast_profile.chains(segs, index, kinds, 1))
+        # d-c-b: the piece drawn c to d is turned to run on into the one drawn c to b
+        self.assertEqual(found, [[(2, True), (1, False)], [(4, False)]])
+        np.testing.assert_allclose(fast_profile.brim([3, 1, 2, 0, 5, 4]), [3, 3, 3, 3, 5, 4])
+        np.testing.assert_allclose(fast_profile.majorant(np.arange(5.), np.array([0., 3, 1, 3, 0])), [0, 3, 3, 3, 0])
+
     def test_parallel_carriageways_share_height(self):
         # two oneway halves 12 m apart, 13 m wide (they overlap), over a DEM tilted across them
         dem=lambda xy: 40+np.asarray(xy)[:,1]*.15

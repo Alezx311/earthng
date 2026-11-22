@@ -16,7 +16,8 @@ meet), so a plan tile is a game tile: tile (i, j) is x in [500 i, 500 i + 500).
 Round the main grid lie four universes (BLOCKS; mod/lua/ge/extensions/e2r/universe.lua): a
 mountain range, a desert, deep snow and deep mud. Each has the same sample of the main grid's
 subjects, built by its own rules, and land of its own; the pack's manifest names the universe
-of every tile, and the game builds the tile by it.
+of every tile, and the game builds the tile by it. The north-east corner is the bridges and
+tunnels (proving_spans.py): a span a tile, by the main grid's rules.
 """
 import argparse
 from collections import defaultdict
@@ -59,6 +60,8 @@ BLOCKS = (
     {'id': 'mud', 'prefix': 'MD', 'title': 'Багно', 'titleEn': 'Mud', 'tiles': (8, 13, -6, 6), 'universe': 'mud'},
     # (the island's south-east corner, between the desert and the mud)
     {'id': 'jungle', 'prefix': 'JG', 'title': 'Джунглі', 'titleEn': 'Jungle', 'tiles': (8, 13, -11, -6), 'universe': 'jungle'},
+    # (the north-east corner, between the mountains and the mud: no universe, the main grid's rules)
+    {'id': 'spans', 'prefix': 'BR', 'title': 'Мости й тунелі', 'titleEn': 'Bridges and tunnels', 'tiles': (8, 13, 6, 12), 'universe': None},
 )
 BLOCK = {b['id']: b for b in BLOCKS}
 # the land every block stands on, in metres: the coastline runs SHORE outside it
@@ -276,7 +279,11 @@ class Plan:
         import fast_dem
         fr = frame()
         paths = fast_dem.audit(index, dem)
-        k = (np.arange(256) + .5) / 256
+        # A pixel's height is the land at its north-west corner: the pack reads a tile so
+        # (fast_profile.Mosaic: the value of pixel n lies at n, the next one at n + 1). Computed
+        # at the pixels' middles the whole relief lay half a pixel, 12.5 m, west and north of its roads:
+        # a river's bed beside its water, a ridge beside its tunnel.
+        k = np.arange(256) / 256
         for path in paths:
             tx, ty = int(path.parent.name), int(path.stem)
             lon = (tx + k) / 4096 * 360 - 180

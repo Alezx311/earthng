@@ -39,7 +39,7 @@ class PlanTests(unittest.TestCase):
         count = sum((b['tiles'][1] - b['tiles'][0]) * (b['tiles'][3] - b['tiles'][2]) for b in ground.BLOCKS)
         self.assertEqual(len(tiles), count)
         self.assertEqual(len([t for t in tiles.values() if t['block'] == 'main']), len(ground.COLS) * len(ground.ROWS))
-        for name in ('A1', 'N10', 'MT-A1', 'MT-P6', 'DS-A1', 'SN-E12', 'MD-A1'):
+        for name in ('A1', 'N10', 'MT-A1', 'MT-P6', 'DS-A1', 'SN-E12', 'MD-A1', 'BR-A1', 'BR-E6'):
             self.assertIn(name, tiles)
         frame = ground.frame()
         for name, tile in tiles.items():
@@ -131,11 +131,11 @@ class PlanTests(unittest.TestCase):
         catalogue = self.plan.catalogue()
         text = json.dumps(catalogue, ensure_ascii=False)
         self.assertLess(len(text.encode('utf8')), 700_000)
-        self.assertEqual([b['id'] for b in catalogue['blocks']], ['main', 'mountains', 'desert', 'snow', 'mud', 'jungle'])
+        self.assertEqual([b['id'] for b in catalogue['blocks']], ['main', 'mountains', 'desert', 'snow', 'mud', 'jungle', 'spans'])
         self.assertEqual((catalogue['blocks'][0]['cols'], catalogue['blocks'][0]['rows']),
                          ([ground.COLS[0], ground.COLS[-1]], [ground.ROWS[0], ground.ROWS[-1]]))
         self.assertEqual(catalogue['zones'][0]['id'], 'studio')
-        self.assertEqual([z['id'] for z in catalogue['zones']][-5:], ['mountains', 'desert', 'snow', 'mud', 'jungle'])
+        self.assertEqual([z['id'] for z in catalogue['zones']][-6:], ['mountains', 'desert', 'snow', 'mud', 'jungle', 'spans'])
         tile = next(t for t in catalogue['tiles'] if t['code'] == 'D7')
         self.assertEqual((tile['i'], tile['j'], tile['zone'], tile['block']), (-4, 1, 'town', 'main'))
         self.assertNotIn('universe', tile)
