@@ -48,10 +48,12 @@ M.walkSim = require('ge/extensions/e2r/walkers')   -- pedestrians on the sidewal
 -- copies of a shape in one DynamicShapeBatch (shapebatch.lua) for the flow and the walkers;
 -- M.useBatches = false (a probe, before the layer starts) keeps a TSStatic each, as older games do
 M.shapeBatch = require('ge/extensions/e2r/shapebatch')
+M.shapeBatch.PRIME_FRAMES = 45   -- a kind's batch comes 45 frames after its shape's first load (shapebatch.lua)
 M.useBatches = true
 M.pedHit = require('ge/extensions/e2r/pedhit')   -- a physical body in a walker's place before a hit
 M.knock = require('ge/extensions/e2r/knock')   -- street furniture a vehicle knocks down (knock.lua)
 M.winguard = require('ge/extensions/e2r/winguard')   -- widget windows stay on the game screen (winguard.lua)
+M.waterfx = require('ge/extensions/e2r/waterfx')     -- the water's look by the weather (waterfx.lua)
 M.far = NATIVE and require('ge/extensions/e2r/far') or nil   -- the land to the horizon (far.lua)
 -- the gate: scene changes while driving only after calm frames, one a frame, in bursts (pace.lua)
 M.pace = require('ge/extensions/e2r/pace')
@@ -916,6 +918,10 @@ local function pairsLeft()
   local cap = S.state == 'driving' and LIMIT.pairsDriving or LIMIT.pairsLanding
   -- a deep queue is a hole in the world: six new materials on the open gate, three once it is caught up
   if S.state == 'driving' and LIMIT.nearQueued() and #(S.queue or {}) > 24 then cap = LIMIT.pairsCatch end
+  -- (The cap, the burst's milliseconds and the generator's budget are a frame's, so a frame made
+  -- longer by the traffic's real cars spawns less a second. Letting all three grow with the frame
+  -- was tried and made it worse: the frame went from 36 to 41 ms and the scene under the car was
+  -- late for 429 frames against 271, traffic-ab-03/04. What helps is a cheaper frame.)
   return cap - (S.pairsFrame or 0)
 end
 
@@ -978,32 +984,17 @@ local function spawnItem(it, group, pause, tile, layer)
     if not obj then return end
     obj.canSave = false
     obj:setField('fullReflect', 0, 'false')
-    obj:setField('baseColor', 0, river and '28 52 56 255' or (sea and '18 48 52 255' or '20 64 72 255'))
     obj:setField('rippleTex', 0, '/core/art/water/ripple_nm.normal.dds')
     obj:setField('foamTex', 0, '/core/art/water/foam_b.color.dds')
     obj:setField('depthGradientTex', 0, river and '/core/art/water/river_depthcolor_ramp_b.png' or '/core/art/water/depthcolor_ramp_b.png')
     obj:setField('cubemap', 0, 'DefaultSkyCubemap')
-    obj:setField('fresnelBias', 0, '0.1')
-    obj:setField('fresnelPower', 0, '10')
-    obj:setField('specularPower', 0, '200')
-    obj:setField('overallRippleMagnitude', 0, river and '0.35' or '0.28')
-    obj:setField('overallWaveMagnitude', 0, river and '0.04' or (sea and '0.05' or '0.08'))
-    obj:setField('overallFoamOpacity', 0, river and '0.85' or '0.6')
-    obj:setField('foamMaxDepth', 0, '0.55')
-    obj:setField('reflectivity', 0, sea and '0.28' or '0.18')
-    obj:setField('viscosity', 0, '0.001')
-    -- At Stow Lake and Ocean Beach 0.9 made shallow water a dark band; 0.3
-    -- keeps a depth tint while making the submerged shore visible.
-    obj:setField('waterFogDensity', 0, river and '1.2' or ((it.lakeFog or sea) and '0.3' or '0.9'))
-    obj:setField('depthGradientMax', 0, river and '6' or (sea and '80' or '12'))
     obj:setField('rippleDir', 0, '0 1'); obj:setField('rippleDir', 1, '0.707 0.707'); obj:setField('rippleDir', 2, '0.5 0.86')
-    obj:setField('rippleSpeed', 0, river and '0.05' or '-0.015')
-    obj:setField('rippleSpeed', 1, '0.015'); obj:setField('rippleSpeed', 2, '0.01')
-    obj:setField('rippleTexScale', 0, river and '4 12' or '10 10')
-    obj:setField('rippleTexScale', 1, '12 16'); obj:setField('rippleTexScale', 2, '50 50')
     obj:setField('waveDir', 0, '0 1'); obj:setField('waveDir', 1, '0.707 0.707'); obj:setField('waveDir', 2, '0.5 0.86')
-    obj:setField('waveMagnitude', 0, '0.2'); obj:setField('waveMagnitude', 1, '0.2'); obj:setField('waveMagnitude', 2, '0.2')
-    obj:setField('waveSpeed', 0, '1'); obj:setField('waveSpeed', 1, '1'); obj:setField('waveSpeed', 2, '1')
+    -- Its colour, waves, ripples, foam and depth fog by the kind of water and the weather of the
+    -- moment (waterfx.lua); the object then follows the weather as it changes (M.waterfx.step).
+    -- A pond's fog: at Stow Lake and Ocean Beach 0.9 made shallow water a dark band, 0.3 keeps
+    -- a depth tint while the submerged shore shows.
+    if M.waterfx.dress then M.waterfx.dress(obj, river and 'river' or (sea and 'sea' or (it.lakeFog and 'pond' or 'lake'))) end
     if river then
       obj:setField('FlowMagnitudePhysics', 0, '2')
       obj:setField('SegmentLength', 0, '12')
@@ -1013,6 +1004,7 @@ local function spawnItem(it, group, pause, tile, layer)
     if obj.reloadTextures then obj:reloadTextures() end
     obj:registerObject(it.name or '')
     if group then group:addObject(obj) end
+    if M.waterfx.track then M.waterfx.track(obj, river and 'river' or (sea and 'sea' or (it.lakeFog and 'pond' or 'lake'))) end
     if river then
       local up = vec3(0, 0, 1)
       for i = 1, #(it.nodes or {}) do
@@ -1840,7 +1832,50 @@ end
 -- no batches), in a group outside the MissionGroup (no collision). Round the player's car the
 -- nearest of them are real simple_traffic cars (handoff.lua), so the cars one can hit are real.
 -- The player's car, those real cars and the game's AI traffic are the flow's obstacles.
-function M.flowSet(n)
+-- the game side of the hand-off (handoff.gameApi) with the game's simple cars by the flow's bodies
+function M.flowApi()
+  local fs, hs = M.flowSim, M.handoffSim
+  -- the game's simple cars, picked once (a group scans every config) and sorted by the flow's
+  -- bodies, so a flow sedan becomes a real sedan; a body the group lacks takes stock configs
+  local t = hptimer()
+  local byBody, k = hs.byBody(TRAFFIC_KINDS[1].group(48)), {}
+  local api = hs.gameApi(fs.PAINT_RGB, function(body)
+    body = body or 1
+    k[body] = (k[body] or 0) + 1
+    local list = byBody[body]
+    if list and #list > 0 then return list[(k[body] - 1) % #list + 1] end
+    local stock = hs.STOCK[body] or hs.STOCK[1]
+    return {model = 'simple_traffic', config = stock[(k[body] - 1) % #stock + 1]}
+  end)
+  api.ms.group = t:stop()
+  return api
+end
+
+-- The pool of real cars a car at a time while a landing loads (the states before the drive), when
+-- the flow will come with the drive: twelve spawns at the touch-down were ~5 s of one frame, the
+-- first thing the player saw of the place.
+function M.flowPoolWarm()
+  local hs = M.handoffSim
+  if (S.flowSaved or 0) <= 0 or (S.flowReal or hs.SIZE) <= 0 or S.flow then return end
+  local P = S.flowPool
+  if not P then
+    P = {H = hs.new{bodies = M.flowSim.BODY_SHARE, size = S.flowReal or hs.SIZE}, api = M.flowApi()}
+    S.flowPool = P
+  end
+  P.H.size = S.flowReal or hs.SIZE
+  if #P.H.pool < hs.target(P.H) and S.now - (P.at or -1e9) > .3 then
+    local veh = getPlayerVehicle(0)
+    local q = veh and veh:getPosition() or focus()
+    if q then hs.prewarmOne(P.H, P.api, q.x, q.y) end
+    P.at = S.now
+    -- (a spawn takes the player into the new car unless told not to; be sure of it)
+    if veh and getPlayerVehicle(0) ~= veh then pcall(function() be:enterVehicle(0, veh) end) end
+  end
+end
+
+-- M.flowSet(n [, park]): n flow cars (0: none). park: the pool of real cars is kept, parked, for
+-- the next drive (a landing) instead of deleted (the setting's Off).
+function M.flowSet(n, park)
   local fs, hs = M.flowSim, M.handoffSim
   if n > 0 and not S.flow then
     local F = fs.new{leftHand = fs.leftHand(S.stream and S.stream.country), seed = math.floor(S.now * 1000) % 100000 + 1,
@@ -1853,33 +1888,48 @@ function M.flowSet(n)
     -- the batches' shapes: one a body, painted per copy (flow.lua batchView)
     shapes.paintable = {}
     for b, body in ipairs(fs.BODIES) do shapes.paintable[b] = '/levels/e2r_world/art/flow/car_' .. body .. '_paint.dae' end
-    -- the game's simple cars, picked once (a group scans every config) and sorted by the flow's
-    -- bodies, so a flow sedan becomes a real sedan; a body the group lacks takes stock configs
-    local t = hptimer()
-    local byBody, k = hs.byBody(TRAFFIC_KINDS[1].group(48)), {}
-    local api = hs.gameApi(fs.PAINT_RGB, function(body)
-      body = body or 1
-      k[body] = (k[body] or 0) + 1
-      local list = byBody[body]
-      if list and #list > 0 then return list[(k[body] - 1) % #list + 1] end
-      local stock = hs.STOCK[body] or hs.STOCK[1]
-      return {model = 'simple_traffic', config = stock[(k[body] - 1) % #stock + 1]}
-    end)
-    api.ms.group = t:stop()
+    -- the fal models of each body in place of the drawn one (a body without a model keeps it)
+    local models = M.trafficModels()
+    shapes.far = {}
+    for _, car in ipairs(models and models.cars or {}) do
+      local b = car.body
+      if shapes.paintable[b] and FS:fileExists(car.shape) then
+        if type(shapes.paintable[b]) ~= 'table' then
+          -- the drawn car of the body stays as its far shape (flow.lua FAR_IN)
+          shapes.far[b] = shapes.paintable[b]
+          shapes.paintable[b] = {}
+        end
+        table.insert(shapes.paintable[b], car.shape)
+      end
+    end
+    -- the pool a landing kept or filled ahead of the drive (flowPoolWarm), else a new one
+    local kept = S.flowPool
+    S.flowPool = nil
+    local api = kept and kept.api or M.flowApi()
+    local H = kept and kept.H or hs.new{bodies = fs.BODY_SHARE, size = S.flowReal or hs.SIZE}
+    H.size = S.flowReal or hs.SIZE
     local group = tileGroup('E2R_flow', true)
     local sb = M.shapeBatch
     local batches = M.useBatches and sb.available() and sb.new(group) or nil
-    S.flow = {F = F, V = fs.view(F, shapes, group, batches), H = hs.new{bodies = fs.BODY_SHARE,
-      size = S.flowReal or hs.SIZE}, api = api, batches = batches}
+    S.flow = {F = F, V = fs.view(F, shapes, group, batches), H = H, api = api, batches = batches}
     local veh = getPlayerVehicle(0)
     local q = veh and veh:getPosition() or focus()
     if q then hs.prewarm(S.flow.H, api, q.x, q.y) end
   end
   if S.flow then fs.setTarget(S.flow.F, n) end
   if n == 0 and S.flow then
-    hs.clear(S.flow.H, S.flow.api)
+    if park then
+      hs.park(S.flow.H, S.flow.api)
+      S.flowPool = {H = S.flow.H, api = S.flow.api}
+    else
+      hs.clear(S.flow.H, S.flow.api)
+    end
     dropGroup('E2R_flow')
     S.flow = nil
+  elseif n == 0 and S.flowPool and not park then
+    -- switched off while its pool waited parked: the cars go
+    hs.clear(S.flowPool.H, S.flowPool.api)
+    S.flowPool = nil
   end
   result.flowTarget = n
 end
@@ -1898,6 +1948,38 @@ function M.flowReal(n)
   result.flowReal = n
 end
 
+-- The cars the player asked for (S.flowSaved, S.trafficSaved: the widget and the registry set
+-- them, settings/earthng.json keeps them) come back with every drive, as the walkers do: a
+-- landing clears the traffic of the place left, and before the first one there is no road to
+-- put a car on. Each start is on its own: one that fails leaves the other and the landing alone.
+function M.trafficResume()
+  if (S.flowSaved or 0) > 0 and not S.flow then
+    local ok, err = pcall(M.flowSet, S.flowSaved)
+    if not ok then log('E', logTag, 'the saved flow did not start: ' .. tostring(err)) end
+  end
+  if (S.trafficSaved or 0) > 0 and not trafficRunning() then
+    local ok, err = pcall(setTraffic, S.trafficSaved, S.trafficKind)
+    if not ok then log('E', logTag, 'the saved traffic did not start: ' .. tostring(err)) end
+  end
+end
+
+-- a choice made outside the registry (the widget's buttons) is written to the settings file too
+function M.wishKeep()
+  local o = M.options
+  if o and o.flush then o.dirty = true; o.flush() end
+end
+
+-- Is an automation file a request of this moment? test_world.py stamps what it writes with the
+-- clock; a file without a stamp, or one older than TEST_FILE_AGE, was left by an earlier run.
+M.TEST_FILE_AGE = 3600
+function M.testFresh(found, now)
+  if type(found) ~= 'table' then return false end
+  local stamp = tonumber(found.stamp)
+  if not stamp then return false end
+  local age = now - stamp
+  return age > -120 and age < M.TEST_FILE_AGE
+end
+
 function M.batchStats(r, B)
   if not B then r.batches = nil; return end
   local rb = r.batches or {}
@@ -1905,11 +1987,34 @@ function M.batchStats(r, B)
     rb, B.objects, B.live, B.resizes, B.finalMs, B.finalMax, B.waits
 end
 
+-- the next obstacle of the flow's list (fl.obs), in a record of fl.obsPool; returns the new count
+function LIMIT.obstacle(fl, n, x, y, vx, vy)
+  n = n + 1
+  local o = fl.obsPool[n]
+  if not o then o = {}; fl.obsPool[n] = o end
+  o.x, o.y, o.vx, o.vy = x, y, vx, vy
+  fl.obs[n] = o
+  return n
+end
+
+-- The models made with fal (earthng/traffic_art.py), when the planet has them:
+-- {cars = {{name, body, shape}}, peds = {{name, look, shapes = {walk0.., stand, sit, far}}}}; nil
+-- in a planet built without them (the drawn shapes of flow_art.py and people_art.py then).
+function M.trafficModels()
+  if S.trafficModels == nil then
+    local path = '/levels/e2r_world/art/traffic_models.json'
+    local ok, data = pcall(function() return FS:fileExists(path) and jsonReadFile(path) or nil end)
+    S.trafficModels = ok and type(data) == 'table' and data or false
+  end
+  return S.trafficModels or nil
+end
+
 function M.flowStep()
   local fs, fl = M.flowSim, S.flow
   local p = focus()
   if not p then return end
   local t = hptimer()
+  local kb0 = collectgarbage('count')
   -- the graph follows navBuild (new tiles, 250 m of driving)
   local sceneChanged = fl.lightVersion ~= (S.flowLightVersion or 0)
   if fl.syncAt ~= S.navAt or (sceneChanged and S.now - (fl.lightAt or -10) >= 1) then
@@ -1929,38 +2034,70 @@ function M.flowStep()
     fs.sync(fl.F, S.nav, p.x, p.y, lights, sceneLights)
     fl.syncMs = t:stopAndReset()
   end
-  local obs = {}
+  -- the obstacles, in records kept from frame to frame (LIMIT.obstacle): a table an obstacle a
+  -- frame, and the list of the pool's ids made again every frame, were the collector's work
+  local obs, n = fl.obs, 0
+  if not obs then obs = {}; fl.obs, fl.obsPool = obs, {} end
   local veh = getPlayerVehicle(0)
   local car = veh and veh:getPosition()
-  local pv
+  local pv, phx, phy
   if veh then
     pv = veh:getVelocity()
-    obs[1] = {x = car.x, y = car.y, vx = pv.x, vy = pv.y}
+    n = LIMIT.obstacle(fl, n, car.x, car.y, pv.x, pv.y)
+    local d = veh:getDirectionVector()
+    local h = math.sqrt(d.x * d.x + d.y * d.y)
+    if h > 1e-6 then phx, phy = d.x / h, d.y / h end
   end
-  M.handoffSim.obstacles(fl.H, fl.api, obs)
+  local api = fl.api
+  for _, e in ipairs(fl.H.pool) do
+    if e.active and api.alive(e.id) then
+      local x, y, vx, vy = api.pose(e.id)
+      n = LIMIT.obstacle(fl, n, x, y, vx, vy)
+    end
+  end
   -- pedestrians crossing a road (walkers.lua): the flow's cars stop for them
   if S.walk then
-    for _, w in ipairs(S.walk.W.onRoad or {}) do obs[#obs + 1] = {x = w.x, y = w.y, vx = 0, vy = 0} end
+    local onRoad = S.walk.W.onRoad
+    for k = 1, S.walk.W.onRoadN or 0 do
+      local w = onRoad[k]
+      if w then n = LIMIT.obstacle(fl, n, w.x, w.y, 0, 0) end
+    end
   end
   -- every other physical car in the level: the game's traffic, a second car the player spawned,
   -- police in a pursuit. Only the game's traffic used to count, so the flow drove through the rest.
-  local mine = {}
-  for _, e in ipairs(fl.H.pool) do mine[e.id] = true end
+  if fl.mineN ~= #fl.H.pool then
+    fl.mine, fl.mineN = {}, #fl.H.pool
+    for _, e in ipairs(fl.H.pool) do fl.mine[e.id] = true end
+  end
+  local mine, mainId = fl.mine, veh and veh:getID()
   for i = 0, be:getObjectCount() - 1 do
     local o = be:getObject(i)
     local id = o and o:getID()
-    if id and not mine[id] and o ~= veh and be:getObjectActive(id) then
+    if id and not mine[id] and id ~= mainId and be:getObjectActive(id) then
       local q, v = o:getPosition(), o:getVelocity()
-      obs[#obs + 1] = {x = q.x, y = q.y, vx = v.x, vy = v.y}
+      n = LIMIT.obstacle(fl, n, q.x, q.y, v.x, v.y)
     end
   end
+  for k = #obs, n + 1, -1 do obs[k] = nil end
   -- the simulation's time, as the physics cars round them: paused or in slow motion the flow
   -- used to drive on at full speed through the real cars standing still
   fs.step(fl.F, S.dtSim or S.dt or 1 / 60, p.x, p.y, obs, S.now, M.signals and M.signals.current)
-  -- the swap follows the player's car, not a free camera: the cars one can hit are round it
-  if car then M.handoffSim.step(fl.H, fs, fl.F, car.x, car.y, S.now, fl.api, pv.x, pv.y) end
+  -- the swap follows the player's car, not a free camera: the cars one can hit are round it.
+  -- A replay (test_world --replay) has no car that drives: the swap follows its pose, so a replay
+  -- carries the real cars' physics along a route that is the same in every run.
+  if S.replayPose then car, pv, phx, phy = S.replayPose.p, S.replayPose.v, nil, nil end
+  if car then M.handoffSim.step(fl.H, fs, fl.F, car.x, car.y, S.now, fl.api, pv.x, pv.y, phx, phy) end
   fl.simMs = t:stopAndReset()
-  fl.moved = fs.draw(fl.F, fl.V, p.x, p.y)
+  if not fl.ground then
+    -- the ground under a car: one vec3 filled again (no garbage per read)
+    local at = vec3(0, 0, 0)
+    fl.ground = function(x, y, z)
+      at.x, at.y, at.z = x, y, z + 2
+      local h = be:getSurfaceHeightBelow(at)
+      if h and h > -1e6 then return h end
+    end
+  end
+  fl.moved = fs.draw(fl.F, fl.V, p.x, p.y, fl.ground)
   fl.drawMs = t:stop()
   local r = result.flow or {}
   result.flow = r
@@ -1970,6 +2107,10 @@ function M.flowStep()
   M.batchStats(r, fl.batches)
   r.simMax, r.drawMax = math.max(r.simMax or 0, fl.simMs), math.max(r.drawMax or 0, fl.drawMs)
   r.syncMax = math.max(r.syncMax or 0, fl.syncMs or 0)
+  -- the means of a drive: ms of the simulation and of the drawing a frame, Lua garbage a frame
+  -- (a collection inside the step reads as less: a floor, not a ceiling)
+  r.steps, r.simSum, r.drawSum = (r.steps or 0) + 1, (r.simSum or 0) + fl.simMs, (r.drawSum or 0) + fl.drawMs
+  r.kbSum = (r.kbSum or 0) + math.max(0, collectgarbage('count') - kb0)
   r.stats = fl.F.stats
   r.real, r.pool, r.handoff, r.handoffMs = M.handoffSim.activeCount(fl.H), #fl.H.pool, fl.H.stats, fl.api.ms
   r.handoffSpawns = fl.api.spawns
@@ -2043,6 +2184,11 @@ function M.walkersSet(n, now)
   local group, sb = tileGroup('E2R_walkers', true), M.shapeBatch
   wk.batches = M.useBatches and sb.available() and sb.new(group) or nil
   wk.V, wk.parked, wk.syncAt = ws.view(wk.W, M.peopleShapes(), group, wk.batches), nil, nil
+  -- the fal people (batches only: a copy has one colour, and theirs is in their own map); the
+  -- body that takes a struck walker's place is painted in its figure's colours (ws.CHARS)
+  local models = wk.batches and M.trafficModels()
+  ws.CHARS = models and models.peds and #models.peds > 0 and models.peds or nil
+  wk.V.chars = ws.CHARS
   if not wk.ground then
     -- the ground under a walker: one vec3 filled again (no garbage per read)
     local at = vec3(0, 0, 0)
@@ -2589,7 +2735,9 @@ local function drawTraffic()
       im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
       im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
     end
-    if im.Button(L(a[2], a[3]) .. '##traffic_' .. a[1], im.ImVec2(width, 0)) and not active then setTraffic(a[1], kind) end
+    if im.Button(L(a[2], a[3]) .. '##traffic_' .. a[1], im.ImVec2(width, 0)) and not active then
+      S.trafficSaved = a[1]; setTraffic(a[1], kind); M.wishKeep()
+    end
     if active then im.PopStyleColor(2) end
   end
   im.Text(L('Потік (без фізики):', 'Flow (no physics):'))
@@ -2602,7 +2750,9 @@ local function drawTraffic()
       im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
       im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
     end
-    if im.Button(L(a[2], a[3]) .. '##flow_' .. a[1], im.ImVec2(width, 0)) and not active then M.flowSet(a[1]) end
+    if im.Button(L(a[2], a[3]) .. '##flow_' .. a[1], im.ImVec2(width, 0)) and not active then
+      S.flowSaved = a[1]; M.flowSet(a[1]); M.wishKeep()
+    end
     if active then im.PopStyleColor(2) end
   end
   im.Text(L('Справжні машини біля гравця:', 'Real cars round the player:'))
@@ -3521,6 +3671,18 @@ local function showPrecip(cfg)
   obj.canSave = false
 end
 
+-- What waterfx.lua reads the weather from: the game's environment (the player's own wind, cloud,
+-- rain and hour) and the pack's rain or snow round the camera.
+function M.waterWeather()
+  local ok, state = pcall(function() return core_environment.getState() end)
+  local env = S.packEnv and S.pack and S.packEnv[S.pack]
+  local precip = env and env.precip ~= false and env.precip or nil
+  local snow = precip and tostring(precip.dataBlock or ''):lower():find('snow', 1, true) ~= nil or false
+  return ok and state or nil, {rain = precip ~= nil and not snow, snow = snow}
+end
+-- a tile's water object by its id, nil once the tile has gone
+function M.waterFind(id) return scenetree.findObjectById(id) end
+
 -- The synthwave sun: one big textured quad that keeps its place on the horizon, as far from the
 -- camera as the view distance allows (env.sun: azimuth, distance, size, height, material).
 local function placeSun()
@@ -3804,7 +3966,7 @@ local function beginArrival(job, early)
   S.tiles, S.far, S.horizon, S.queue, S.co = {}, {}, {}, {}, nil
   -- traffic and parked cars of the old place have no roads here
   if trafficRunning() then gameplay_traffic.deleteVehicles() end
-  if S.flow then M.flowSet(0) end
+  if S.flow then M.flowSet(0, true) end   -- (its pool of real cars waits parked for the next drive)
   if S.walk then M.walkersPark() end   -- the count asked comes back with the drive
   M.knockPark()
   if S.park then parking.clear(S.park) end
@@ -3904,6 +4066,8 @@ local function beginArrival(job, early)
       result.packMaterialsWarmed = n
     end
     arrival.packWarm = arrivalTimer:stopAndReset()
+    -- (a style saved by another build may be gone from this one: the world is then the real one)
+    if S.pack and S.packs and not S.packs[S.pack] then S.pack = nil end
     if S.pack and S.pack ~= 'real' then applyPack(S.pack) end   -- keep the player's choice
   end
   arrival.packs = arrivalTimer:stopAndReset()
@@ -3931,10 +4095,20 @@ local function beginArrival(job, early)
   -- walkers coming with this drive (asked before it, or the automation's): their shapes too
   if (M.walkersGet() > 0 or (test and test.walkers)) and manifest.warmShapes and not manifest.peopleWarm then
     manifest.peopleWarm = true
-    for _, shape in ipairs(M.peopleShapes(true)) do
+    local list = M.peopleShapes(true)
+    -- the fal people's shapes too, where they are drawn (batches)
+    local models = M.useBatches and M.shapeBatch.available() and M.trafficModels()
+    for _, ped in ipairs(models and models.peds or {}) do
+      for _, shape in pairs(ped.shapes) do list[#list + 1] = shape end
+    end
+    for _, shape in ipairs(list) do
       if FS:fileExists(shape) then table.insert(manifest.warmShapes, shape) end
     end
   end
+  -- (The flow's fal cars are not warmed here: their batches are made at the touch-down, as the
+  -- warm-up's objects go, and every one of them then drew nothing: finalizeShape took 0.1 ms a
+  -- batch instead of 70 and no car was on the road, look-02. The trap of shapebatch.lua's notes;
+  -- the walkers' batches are made seconds later and are not caught by it.)
   -- test.floraAll (earthng/flora_cook.py's cook run): every shape of the flora pack, so the game
   -- compiles each and bakes its imposter here, where the tool finds them
   if test and test.floraAll and manifest.warmShapes and not manifest.floraWarm then
@@ -3989,6 +4163,7 @@ local function touchDown()
   result.cameraSwitchMs = timer:stop()
   S.state, S.phaseAt = 'driving', S.now
   S.driveAcc = newAcc()
+  if not test then M.trafficResume() end   -- (the automation asks for its own cars)
   result.landedAt = S.now
   result.startupSeconds = S.landTimer and S.landTimer:stop() / 1000 or S.now - S.landAt
   M.loadMark('landed')
@@ -5495,7 +5670,7 @@ local function refreshCountries(why)
     pcall(VISTA.plane, nil)
     dropLights()
     if trafficRunning() then gameplay_traffic.deleteVehicles() end
-    if S.flow then M.flowSet(0) end
+    if S.flow then M.flowSet(0, true) end
     if S.walk then M.walkersPark() end
     M.knockPark()
     map.reset({})
@@ -5558,11 +5733,13 @@ function M.onClientEndMission()
   if detail.turf then detail.turf.reset() end
   if NATIVE then native.refresh() end
   if S.ocean then pcall(function() S.ocean:delete() end); S.ocean = nil end
+  if M.waterfx.reset then M.waterfx.reset() end
   S.stream, S.co, S.job, S.landing, S.state = nil, nil, nil, nil, 'off'
   S.tiles, S.far, S.horizon, S.queue, S.nav, S.navPending, S.navLights = {}, {}, {}, {}, {}, {}, {}
   S.walks, S.walkAt, S.spotsAt = {}, nil, nil
   S.signalDirty, S.signalAt = nil, nil
   M.walkersLost()   -- the walkers' shapes and bodies went with the level; the count asked stays
+  S.flowPool, S.trafficModels = nil, nil   -- so did the parked pool of the flow's real cars
   S.knock = nil     -- the debris and its pool went with the level; knockOff (the setting) stays
   S.knownMats, S.coverage, S.centredOnPackage = {}, nil, nil
   dropLights()
@@ -6295,12 +6472,21 @@ function M.onUpdate(dtReal, dtSim)
   if not test and S.state == 'pick' and S.now - (S.testCheckAt or -1) > 1 then
     S.testCheckAt = S.now
     if FS:fileExists('/e2r-world-test.json') then
-      test = jsonReadFile('/e2r-world-test.json')
-      if test and test.pack then S.pack = test.pack end     -- drive in a pack (applied at the landing)
-      pcall(function() local tod = scenetree.tod; if tod then tod.play = false end end)
-      result.status = 'picker_open'
-      S.phaseAt = S.now
-      saveResult()
+      -- Only a file the driver has just written is a request (test_world.py stamps it). One left
+      -- behind in a player's folder is not: it landed every start in the same place and replaced
+      -- the saved quality with its own (the live profile, 19-21.11).
+      local found = jsonReadFile('/e2r-world-test.json')
+      if M.testFresh(found, os.time()) then
+        test = found
+        if test.pack then S.pack = test.pack end     -- drive in a pack (applied at the landing)
+        pcall(function() local tod = scenetree.tod; if tod then tod.play = false end end)
+        result.status = 'picker_open'
+        S.phaseAt = S.now
+        saveResult()
+      elseif not S.testStale then
+        S.testStale = true
+        log('W', logTag, 'ignoring /e2r-world-test.json: no fresh stamp, so it is a leftover of an earlier automation run; the player picks the landing')
+      end
     end
   end
   -- A frame stuck in Lua (ours or another mod's) for seconds writes its Lua stack to
@@ -6369,6 +6555,11 @@ function M.tick(dt)
     end
     local loading = S.state == 'generating' or S.state == 'warmup' or S.state == 'spawning'
     if test and loading then M.loadEngine(S.state) end
+    -- the flow's real cars spawn while the landing loads, not at the touch-down
+    if not test and (S.state == 'warmup' or S.state == 'spawning') then
+      local ok, err = pcall(M.flowPoolWarm)
+      if not ok and not S.flowPoolFailed then S.flowPoolFailed = true; log('E', logTag, 'the pool of real cars: ' .. tostring(err)) end
+    end
     local owed = loading and (S.state ~= 'spawning' or S.landOwed ~= false)
     local genBudget = test and test.genBudget or (owed and LIMIT.loadNativeMs) or BUDGET_MS
     if not (test and test.genBudget) and S.state == 'driving' then
@@ -6386,6 +6577,14 @@ function M.tick(dt)
   lightsStep()
   reloadStep()
   if S.precipPending and S.state == 'driving' and S.now - (S.phaseAt or 0) >= 1.5 then showPrecip(S.precipPending) end
+  -- the water follows the weather: the game's wind, cloud, rain and hour, and the pack's own rain or snow
+  if S.state == 'driving' and M.waterfx.step then
+    local ok, err = pcall(M.waterfx.step, S.now, M.waterWeather, M.waterFind)
+    if not ok and not S.waterfxFailed then
+      S.waterfxFailed = true
+      log('E', logTag, 'the water did not take the weather: ' .. tostring(err))
+    end
+  end
   envAgainStep()
   readStatus()
   replayStep(dt)
@@ -6843,8 +7042,10 @@ function M.optionsBind()
   o.define{key = 'groundTrees', kind = 'bool', group = 'advanced',
     label = {uk = 'Дерева на відкритому ґрунті', en = 'Trees on open ground'},
     read = tuneRead('groundTrees'), apply = tuneApply('groundTrees')}
-  -- traffic and people: what runs now (not saved, as in the widget)
-  o.define{key = 'trafficKind', kind = 'enum', values = TRAFFIC_KINDS, group = 'traffic',
+  -- traffic and people. The page and the widget show what runs now; the file keeps what the
+  -- player asked for (S.trafficSaved, S.flowSaved), which a landing clears from the road and
+  -- M.trafficResume starts again with the drive. Before a landing apply only remembers.
+  o.define{key = 'trafficKind', kind = 'enum', values = TRAFFIC_KINDS, group = 'traffic', path = {'trafficKind'},
     label = {uk = 'Трафік: машини', en = 'Traffic: cars'},
     read = function() return S.trafficKind or 'simple' end,
     apply = function(v)
@@ -6852,15 +7053,24 @@ function M.optionsBind()
       local amount = trafficRunning() and S.trafficAmount or 0
       if amount and amount > 0 then setTraffic(amount, v) end   -- the running traffic respawns with it
     end}
-  o.define{key = 'trafficAmount', kind = 'enum', values = TRAFFIC_KINDS.amounts, group = 'traffic',
+  o.define{key = 'trafficAmount', kind = 'enum', values = TRAFFIC_KINDS.amounts, group = 'traffic', path = {'traffic'},
     label = {uk = 'Трафік (з фізикою)', en = 'Traffic (with physics)'},
     hint = {uk = 'Кожна машина ~1,5 мс кадру', en = 'Each car costs ~1.5 ms of the frame'}, available = driving,
     read = function() return trafficRunning() and (S.trafficAmount or -1) or 0 end,
-    apply = function(v) setTraffic(v, S.trafficKind) end}
-  o.define{key = 'flow', kind = 'enum', values = TRAFFIC_KINDS.flow, group = 'traffic',
+    encode = function() return S.trafficSaved or 0 end,
+    apply = function(v)
+      S.trafficSaved = v
+      if driving() then setTraffic(v, S.trafficKind) end
+    end}
+  o.define{key = 'flow', kind = 'enum', values = TRAFFIC_KINDS.flow, group = 'traffic', path = {'flow'},
     label = {uk = 'Потік (без фізики)', en = 'Flow (no physics)'}, available = driving,
-    read = function() return S.flow and S.flow.F.target or 0 end, apply = function(v) M.flowSet(v) end}
-  o.define{key = 'flowReal', kind = 'enum', values = TRAFFIC_KINDS.real, group = 'traffic',
+    read = function() return S.flow and S.flow.F.target or 0 end,
+    encode = function() return S.flowSaved or 0 end,
+    apply = function(v)
+      S.flowSaved = v
+      if driving() then M.flowSet(v) end
+    end}
+  o.define{key = 'flowReal', kind = 'enum', values = TRAFFIC_KINDS.real, group = 'traffic', path = {'flowReal'},
     label = {uk = 'Справжні машини біля гравця', en = 'Real cars round the player'},
     read = function() return S.flowReal or M.handoffSim.SIZE end, apply = function(v) M.flowReal(v) end}
   -- pedestrians: a count (kept while they are off) and on/off; walkersSet(on and count or 0). Saved
@@ -6937,7 +7147,8 @@ function M.optionsBind()
       S.locationOff = not v
       if S.locationShown then S.locationShown[0] = v end
     end}
-  o.define{key = 'style', kind = 'enum', group = 'view', label = {uk = 'Стиль світу', en = 'World style'},
+  -- (the styles are known after a landing: the saved one is read by onExtensionLoaded, not restore)
+  o.define{key = 'style', kind = 'enum', group = 'view', label = {uk = 'Стиль світу', en = 'World style'}, path = {'style'},
     available = function() return S.packs ~= nil end,
     values = function()
       local out = {}
@@ -7141,14 +7352,51 @@ function M.polygonHere(i, j)
   return S.polygonIndex[i .. '_' .. j]
 end
 
+-- What the page tells about the tile under the car (or the pinned one): what the plan built
+-- there (its subject, theme, block, tags) and by which rules the generator builds it now: the
+-- universe in force with what it changes, the asset set, the climate and the lab's own changes.
+function M.polygonDetail()
+  local key, scope, i, j = M.labTile()
+  if not key then return nil end
+  local plan = M.polygonPlan()
+  local tile = plan and M.polygonHere(i, j)
+  local out = {key = key, scope = scope, i = i, j = j, pinned = S.labPin ~= nil, size = S.stream and S.stream.tile or 500}
+  if tile then
+    out.code, out.title, out.titleEn, out.tags, out.at, out.zone = tile.code, tile.title, tile.titleEn, tile.tags, tile.at, tile.zone
+    for _, b in ipairs(plan.blocks or {}) do
+      if b.id == tile.block then out.block = {id = b.id, title = b.title, titleEn = b.titleEn} end
+    end
+    out.theme = type(plan.themes) == 'table' and plan.themes[tile.zone] or nil
+  end
+  local lab = NATIVE and native.lab
+  if lab and lab.report then
+    local report = lab.report(scope, {'universe', 'look'})
+    out.rules, out.look, out.changed = report.groups.universe, report.groups.look, report.changed
+    local id, from = lab.get('universe', scope)
+    local u = id and id ~= 'none' and native.universes and native.universes.describe and native.universes.describe(id)
+    if u then
+      u.from = from == 'default' and 'pack' or from   -- the default of a pack's own tile is the pack's choice
+      out.universe = u
+    end
+  end
+  local stream = S.status and S.status.stream
+  if stream then
+    out.state = {ready = stream.ready and stream.ready[key] and true or false,
+      scene = stream.scenes and stream.scenes[key] and true or false, building = stream.building, queued = stream.queued}
+  end
+  return out
+end
+
 function M.polygonList()
   if not guihooks then return end
   local plan, country = M.polygonPlan()
   local _, _, i, j = M.labTile()
   local here = plan and M.polygonHere(i, j)
+  local okD, detail = pcall(M.polygonDetail)
   guihooks.trigger('EarthNGPolygon', {lang = lang, mounted = plan ~= nil, title = country and country.title or nil,
     landed = S.state == 'driving', here = here and here.code or nil, view = S.polygonView,
-    plan = plan and {blocks = plan.blocks, zones = plan.zones, tiles = plan.tiles} or nil})
+    detail = okD and plan and detail or nil,
+    plan = plan and {blocks = plan.blocks, zones = plan.zones, tiles = plan.tiles, themes = plan.themes} or nil})
 end
 
 local function polygonTile(code)
@@ -7268,10 +7516,13 @@ function M.onExtensionLoaded()
     local ok, cfg = pcall(jsonReadFile, LANG_FILE)
     S.tune = quality.clamp(ok and type(cfg) == 'table' and cfg.tune or nil)
     S.appliedTune = native.setTune(S.tune)
+    -- the world's style: the landing applies S.pack once the planet's styles are read
+    local style = ok and type(cfg) == 'table' and cfg.style or nil
+    if type(style) == 'string' and style ~= 'real' and not S.pack then S.pack = style end
   end
   if M.options then
     M.optionsBind()
-    M.options.restore(nil, true)   -- locationOff (the rest is read above)
+    M.options.restore(nil, true)   -- every option with a path (the tune and the style are read above)
     M.optionsList()                -- an open UI app redraws after a Lua reload
   end
   pcall(M.labBind)

@@ -60,17 +60,24 @@ end
 -- in force for a tile gives its knobs their defaults: a road's lanes are off in the snow, and
 -- the page shows them off until somebody sets them on against the universe.
 M.rules = nil
-local function defaultOf(spec, scope)
+-- what the universe in force says of a knob, as the rule gives it (nil: nothing)
+local function ruleOf(spec, scope)
   if M.rules and spec.key ~= 'universe' and specs.universe then
     local id = M.get('universe', scope)
     local rules = id and id ~= 'none' and M.rules(id) or nil
     local values = rules and rules[spec.target]
     local v = values and values[spec.field]
-    if v ~= nil then
-      if spec.number then v = v ~= 0 and v ~= false end
-      v = normalise(spec, v)
-      if v ~= nil then return v end
-    end
+    if v ~= nil and spec.number then v = v ~= 0 and v ~= false end
+    return v
+  end
+  return nil
+end
+
+local function defaultOf(spec, scope)
+  local v = ruleOf(spec, scope)
+  if v ~= nil then
+    v = normalise(spec, v)
+    if v ~= nil then return v end
   end
   return ownDefault(spec, scope)
 end
@@ -265,6 +272,42 @@ function M.payload(scope)
   end
   return {revision = M.revision, scope = scope, groups = out, scopes = M.scopes(), worldTouched = next(world) ~= nil,
     tileTouched = scope and tiles[scope] ~= nil or false}
+end
+
+-- What is in force for a tile (or the world), for a reader: the proving ground's page shows it
+-- beside the tile. groups: a list of group keys whose knobs are all listed with their value in
+-- force ({key, label, value, text, from}); changed: every other knob that is not at its own
+-- default. from: 'tile', 'world', 'universe' (a rule of the universe in force gives the value)
+-- or 'default'. text: an enum's label for the value.
+function M.report(scope, groupKeys)
+  local whole = {}
+  for _, key in ipairs(groupKeys or {}) do whole[key] = {} end
+  local changed = {}
+  for k = 1, #order do
+    local spec = specs[order[k]]
+    local value, from = M.get(spec.key, scope)
+    local own = ownDefault(spec, scope)
+    if from == 'default' and value ~= own then
+      from = 'universe'
+      -- the number the generator is given is the rule's own, not the knob's nearest step
+      local rule = ruleOf(spec, scope)
+      if type(rule) == 'number' then value = rule end
+    end
+    local entry = {key = spec.key, group = spec.group or 'other', label = label(spec.label, spec.key), value = value, from = from}
+    if spec.kind == 'enum' then
+      for _, choice in ipairs(spec.values) do
+        if choice.value == value then entry.text = label(choice.label, tostring(value)) end
+      end
+    end
+    local list = whole[entry.group]
+    if list then
+      list[#list + 1] = entry
+    elseif from ~= 'default' then
+      entry.default = own
+      changed[#changed + 1] = entry
+    end
+  end
+  return {groups = whole, changed = changed}
 end
 
 -- --- settings/earthng-lab.json ---------------------------------------------------------------------

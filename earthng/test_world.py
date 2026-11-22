@@ -299,11 +299,15 @@ def main():
         a.timeout = 10**9
     if a.stream_cache:
         shutil.copytree(a.stream_cache, profile / 'e2r_stream')
-    (profile / 'e2r-world-test.json').write_text(json.dumps(test), encoding='utf8')
     if a.native:
         test['skipMap'] = True  # native picker has an offline vector map instead of downloaded textures
-        test_file = profile / 'e2r-world-test.json'
-        test_file.write_text(json.dumps(test), encoding='utf8')
+
+    def write_test():
+        # world.lua takes the file only while its stamp is fresh (M.testFresh): one left behind in
+        # a folder a player starts the game from is then not a request to land and to set quality
+        (profile / 'e2r-world-test.json').write_text(json.dumps(dict(test, stamp=int(time.time()))), encoding='utf8')
+
+    write_test()
     EXE = game_exe()
     started = time.perf_counter()
     game = subprocess.Popen([str(EXE), '-userpath', str(user), '-level', build_mod.LEVEL, '-nosteam']
@@ -331,7 +335,7 @@ def main():
                 finished = None
             # the game's first start in a new profile removes unknown files; keep putting it back
             if not test_file.exists() and not res_path.exists():
-                test_file.write_text(json.dumps(test), encoding='utf8')
+                write_test()
                 if a.route and not (profile / 'e2r-route.json').exists():
                     shutil.copy2(a.route, profile / 'e2r-route.json')
             if not progress.get('landedAt'):

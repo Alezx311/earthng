@@ -37,6 +37,14 @@ local M = {}
 
 local FIRST = 16          -- slots of a new batch
 M.PER_FRAME = 1           -- new batches a frame (each ~13-25 ms of finalizeShape)
+-- A batch whose finalizeShape is what first loads its shape draws nothing, for as long as it
+-- lives, when the shape is a textured model of a few thousand triangles (the fal cars: 400
+-- copies placed and enabled, none on the road; the flow made again a while later, its shapes
+-- loaded by then, drew them all: look-07). The drawn shapes of a few hundred triangles never
+-- showed it. So a kind's first batch is a primer that only loads the shape, and the batch of its
+-- copies is made PRIME_FRAMES later, the primer deleted once that one is there. 0: no primer (the
+-- tests; world.lua sets it for the game).
+M.PRIME_FRAMES = 0
 
 -- the class is there and takes the calls this module makes (checked once a session)
 function M.available()
@@ -99,9 +107,34 @@ local function batchOf(P, K)
   return B
 end
 
--- the kind's batch made now, whatever this frame made already (a layer's start: its shapes load
--- then, not with its first copies)
-function M.warm(P, K) return batchOf(P, K) end
+-- the kind's primer: a batch without copies that loads the shape
+local function prime(P, K)
+  local o = createObject('DynamicShapeBatch')
+  o.canSave = false
+  o:registerObject('')
+  if P.group then P.group:addObject(o) end
+  o:setShape(K.shape)
+  local timer = P.timer
+  if timer then timer:stopAndReset() end
+  o:finalizeShape()
+  if timer then
+    local ms = timer:stop()
+    P.finalMs, P.finalMax = P.finalMs + ms, math.max(P.finalMax, ms)
+  end
+  K.primer, K.primeAt = o, P.frame
+  P.objects, P.made = P.objects + 1, P.made + 1
+end
+
+-- the kind's shape loaded now, whatever this frame made already (a layer's start: its shapes load
+-- then, not with its first copies): its batch at once, or with primers its primer (the batch
+-- then comes with the first copy asked for PRIME_FRAMES later)
+function M.warm(P, K)
+  if M.PRIME_FRAMES > 0 then
+    if not K.batch and not K.primer then prime(P, K) end
+    return K.batch
+  end
+  return batchOf(P, K)
+end
 
 -- every frame: the budget of new batches starts again
 function M.tick(P)
@@ -141,7 +174,25 @@ function M.add(P, K, x, y, z, dx, dy, dz, colour)
       P.waits = P.waits + 1
       return nil
     end
+    if M.PRIME_FRAMES > 0 then
+      if not K.primer then
+        prime(P, K)
+        P.waits = P.waits + 1
+        return nil
+      end
+      if P.frame - K.primeAt < M.PRIME_FRAMES then
+        P.waits = P.waits + 1
+        return nil
+      end
+    end
     B = batchOf(P, K)
+    -- (after its batch is made: the shape never goes without a holder)
+    if K.primer then
+      local primer = K.primer
+      pcall(function() primer:delete() end)
+      K.primer = nil
+      P.objects = P.objects - 1
+    end
   end
   if B.nfree == 0 then grow(P, B) end
   local i = B.free[B.nfree]
@@ -177,6 +228,13 @@ function M.clear(P)
   for _, B in ipairs(P.list) do
     pcall(function() B.obj:delete() end)
     B.kind.batch = nil
+  end
+  for _, K in pairs(P.kinds) do
+    if K.primer then
+      local primer = K.primer
+      pcall(function() primer:delete() end)
+      K.primer = nil
+    end
   end
   P.list, P.objects, P.live = {}, 0, 0
 end

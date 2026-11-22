@@ -86,6 +86,13 @@ local WATER = {bed = 'bare_ground', lakeDepth = 10, seaDepth = 80, riverDepth = 
   above = SEA_ABOVE, gridNear = 5, gridFar = 16, riverStep = 40, riverMaxW = 90, riverMinAspect = 2.5,
   -- rows of the wet cover (WATER.cover), m
   coverCell = 10}
+-- Shorelines (shore.lua): the real pack's water stands under its banks, the ground round it is
+-- shaped by the distance to the mapped shore and each bank is drawn in its own material.
+-- nil where the module cannot be found: the water then lies on the DEM as it did.
+do
+  local ok, shore = pcall(require, 'ge/extensions/e2r/shore')
+  WATER.shore = ok and type(shore) == 'table' and shore or nil
+end
 function WATER.classOf(area, box)
   local tags = area.tags or {}
   local w = tags.water or tags.waterway or ''
@@ -123,8 +130,20 @@ function WATER.lakeLevel(area, box, demAt, inside)
   table.sort(zs)
   return zs[math.ceil(#zs * .5)] + WATER.above
 end
-function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, level, inside, boundsOf, pause, blocked, lakeLevels, realStyle, asphaltBins)
+-- Is a cell of a water's cover dry: the ground at nine points of it is not under the water.
+function WATER.dry(ground, a, b, c, d, surface)
+  local mx, my = (a + c) * .5, (b + d) * .5
+  return ground(a, b) >= surface and ground(c, b) >= surface and ground(c, d) >= surface
+    and ground(a, d) >= surface and ground(mx, my) >= surface and ground(mx, b) >= surface
+    and ground(mx, d) >= surface and ground(a, my) >= surface and ground(c, my) >= surface
+end
+-- shore: {SH = shore.lua, ground = the drawn ground's height} where the tile has shorelines.
+-- The cover then reaches PAD m past a body's mapped edge and keeps the cells where the ground
+-- lies under the water: the waterline is where the land comes out of it, not a block's edge.
+function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, level, inside, boundsOf, pause, blocked, lakeLevels, realStyle, asphaltBins, shore)
   local n = 0
+  local SH = shore and shore.SH or nil
+  local pad = SH and SH.PAD or 0
   local function block(x0, y0, x1, y1, z, depth, look, lakeFog)
     local w, l = x1 - x0, y1 - y0
     if w < 1 or l < 1 then return end
@@ -151,6 +170,8 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
     local seaCell = distant and math.max(WATER.coverCell, (rect[3] - rect[1]) / 50) or WATER.coverCell
     local cover = WATER.cover(rings, rect[1], rect[2], rect[3], rect[4], seaCell,
       function(a, b, c, d)
+        -- (with shorelines: water where the drawn ground is under the sea, as a lake's cells are)
+        if SH then return WATER.dry(shore.ground, a, b, c, d, sea) end
         if realStyle and not distant then
           local z = demAt((a + c) * .5, (b + d) * .5)
           if z and z >= sea then return true end
@@ -161,12 +182,13 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
     pause()
   end
   for _, area in ipairs(distant and {} or areas or {}) do
-    if area.kind == 'water' then
+    -- (the sea's own water, a tidal harbour, is under the sea's blocks already)
+    if area.kind == 'water' and not (sea and lakeLevels and lakeLevels.tidal and lakeLevels.tidal[area]) then
       local box = boundsOf(area.rings)
-      local x0 = math.max(rect[1], box[1])
-      local y0 = math.max(rect[2], box[2])
-      local x1 = math.min(rect[3], box[3])
-      local y1 = math.min(rect[4], box[4])
+      local x0 = math.max(rect[1], box[1] - pad)
+      local y0 = math.max(rect[2], box[2] - pad)
+      local x1 = math.min(rect[3], box[3] + pad)
+      local y1 = math.min(rect[4], box[4] + pad)
       if x1 - x0 >= 2 and y1 - y0 >= 2 then
         local class = WATER.classOf(area, box)
         -- one surface Z for the whole body (median of wet samples): shelves were adjacent cells
@@ -200,11 +222,18 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
         end
         if zN > 0 then
           table.sort(zs)
-          local surface = (lakeLevels and lakeLevels[area]) or (zs[math.ceil(zN * .5)] + WATER.above)
+          -- (with shorelines: a low level of the body's samples, under its banks. The banks stand
+          -- over the level at each of their own points, so the median of a falling river would
+          -- lie over the banks of its lower end.)
+          local surface = (lakeLevels and lakeLevels[area])
+            or (SH and zs[math.max(1, math.ceil(zN * WATER.riverLevel))] - SH.DROP) or (zs[math.ceil(zN * .5)] + WATER.above)
           -- a River for a narrow channel; a wide river (its centre line would span the islands
           -- and both arms, the Dnipro) and a lake are blocks over their wet rows
+          -- (the level this body's water takes in the tile, for its banks: WATER.banks)
+          if SH and lakeLevels then lakeLevels[area] = surface end
           local nodes = class == 'river' and (not realStyle or #area.rings == 1)
-            and WATER.riverNodes(area.rings, rect, x0, y0, x1, y1, surface, demAt, level, inside, realStyle)
+            and WATER.riverNodes(area.rings, rect, math.max(rect[1], box[1]), math.max(rect[2], box[2]),
+              math.min(rect[3], box[3]), math.min(rect[4], box[4]), surface, demAt, level, inside, realStyle, SH)
           local narrow = nodes and #nodes >= 2
           for _, node in ipairs(narrow and nodes or NONE) do
             if node[4] > WATER.riverMaxW then narrow = false; break end
@@ -212,8 +241,11 @@ function WATER.fill(scene, key, rect, sea, seaQuads, areas, distant, demAt, leve
           -- A River cannot have holes cut around roads. If any covered cell intersects a road
           -- at or below the water, use the same clipped blocks as a wide water body instead.
           local coverCell = realStyle and class == 'lake' and math.max(box[3]-box[1], box[4]-box[2]) <= 200 and 5 or WATER.coverCell
+          local dry = blocked and function(a, b, c, d) return blocked(a, b, c, d, surface) end
+          if SH then dry = function(a, b, c, d) return WATER.dry(shore.ground, a, b, c, d, surface) end end
           local cover, clipped = WATER.cover(area.rings, x0, y0, x1, y1, coverCell,
-            blocked and function(a, b, c, d) return blocked(a, b, c, d, surface) end, pause, asphaltBins, surface, realStyle)
+            dry, pause, asphaltBins, surface, realStyle, pad)
+          if SH then clipped = false end   -- (dry ground in a channel is not a road: a River may still do)
           if narrow and (blocked or asphaltBins) then
             local high = surface
             for _, node in ipairs(nodes) do high = math.max(high, node[3]) end
@@ -247,11 +279,14 @@ end
 -- rings (even-odd: an island stays dry) on three scanlines across the row, so a block reaches a
 -- little onto the bank (under it where the bank rises) rather than leaving the carved bed bare;
 -- runs that repeat on the next row grow one block.
-function WATER.cover(rings, x0, y0, x1, y1, cell, blocked, pause, asphaltBins, surface, trimBanks)
+-- pad: the runs reach this far past the rings, along a row and across it (shorelines: the cells
+-- of dry ground are then taken out by `blocked`).
+function WATER.cover(rings, x0, y0, x1, y1, cell, blocked, pause, asphaltBins, surface, trimBanks, pad)
   local nx = math.max(1, math.ceil((x1 - x0) / cell - 1e-6))
   local ny = math.max(1, math.ceil((y1 - y0) / cell - 1e-6))
   local w, h = (x1 - x0) / nx, (y1 - y0) / ny
   local xs = {}
+  pad = pad or 0
   local function mark(y, runs)
     local n = 0
     for _, ring in ipairs(rings) do
@@ -266,7 +301,7 @@ function WATER.cover(rings, x0, y0, x1, y1, cell, blocked, pause, asphaltBins, s
     for k = n + 1, #xs do xs[k] = nil end
     table.sort(xs)
     for k = 1, n - 1, 2 do
-      local a, b = math.max(xs[k], x0), math.min(xs[k + 1], x1)
+      local a, b = math.max(xs[k] - pad, x0), math.min(xs[k + 1] + pad, x1)
       if b > a then
         if not trimBanks then
           a = x0 + math.max(0, floor((a - x0) / w)) * w
@@ -284,6 +319,10 @@ function WATER.cover(rings, x0, y0, x1, y1, cell, blocked, pause, asphaltBins, s
     mark(rowY + .02 * h, wet)
     mark(rowY + .5 * h, wet)
     mark(rowY + .98 * h, wet)
+    if pad > 0 then
+      mark(rowY - pad, wet); mark(rowY - pad * .5, wet)
+      mark(rowY + h + pad * .5, wet); mark(rowY + h + pad, wet)
+    end
     table.sort(wet, byStart)
     -- Unite the three scans, retaining sub-cell islands and the actual X of a quay.
     local count = 0
@@ -371,7 +410,10 @@ function WATER.roadBlocked(bins, x0, y0, x1, y1, surface, lift)
   return false
 end
 -- Centre line of a river polygon: samples along the long axis, width from the wet cross-section.
-function WATER.riverNodes(rings, rect, x0, y0, x1, y1, surface, demAt, level, inside, realStyle)
+-- SH (shore.lua): the tile has shorelines. A node then lies DROP m under the level of its own
+-- place where the river falls under its level in the tile (`surface`, which its banks stand
+-- over), and the ribbon reaches PAD m past the mapped banks (the ground hides what is not water).
+function WATER.riverNodes(rings, rect, x0, y0, x1, y1, surface, demAt, level, inside, realStyle, SH)
   local dx, dy = x1 - x0, y1 - y0
   local alongX = dx >= dy
   local len = alongX and dx or dy
@@ -400,10 +442,11 @@ function WATER.riverNodes(rings, rect, x0, y0, x1, y1, surface, demAt, level, in
     if not lo then return nil end
     local cx, cy = ax + nx * (lo + hi) * .5, ay + ny * (lo + hi) * .5
     if alongX then cx = x0 + s else cy = y0 + s end
-    local width = math.max(4, math.min(400, (hi - lo) + 4))
+    local width = math.max(4, math.min(400, (hi - lo) + 4 + (SH and SH.PAD * 2 or 0)))
     local z = surface
     local bed = level(cx, cy, demAt(cx, cy) or surface, demAt)
-    if bed then z = math.max(surface - 0.5, bed + WATER.above) end
+    if bed and SH then z = math.min(bed - SH.DROP, surface)
+    elseif bed then z = math.max(surface - 0.5, bed + WATER.above) end
     return {cx, cy, z, width, WATER.riverDepth}
   end
   local gap = false
@@ -2068,6 +2111,321 @@ function RELIEF.lift(x, y, near, built, base, seaLevel, fine)
     end
   end
   return lift
+end
+-- Shorelines (shore.lua, ROADS.waters.shore) in a build. o: build()'s own things (bio.shore):
+-- step, n0x, n0y, count, rect, nodes, demAt, coverAt, builtAt, group, noise, pause, shoulder,
+-- then ground, normal, press, claims, polygon, kindOf, sea as each comes to exist.
+-- The water's level at a point of a shoreline: its lake's one level, else DROP m under the
+-- lowest DEM round the point (ROADS.level: a pure function of the place, so two tiles agree).
+function WATER.levelAt(o, piece, x, y)
+  local water = piece.water
+  if water.surface or water.plane then return water.surface or water.plane end
+  local base = o.demAt(x, y)
+  return base and ROADS.level(x, y, base, o.demAt) - ROADS.waters.shore.DROP or nil
+end
+-- One level in this tile for every water that has no lake's level of its own (a river, a
+-- canal): DROP m under the middle one of the levels at its points (ROADS.level, every 25 m),
+-- as its blocks stand (WATER.fill reads it from ROADS.waters.levels). Its banks and its bed are
+-- shaped from this level, not from the level at each of their own points: a DEM climbs a wooded
+-- bank from 40 m out in the river (2-3 m at a Dnipro beach), the bed by the bank then stood
+-- over the water and the waterline ran 25 m inside the mapped shore. The parts of one body
+-- that a pack cut by its cells (ids 'way:0', 'way:1') share one level.
+function WATER.planes(rect, demAt, pause)
+  local SH, W = ROADS.waters.shore, ROADS.waters
+  local groups, order = {}, {}
+  for _, water in ipairs(W) do
+    if not water.surface then
+      local id = tostring(water.area and water.area.id or '')
+      id = id:match('^(.-):%d+$') or id
+      local g = groups[id]
+      if not g then
+        g = {box = {math.huge, math.huge, -math.huge, -math.huge}}
+        groups[id], order[#order + 1] = g, g
+      end
+      g[#g + 1] = water
+      local b = water.bounds
+      g.box[1], g.box[2] = math.min(g.box[1], b[1]), math.min(g.box[2], b[2])
+      g.box[3], g.box[4] = math.max(g.box[3], b[3]), math.max(g.box[4], b[4])
+    end
+  end
+  for index, g in ipairs(order) do
+    local x0, y0 = math.max(rect[1], g.box[1] - SH.PAD), math.max(rect[2], g.box[2] - SH.PAD)
+    local x1, y1 = math.min(rect[3], g.box[3] + SH.PAD), math.min(rect[4], g.box[4] + SH.PAD)
+    local zs, zN = {}, 0
+    local function take(x, y)
+      for _, water in ipairs(g) do
+        local b = water.bounds
+        if x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] and inside(water.rings, x, y) then
+          local base = demAt(x, y)
+          if base then zN = zN + 1; zs[zN] = ROADS.level(x, y, base, demAt) end
+          return
+        end
+      end
+    end
+    if x1 - x0 >= 2 and y1 - y0 >= 2 then
+      for sy = y0 + 10, y1, 25 do
+        for sx = x0 + 10, x1, 25 do take(sx, sy) end
+      end
+      if zN == 0 then
+        -- a small or thin body between the 25 m samples
+        local nx, ny = math.min(60, math.max(1, math.ceil((x1 - x0) / 5))), math.min(60, math.max(1, math.ceil((y1 - y0) / 5)))
+        for iy = 0, ny - 1 do
+          for ix = 0, nx - 1 do take(x0 + (ix + .5) * (x1 - x0) / nx, y0 + (iy + .5) * (y1 - y0) / ny) end
+        end
+      end
+    end
+    if zN > 0 then
+      table.sort(zs)
+      local plane = zs[math.max(1, math.ceil(zN * WATER.riverLevel))] - SH.DROP
+      for _, water in ipairs(g) do
+        water.plane = plane
+        if water.area then W.levels[water.area] = plane end
+      end
+    end
+    if pause and index % 8 == 0 then pause() end
+  end
+end
+-- The sea's plane over a tile, nil where there is none: Death Valley's floor lies 86 m under the
+-- sea, and a tile far inland (land on the climate grid ~3 km round its corners and centre) has
+-- no sea at all (build() asks the same of its own sea).
+function WATER.seaPlane(options, rect, size)
+  local sea = type(options.seaLevel) == 'number' and options.seaLevel + WATER.above or nil
+  if sea and VEG.biome and VEG.biome.inland and type(options.geo) == 'table' and VEG.biome.available() then
+    for _, q in ipairs({{.5, .5}, {0, 0}, {1, 0}, {0, 1}, {1, 1}}) do
+      if not VEG.biome.inland(options.geo, rect[1] + q[1] * size, rect[2] + q[2] * size) then return sea end
+    end
+    return nil
+  end
+  return sea
+end
+-- The lattice's nodes round the water, before anything reads them: a node under water lies on
+-- the bed of its bank's kind (to DEEP m), a dry one within REACH of a shoreline stands at least
+-- the bank's rise over the water. Not the nodes on a road (a causeway, a quay's street): the
+-- road has them. ROADS.waters.sd keeps each node's distance to the shoreline (negative under
+-- water), .kind its bank and .lvl the water's level there, for the banks' materials.
+function WATER.shape(o)
+  local SH, S = ROADS.waters.shore, ROADS.waters.index
+  local nodes, step, demAt = o.nodes, o.step, o.demAt
+  local sd, kinds, levels, deep = {}, {}, {}, -2 * SH.REACH
+  ROADS.waters.sd, ROADS.waters.kind, ROADS.waters.lvl = sd, kinds, levels
+  -- (most tiles have no shoreline: no search then, and only a tile out on open water has work)
+  local shores = S.count > 0
+  if not shores and #ROADS.waters == 0 then return end
+  for gy = o.n0y - 1, o.n0y + o.count + 3 do
+    for gx = o.n0x - 1, o.n0x + o.count + 3 do
+      local key = (gx - o.n0x) * 4096 + (gy - o.n0y)
+      local z, near = nodes[key], nodes.near[key]
+      if z and near and (near < 0 or (shores and near > o.shoulder)) then
+        local x, y = gx * step, gy * step
+        local d, piece, px, py
+        if shores then d, piece, px, py = SH.near(S, x, y) end
+        if near < 0 then
+          local water, base = ROADS.waterAt(x, y), demAt(x, y)
+          local level = base and ROADS.level(x, y, base, demAt) - SH.DROP or z
+          -- (its body's level in the tile where that is lower: a river falls, its bed with it)
+          if water and water.surface then level = water.surface
+          elseif water and water.plane and water.plane < level then level = water.plane end
+          local T = piece and SH.typeAt(S, o, piece, px, py, level)
+          nodes[key] = math.min(z, level) - (T and SH.depth(T, d, water and water.least) or SH.DEEP)
+          sd[key], kinds[key], levels[key] = d and -d or deep, T, level
+        elseif piece and not (ROADS.waters.sea and (demAt(x, y) or math.huge) < ROADS.waters.sea) then
+          -- (a node of the sea's own bed beside a shoreline stays the sea's)
+          local level = WATER.levelAt(o, piece, px, py)
+          if level then
+            local T = SH.typeAt(S, o, piece, px, py, level)
+            -- no steeper from the water than a bank of its kind is (shore.lua cap), no lower
+            -- than its rise
+            z = level + SH.cap(T, d, z - level)
+            local bank = level + SH.rise(T, d)
+            nodes[key] = bank > z and bank or z
+            sd[key], kinds[key], levels[key] = d, T, level
+          end
+        end
+      end
+    end
+    o.pause()
+  end
+end
+-- Samples along a shoreline's piece every `every` m of its longer axis, on that axis's world
+-- grid: the parts of one edge that two cells cut differently give the same points.
+function WATER.along(piece, every, visit)
+  local byX = math.abs(piece.ux) >= math.abs(piece.uy)
+  local a, u = byX and piece.ax or piece.ay, byX and piece.ux or piece.uy
+  local b = a + u * piece.len
+  for g = math.ceil(math.min(a, b) / every), floor(math.max(a, b) / every) do
+    local s = (g * every - a) / u
+    if s >= 0 and s < piece.len then visit(piece.ax + piece.ux * s, piece.ay + piece.uy * s, g) end
+  end
+end
+-- A pond or a canal narrower than the lattice has no node of its own to be its bed: the ground
+-- just inside its shoreline is pressed under the water. Only where none of the ground
+-- triangle's corners is a node under water: beside a steep bank the press took the bed's own
+-- nodes down by the bank's height (each corner by its share), a trench along the shore with a
+-- ridge behind it, and the waterline ran in teeth of a lattice cell (Kyiv, the Dnipro's beach).
+-- WATER.sinkAt: m inside the edge.
+WATER.sinkAt = {1.2, 3.5}
+-- the share of a river's level samples that lie under the level its blocks take in a tile
+WATER.riverLevel = .5
+function WATER.sink(o)
+  local SH, S, sd = ROADS.waters.shore, ROADS.waters.index, ROADS.waters.sd
+  local rect, m = o.rect, o.step * 2 + SH.PIECE
+  for index = 1, S.count do
+    local p = S.pieces[index]
+    if p.ax > rect[1] - m and p.ax < rect[3] + m and p.ay > rect[2] - m and p.ay < rect[4] + m then
+      WATER.along(p, 4, function(x, y)
+        local level = WATER.levelAt(o, p, x, y)
+        if not level then return end
+        local T = SH.typeAt(S, o, p, x, y, level)
+        for _, off in ipairs(WATER.sinkAt) do
+          local qx, qy = x - p.nx * off, y - p.ny * off
+          local fx, fy = qx / o.step, qy / o.step
+          local k = (floor(fx) - o.n0x) * 4096 + (floor(fy) - o.n0y)
+          local east = fx - floor(fx) >= fy - floor(fy)   -- the south-east triangle of the cell, as press() has it
+          if (sd[k] or 1) >= 0 and (sd[east and k + 4096 or k + 4097] or 1) >= 0 and (sd[east and k + 4097 or k + 1] or 1) >= 0
+              and ROADS.wet(qx, qy) then
+            o.press(qx, qy, level - math.max(.1, SH.depth(T, off)))
+          end
+        end
+      end)
+    end
+    if index % 32 == 0 then o.pause() end
+  end
+end
+-- One ground triangle's bank: the piece of it in the bank's band (shore.lua band), draped on
+-- the ground, or the whole triangle claimed in the bank's material. key: the triangle's claim.
+-- Corners as numbers (x, y, z, d each; h is z over `level`): most triangles are all bank or
+-- none of it and are answered without a table (a tile's banks were a third of its garbage).
+-- A clipped piece takes its normals from the corners', as the ground under it is shaded.
+function WATER.bank(o, T, key, level, ax, ay, az, ad, bx, by, bz, bd, cx, cy, cz, cd)
+  local SH = ROADS.waters.shore
+  local held = o.claims[key]
+  if held == 'paved' or held == 'ballast' then return end
+  local ah, bh, ch = az - level, bz - level, cz - level
+  local low, high = math.min(ah, bh, ch), math.max(ah, bh, ch)
+  -- o.under: how far the body's water in this tile lies under the level of this place (a wide
+  -- river's blocks take one level a tile). The bank's material goes down to its `lo` under that
+  -- water: the bed that stands out of it is the bank's, not a strip of bare bed along the shore.
+  local lo = T.lo - (o.under or 0)
+  if low > T.hi or high < lo or math.min(ad, bd, cd) > T.out then return end
+  if low >= lo and high <= T.hi and math.max(ad, bd, cd) <= T.out then o.claims[key] = T.kind; return end
+  local a, b, c = {ax, ay, az, ah, ad}, {bx, by, bz, bh, bd}, {cx, cy, cz, ch, cd}
+  a[6], a[7], a[8] = o.normal(ax, ay)
+  b[6], b[7], b[8] = o.normal(bx, by)
+  c[6], c[7], c[8] = o.normal(cx, cy)
+  local piece, whole = SH.band(T, {a, b, c}, lo)
+  if not piece then return end
+  if whole then o.claims[key] = T.kind; return end
+  local mx, my = 0, 0
+  for _, q in ipairs(piece) do
+    q[3], q[4], q[5] = q[3] + SH.ABOVE, nil, nil
+    mx, my = mx + q[1], my + q[2]
+  end
+  o.polygon(o.kindOf(T.kind, mx / #piece, my / #piece), piece)
+  o.banks = (o.banks or 0) + 1
+end
+-- A triangle of the open sea's shore (a, b, c: {x, y, z}; the sea has no polygon). The distance
+-- to the waterline is the height over the sea by the triangle's own slope, so a beach is as
+-- wide on a gentle shore as on a steep one and a flat plain behind it is not all sand.
+function WATER.coast(o, sea, a, b, c, key)
+  local SH = ROADS.waters.shore
+  local ux, uy, uz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+  local vx, vy, vz = c[1] - a[1], c[2] - a[2], c[3] - a[3]
+  local det = ux * vy - uy * vx
+  local gx, gy = (uz * vy - vz * uy) / det, (ux * vz - vx * uz) / det
+  local g = math.sqrt(gx * gx + gy * gy)
+  local mx, my, h = (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3, (a[3] + b[3] + c[3]) / 3 - sea
+  if math.min(a[3], b[3], c[3]) > sea then
+    -- all dry: the sea's shore only where the slope reaches the water within a beach's width
+    if g < .004 or h / g > SH.TYPES.sand.out + 4 then return end
+    local reach = h / g + 2
+    if o.ground(mx - gx / g * reach, my - gy / g * reach) >= sea then return end
+  end
+  local T, s = SH.coast(o, mx, my, g), math.max(g, .02)
+  o.under = 0
+  WATER.bank(o, T, key, sea, a[1], a[2], a[3], (a[3] - sea) / s, b[1], b[2], b[3], (b[3] - sea) / s,
+    c[1], c[2], c[3], (c[3] - sea) / s)
+end
+-- The banks of a near tile: every ground cell near a shoreline gets its bank (the kind and the
+-- water's level of its node nearest to the shore, as WATER.shape found them), and the
+-- triangles along the sea theirs.
+function WATER.banks(o)
+  local SH, S, sd = ROADS.waters.shore, ROADS.waters.index, ROADS.waters.sd
+  local kinds, levels = ROADS.waters.kind, ROADS.waters.lvl
+  local step, rect, far, sea = o.step, o.rect, SH.REACH * 2, o.sea
+  local ground = o.ground
+  if S.count == 0 and not sea then return end
+  for gy = 0, o.count - 1 do
+    for gx = 0, o.count - 1 do
+      local cx, cy = o.n0x + 1 + gx, o.n0y + 1 + gy
+      local k = (cx - o.n0x) * 4096 + (cy - o.n0y)
+      local d00, d10, d01, d11 = sd[k], sd[k + 4096], sd[k + 1], sd[k + 4097]
+      local x0, y0 = cx * step, cy * step
+      local x1, y1 = x0 + step, y0 + step
+      if x1 > rect[1] and x0 < rect[3] and y1 > rect[2] and y0 < rect[4] and (sea or d00 or d10 or d01 or d11) then
+        local key = ((cx + 32768) * 65536 + cy + 32768) * 2
+        if d00 or d10 or d01 or d11 then
+          local best, T, level = far, nil, nil
+          for n = 1, 4 do
+            local nk = n == 1 and k or (n == 2 and k + 4096 or (n == 3 and k + 1 or k + 4097))
+            local d = sd[nk]
+            if d and kinds[nk] and math.abs(d) < best then best, T, level = math.abs(d), kinds[nk], levels[nk] end
+          end
+          -- (no bank in reach of any corner: open water, or a road's own ground)
+          if T then
+            local water = ROADS.waterAt((x0 + x1) * .5, (y0 + y1) * .5) or (d00 and d00 < 0 and ROADS.waterAt(x0, y0))
+              or (d11 and d11 < 0 and ROADS.waterAt(x1, y1)) or (d10 and d10 < 0 and ROADS.waterAt(x1, y0))
+              or (d01 and d01 < 0 and ROADS.waterAt(x0, y1))
+            local plane = water and water.area and ROADS.waters.levels[water.area]
+            o.under = plane and math.max(0, level - plane) or 0
+            local z00, z11 = ground(x0, y0), ground(x1, y1)
+            -- the south-east triangle (x0, y0)-(x1, y0)-(x1, y1), then the north-west one
+            WATER.bank(o, T, key, level, x0, y0, z00, d00 or far, x1, y0, ground(x1, y0), d10 or far, x1, y1, z11, d11 or far)
+            WATER.bank(o, T, key + 1, level, x0, y0, z00, d00 or far, x1, y1, z11, d11 or far, x0, y1, ground(x0, y1), d01 or far)
+          end
+        elseif sea then
+          local z00, z10, z11, z01 = ground(x0, y0), ground(x1, y0), ground(x1, y1), ground(x0, y1)
+          if math.min(z00, z10, z11, z01) < sea + 1.4 and math.max(z00, z10, z11, z01) > sea - SH.DEEP then
+            WATER.coast(o, sea, {x0, y0, z00}, {x1, y0, z10}, {x1, y1, z11}, key)
+            WATER.coast(o, sea, {x0, y0, z00}, {x1, y1, z11}, {x0, y1, z01}, key + 1)
+          end
+        end
+      end
+    end
+    o.pause()
+  end
+end
+-- What stands along a shoreline: reed and cattail in the shallows of a grown bank (o.reed, the
+-- flora's bank layer), loose stone on shingle and rock (o.stone). Each kind's `every` m of
+-- shore has one, a little in the water or just out of it; `cap` of them a tile.
+WATER.GROW = {reed = {-2.6, .9, -.75, .3}, stone = {-1.5, 3, -.5, .9}}   -- m across the shore, m over the water
+function WATER.plants(o, cap)
+  local SH, S = ROADS.waters.shore, ROADS.waters.index
+  local rect, planted = o.rect, 0
+  for index = 1, S.count do
+    local p = S.pieces[index]
+    if planted < cap and p.ax > rect[1] - SH.PIECE and p.ax < rect[3] + SH.PIECE and p.ay > rect[2] - SH.PIECE and p.ay < rect[4] + SH.PIECE then
+      WATER.along(p, 1.3, function(x, y, g)
+        local level = WATER.levelAt(o, p, x, y)
+        if not level or planted >= cap then return end
+        local T = SH.typeAt(S, o, p, x, y, level)
+        local grow, plant = WATER.GROW[T.plants or ''], T.plants == 'reed' and o.reed or o.stone
+        if not grow or not plant then return end
+        local key = latticeKey(3, floor(x * 2), floor(y * 2), 700)
+        local h = keyHash(53, key)
+        if h % 1000 / 1000 >= 1.3 / T.every then return end
+        local across = grow[1] + (grow[2] - grow[1]) * (floor(h / 1000) % 1000 / 1000)
+        local qx, qy = x + p.nx * across + (floor(h / 7) % 100 / 100 - .5), y + p.ny * across + (floor(h / 13) % 100 / 100 - .5)
+        if qx < rect[1] or qx >= rect[3] or qy < rect[2] or qy >= rect[4] then return end
+        local z = o.ground(qx, qy)
+        if z - level < grow[3] or z - level > grow[4] then return end
+        -- (on land the roads, walls and paths keep their room; in the water there are none)
+        if not ROADS.wet(qx, qy) and o.blocked(qx, qy) then return end
+        if plant(key, h, qx, qy, z) then planted = planted + 1 end
+      end)
+    end
+    if index % 16 == 0 then o.pause() end
+  end
+  return planted
 end
 -- Fields: one crop a field, as a July drive past them shows (fast_style.FIELDS: ploughed black
 -- soil, ripe wheat with its tramlines, stubble, sunflower or maize in rows). The crop comes from
@@ -13507,24 +13865,56 @@ local function build(cells, i, j, options)
   -- river 4 m, over the deck of Pont Saint-Louis.
   ROADS.waters = {}
   ROADS.waters.levels = {}
+  -- Shorelines (shore.lua) in the real pack's near and far tiles: the water stands under its
+  -- banks and the ground round it is shaped by the shore (WATER.shape). A far tile shapes the
+  -- same nodes, so it meets the near tile beside it; the horizon keeps the DEM.
+  -- options.shore = false (the lab): the water on its DEM, as before.
+  ROADS.waters.shore = options.realStyle ~= false and options.shore ~= false and not options.horizon and WATER.shore or nil
   for _, area in ipairs(lists.areas) do
     if area.kind == 'water' then
       local bounds = ringBounds(area.rings)
       local surface
-      if options.realStyle ~= false and not distant and WATER.classOf(area, bounds) == 'lake' then
+      if options.realStyle ~= false and (not distant or ROADS.waters.shore) and WATER.classOf(area, bounds) == 'lake' then
         -- OSM ele is in metres above sea level; the pack's seaLevel is that
         -- datum in game coordinates. It remains identical when the country
         -- builder clips one lake into several independently loaded cells.
         local elevation = tonumber((area.tags or NONE).ele)
         if elevation and elevation == elevation and math.abs(elevation) < 12000 and type(options.seaLevel) == 'number' then
-          surface = options.seaLevel + elevation + WATER.above
+          -- (with shorelines the mapped height is the water's own; its banks rise from it)
+          surface = options.seaLevel + elevation + (ROADS.waters.shore and 0 or WATER.above)
         else
           surface = WATER.lakeLevel(area, bounds, demAt, inside)
+          -- the DEM over a lake is its surface and the banks are no higher for a while: under it
+          if surface and ROADS.waters.shore then surface = surface - WATER.above - ROADS.waters.shore.DROP end
+        end
+        -- A harbour or a lagoon whose DEM lies at the sea's level or a little under it (the pack
+        -- sinks a tidal harbour's floor 2 m) is the sea's own water: on the sea's plane, and drawn
+        -- by the sea's blocks (WATER.fill), not as a lake 2 m under the sea beside it.
+        if surface and ROADS.waters.shore and type(options.seaLevel) == 'number'
+            and surface <= options.seaLevel + WATER.above and surface > options.seaLevel - 4 then
+          surface = options.seaLevel + WATER.above
+          ROADS.waters.levels.tidal = ROADS.waters.levels.tidal or {}
+          ROADS.waters.levels.tidal[area] = true
         end
         ROADS.waters.levels[area] = surface
       end
-      ROADS.waters[#ROADS.waters + 1] = {rings = area.rings, bounds = bounds, surface = surface}
+      ROADS.waters[#ROADS.waters + 1] = {rings = area.rings, bounds = bounds, surface = surface, tags = area.tags, area = area,
+        -- (a pond's bed is steep enough for its middle to be water: shore.lua pond)
+        least = surface and ROADS.waters.shore and ROADS.waters.shore.pond(math.min(bounds[3] - bounds[1], bounds[4] - bounds[2])) or nil}
     end
+  end
+  if ROADS.waters.shore then
+    mark('waters')
+    WATER.planes(rect, demAt, pause)
+    -- The sea is water too, though it has no polygon: a harbour's or a river mouth's edge on the
+    -- open sea is no shore (a bank raised along it stood in the sea as a mole 30 m wide).
+    ROADS.waters.sea = WATER.seaPlane(options, rect, size)
+    ROADS.waters.index = ROADS.waters.shore.index(ROADS.waters, function(x, y)
+      if ROADS.wet(x, y) then return true end
+      local z = ROADS.waters.sea and demAt(x, y)
+      return z ~= nil and z ~= false and z < ROADS.waters.sea
+    end, rect, 4 * step + ROADS.waters.shore.REACH, pause)
+    mark('shoreindex')
   end
   local heightOperations = 0
   local span = math.max(1, tune.pullZero - tune.pullFull)
@@ -13571,6 +13961,8 @@ local function build(cells, i, j, options)
     -- (second value: the nearest road edge's distance, -1 on the bed: RELIEF leaves it)
     if near > tune.shoulder then
       local water = ROADS.waterAt(x, y)
+      -- (with shorelines the bed is shaped by the shore, WATER.shape: the DEM as it is for now)
+      if water and ROADS.waters.shore then return base, -1 end
       if water then
         -- A compact lake's datum already uses only wet samples. Looking outside
         -- it again could dig its bed down to a nearby, lower valley or the sea.
@@ -13716,8 +14108,10 @@ local function build(cells, i, j, options)
       local b = ringBounds(area.rings)
       local rank = (CLAIM[area.kind] or 50) + (((area.tags or NONE).source or ''):find('worldcover', 1, true) and 100 or 0)
       local idString = tostring(area.id)
-      for gx = floor(math.max(rect[1], b[1]) / 100), floor(math.min(rect[3], b[3]) / 100) do
-        for gy = floor(math.max(rect[2], b[2]) / 100), floor(math.min(rect[4], b[4]) / 100) do
+      -- (60 m past the tile: a shoreline just outside it is read for the nodes of the tile's
+      -- edge, and its bank must be what the tile beside sees there)
+      for gx = floor(math.max(rect[1] - 60, b[1]) / 100), floor(math.min(rect[3] + 60, b[3]) / 100) do
+        for gy = floor(math.max(rect[2] - 60, b[2]) / 100), floor(math.min(rect[4] + 60, b[4]) / 100) do
           local k = (gx + 32768) * 65536 + gy + 32768
           local bin = coverBins[k] or {}; coverBins[k] = bin
           bin[#bin + 1] = {area = area, rank = rank, id = idString}
@@ -14051,6 +14445,18 @@ local function build(cells, i, j, options)
     local b = s01 + (s11 - s01) * tx
     return a + (b - a) * ty
   end
+  -- the ground round the water (WATER.shape), on the same nodes and as early
+  if ROADS.waters.index then
+    bio.shore = {step = step, n0x = n0x, n0y = n0y, count = count, rect = rect, nodes = nodes, demAt = demAt,
+      coverAt = coverAt, builtAt = builtAt, noise = RELIEF.noise, pause = pause, shoulder = tune.shoulder,
+      group = function(x, y)
+        local p = bio.on and bio.at(x, y)
+        return p and p.group or nil
+      end}
+    mark('built')
+    WATER.shape(bio.shore)
+    mark('shore')
+  end
   -- the ground's own unevenness (RELIEF) on the lattice's nodes; nothing has read them yet
   if options.relief ~= false and not options.vista then
     local seaLevel = type(options.seaLevel) == 'number' and options.seaLevel or nil
@@ -14067,6 +14473,12 @@ local function build(cells, i, j, options)
     end
   end
   nodes.near = nil
+  if bio.shore then
+    bio.shore.press, bio.shore.ground = press, ground
+    mark('relief')
+    WATER.sink(bio.shore)
+    mark('shoresink')
+  end
   -- Junctions from the road graph itself. A source road is one graph segment, its two ends
   -- the nodes road.nodes names, so a node's mouths are the road ends sharing its id. The pack
   -- builder's rules (fast_sources.write_index, fast.junction_star): a node of two or more mouths
@@ -15531,7 +15943,11 @@ local function build(cells, i, j, options)
     for gx = 0, seaCount - 1 do
       local x0, y0 = rect[1] + size * gx / seaCount, rect[2] + size * gy / seaCount
       local x1, y1 = rect[1] + size * (gx + 1) / seaCount, rect[2] + size * (gy + 1) / seaCount
-      if math.min(rawHeight(x0, y0), rawHeight(x1, y0), rawHeight(x0, y1), rawHeight(x1, y1)) < sea then
+      -- (with shorelines the drawn ground decides: a harbour's bed is shaped by its quays, not the DEM)
+      local wet
+      if bio.shore and not distant then wet = math.min(ground(x0, y0), ground(x1, y0), ground(x0, y1), ground(x1, y1)) < sea
+      else wet = math.min(rawHeight(x0, y0), rawHeight(x1, y0), rawHeight(x0, y1), rawHeight(x1, y1)) < sea end
+      if wet then
         seaQuads[#seaQuads + 1] = {x0, y0, x1, y1}
       else
         seaAll = false
@@ -15544,7 +15960,8 @@ local function build(cells, i, j, options)
   WATER.fill(scene, key, rect, sea, seaQuads, lists.areas, distant, demAt, ROADS.level, inside, ringBounds, pause,
     (distant or options.realStyle == false) and function(x0, y0, x1, y1, z)
       return WATER.roadBlocked(segmentBins, x0, y0, x1, y1, z, lift)
-    end, ROADS.waters.levels, options.realStyle ~= false, visualRoads and options.realStyle ~= false and asphaltBins)
+    end, ROADS.waters.levels, options.realStyle ~= false, visualRoads and options.realStyle ~= false and asphaltBins,
+    bio.shore and not distant and {SH = ROADS.waters.shore, ground = ground} or nil)
   mark('groundsea')
   for _, area in ipairs(distant and NONE or lists.areas) do
     local kind = area.kind
@@ -15554,6 +15971,16 @@ local function build(cells, i, j, options)
       drapeRings(FIELD.of(area, RAIL.cover(area)), area.rings, .025, kind == 'meadow' and not bio.landOff)
     end
     pause()
+  end
+  mark('drapes')
+  -- each bank in its own material: sand, shingle, rock, the wet earth of a grown bank, a quay
+  -- (WATER.banks; after the mapped covers, whose whole triangles it may take over)
+  if bio.shore and not distant then
+    bio.shore.sea, bio.shore.claims, bio.shore.normal = sea, claims, groundNormal
+    bio.shore.polygon = function(kind, poly) scene.polygon(kind, poly, true) end
+    bio.shore.kindOf = function(kind, x, y) return surfaceKind(x, y, kind) end
+    WATER.banks(bio.shore)
+    mark('banks')
   end
   -- Height of the drawn surface, or nil outside every DEM grid. No grids at all stays the
   -- numeric ground (flat near tiles). A sample just outside a grid is nil so the normal
@@ -18294,6 +18721,19 @@ local function build(cells, i, j, options)
     end
     scatter('rock', {bare_rock = 11, scree = 8}, {bare_rock = .72, scree = .84},
       VEG.rocks, maxRocks, math.min(16, maxRocks), .55, 1.25, .45, nil)
+    -- along the shorelines (WATER.plants): reed and cattail in the shallows of a grown bank (the
+    -- flora pack's bank layer), loose stone on shingle and rock
+    if bio.shore and not distant and ROADS.waters.index.count > 0 then
+      bio.shore.blocked = function(x, y) return blocked(x, y, 1.5) end
+      bio.shore.reed = bio.flora and bio.flora.layer and options.fill ~= false and maxGrass > 0
+        and bio.zone((rect[1] + rect[3]) / 2, (rect[2] + rect[4]) / 2) and bio.flora.layer('bank', 0, 0)
+        and function(key, h, x, y, z) return bio.herb('bank', 'shore', {key = key, hash = h}, x, y, z, true) end or nil
+      bio.shore.stone = maxRocks > 0 and #VEG.rocks > 0 and function(key, h, x, y, z)
+        static('shore_' .. key, VEG.rocks[h % #VEG.rocks + 1], x, y, z - .08, h % 6283 / 1000, .45 + floor(h / 17) % 100 / 100 * .7)
+        return true
+      end or nil
+      WATER.plants(bio.shore, math.min(900, floor(maxGrass * .15) + maxRocks))
+    end
     -- Slopes too steep for trees still had no stones unless OSM tagged bare_rock or scree.
     -- Same sorted lattice near and far, so the far handful stays inside the near list.
     local function scatterSlopeRocks()
@@ -18402,6 +18842,9 @@ function M.resumeBuild(co)
 end
 
 M.build = build
+-- the waters of the last build (ROADS.waters: the shoreline index and each node's distance,
+-- bank and level), for the tools that look at a shore (shore_census.py)
+function M.waters() return ROADS.waters end
 M.keepsLeft = ROADS.keepsLeft
 -- the sign families (signstyle.lua) where require cannot reach them (the tests)
 function M.setSignStyles(styles) SIGNS.styles, SIGNS.style = styles, styles.DEFAULT end

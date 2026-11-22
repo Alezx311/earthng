@@ -344,7 +344,8 @@ class Plan:
                  for z in self.zones]
         blocks = [{'id': b['id'], 'title': b['title'], 'titleEn': b['titleEn'], 'universe': b['universe'],
                    'cols': [b['tiles'][0], b['tiles'][1] - 1], 'rows': [b['tiles'][2], b['tiles'][3] - 1]} for b in BLOCKS]
-        return {'tile': TILE, 'blocks': blocks, 'zones': zones, 'tiles': tiles}
+        import proving_zones
+        return {'tile': TILE, 'blocks': blocks, 'zones': zones, 'tiles': tiles, 'themes': proving_zones.themes()}
 
 
 def make_plan():

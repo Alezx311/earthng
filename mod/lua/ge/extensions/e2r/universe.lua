@@ -48,12 +48,16 @@ M.list = {
   -- rock over it, snow from 900 m. (The real lines of this latitude stand at 1600 and 2700 m:
   -- a massif that high needs twenty kilometres.) Central European walls and roofs.
   mountains = {label = {uk = 'Гори', en = 'Mountains'},
+    about = {uk = 'Усі пояси на одному схилі: тайга в долині, вище межі лісу осип і скеля, ще вище сніг.',
+      en = 'Every belt on one slope: boreal forest in the valley, scree and rock over the tree line, snow above.'},
     climate = {class = 27, treeline = 420, snowline = 900},
     look = {block = 'central', verge = 'gravel'},
     feel = true},
   -- A hot desert: bare ground, dunes where sand is mapped, palms in the towns, no grass edge
   -- on a road. Walls and roofs of the Middle East.
   desert = {label = {uk = 'Пустеля', en = 'Desert'},
+    about = {uk = 'Спекотна пустеля: гола земля, дюни там, де на мапі пісок, пальми в містах, край дороги без трави.',
+      en = 'A hot desert: bare ground, dunes where sand is mapped, palms in the towns, no grass at the road edge.'},
     climate = {class = 4},
     look = {block = 'middle-east', verge = 'dirt', asphalt = 'worn'},
     swap = {edge_grass = 'edge_dirt'},
@@ -62,6 +66,8 @@ M.list = {
   -- forest standing in it. Roads are packed snow, sidewalks, fields and roofs lie under it,
   -- paint and cracks are not seen. Nordic walls.
   snow = {label = {uk = 'Сніг', en = 'Snow'},
+    about = {uk = 'Глибокий сніг: уся природна земля під снігом, ліс стоїть. Дороги з накатаного снігу, тротуари, поля й дахи засипані, розмітки й тріщин не видно.',
+      en = 'Deep snow: all natural ground is snow, the forest stands in it. Roads are packed snow, sidewalks, fields and roofs lie under it, paint and cracks are not seen.'},
     climate = {class = 27, snowline = -3000},
     look = {block = 'nordic', markings = 'none'},
     tune = {lanes = 0, wear = 0},
@@ -76,6 +82,8 @@ M.list = {
   -- Deep mud: the open land, the fields and every unpaved road are mud a car sinks in; the
   -- asphalt stays, its edges are dirt. The climate and the region are the place's own.
   mud = {label = {uk = 'Багно', en = 'Mud'},
+    about = {uk = 'Глибоке багно: відкрита земля, поля й ґрунтові дороги стають багном, у якому в’язне авто. Асфальт лишається, його краї ґрунтові. Клімат і регіон свої.',
+      en = 'Deep mud: open land, fields and unpaved roads become mud a car sinks in. Asphalt stays, its edges are dirt. The climate and the region are the place\'s own.'},
     look = {verge = 'dirt', asphalt = 'worn'},
     swap = {bare_ground = 'mud', edge_grass = 'edge_dirt', beach = 'mud'},
     patterns = join(rules('mud', LANDS, UNPAVED, {'^farmland'})),
@@ -86,6 +94,8 @@ M.list = {
   -- climate's old sets without the pack. Walls and roofs of South-East Asia, earth at the
   -- road's edge.
   jungle = {label = {uk = 'Джунглі', en = 'Jungle'},
+    about = {uk = 'Дощовий ліс: клімат вологих тропіків і його рослини, де їх має пак флори. Край дороги ґрунтовий.',
+      en = 'A rainforest: the climate of the wet tropics and its plants where the flora pack has them. Earth at the road edge.'},
     climate = {class = 1},
     flora = 'tropics',
     look = {block = 'southeast-asia', verge = 'dirt'},
@@ -147,6 +157,33 @@ function M.look(u, look)
     for k, v in pairs(u.look) do out[k] = v end
     cache[key] = out
   end
+  return out
+end
+
+-- A universe's rules for a reader (the proving ground's page): {id, label, about, climate =
+-- {class, name, treeline, snowline}, look = {slot = value}, tune = {...}, option = {...},
+-- swaps = {{from, to}} sorted (to false: not drawn), patterns = how many families are swapped
+-- by pattern, feel, flora}. Plain tables built on demand; nil for an unknown id.
+function M.describe(id)
+  local u = M.list[id]
+  if not u then return nil end
+  local out = {id = id, label = u.label, about = u.about, feel = u.feel and true or false, flora = u.flora}
+  if u.climate then
+    local name
+    for key, class in pairs(CLIMATES) do if class == u.climate.class then name = key end end
+    out.climate = {class = u.climate.class, name = name, treeline = u.climate.treeline, snowline = u.climate.snowline}
+  end
+  for _, field in ipairs({'look', 'tune', 'option'}) do
+    if u[field] then
+      local copy = {}
+      for k, v in pairs(u[field]) do copy[k] = v end
+      out[field] = copy
+    end
+  end
+  local swaps = {}
+  for from, to in pairs(u.swap or {}) do swaps[#swaps + 1] = {from, to} end
+  table.sort(swaps, function(a, b) return a[1] < b[1] end)
+  out.swaps, out.patterns = swaps, u.patterns and #u.patterns or 0
   return out
 end
 

@@ -145,6 +145,16 @@ class PlanTests(unittest.TestCase):
         self.assertEqual([v['id'] for v in tile['views']], ['street', 'over', 'top'])
         self.assertEqual(len(tile['views'][0]['eye']), 3)
 
+    def test_every_tile_has_a_theme_the_page_can_explain(self):
+        """The card of the tile under the car says what its theme is there to show."""
+        catalogue = self.plan.catalogue()
+        themes = catalogue['themes']
+        self.assertEqual({t['zone'] for t in catalogue['tiles']} - set(themes), set())
+        for zone, theme in themes.items():
+            for field in ('title', 'titleEn', 'about', 'aboutEn'):
+                self.assertTrue(theme[field].strip(), (zone, field))
+            self.assertLess(len(theme['about']), 200, zone)      # a sentence on a card, not a page
+
     def test_pbf_round_trip(self):
         from osmium_compat import osmium
         with tempfile.TemporaryDirectory() as folder:

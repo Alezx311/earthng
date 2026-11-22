@@ -461,7 +461,9 @@ function M.gameApi(looks)
     local obj = getObjectByID(id)
     if not obj then return end
     obj:setActive(1)
-    local cols = {looks.SHIRTS[w.shirt], looks.PANTS[w.pants], looks.SKIN[w.skin]}
+    -- its figure's own colours where the walkers are the fal people (walkers.coloursOf)
+    local cols
+    if looks.coloursOf then cols = {looks.coloursOf(w)} else cols = {looks.SHIRTS[w.shirt], looks.PANTS[w.pants], looks.SKIN[w.skin]} end
     for k, field in ipairs({'color', 'colorPalette0', 'colorPalette1'}) do
       local c = cols[k]
       if c then pcall(function() obj[field] = ColorF(c[1], c[2], c[3], 1):asLinear4F() end) end

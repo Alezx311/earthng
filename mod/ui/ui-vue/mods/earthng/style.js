@@ -97,11 +97,29 @@ padding:0;background:rgba(255,255,255,.1);overflow:hidden}
 .eng-z-covers{background:#5f7d3f}.eng-z-plants{background:#3f7d4f}.eng-z-water{background:#3d6f96}
 .eng-z-relief{background:#75695c}.eng-z-junctions{background:#8f4f6a}.eng-z-main{background:#5c6b7a}
 .eng-z-wild{background:#46554c}.eng-z-mountains{background:#6f7f92}.eng-z-desert{background:#a9823f}
-.eng-z-snow{background:#8fa9bd}.eng-z-mud{background:#5d4731}
+.eng-z-snow{background:#8fa9bd}.eng-z-mud{background:#5d4731}.eng-z-jungle{background:#2f6b45}
 .eng-legend button.on{outline:2px solid #fff;outline-offset:-2px;font-weight:700}.eng-z-studio{background:#9a8f7a}.eng-z-free{background:rgba(255,255,255,.08)}
 .eng-legend{display:flex;flex-wrap:wrap;gap:.3em;padding:0 .5em .3em}
 .eng-legend button{padding:.25em .6em;border:0;border-radius:2px;cursor:pointer;font:inherit;font-size:.85em;color:#fff}
 .eng-legend button:hover{outline:2px solid #fff;outline-offset:-2px}
+
+.eng-here{margin:.5em .3em .3em;padding:.6em .7em .7em;background:rgba(255,255,255,.06);border-radius:3px;
+border-left:3px solid var(--bng-orange,#ff6600)}
+.eng-here-head{display:flex;align-items:center;flex-wrap:wrap;gap:.5em}
+.eng-here-code{padding:.15em .55em;border-radius:2px;font-weight:800;letter-spacing:.04em}
+.eng-here-title{flex:1 1 auto;min-width:0;font-weight:700;font-size:1.05em}
+.eng-here-head .eng-state{margin-left:0}
+.eng-here-sub{margin-top:.3em;color:rgba(255,255,255,.6);font-size:.88em}
+.eng-here-about{margin-top:.45em;color:rgba(255,255,255,.9)}
+.eng-here-about strong{color:#ffb380}
+.eng-here-tags{margin-top:.3em}
+.eng-here-h{display:flex;align-items:center;margin:.75em 0 .2em;padding-bottom:.2em;font-weight:700;text-transform:uppercase;
+font-size:.8em;letter-spacing:.07em;color:rgba(255,255,255,.75);border-bottom:1px solid rgba(255,255,255,.12)}
+.eng-here-note{color:rgba(255,255,255,.65);font-size:.9em;margin:.15em 0 .25em}
+.eng-here-was{margin-left:.5em;color:rgba(255,255,255,.5);font-size:.85em}
+.eng-kv{display:flex;gap:.8em;padding:.16em 0}
+.eng-k{flex:0 0 36%;min-width:0;color:rgba(255,255,255,.62)}
+.eng-v{flex:1 1 auto;min-width:0;word-break:break-word}
 `
 
 export function ensureStyle() {

@@ -1554,6 +1554,55 @@ ROWS_PLAN = {10: ('classes', 'Класи доріг', 'Road classes', road_class
              1: ('relief', 'Рельєф і студія', 'Relief and the studio', relief)}
 
 
+# What a theme is there to show, for the page's card of the tile under the car (the catalogue's
+# 'themes'): a tile's zone -> its name and one sentence on what to look at.
+THEMES = {
+    'classes': ('Класи доріг', 'Road classes',
+                'Один клас дороги OSM на тайл, від автомагістралі до стежки: ширина, смуги, узбіччя й тротуари, '
+                'які генератор дає класу без інших тегів.',
+                'One OSM road class a tile, from a motorway to a path: the width, lanes, shoulders and sidewalks '
+                'the generator gives a class with no other tags.'),
+    'surfaces': ('Покриття', 'Surfaces',
+                 'Одне значення surface на дорозі, тротуарі, ґрунтівці, стоянці й площі: матеріал, колії та знос.',
+                 'One surface value on a road, a sidewalk, a track, a car park and a square: its material, ruts and wear.'),
+    'lanes': ('Смуги й розмітка', 'Lanes and markings',
+              'Кількість смуг і розмітка: від однієї до восьми смуг, 2+1, смуги повороту, однобічні вулиці, звуження.',
+              'Lane counts and paint: one to eight lanes, 2+1, turn lanes, one-way streets, a width taper.'),
+    'town': ('Міська забудова', 'Town blocks',
+             'Квартали за епохами й типами: які стіни, дахи, вікна й двори конструктор дає кожному виду забудови.',
+             'Blocks by era and type: the walls, roofs, windows and yards the kit gives each kind of building.'),
+    'works': ('Садиби, торгівля, виробництво', 'Houses, trade, works',
+              'Село, дачі, ферма, завод, склади, АЗС, крамниці, стадіон, цвинтар: забудова поза кварталами міста.',
+              'A village, dachas, a farm, a plant, warehouses, fuel, shops, a stadium, a cemetery: what is built outside town blocks.'),
+    'street': ('Вуличні меблі й точки інтересу', 'Street furniture and points of interest',
+               'Ліхтарі, лавки, зупинки, переходи, знаки, паркани, бренди й реклама: що стоїть на вулиці і де саме.',
+               'Lamps, benches, stops, crossings, signs, fences, brands and adverts: what stands on a street, and where.'),
+    'covers': ('Покриви землі', 'Ground covers',
+               'Кілька ділянок landuse і natural на тайл, від землі без тегів до льодовика: матеріал, трава й переходи між ними.',
+               'Several landuse and natural plots a tile, from untagged land to a glacier: the material, the grass and how they meet.'),
+    'plants': ('Рослинність', 'Vegetation',
+               'Ліси за типом листя, парк, сад, виноградник, чагарник, болото: породи, густота й шари рослин.',
+               'Woods by leaf type, a park, an orchard, a vineyard, scrub, a wetland: the species, the density and the layers.'),
+    'water': ('Вода й колії', 'Water and rails',
+              'Річка з мостом, струмок, озеро, канал, набережна; переїзд, станція, трамвай і шляхопроводи.',
+              'A river and its bridge, a stream, a lake, a canal, an embankment; a level crossing, a station, a tram and overpasses.'),
+    'relief': ('Рельєф', 'Relief',
+               'Ухили 5–30 %, серпантин, кар’єр, косогір, віадук, тунель: як дорога й земля сідають на схил.',
+               'Grades of 5-30 %, switchbacks, a quarry, a side slope, a viaduct, a tunnel: how the road and the land sit on a slope.'),
+    'junctions': ('Перехрестя', 'Junctions',
+                  'Світлофор, кільця, STOP, зебри, зміщені й косі з’їзди: як сходяться дороги, тротуари й розмітка.',
+                  'Lights, roundabouts, a stop sign, zebras, offset and skewed arms: how roads, sidewalks and paint meet.'),
+    'wild': ('Земля всесвіту', 'The universe’s own land',
+             'Рельєф і природа, заради яких блок існує: тут видно клімат, підміну матеріалів і фізику ґрунту всесвіту.',
+             'The relief and nature the block exists for: the universe’s climate, swapped materials and ground physics show here.'),
+}
+
+
+def themes():
+    return {zone: {'title': uk, 'titleEn': en, 'about': about, 'aboutEn': about_en}
+            for zone, (uk, en, about, about_en) in THEMES.items()}
+
+
 # a subject of the main grid by its theme and its place in the row: what a universe builds again
 TILES = {'classes': classes_tile, 'surfaces': surfaces_tile, 'lanes': lanes_tile, 'town': town_tile, 'works': works_tile,
          'street': street_tile, 'covers': covers_tile, 'plants': plants_tile, 'water': water_tile, 'relief': relief_tile,

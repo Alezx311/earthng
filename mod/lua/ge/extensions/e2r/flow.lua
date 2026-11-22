@@ -83,7 +83,35 @@ function M.new(opts)
   opts = opts or {}
   return {links = {}, nodes = {}, segs = {}, cars = {}, nextId = 1, now = 0, target = 0, version = 0,
     leftHand = opts.leftHand, random = hashRandom(opts.seed), paints = opts.paints or {1}, bodies = opts.bodies or {1},
-    obstacles = {}, grid = {}, gridCell = 30, stats = {spawned = 0, removed = 0, gaveUp = 0}}
+    -- obstacles[link][lane]: {n = count, s1, v1, s2, v2, ...}, emptied in place every step (obsUsed:
+    -- the lists filled in this one); a link that went takes its lists with it
+    obstacles = setmetatable({}, {__mode = 'k'}), obsUsed = {}, obsUsedN = 0, hits = {}, stamp = 0,
+    -- busy: the links that hold a car, the only ones a step walks (a city's graph is thousands of
+    -- links for a hundred cars); asking: the junctions with a car waiting for its turn
+    busy = {}, asking = {},
+    grid = {}, gridCell = 30, stats = {spawned = 0, removed = 0, gaveUp = 0}}
+end
+
+-- a car came onto link / left it: F.busy lists the links with cars
+local function carIn(F, link)
+  local n = (link.count or 0) + 1
+  link.count = n
+  if n == 1 then
+    local busy = F.busy
+    busy[#busy + 1] = link
+    link.busyAt = #busy
+  end
+end
+
+local function carOut(F, link)
+  local n = (link.count or 1) - 1
+  link.count = n
+  if n == 0 and link.busyAt then
+    local busy = F.busy
+    local last = busy[#busy]
+    busy[link.busyAt], last.busyAt = last, link.busyAt
+    busy[#busy], link.busyAt = nil, nil
+  end
 end
 
 local function countChar(s, c)
@@ -135,9 +163,10 @@ local function laneOffset(F, link, lane)
 end
 M.laneOffset = laneOffset
 
--- '+ 0': floor(-0.3) is -0, and tostring(-0) is '-0', another cell than '0'
+-- a cell as one number: a string key per look was garbage for the collector (nine a car a frame
+-- in placeObstacles; the world is within 2^20 cells of its origin either way)
 local function cellKey(F, x, y)
-  return (math.floor(x / F.gridCell) + 0) .. ':' .. (math.floor(y / F.gridCell) + 0)
+  return (math.floor(x / F.gridCell) + 1048576) * 2097152 + (math.floor(y / F.gridCell) + 1048576)
 end
 
 local function gridAdd(F, link)
@@ -162,7 +191,9 @@ local function removeCar(F, car, why)
   car.dead = true
   local list = car.link and car.link.cars[car.lane]
   if list then
-    for k = #list, 1, -1 do if list[k] == car then table.remove(list, k); break end end
+    for k = #list, 1, -1 do
+      if list[k] == car then table.remove(list, k); carOut(F, car.link); break end
+    end
   end
   F.cars[car.id] = nil
   F.stats[why or 'removed'] = (F.stats[why or 'removed'] or 0) + 1
@@ -526,7 +557,7 @@ end
 
 -- a new car on link at s (nil: a free place picked at random); returns it or nil when another car
 -- is within room m (default the length, the jam gap and 3 m)
-function M.spawn(F, link, s, lane, v, paint, room, body)
+function M.spawn(F, link, s, lane, v, paint, room, body, variant)
   lane = lane or F.random(1, link.lanes)
   local list = link.cars[lane]
   if not s then
@@ -537,11 +568,14 @@ function M.spawn(F, link, s, lane, v, paint, room, body)
     if math.abs(other.s - s) < room then return end
   end
   local car = {id = F.nextId, link = link, lane = lane, s = s, v = v or link.speed * .6,
-    want = .85 + F.random() * .3, paint = paint or pick(F, F.paints), body = body or pick(F, F.bodies), wait = 0}
+    want = .85 + F.random() * .3, paint = paint or pick(F, F.paints), body = body or pick(F, F.bodies), wait = 0,
+    -- which of its body's models it is drawn as (the view's; a car back from the hand-off keeps its own)
+    variant = variant}
   F.nextId = F.nextId + 1
   car.next = pickNext(F, link)
   car.nextLane = car.next and math.min(car.next.lanes, F.random(1, car.next.lanes))
   insertCar(list, car)
+  carIn(F, link)
   F.cars[car.id] = car
   F.stats.spawned = F.stats.spawned + 1
   if F.onSpawn then F.onSpawn(car) end
@@ -550,74 +584,139 @@ end
 
 -- every lane under (x, y) heading along (hx, hy) (a unit vector; nil: any heading): fn(link,
 -- lane, s, along, miss) with miss the distance from the lane's middle (under 0.6 of a lane)
-local function locate(F, x, y, hx, hy, fn)
+-- The lanes found go into F.hits, five numbers a lane (link, lane, s, along, miss); returns how
+-- many. No table, string or closure is made: this runs for every obstacle every frame, and its
+-- garbage (two tables, nine cell keys and a closure a call) was the flow's share of the collector.
+local function locate(F, x, y, hx, hy)
   -- the cells hold a link's centre line; a lane lies up to a few metres off it, maybe in the next
   -- cell: the 3 x 3 cells round the point
-  local seen, list, c = {}, {}, F.gridCell
+  local hits, n, c, grid = F.hits, 0, F.gridCell, F.grid
+  local stamp = F.stamp + 1
+  F.stamp = stamp
   for gx = -1, 1 do
     for gy = -1, 1 do
-      for link in pairs(F.grid[cellKey(F, x + gx * c, y + gy * c)] or {}) do
-        if not seen[link] then seen[link] = true; list[#list + 1] = link end
-      end
-    end
-  end
-  for _, link in ipairs(list) do
-    local pts, cum = link.pts, link.cum
-    for k = 1, #cum - 1 do
-      local j = 3 * (k - 1) + 1
-      local dx, dy = pts[j + 3] - pts[j], pts[j + 4] - pts[j + 1]
-      local l2 = dx * dx + dy * dy
-      if l2 > 0 then
-        local f = ((x - pts[j]) * dx + (y - pts[j + 1]) * dy) / l2
-        if f >= 0 and f <= 1 then
-          local h = math.sqrt(l2)
-          -- signed distance to the right of the link
-          local right = ((x - pts[j]) * dy - (y - pts[j + 1]) * dx) / h
-          local along = hx and (hx * dx + hy * dy) / h or 1
-          if along > .5 then
-            for lane = 1, link.lanes do
-              local miss = math.abs(right - laneOffset(F, link, lane))
-              if miss < link.laneWidth * .6 then fn(link, lane, cum[k] + f * h, along, miss) end
+      local cell = grid[cellKey(F, x + gx * c, y + gy * c)]
+      if cell then
+        for link in pairs(cell) do
+          if link.seen ~= stamp then
+            link.seen = stamp
+            local pts, cum = link.pts, link.cum
+            for k = 1, #cum - 1 do
+              local j = 3 * (k - 1) + 1
+              local dx, dy = pts[j + 3] - pts[j], pts[j + 4] - pts[j + 1]
+              local l2 = dx * dx + dy * dy
+              if l2 > 0 then
+                local f = ((x - pts[j]) * dx + (y - pts[j + 1]) * dy) / l2
+                if f >= 0 and f <= 1 then
+                  local h = math.sqrt(l2)
+                  -- signed distance to the right of the link
+                  local right = ((x - pts[j]) * dy - (y - pts[j + 1]) * dx) / h
+                  local along = hx and (hx * dx + hy * dy) / h or 1
+                  if along > .5 then
+                    for lane = 1, link.lanes do
+                      local miss = math.abs(right - laneOffset(F, link, lane))
+                      if miss < link.laneWidth * .6 then
+                        local o = 5 * n
+                        hits[o + 1], hits[o + 2], hits[o + 3], hits[o + 4], hits[o + 5] = link, lane, cum[k] + f * h, along, miss
+                        n = n + 1
+                      end
+                    end
+                  end
+                end
+              end
             end
           end
         end
       end
     end
   end
+  return n
 end
 
 -- obstacles: list of {x, y, vx, vy}; each lands on the lane it is on (same heading when moving)
 local function placeObstacles(F, list)
-  F.obstacles = {}
+  local used, all, hits = F.obsUsed, F.obstacles, F.hits
+  for k = 1, F.obsUsedN do used[k].n = 0 end
+  local usedN = 0
   for _, o in ipairs(list or {}) do
-    local speed = math.sqrt((o.vx or 0) ^ 2 + (o.vy or 0) ^ 2)
-    local hx, hy = speed > 1 and o.vx / speed or nil, speed > 1 and o.vy / speed or nil
-    locate(F, o.x, o.y, hx, hy, function(link, lane, s, along)
-      -- by link, then lane: a string key per car per frame was garbage for the GC
-      local byLane = F.obstacles[link]
-      if not byLane then byLane = {}; F.obstacles[link] = byLane end
-      local list = byLane[lane]
-      if not list then list = {}; byLane[lane] = list end
-      list[#list + 1] = {s = s, v = speed * math.max(0, along)}
-    end)
+    local vx, vy = o.vx or 0, o.vy or 0
+    local speed = math.sqrt(vx * vx + vy * vy)
+    local n
+    if speed > 1 then n = locate(F, o.x, o.y, vx / speed, vy / speed) else n = locate(F, o.x, o.y) end
+    for k = 0, n - 1 do
+      local link, lane = hits[5 * k + 1], hits[5 * k + 2]
+      local byLane = all[link]
+      if not byLane then byLane = {}; all[link] = byLane end
+      local lst = byLane[lane]
+      if not lst then lst = {n = 0}; byLane[lane] = lst end
+      if lst.n == 0 then usedN = usedN + 1; used[usedN] = lst end
+      local m = lst.n + 1
+      lst.n, lst[2 * m - 1], lst[2 * m] = m, hits[5 * k + 3], speed * math.max(0, hits[5 * k + 4])
+    end
   end
+  for k = usedN + 1, F.obsUsedN do used[k] = nil end
+  F.obsUsedN = usedN
 end
 
 -- --- hand-off to real cars (handoff.lua) --------------------------------------------------------
 -- whether a real car at (x, y) heading (hx, hy) at v m/s must stand for a light: it is on a lit
 -- approach within its braking reach of a red one, or of a yellow one it can stop for
 function M.holdAt(F, x, y, hx, hy, v)
-  local hold = false
-  locate(F, x, y, hx, hy, function(link, lane, s)
+  local hits = F.hits
+  for k = 0, locate(F, x, y, hx, hy) - 1 do
+    local link, s = hits[5 * k + 1], hits[5 * k + 3]
     local light = link.light
     if light and light ~= true then
       local c = M.lightOf(F, link)
       local toEnd = link.len - s
       local brake = v * v / (2 * BRAKE)
-      if toEnd > .5 and toEnd < brake + 8 and (c == 'red' or (c == 'yellow' and toEnd > brake)) then hold = true end
+      if toEnd > .5 and toEnd < brake + 8 and (c == 'red' or (c == 'yellow' and toEnd > brake)) then return true end
     end
-  end)
-  return hold
+  end
+  return false
+end
+
+-- What a real car at (x, y) heading (hx, hy) has ahead of it in the flow: the gap (m) to the flow
+-- car in front on its lane and that car's speed, or nothing within LEAD_R. The game's AI does not
+-- see a flow car (it has no collision): without this a real car drove through the queue at a light.
+-- The lane ahead is the car's own link and, past its end, the first car of the link that goes on
+-- straightest from it.
+local LEAD_R = 60
+function M.leadAt(F, x, y, hx, hy)
+  local hits, gap, speed = F.hits, nil, nil
+  for k = 0, locate(F, x, y, hx, hy) - 1 do
+    local link, lane, s, along = hits[5 * k + 1], hits[5 * k + 2], hits[5 * k + 3], hits[5 * k + 4]
+    if along > .7 then
+      local list = link.cars[lane]
+      local found = false
+      for i = 1, #list do
+        local c = list[i]
+        if c.s > s + 1 then
+          local g = c.s - s - LEN
+          if g < LEAD_R and (not gap or g < gap) then gap, speed = g, c.v end
+          found = true
+          break
+        end
+      end
+      local toEnd = link.len - s
+      if not found and toEnd < LEAD_R then
+        local n = F.nodes[link.to]
+        local best, bestTurn
+        for _, out in ipairs(n and n.out or {}) do
+          if out.sid ~= link.sid then
+            local t = turn(link, out)
+            if t < .6 and (not bestTurn or t < bestTurn) then best, bestTurn = out, t end
+          end
+        end
+        local first = best and best.cars[math.min(lane, best.lanes)][1]
+        if first then
+          local g = toEnd + first.s - LEN
+          if g < LEAD_R and (not gap or g < gap) then gap, speed = g, first.v end
+        end
+      end
+    end
+  end
+  return gap, speed
 end
 
 -- flow cars within r of (fx, fy), nearest first, each {car, x, y, z, yaw, d}
@@ -652,12 +751,15 @@ end
 -- a real car comes back: onto the lane under (x, y) along its heading (hx, hy), at speed v, with
 -- paint. Returns the flow car, or nil when no lane is there or it has no room (it is dropped then;
 -- the fill puts another one out of sight). try: a failure changes nothing (the real car stays).
-function M.put(F, x, y, hx, hy, v, paint, body, try)
-  local best
-  locate(F, x, y, hx, hy, function(link, lane, s, along, miss)
-    if along > .7 and (not best or miss < best.miss) then best = {link = link, lane = lane, s = s, miss = miss} end
-  end)
-  local car = best and M.spawn(F, best.link, math.min(best.s, best.link.len - .1), best.lane, v, paint, LEN, body)
+function M.put(F, x, y, hx, hy, v, paint, body, try, variant)
+  local hits, link, lane, s, least = F.hits, nil, nil, nil, nil
+  for k = 0, locate(F, x, y, hx, hy) - 1 do
+    local along, miss = hits[5 * k + 4], hits[5 * k + 5]
+    if along > .7 and (not least or miss < least) then
+      link, lane, s, least = hits[5 * k + 1], hits[5 * k + 2], hits[5 * k + 3], miss
+    end
+  end
+  local car = link and M.spawn(F, link, math.min(s, link.len - .1), lane, v, paint, LEN, body, variant)
   if car or not try then F.promoted = math.max(0, (F.promoted or 0) - 1) end
   if not car and not try then F.stats.dropped = (F.stats.dropped or 0) + 1 end
   return car
@@ -679,9 +781,9 @@ local function ahead(F, car, list, k)
   local byLane = F.obstacles[link]
   local obs = byLane and byLane[car.lane]
   if obs then
-    for _, o in ipairs(obs) do
-      local g = o.s - car.s - LEN
-      if g > -LEN * .5 and (not gap or g < gap) then gap, v = math.max(.1, g), o.v end
+    for i = 1, obs.n do
+      local g = obs[2 * i - 1] - car.s - LEN
+      if g > -LEN * .5 and (not gap or g < gap) then gap, v = math.max(.1, g), obs[2 * i] end
     end
   end
   if gap then return gap, v end
@@ -693,10 +795,10 @@ local function ahead(F, car, list, k)
   if first then return toEnd + first.s - LEN, first.v end
   local nextLanes = F.obstacles[car.next]
   local nobs = nextLanes and nextLanes[car.nextLane]
-  if nobs then
-    local best
-    for _, o in ipairs(nobs) do if not best or o.s < best.s then best = o end end
-    if best then return toEnd + best.s - LEN, best.v end
+  if nobs and nobs.n > 0 then
+    local best = 1
+    for i = 2, nobs.n do if nobs[2 * i - 1] < nobs[2 * best - 1] then best = i end end
+    return toEnd + nobs[2 * best - 1] - LEN, nobs[2 * best]
   end
 end
 
@@ -707,7 +809,13 @@ local function request(F, car)
   if not n then return end
   local queued = false
   for _, c in ipairs(n.queue) do if c == car then queued = true; break end end
-  if not queued then n.queue[#n.queue + 1] = car end
+  if not queued then
+    n.queue[#n.queue + 1] = car
+    if not n.asking then
+      n.asking = true
+      F.asking[#F.asking + 1] = n
+    end
+  end
 end
 
 -- room on the way out: the last car in has cleared the junction or is moving off it
@@ -744,15 +852,24 @@ local function clearOf(n)
 end
 
 local function serveNodes(F)
-  for _, n in pairs(F.nodes) do
+  -- only the junctions a car asked at (request): a walk over every node of a city's graph every
+  -- frame was most of a step with a hundred cars
+  local asking = F.asking
+  for at = #asking, 1, -1 do
+    local n = asking[at]
     local q = n.queue
     for k = #q, 1, -1 do
       local c = q[k]
       if c.dead or c.granted or c.link.to ~= n.id then table.remove(q, k) end
     end
-    if n.signal then
+    if n.signal or F.nodes[n.id] ~= n then
       for k = #q, 1, -1 do q[k] = nil end
-    elseif #q > 0 then
+    end
+    if #q == 0 then
+      n.asking = nil
+      asking[at] = asking[#asking]
+      asking[#asking] = nil
+    else
       local main = mainRoad(F, n)
       if not main then
         -- equal roads: one car at a time, first come first served
@@ -820,10 +937,11 @@ local function cross(F, car)
       return
     end
     local list = link.cars[car.lane]
-    for i = #list, 1, -1 do if list[i] == car then table.remove(list, i); break end end
+    for i = #list, 1, -1 do if list[i] == car then table.remove(list, i); carOut(F, link); break end end
     car.s = car.s - link.len
     car.link, car.lane, car.granted, car.hint, car.turn = next, car.nextLane, nil, nil, nil
     insertCar(next.cars[car.lane], car)
+    carIn(F, next)
     car.next = pickNext(F, next)
     car.nextLane = car.next and math.min(car.next.lanes, F.random(1, car.next.lanes))
   end
@@ -872,9 +990,13 @@ function M.step(F, dt, fx, fy, obstacles, lightNow, signalColour)
   F.now = F.now + dt
   F.lightNow, F.signalColour = lightNow, signalColour
   placeObstacles(F, obstacles)
-  -- leaders first along each lane, so a follower sees where its leader is now
-  for _, link in pairs(F.links) do
-    for _, list in ipairs(link.cars) do
+  -- leaders first along each lane, so a follower sees where its leader is now; only the links
+  -- that hold a car (F.busy)
+  local busy = F.busy
+  for b = #busy, 1, -1 do
+    local cars = busy[b].cars
+    for l = 1, #cars do
+      local list = cars[l]
       for k = #list, 1, -1 do
         local car = list[k]
         if car then advance(F, car, dt, list, k) end
@@ -939,12 +1061,25 @@ end
 function M.clear(F)
   M.setTarget(F, 0)
   F.links, F.nodes, F.segs, F.grid, F.linkList = {}, {}, {}, {}, nil
+  F.busy, F.asking = {}, {}
 end
 
 -- --- the game side: one TSStatic a car ----------------------------------------------------------
 -- shapes: list of shape paths by paint. Cars within NEAR_R move every frame, the rest every
 -- FAR_EVERY frames (a car at 500 m moves a pixel a frame).
 local NEAR_R, FAR_EVERY = 250, 3
+-- A car within GROUND_R of the focus stands on the ground under it, read again every GROUND_EVERY m
+-- of its way (M.draw's ground): the graph's height is the road's middle line as the pack has it,
+-- and the road as built (seated on the land, crowned, a junction's plate) lay a hand or two off
+-- it, so the cars hung over the asphalt with their shadows under them (look-08). A read further
+-- than GROUND_MAX from the graph's height is another surface (a bridge over the road) and is left.
+local GROUND_R, GROUND_EVERY, GROUND_MAX = 160, 3, 1.2
+-- A body's models (the fal cars, ~2500 triangles and a map each) are worn within FAR_IN m of the
+-- focus; further, and back out past FAR_OUT, a car is its body's far shape (shapes.far: the drawn
+-- car of ~470 triangles in the same paint). A hundred cars all in their models were 3-4 ms of
+-- the frame (40.1 ms against 36.4 with none drawn, traffic-ab-03/05), and at a hundred metres a
+-- car is a few dozen pixels.
+local FAR_IN, FAR_OUT = 95, 115
 -- The rotation of a car shape (forward +x) heading yaw about z, its nose pitch up, as setPosRot
 -- takes it. BeamNG's quaternions turn the other way round from the textbook (mathlib.lua
 -- LuaVec3:setRotate is v - w t + q x t), so this is the conjugate of Rz(yaw) Ry(-pitch). The
@@ -963,19 +1098,41 @@ end
 -- level: the slope is not drawn (shapebatch.lua); a car within ~90 m of the player is real anyway.
 local function batchView(F, V, shapes, batches)
   local kinds, colours = {}, {}
-  for b, path in ipairs(shapes.paintable) do
-    kinds[b] = batches:kind(path)
-    batches:warm(kinds[b])
+  for b, paths in ipairs(shapes.paintable) do
+    -- a body's models: one shape, or several (the fal models of traffic_art.py) the cars of that
+    -- body are shared among
+    if type(paths) ~= 'table' then paths = {paths} end
+    kinds[b] = {}
+    for k, path in ipairs(paths) do
+      kinds[b][k] = batches:kind(path)
+      batches:warm(kinds[b][k])
+    end
   end
   for k, rgb in ipairs(M.PAINT_RGB) do colours[k] = ColorF(rgb[1], rgb[2], rgb[3], 1) end
   V.kinds, V.colours = kinds, colours
-  F.onSpawn = function(car)
+  -- the far shape of each body that has one
+  local far = {}
+  for b, path in pairs(shapes.far or {}) do
+    far[b] = batches:kind(path)
+    batches:warm(far[b])
+  end
+  V.far = next(far) and far or nil
+  -- a car's copy; none yet while its model's batch is not made (shapebatch.lua: one a frame, and
+  -- after its primer), M.draw then asks again
+  V.place = function(car, close)
     local x, y, z, yaw, pitch = M.pose(F, car.link, car.s, car.lane)
-    car.batch, car.slot = batches:add(kinds[car.body or 1] or kinds[1], x, y, z, -math.sin(yaw), math.cos(yaw), 0,
+    local models = kinds[car.body or 1] or kinds[1]
+    -- its model by its number, unless it came back from the hand-off as the model it left as
+    if not (car.variant and models[car.variant]) then car.variant = (car.id - 1) % #models + 1 end
+    -- (a new car is far: it starts out of sight)
+    local K = not close and far[car.body or 1] or models[car.variant]
+    car.batch, car.slot = batches:add(K, x, y, z + (close and car.dz or 0), -math.sin(yaw), math.cos(yaw), 0,
       colours[car.paint] or colours[1])
+    car.close = car.batch and K == models[car.variant] or nil
     car.drawnYaw, car.drawnPitch, car.drawnX, car.drawnY = yaw, pitch, x, y
     car.drawnS, car.drawnLink, car.drawnLane = car.s, car.link, car.lane
   end
+  F.onSpawn = V.place
   F.onRemove = function(car)
     if car.batch then batches:drop(car.batch, car.slot) end
     car.batch, car.slot = nil, nil
@@ -1028,22 +1185,57 @@ function M.view(F, shapes, group, batches)
   return V
 end
 
-function M.draw(F, V, fx, fy)
+function M.draw(F, V, fx, fy, ground)
   V.frame = V.frame + 1
   local moved, nearR2 = 0, NEAR_R * NEAR_R
+  local groundR2 = GROUND_R * GROUND_R
   local batches = V.batches
   if batches then batches:tick() end
   for id, car in pairs(F.cars) do
     local obj = batches and car.batch or V.objs[id]
+    if batches and not obj then
+      -- its model's batch was not there when it came: asked again
+      V.place(car)
+      if car.batch then moved = moved + 1 end
     -- a car standing where it was drawn (a queue at a light, a jam) is not moved again
-    if obj and (car.s ~= car.drawnS or car.link ~= car.drawnLink or car.lane ~= car.drawnLane) then
+    elseif obj then
       -- near or far by where it was drawn last (a car moves under a metre a frame): a far car
       -- skipped this frame costs no pose
       local dx, dy = car.drawnX, car.drawnY
-      local near = not fx or not dx or (dx - fx) ^ 2 + (dy - fy) ^ 2 < nearR2
-      if near or (id + V.frame) % FAR_EVERY == 0 then
+      local d2 = fx and dx and (dx - fx) ^ 2 + (dy - fy) ^ 2 or 0
+      local near = d2 < nearR2
+      local onGround = ground and d2 < groundR2
+      local went = car.s ~= car.drawnS or car.link ~= car.drawnLink or car.lane ~= car.drawnLane
+      -- its model or its far shape, by how far it is: the copy of the other one is made first,
+      -- then this one goes (a model's batch not made yet: it stays as it is)
+      if V.far and V.far[car.body or 1] and fx and dx then
+        local close = d2 < (car.close and FAR_OUT * FAR_OUT or FAR_IN * FAR_IN)
+        if close ~= (car.close or false) then
+          local oldB, oldI, was = obj, car.slot, car.close
+          V.place(car, close)
+          if car.batch then
+            batches:drop(oldB, oldI)
+            obj = car.batch
+            moved = moved + 1
+          else
+            car.batch, car.slot, car.close = oldB, oldI, was
+          end
+        end
+      end
+      -- (a car that stood before the focus came near is put on the ground once)
+      if (went and (near or (id + V.frame) % FAR_EVERY == 0)) or (onGround and not car.gs) then
         local x, y, z, yaw, pitch, hint = M.pose(F, car.link, car.s, car.lane, car.hint)
         car.hint = hint
+        if onGround then
+          if not car.gs or car.gl ~= car.link or math.abs(car.s - car.gs) > GROUND_EVERY then
+            local g = ground(x, y, z)
+            car.dz = g and math.abs(g - z) < GROUND_MAX and g - z or 0
+            car.gs, car.gl = car.s, car.link
+          end
+          z = z + car.dz
+        else
+          car.gs = nil
+        end
         if batches then
           batches:move(obj, car.slot, x, y, z, -math.sin(yaw), math.cos(yaw), 0)
         else

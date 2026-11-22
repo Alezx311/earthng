@@ -138,3 +138,20 @@ These are artistic regional types, not photographs or surveys of real buildings.
 
 Upstream model pages: [PATINA](https://fal.ai/models/fal-ai/patina/material),
 [Nano Banana 2](https://fal.ai/models/fal-ai/nano-banana-2). Provider terms apply.
+
+## Traffic and pedestrian models (fal, 22 November 2026)
+
+The cars of the traffic flow and the pedestrians without physics (`car_*`, `ped_*` shapes and
+maps in the planet's `art/flow` and `art/people`; recipes and processing in
+`earthng/traffic_art.py`) were generated through fal: a concept picture of each with
+`fal-ai/nano-banana-2`, its textured low-poly model with `tripo3d/h3.1/image-to-3d`, and for
+the people a skeleton with a walk, an idle and a seated clip with
+`fal-ai/meshy/rigging/multi-animation`. The prompts are in `traffic_art.py`; endpoints, request
+IDs and seeds are logged in the `fal_manifest.jsonl` files under `data/fal/traffic` beside the
+generated originals. The poses, the far shapes and the paint masks are computed from those
+originals at the cook. The cars are generic bodies without badges and the people are invented:
+none is a likeness of a real product or person.
+
+Upstream model pages: [Nano Banana 2](https://fal.ai/models/fal-ai/nano-banana-2),
+[Tripo H3.1](https://fal.ai/models/tripo3d/h3.1/image-to-3d),
+[Meshy Rigging](https://fal.ai/models/fal-ai/meshy/rigging/multi-animation). Provider terms apply.

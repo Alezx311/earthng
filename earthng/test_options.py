@@ -436,6 +436,87 @@ class WidgetSyncTests(unittest.TestCase):
         self.assertEqual(len(off.eval('fake.calls')), 0)
         self.assertTrue(off.eval('mod.knockGet()'))                          # no key: knockable, as before
 
+    def test_traffic_wishes_persist_and_come_back_with_the_drive(self):
+        fakes = '''
+          flowCalls, trafficCalls = {}, {}
+          mod.flowSet = function(n) flowCalls[#flowCalls+1] = n; S.flow = n > 0 and {F = {target = n}} or nil end
+          up(mod.trafficResume, 'setTraffic', function(n, kind) trafficCalls[#trafficCalls+1] = {n, kind} end)
+        '''
+        lua = self.world()
+        lua.execute("S.state = 'driving'" + fakes)
+        lua.execute("o.set('flowReal', 12); o.set('trafficKind', 'full'); o.set('trafficAmount', 8); o.set('flow', 200)")
+        disk = to_py(lua.eval('disk'))
+        self.assertEqual((disk['flow'], disk['traffic'], disk['trafficKind'], disk['flowReal']), (200, 8, 'full', 12))
+        self.assertEqual(to_py(lua.eval('trafficCalls')), [[8, 'full']])
+        # a landing clears the road (flowSet(0) from the landing, not the player): the wish stays
+        # in the file whatever is saved next, and comes back with the drive
+        lua.execute("mod.flowSet(0); o.set('knock', false)")
+        self.assertEqual(to_py(lua.eval('disk'))['flow'], 200)
+        lua.execute('mod.trafficResume()')
+        self.assertEqual(lua.eval('flowCalls[#flowCalls]'), 200)
+        self.assertEqual(to_py(lua.eval('trafficCalls[#trafficCalls]')), [8, 'full'])
+        # the player turns the flow off: that is saved, and nothing comes back
+        lua.execute("o.set('flow', 0); n = #flowCalls; mod.trafficResume()")
+        self.assertEqual(to_py(lua.eval('disk'))['flow'], 0)
+        self.assertEqual(lua.eval('#flowCalls'), lua.eval('n'))
+
+        # a new session: before the landing nothing is started, the wishes are only remembered
+        again = self.world("{lang='uk', flow=200, traffic=8, trafficKind='full', flowReal=12}")
+        self.assertIsNone(again.eval('S.flow'))
+        self.assertEqual((again.eval('S.flowSaved'), again.eval('S.trafficSaved'), again.eval('S.trafficKind'),
+                          again.eval('S.flowReal')), (200, 8, 'full', 12))
+        again.execute(fakes + "o.set('knock', false)")                       # a save before the landing keeps them
+        disk = to_py(again.eval('disk'))
+        self.assertEqual((disk['flow'], disk['traffic'], disk['trafficKind'], disk['flowReal']), (200, 8, 'full', 12))
+        self.assertEqual(again.eval('#flowCalls'), 0)
+        again.execute("S.state = 'driving'; mod.trafficResume()")
+        self.assertEqual(to_py(again.eval('flowCalls')), [200])
+        self.assertEqual(to_py(again.eval('trafficCalls')), [[8, 'full']])
+        # nothing saved: nothing starts, as before
+        plain = self.world()
+        plain.execute(fakes + "S.state = 'driving'; mod.trafficResume()")
+        self.assertEqual((plain.eval('#flowCalls'), plain.eval('#trafficCalls')), (0, 0))
+
+    def test_the_widgets_traffic_buttons_are_saved_too(self):
+        lua = self.world()
+        lua.execute('''
+          S.state = 'driving'
+          mod.flowSet = function(n) S.flow = n > 0 and {F = {target = n}} or nil end
+          S.flowSaved = 400; mod.wishKeep()
+        ''')
+        self.assertEqual(to_py(lua.eval('disk'))['flow'], 400)
+        src = (E2R / 'world.lua').read_text(encoding='utf8')
+        self.assertIn("S.flowSaved = a[1]; M.flowSet(a[1]); M.wishKeep()", src)
+        self.assertIn("S.trafficSaved = a[1]; setTraffic(a[1], kind); M.wishKeep()", src)
+
+    def test_the_style_is_saved(self):
+        lua = self.world()
+        self.assertEqual(lua.eval("o.save({}).style"), 'real')
+        lua.execute("S.pack = 'night'")
+        self.assertEqual(lua.eval("o.save({}).style"), 'night')
+
+    def test_only_a_fresh_automation_file_is_a_request(self):
+        """A test file left in a player's folder landed every start in its place and replaced the
+        saved quality (the live profile, 19-21.11): the game takes one only while its stamp is fresh."""
+        lua = self.world()
+        fresh = lua.eval('mod.testFresh')
+        now = 1_800_000_000
+        self.assertTrue(fresh(lua.eval('{lat = 1, stamp = %d}' % (now - 30)), now))
+        self.assertTrue(fresh(lua.eval('{stamp = %d}' % (now + 5)), now))             # clocks a few seconds apart
+        self.assertFalse(fresh(lua.eval('{lat = 25.78117, lon = -80.22302, quality = 50}'), now))   # the leftover itself
+        self.assertFalse(fresh(lua.eval('{stamp = %d}' % (now - 2 * 86400)), now))
+        self.assertFalse(fresh(lua.eval('{stamp = %d}' % (now + 3600)), now))
+        self.assertFalse(fresh(None, now))
+        self.assertFalse(fresh('text', now))
+        # the driver stamps every copy it writes, through one writer
+        src = (ROOT / 'earthng/test_world.py').read_text(encoding='utf8')
+        self.assertIn('stamp=int(time.time())', src)
+        self.assertEqual(src.count("'e2r-world-test.json').write_text"), 1)
+        # and the game reads the file through the check
+        world = (E2R / 'world.lua').read_text(encoding='utf8')
+        self.assertIn('if M.testFresh(found, os.time()) then', world)
+        self.assertEqual(world.count("jsonReadFile('/e2r-world-test.json')"), 1)
+
     def test_knock_switch_calls_knockSet(self):
         lua = self.world()
         lua.execute("calls = {}; local real = mod.knockSet; mod.knockSet = function(v) calls[#calls+1] = v; real(v) end")

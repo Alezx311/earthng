@@ -194,5 +194,49 @@ class ShapeBatchTests(unittest.TestCase):
         '''))
 
 
+    def test_with_primers_a_kinds_first_batch_only_loads_the_shape_and_its_copies_come_later(self):
+        out = self.lua().execute('''
+          sb.PRIME_FRAMES = 10
+          local P = sb.new(GROUP)
+          local K = sb.kind(P, 'car.dae')
+          local out = {}
+          -- the first ask makes the primer: a finalized batch without a copy, and no copy yet
+          P:tick()
+          out[1] = P:add(K, 1, 2, 3, 0, 1, 0) == nil
+          out[2] = BATCH.made
+          out[3] = K.primer ~= nil and K.primer.finals == 1 and K.primer:shown() == 0 and K.batch == nil
+          -- asked again until PRIME_FRAMES have passed: still none, and nothing more is made
+          for f = 1, 9 do
+            P:tick()
+            if P:add(K, 1, 2, 3, 0, 1, 0) then out[4] = f end
+          end
+          out[4] = out[4] or 0
+          out[5] = BATCH.made
+          -- then its batch, and the primer goes once that one is there
+          P:tick()
+          local primer = K.primer
+          local B, i = P:add(K, 1, 2, 3, 0, 1, 0)
+          out[6] = B ~= nil and B.obj:shown() == 1 and B.obj ~= primer
+          out[7] = primer.deleted == true and K.primer == nil
+          out[8] = {BATCH.made, BATCH.alive, P.objects}
+          -- a kind warmed is primed at once, whatever the frame made already; clear takes a primer too
+          local K2 = sb.kind(P, 'van.dae')
+          out[9] = P:warm(K2) == nil and K2.primer ~= nil
+          P:clear()
+          out[10] = {BATCH.alive, K2.primer == nil}
+          return out
+        ''')
+        first, made, primer, early, made_wait, shown, gone, counts, warmed, cleared = list(out.values())
+        self.assertTrue(first)
+        self.assertEqual(made, 1)
+        self.assertTrue(primer)
+        self.assertEqual(early, 0)
+        self.assertEqual(made_wait, 1)
+        self.assertTrue(shown)
+        self.assertTrue(gone)
+        self.assertEqual(list(counts.values()), [2, 1, 1])
+        self.assertTrue(warmed)
+        self.assertEqual(list(cleared.values()), [0, True])
+
 if __name__ == '__main__':
     unittest.main()

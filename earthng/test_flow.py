@@ -945,5 +945,418 @@ class FlowTests(unittest.TestCase):
         self.assertGreater(holds, 0)       # real cars on a red approach were held
         self.assertGreater(released, 0)    # and let go when it turned green
 
+    def test_a_step_walks_only_the_links_that_hold_a_car(self):
+        lua = self.lua()
+        out = lua.execute('''
+          local F = flow.new{seed = 3}
+          flow.sync(F, grid(6, 120))
+          F.target = 40
+          for t = 1, 900 do flow.step(F, 1 / 30, 300, 300, {{x = 300, y = 300, vx = 0, vy = 0}}) end
+          -- every link's count is its cars, and the busy list is the links with a car, each once
+          local wrong, withCars, listed = 0, 0, 0
+          local seen = {}
+          for _, link in pairs(F.links) do
+            local n = 0
+            for _, list in ipairs(link.cars) do n = n + #list end
+            if n ~= (link.count or 0) then wrong = wrong + 1 end
+            if n > 0 then withCars = withCars + 1 end
+          end
+          for k, link in ipairs(F.busy) do
+            listed = listed + 1
+            if seen[link] or link.busyAt ~= k or (link.count or 0) == 0 or F.links[link.id] ~= link then wrong = wrong + 1 end
+            seen[link] = true
+          end
+          local links = 0
+          for _ in pairs(F.links) do links = links + 1 end
+          -- the roads go: no link of the busy list is left behind
+          flow.sync(F, {})
+          return {wrong, withCars, listed, links, #F.busy, #F.asking > 0 and 1 or 0, F.count}
+        ''')
+        wrong, with_cars, listed, links, busy_after, _, count = list(out.values())
+        self.assertEqual(wrong, 0)
+        self.assertEqual(listed, with_cars)
+        self.assertLess(with_cars, links)
+        self.assertEqual(count, 40)
+        self.assertEqual(busy_after, 0)
+
+    def test_obstacles_make_no_table_a_frame(self):
+        lua = self.lua()
+        out = lua.execute('''
+          local F = flow.new{seed = 5}
+          flow.sync(F, grid(4, 100))
+          F.target = 12
+          local obs = {}
+          for k = 1, 30 do obs[k] = {x = (k % 4) * 100, y = k * 9, vx = 0, vy = k % 2 == 0 and 6 or 0} end
+          for t = 1, 60 do flow.step(F, 1 / 30, 150, 150, obs) end
+          -- the lane lists of one step are the next step's (emptied in place), and a cell is a number
+          local lists = {}
+          for k = 1, F.obsUsedN do lists[F.obsUsed[k]] = true end
+          flow.step(F, 1 / 30, 150, 150, obs)
+          local same, n = 0, 0
+          for k = 1, F.obsUsedN do
+            n = n + 1
+            if lists[F.obsUsed[k]] then same = same + 1 end
+          end
+          local numeric = true
+          for key in pairs(F.grid) do if type(key) ~= 'number' then numeric = false end end
+          flow.step(F, 1 / 30, 150, 150, {})
+          return {n, same, numeric, F.obsUsedN}
+        ''')
+        n, same, numeric, after = list(out.values())
+        self.assertGreater(n, 0)
+        self.assertEqual(same, n)
+        self.assertTrue(numeric)
+        self.assertEqual(after, 0)
+
+    def test_a_real_car_sees_the_flow_car_ahead_of_it(self):
+        lua = self.lua()
+        out = lua.execute('''
+          local s = {'r', 'A', 'B', '-+', 13.9, 3.5, 1, 0, 0, 0, 500, 0, 0, 1000, 0, 0}
+          local t = {'t', 'B', 'C', '-+', 13.9, 3.5, 1, 1000, 0, 0, 1200, 0, 0, 1400, 0, 0}
+          local F = flow.new{seed = 2}
+          flow.sync(F, {r = {s = s, x = 500, y = 0}, t = {s = t, x = 1200, y = 0}})
+          local link = F.links['r+']
+          local lane = flow.laneOffset(F, link, 1)
+          local car = flow.spawn(F, link, 300, 1, 0)
+          local out = {}
+          local gap, v = flow.leadAt(F, 270, -lane, 1, 0)          -- 30 m behind it, on its lane
+          out[1], out[2] = gap, v
+          out[3] = flow.leadAt(F, 270, lane, -1, 0) or -1           -- the other way: nothing ahead
+          out[4] = flow.leadAt(F, 330, -lane, 1, 0) or -1           -- past it
+          out[5] = flow.leadAt(F, 100, -lane, 1, 0) or -1           -- further than a look ahead
+          -- the first car of the road that goes on, seen from the end of this one
+          flow.take(F, car)
+          local far = flow.spawn(F, F.links['t+'], 20, 1, 3)
+          out[6], out[7] = flow.leadAt(F, 980, -lane, 1, 0)
+          return out
+        ''')
+        gap, v, other, past, far, next_gap, next_v = list(out.values())
+        self.assertAlmostEqual(gap, 30 - 4.6, places=3)
+        self.assertEqual(v, 0)
+        self.assertEqual((other, past, far), (-1, -1, -1))
+        self.assertAlmostEqual(next_gap, 20 + 20 - 4.6, places=3)
+        self.assertEqual(next_v, 3)
+
+    def test_a_real_car_behind_a_flow_queue_slows_and_stops(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        out = lua.execute('''
+          limits = {}
+          function api.limit(id, speed) real[id].limit = speed; limits[#limits + 1] = speed or -1 end
+          local s = {'r', 'A', 'B', '-+', 13.9, 3.5, 1, 0, 0, 0, 500, 0, 0, 1000, 0, 0}
+          local F = flow.new{seed = 2}
+          flow.sync(F, {r = {s = s, x = 500, y = 0}})
+          local link = F.links['r+']
+          local lane = flow.laneOffset(F, link, 1)
+          local H = handoff.new{size = 1, spare = 0}
+          handoff.prewarm(H, api, 0, 0)
+          -- a real car on the lane at 10 m/s, a flow car standing 60 m ahead of it (kept there: the
+          -- flow is not stepped)
+          local e = H.pool[1]
+          e.active = true
+          F.promoted = 1
+          api.activate(e.id, 200, -lane, 0, 0, 10, 1)
+          local car = flow.spawn(F, link, 260, 1, 0)
+          local now, closest = 0, 1e9
+          for t = 1, 30 * 30 do
+            now = now + 1 / 30
+            handoff.step(H, flow, F, 230, 40, now, api)
+            local r = real[e.id]
+            -- the stand-in AI: its speed follows the limit it was given
+            if r.limit then r.v = math.min(r.v, r.limit) end
+            drive(1 / 30)
+            closest = math.min(closest, car.s - r.x - flow.LEN)
+          end
+          local stopped = real[e.id].v
+          -- the flow car drives off: the limit goes
+          flow.take(F, car)
+          handoff.step(H, flow, F, 230, 40, now + 1, api)
+          return {closest, stopped, #limits, limits[#limits], H.stats.followed or 0}
+        ''')
+        closest, stopped, told, last, followed = list(out.values())
+        self.assertGreater(closest, 0)          # it never reached the flow car
+        self.assertLess(closest, 4)             # and stood close behind it
+        self.assertEqual(stopped, 0)
+        self.assertLess(told, 30)               # told when the limit changed, not every check
+        self.assertEqual(last, -1)              # free again
+        self.assertEqual(followed, 1)
+
+    def test_cars_of_a_queue_have_room_to_become_real(self):
+        lua = self.lua()
+        out = lua.execute('''
+          local c = handoff.crowded
+          return {
+            c(0, 0, 1, 0, -6.8, 0, 1, 0, 6.5, 5.6, 2.3),     -- the next car of a queue: room
+            c(0, 0, 1, 0, -4, 0, 1, 0, 6.5, 5.6, 2.3),       -- half a length behind: none
+            c(0, 0, 1, 0, 1, 3, 1, 0, 6.5, 5.6, 2.3),        -- beside it on the next lane: room
+            c(0, 0, 1, 0, 1, 3, -1, 0, 6.5, 5.6, 2.3),       -- the oncoming lane: room
+            c(0, 0, 1, 0, 2, 3, 0, 1, 6.5, 5.6, 2.3),        -- a car across it: none
+            c(0, 0, 1, 0, 2, 3, nil, nil, 8, 6.4, 2.5),      -- a heading not known: none
+            c(0, 0, 1, 0, 9, 0, nil, nil, 8, 6.4, 2.5),      -- far enough either way
+          }
+        ''')
+        self.assertEqual(list(out.values()), [False, True, False, False, True, True, False])
+
+    def test_a_queue_at_the_player_becomes_real_car_by_car(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        out = lua.execute('''
+          local s = {'r', 'A', 'B', '-+', 13.9, 3.5, 1, 0, 0, 0, 500, 0, 0, 1000, 0, 0}
+          local F = flow.new{seed = 2, paints = {1}}
+          flow.sync(F, {r = {s = s, x = 500, y = 0}})
+          local link = F.links['r+']
+          -- six cars standing bumper to bumper (6.8 m apart) behind the player's stopped car
+          for k = 1, 6 do flow.spawn(F, link, 500 - k * 6.8 - 8, 1, 0, nil, flow.LEN) end
+          local H = handoff.new{size = 6, spare = 0}
+          handoff.prewarm(H, api, 0, 0)
+          local lane = flow.laneOffset(F, link, 1)
+          local now = 0
+          for t = 1, 300 do
+            now = now + 1 / 30
+            handoff.step(H, flow, F, 500, -lane, now, api, 0, 0, 1, 0)
+          end
+          local left = 0
+          for _ in pairs(F.cars) do left = left + 1 end
+          return {handoff.activeCount(H), left}
+        ''')
+        real, left = list(out.values())
+        self.assertEqual(real, 6)     # every car of the queue, not every second one
+        self.assertEqual(left, 0)
+
+    def test_a_real_car_that_stands_for_no_reason_goes_back_into_the_flow(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        out = lua.execute('''
+          local s = {'r', 'A', 'B', '-+', 13.9, 3.5, 1, 0, 0, 0, 500, 0, 0, 1000, 0, 0}
+          local F = flow.new{seed = 2}
+          flow.sync(F, {r = {s = s, x = 500, y = 0}})
+          local lane = flow.laneOffset(F, F.links['r+'], 1)
+          local H = handoff.new{size = 1, spare = 0}
+          handoff.prewarm(H, api, 0, 0)
+          local e = H.pool[1]
+          e.active, e.paint, e.flowVariant = true, 3, 2
+          F.promoted = 1
+          api.activate(e.id, 300, -lane, 0, 0, 0, 3)      -- it stands, 60 m from the player
+          local back
+          F.onSpawn = function(car) back = back or car end
+          -- in front of the player it stays as it is: a wreck must not mend itself in plain sight
+          local now = 0
+          for t = 1, 30 * 30 do
+            now = now + 1 / 30
+            handoff.step(H, flow, F, 240, -lane, now, api, 0, 0, 1, 0)
+          end
+          local ahead = H.stats.unstuck or 0
+          -- behind the player it goes back into the flow, as the car it was
+          local at
+          for t = 1, 30 * 30 do
+            now = now + 1 / 30
+            handoff.step(H, flow, F, 360, -lane, now, api, 0, 0, 1, 0)
+            if not at and (H.stats.unstuck or 0) > 0 then at = now end
+          end
+          return {ahead, at or -1, back and back.paint or -1, back and back.variant or -1, back and back.v or -1}
+        ''')
+        ahead, at, paint, variant, v = list(out.values())
+        self.assertEqual(ahead, 0)
+        self.assertGreater(at, 30)      # at the first check with the player past it
+        self.assertLess(at, 31)
+        self.assertEqual((paint, variant, v), (3, 2, 0))
+
+    def test_a_body_has_several_models_and_a_car_keeps_its_own(self):
+        lua = self.lua()
+        out = lua.execute('''
+          ColorF = function(r, g, b, a) return {r, g, b, a} end
+          local made = {}
+          local batches = {tick = function() end, warm = function() end, drop = function() end, move = function() end,
+            kind = function(_, path) return path end,
+            add = function(_, K) made[K] = (made[K] or 0) + 1; return K, made[K] end}
+          local F = flow.new{seed = 6, bodies = {1, 1}}
+          flow.sync(F, grid(5, 150))
+          flow.view(F, {paintable = {{'sedan_a', 'sedan_b', 'sedan_c'}, 'hatch'}}, nil, batches)
+          F.target = 60
+          for t = 1, 60 do flow.step(F, 1 / 30, 300, 300, {}) end
+          -- a car taken by the hand-off comes back as the model it was
+          local car
+          for _, c in pairs(F.cars) do if c.body == 1 and c.variant == 3 then car = c; break end end
+          local x, y, _, yaw = flow.pose(F, car.link, car.s, car.lane)
+          flow.take(F, car)
+          local back = flow.put(F, x, y, math.cos(yaw), math.sin(yaw), 5, car.paint, 1, false, 3)
+          return {made.sedan_a or 0, made.sedan_b or 0, made.sedan_c or 0, made.hatch or 0, back and back.variant or -1,
+                  back and back.batch or ''}
+        ''')
+        a, b, c, hatch, variant, kind = list(out.values())
+        self.assertGreater(min(a, b, c), 3)     # every model of the body is on the road
+        self.assertGreater(hatch, 3)
+        self.assertEqual(a + b + c + hatch, 61)   # 60 cars and the one that came back
+        self.assertEqual((variant, kind), (3, 'sedan_c'))
+
+    def test_a_landing_parks_the_pool_and_the_next_drive_takes_it_as_it_is(self):
+        lua = self.lua()
+        lua.execute(self.HANDOFF_API)
+        out = lua.execute('''
+          local s = {'r', 'A', 'B', '--++', 13.9, 7, 1, 0, 0, 0, 1000, 0, 0, 2000, 0, 0}
+          local F = flow.new{seed = 4}
+          flow.sync(F, {r = {s = s, x = 1000, y = 0}})
+          F.target = 60
+          local H = handoff.new{size = 4, spare = .5}
+          -- a car at a time, as a landing fills it; no more than the pool holds
+          local filled = 0
+          for k = 1, 10 do if handoff.prewarmOne(H, api, 0, 0) then filled = filled + 1 end end
+          local now = 0
+          for t = 1, 300 do
+            now = now + 1 / 30
+            flow.step(F, 1 / 30, 1000, 0, handoff.obstacles(H, api, {}))
+            handoff.step(H, flow, F, 1000, 0, now, api)
+            drive(1 / 30)
+          end
+          local driving = handoff.activeCount(H)
+          local ids = {}
+          for _, e in ipairs(H.pool) do ids[e.id] = true end
+          -- one of the cars was deleted by something else meanwhile
+          local gone = H.pool[1].id
+          api.delete(gone)
+          handoff.park(H, api)
+          local parked, stillOn, same = #H.pool, 0, true
+          for _, e in ipairs(H.pool) do
+            if e.active or real[e.id].active then stillOn = stillOn + 1 end
+            if not ids[e.id] or e.id == gone then same = false end
+          end
+          -- the next drive: another flow, the same pool; it is short of the deleted car only
+          local G = flow.new{seed = 5}
+          flow.sync(G, {r = {s = s, x = 1000, y = 0}})
+          G.target = 60
+          local spawned = api.nextId
+          handoff.prewarm(H, api, 1000, 0)
+          for t = 1, 300 do
+            now = now + 1 / 30
+            flow.step(G, 1 / 30, 1000, 0, handoff.obstacles(H, api, {}))
+            handoff.step(H, flow, G, 1000, 0, now, api)
+            drive(1 / 30)
+          end
+          return {filled, driving, parked, stillOn, same, api.nextId - spawned, handoff.activeCount(H), G.count}
+        ''')
+        filled, driving, parked, still_on, same, new, again, count = list(out.values())
+        self.assertEqual(filled, 6)          # 4 that drive and their spares
+        self.assertEqual(driving, 4)
+        self.assertEqual(parked, 5)          # the deleted one is forgotten
+        self.assertEqual(still_on, 0)
+        self.assertTrue(same)
+        self.assertEqual(new, 1)             # one spawn at the next drive, not six
+        self.assertEqual(again, 4)
+        self.assertEqual(count, 60)
+
+    def test_a_car_whose_models_batch_is_not_made_yet_gets_its_copy_when_it_is(self):
+        lua = self.lua()
+        out = lua.execute('''
+          ColorF = function(r, g, b, a) return {r, g, b, a} end
+          -- a pool that makes no batch for the first twenty frames (a primer's wait)
+          local frame, copies = 0, 0
+          local batches = {tick = function() frame = frame + 1 end, warm = function() end, drop = function() end,
+            move = function() end, kind = function(_, path) return path end,
+            add = function(_, K) if frame < 20 then return nil end copies = copies + 1; return K, copies end}
+          local F = flow.new{seed = 6}
+          flow.sync(F, grid(4, 150))
+          local V = flow.view(F, {paintable = {'sedan'}}, nil, batches)
+          F.target = 30
+          local early
+          for t = 1, 40 do
+            flow.step(F, 1 / 30, 200, 200, {})
+            flow.draw(F, V, 200, 200)
+            if t == 19 then early = copies end
+          end
+          local without = 0
+          for _, car in pairs(F.cars) do if not car.batch then without = without + 1 end end
+          return {early, copies, without, F.count}
+        ''')
+        early, copies, without, count = list(out.values())
+        self.assertEqual(early, 0)
+        self.assertEqual(count, 30)
+        self.assertEqual(copies, 30)     # each car one copy, once the batch was there
+        self.assertEqual(without, 0)
+
+    def test_near_cars_stand_on_the_ground_under_them(self):
+        lua = self.lua()
+        out = lua.execute('''
+          ColorF = function(r, g, b, a) return {r, g, b, a} end
+          local placed = {}
+          local batches = {tick = function() end, warm = function() end, drop = function() end,
+            kind = function(_, path) return path end,
+            add = function(_, K, x, y, z) placed[#placed + 1] = {x, y, z}; return placed, #placed end,
+            move = function(_, B, i, x, y, z) B[i] = {x, y, z} end}
+          local F = flow.new{seed = 6}
+          flow.sync(F, grid(8, 150))
+          local V = flow.view(F, {paintable = {'sedan'}}, nil, batches)
+          F.target = 80
+          -- the road lies 0.35 m under the graph near x = 500 and a bridge passes 6 m over it elsewhere
+          local reads = 0
+          local function ground(x, y, z)
+            reads = reads + 1
+            if x > 700 then return z + 6 end
+            return z - .35
+          end
+          for t = 1, 300 do
+            flow.step(F, 1 / 30, 500, 500, {})
+            flow.draw(F, V, 500, 500, ground)
+          end
+          local near, onGround, far, lifted, bridge = 0, 0, 0, 0, 0
+          for _, car in pairs(F.cars) do
+            local x, y, z = flow.pose(F, car.link, car.s, car.lane)
+            local p = placed[car.slot]
+            local d = math.sqrt((p[1] - 500) ^ 2 + (p[2] - 500) ^ 2)
+            if d < 140 and p[1] <= 690 then
+              near = near + 1
+              if math.abs(p[3] - (z - .35)) < 1e-6 then onGround = onGround + 1 end
+            elseif d > 180 then
+              far = far + 1
+              if math.abs(p[3] - z) > 1e-6 then lifted = lifted + 1 end
+            end
+            if p[1] > 710 and math.abs(p[3] - z) > 1e-6 then bridge = bridge + 1 end
+          end
+          return {near, onGround, far, lifted, bridge, reads, F.count}
+        ''')
+        near, on_ground, far, lifted, bridge, reads, count = list(out.values())
+        self.assertGreater(near, 3)
+        self.assertEqual(on_ground, near)     # on the road as built
+        self.assertGreater(far, 10)
+        self.assertEqual(lifted, 0)           # the far ones keep the graph's height: no read for them
+        self.assertEqual(bridge, 0)           # a surface far off the graph's height is not the road
+        self.assertLess(reads, 300 * 20)      # a read every few metres of a car's way, not every frame
+
+    def test_a_car_wears_its_model_near_the_focus_and_its_far_shape_beyond(self):
+        lua = self.lua()
+        out = lua.execute('''
+          ColorF = function(r, g, b, a) return {r, g, b, a} end
+          local live, adds, drops = {}, 0, 0
+          local batches = {tick = function() end, warm = function() end, kind = function(_, path) return path end,
+            add = function(_, K) adds = adds + 1; live[adds] = K; return K, adds end,
+            move = function() end,
+            drop = function(_, B, i) drops = drops + 1; live[i] = nil end}
+          local F = flow.new{seed = 6}
+          flow.sync(F, grid(8, 150))
+          local V = flow.view(F, {paintable = {{'model_a', 'model_b'}}, far = {'far_shape'}}, nil, batches)
+          F.target = 120
+          for t = 1, 400 do
+            flow.step(F, 1 / 30, 500, 500, {})
+            flow.draw(F, V, 500, 500)
+          end
+          local nearModel, nearFar, farModel, farFar, copies = 0, 0, 0, 0, 0
+          for _, car in pairs(F.cars) do
+            local kind = live[car.slot]
+            if kind ~= car.batch then copies = copies - 1000 end
+            local d = math.sqrt((car.drawnX - 500) ^ 2 + (car.drawnY - 500) ^ 2)
+            local model = kind == 'model_a' or kind == 'model_b'
+            if d < 90 then if model then nearModel = nearModel + 1 else nearFar = nearFar + 1 end end
+            if d > 120 then if model then farModel = farModel + 1 else farFar = farFar + 1 end end
+          end
+          for _ in pairs(live) do copies = copies + 1 end
+          return {nearModel, nearFar, farModel, farFar, copies, F.count, adds - drops}
+        ''')
+        near_model, near_far, far_model, far_far, copies, count, held = list(out.values())
+        self.assertGreater(near_model, 1)
+        self.assertEqual(near_far, 0)        # its model within FAR_IN
+        self.assertEqual(far_model, 0)       # its far shape beyond FAR_OUT
+        self.assertGreater(far_far, 50)
+        self.assertEqual(copies, count)      # one copy a car: the other shape's copy went
+        self.assertEqual(held, count)
+
 if __name__ == '__main__':
     unittest.main()

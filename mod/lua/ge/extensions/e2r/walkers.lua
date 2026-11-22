@@ -1652,6 +1652,34 @@ local function kindOf(V, pose, skin)
   return K
 end
 
+-- The fal people (earthng/traffic_art.py; M.CHARS, set by world.lua where the planet has them and
+-- the game has batches): a walker is one of the figures, by its look's number, and its copy is the
+-- figure's own shape of the pose with the figure's own map (no colour, no remap). A walker
+-- further than NEAR_R walks as the figure's far shape (a third of the triangles).
+local POSE_KEYS = {}
+for q = 0, M.POSES - 1 do POSE_KEYS[q] = 'walk' .. q end
+POSE_KEYS[M.POSES], POSE_KEYS[M.POSES + 1] = 'stand', 'sit'
+function M.charOf(w)
+  local chars = M.CHARS
+  return chars and chars[(w.look or 0) % #chars + 1] or nil
+end
+-- the colours of the body that takes w's place (pedhit.lua): its figure's, else its palettes'
+function M.coloursOf(w)
+  local char = M.charOf(w)
+  local look = char and char.look
+  if look then return look.shirt, look.pants, look.skin end
+  return M.SHIRTS[w.shirt], M.PANTS[w.pants], M.SKIN[w.skin]
+end
+local function charKind(V, char, key)
+  local shape = char.shapes[key]
+  local K = V.kinds[shape]
+  if not K then
+    K = V.batches:kind(shape, nil, shape)
+    V.kinds[shape] = K
+  end
+  return K
+end
+
 -- the shirt as one ColorF per palette entry (sRGB, as the engine's ColorF), made once
 local function shirtOf(V, i)
   local c = V.shirts[i]
@@ -1697,12 +1725,18 @@ local function batchDraw(W, V, fx, fy, ground)
       top = slot
       if mode == 2 then nearUsed = nearUsed + 1 else farUsed = farUsed + 1 end
       local pose = (mode == 2 or w.stay) and poseOf(w) or FAR_POSE
-      local K = kindOf(V, pose, w.skin)
+      local char = V.chars and M.charOf(w)
+      local K
+      if char then
+        K = charKind(V, char, (mode == 2 or w.stay) and POSE_KEYS[pose] or 'far')
+      else
+        K = kindOf(V, pose, w.skin)
+      end
       local hx, hy = w.hx or 1, w.hy or 0
       local len = math.sqrt(hx * hx + hy * hy)
       if len > 1e-9 then hx, hy = hx / len, hy / len else hx, hy = 1, 0 end
       if K ~= bkind[slot] or blook[slot] ~= w.look then
-        local B, i = P:add(K, w.x, w.y, groundZ(w, ground), -hy, hx, 0, shirtOf(V, w.shirt))
+        local B, i = P:add(K, w.x, w.y, groundZ(w, ground), -hy, hx, 0, not char and shirtOf(V, w.shirt) or nil)
         -- the kind's batch not made yet (one a frame): the old copy stays until it is
         if B then
           -- keep the previous pose one frame: dropping it here left a blank frame every step

@@ -45,6 +45,34 @@ class RuleTests(unittest.TestCase):
             self.assertTrue(choice[1] and choice[2])
         self.assertIsNone(self.lua.eval("U.get('none')"))
 
+    def test_a_universe_is_described_for_a_reader(self):
+        """The proving ground's page says by which rules the tile under the car is built."""
+        import json
+        for name in ('mountains', 'desert', 'snow', 'mud', 'jungle'):
+            d = to_py(self.lua.eval(f"U.describe('{name}')"))
+            json.dumps(d)                                    # plain data: it goes to the page as JSON
+            self.assertEqual(d['id'], name)
+            self.assertTrue(d['label']['uk'] and d['label']['en'] and d['about']['uk'] and d['about']['en'], name)
+            self.assertIs(d['feel'], True)
+        snow = to_py(self.lua.eval("U.describe('snow')"))
+        self.assertEqual(snow['climate'], {'class': 27, 'name': 'boreal', 'snowline': -3000})
+        self.assertEqual(snow['look'], {'block': 'nordic', 'markings': 'none'})
+        self.assertEqual((snow['tune'], snow['option']), ({'lanes': 0, 'wear': 0}, {'maxGrass': 0, 'maxRocks': 0}))
+        self.assertIn(['sidewalk', 'snow'], snow['swaps'])
+        self.assertIn(['mark', False], snow['swaps'])
+        self.assertEqual(snow['swaps'], sorted(snow['swaps'], key=lambda s: s[0]))
+        self.assertGreater(snow['patterns'], 0)
+        mountains = to_py(self.lua.eval("U.describe('mountains')"))
+        self.assertEqual(mountains['climate'], {'class': 27, 'name': 'boreal', 'treeline': 420, 'snowline': 900})
+        self.assertEqual((to_py(mountains['swaps']), mountains['patterns']), ({}, 0))
+        self.assertEqual(to_py(self.lua.eval("U.describe('jungle')"))['flora'], 'tropics')
+        self.assertNotIn('climate', to_py(self.lua.eval("U.describe('mud')")))    # the place's own
+        self.assertIsNone(self.lua.eval("U.describe('none')"))
+        # describing a universe does not change its rules
+        self.assertEqual(self.lua.eval("U.get('snow').look.block"), 'nordic')
+        self.lua.execute("U.describe('snow').look.block = 'x'")
+        self.assertEqual(self.lua.eval("U.get('snow').look.block"), 'nordic')
+
     def test_snow_covers_roads_roofs_and_fields(self):
         for kind in ('road', 'road_major', 'road_worn', 'road_major_lane', 'road_gravel', 'road_dirt', 'road_track', 'paved'):
             self.assertEqual(self.swap('snow', kind), 'snow_edge', kind)

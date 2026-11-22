@@ -114,6 +114,33 @@ class LabTests(unittest.TestCase):
         self.assertTrue(payload['worldTouched'] and payload['tileTouched'])
         self.assertEqual([g['key'] for g in payload['groups']][:4], ['universe', 'look', 'buildings', 'road'])
 
+    def test_report_says_what_is_in_force_for_a_tile(self):
+        """The proving ground's card of the tile under the car: the asset set in force, and every
+        other knob that is not at its default with where its value comes from."""
+        lua = lab()
+        report = to_py(lua.eval("lab.report('r:0_0', {'look'})"))
+        json.dumps(report)
+        self.assertEqual(to_py(report['changed']), {})                       # an untouched lab changes nothing
+        look = {s['key']: s for s in report['groups']['look']}
+        self.assertEqual(list(look), ['look.block', 'look.asphalt', 'look.markings', 'look.verge', 'look.buildings',
+                                      'look.trees', 'look.statics'])
+        self.assertEqual((look['look.block']['value'], look['look.block']['from'], look['look.block']['text']['en']),
+                         ('postsoviet', 'default', 'Post-Soviet'))
+        lua.execute("lab.set('crown', .04); lab.set('sidewalk', 3, 'r:0_0'); lab.set('look.block', 'british', 'r:0_0')")
+        lua.execute("lab.set('wear', false, 'r:0_0')")
+        report = to_py(lua.eval("lab.report('r:0_0', {'look'})"))
+        changed = {k['key']: k for k in report['changed']}
+        self.assertEqual(set(changed), {'crown', 'sidewalk', 'wear'})        # the look is listed whole, not here
+        self.assertEqual((changed['crown']['from'], changed['crown']['value'], changed['crown']['default']), ('world', .04, .02))
+        self.assertEqual((changed['sidewalk']['from'], changed['sidewalk']['default']), ('tile', 2))
+        self.assertEqual((changed['wear']['value'], changed['wear']['default']), (False, True))
+        self.assertTrue(changed['crown']['label']['uk'] and changed['crown']['label']['en'])
+        block = next(s for s in report['groups']['look'] if s['key'] == 'look.block')
+        self.assertEqual((block['value'], block['from'], block['text']['uk']), ('british', 'tile', 'Британія'))
+        # another tile sees the world's change alone
+        other = to_py(lua.eval("lab.report('r:5_5', {'look'})"))
+        self.assertEqual([k['key'] for k in other['changed']], ['crown'])
+
     def test_file_round_trip_drops_what_it_does_not_know(self):
         lua = lab()
         lua.execute("saved = nil; lab.storage = {read = function() return saved end, write = function(cfg) saved = cfg end}")
@@ -203,6 +230,149 @@ class NativeLabTests(unittest.TestCase):
             if mod.status().job.state != 'working':
                 break
         self.assertEqual(mod.status().job.state, 'ready')
+
+
+def to_lua(value):
+    """A plain Python value as Lua source."""
+    if value is None:
+        return 'nil'
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple)):
+        return '{' + ', '.join(to_lua(v) for v in value) + '}'
+    return '{' + ', '.join(f'[{to_lua(k)}] = {to_lua(v)}' for k, v in value.items()) + '}'
+
+
+def card_world(here='D7'):
+    """world.lua on a small proving ground, with the real lab and universes behind a stub of
+    native.lua: what the page's card of the tile under the car is made of (M.polygonDetail)."""
+    import proving_zones
+    from test_options import WORLD_IM
+    from test_widget import load_world
+    tiles = [
+        {'code': 'D7', 'i': -4, 'j': 1, 'block': 'main', 'zone': 'town', 'title': 'Панельки 9 поверхів',
+         'titleEn': 'Panel, 9 floors', 'tags': 'building=apartments building:levels=9', 'at': [-48.87, -123.42], 'views': []},
+        {'code': 'SN-B2', 'i': -12, 'j': -5, 'block': 'snow', 'zone': 'wild', 'title': 'Тайга', 'titleEn': 'Taiga',
+         'tags': '', 'at': [-48.9, -123.5], 'views': [], 'universe': 'snow'}]
+    plan = {'tile': 500, 'tiles': tiles, 'zones': [], 'themes': proving_zones.themes(),
+            'blocks': [{'id': 'main', 'title': 'Основна сітка', 'titleEn': 'Main grid', 'universe': None},
+                       {'id': 'snow', 'title': 'Сніг', 'titleEn': 'Snow', 'universe': 'snow'}]}
+    lua = LuaRuntime()
+    lua.globals().parking_mod = lua.execute((E2R / 'parking.lua').read_text(encoding='utf8'))
+    lua.globals().winguard_mod = lua.execute((E2R / 'winguard.lua').read_text(encoding='utf8'))
+    lua.execute(WORLD_IM)
+    src = (E2R / 'world.lua').read_text(encoding='utf8').replace('local NATIVE = true', 'local NATIVE = false')
+    lua.globals().mod = load_world(lua, src)
+    lua.globals().lab = lua.execute((E2R / 'lab.lua').read_text(encoding='utf8'))
+    lua.globals().U = lua.execute((E2R / 'universe.lua').read_text(encoding='utf8'))
+    tile = next(t for t in tiles if t['code'] == here)
+    lua.execute(f'''
+      S = up(mod.tick, 'S')
+      plan = {to_lua(plan)}
+      at = {{i = {tile['i']}, j = {tile['j']}}}
+      S.status = {{stream = {{country = 'polygon', tile = 500, ready = {{}}, scenes = {{}}, building = 1, queued = 2}},
+        countries = {{{{id = 'polygon', title = 'Proving ground', polygon = plan}}}}}}
+      up(mod.labTile, 'NATIVE', true)
+      up(mod.labTile, 'native', {{lab = lab, universes = U,
+        tileAt = function() return at.i .. '_' .. at.j, 'polygon:' .. at.i .. '_' .. at.j, at.i, at.j end}})
+      lab.bind{{tune = {TUNE}, universes = U.choices(), climates = U.climates, rules = U.get,
+        floraZones = {{{{'polissia', 'Полісся', 'Polissia'}}, {{'tropics', 'Тропіки', 'Tropics'}}}},
+        universeOf = function(scope)
+          local i, j = tostring(scope):match(':(-?%d+)_(-?%d+)$')
+          local t = i and mod.polygonHere(tonumber(i), tonumber(j))
+          return t and t.universe or nil
+        end,
+        look = function() return {{block = 'postsoviet', asphalt = 'worn'}} end,
+        quality = function(key) return ({{detail = 50, maxTrees = 1800, maxGrass = 4000, maxRocks = 120}})[key] end}}
+    ''')
+    return lua
+
+
+class TileCardTests(unittest.TestCase):
+    """The proving ground's page tells what the tile under the car shows and which rules build it."""
+
+    def detail(self, lua):
+        d = to_py(lua.eval('mod.polygonDetail()'))
+        json.dumps(d)                                        # plain data: it goes to the page as JSON
+        return d
+
+    def test_a_tile_of_the_main_grid(self):
+        lua = card_world('D7')
+        d = self.detail(lua)
+        self.assertEqual((d['code'], d['titleEn'], d['zone'], d['key'], d['scope'], d['size']),
+                         ('D7', 'Panel, 9 floors', 'town', '-4_1', 'polygon:-4_1', 500))
+        self.assertEqual(d['block'], {'id': 'main', 'title': 'Основна сітка', 'titleEn': 'Main grid'})
+        self.assertEqual(d['theme']['titleEn'], 'Town blocks')
+        self.assertTrue(d['theme']['about'] and d['theme']['aboutEn'])
+        self.assertEqual(d['tags'], 'building=apartments building:levels=9')
+        self.assertEqual(d['at'], [-48.87, -123.42])
+        self.assertNotIn('universe', d)                      # the place's own rules
+        self.assertEqual([r['key'] for r in d['rules']], ['universe', 'climate', 'floraZone', 'feel'])
+        self.assertEqual({s['key']: s['value'] for s in d['look']}['look.block'], 'postsoviet')
+        self.assertEqual(to_py(d['changed']), {})
+        self.assertEqual(d['state'], {'ready': False, 'scene': False, 'building': 1, 'queued': 2})
+        self.assertFalse(d['pinned'])
+
+    def test_the_labs_changes_are_listed_with_their_source(self):
+        lua = card_world('D7')
+        lua.execute("lab.set('crown', .04); lab.set('sidewalk', 3, 'polygon:-4_1'); lab.set('look.block', 'british', 'polygon:-4_1')")
+        lua.execute("S.status.stream.ready['-4_1'] = true; S.status.stream.scenes['-4_1'] = true")
+        d = self.detail(lua)
+        changed = {k['key']: (k['value'], k['from'], k['default']) for k in d['changed']}
+        self.assertEqual(changed, {'crown': (.04, 'world', .02), 'sidewalk': (3, 'tile', 2)})
+        block = next(s for s in d['look'] if s['key'] == 'look.block')
+        self.assertEqual((block['value'], block['from'], block['text']['en']), ('british', 'tile', 'British'))
+        self.assertEqual((d['state']['ready'], d['state']['scene']), (True, True))
+        # the whole world as another universe: the tile is built by its rules, and the card says whose choice it is
+        lua.execute("lab.set('universe', 'mud')")
+        d = self.detail(lua)
+        self.assertEqual((d['universe']['id'], d['universe']['from'], d['universe']['label']['en']), ('mud', 'world', 'Mud'))
+        self.assertTrue(d['universe']['about']['uk'])
+
+    def test_a_tile_of_a_universe(self):
+        lua = card_world('SN-B2')
+        d = self.detail(lua)
+        self.assertEqual((d['code'], d['zone'], d['block']['id']), ('SN-B2', 'wild', 'snow'))
+        u = d['universe']
+        self.assertEqual((u['id'], u['from']), ('snow', 'pack'))          # the plan names it for its own tile
+        self.assertEqual(u['climate'], {'class': 27, 'name': 'boreal', 'snowline': -3000})
+        self.assertIn(['mark', False], u['swaps'])
+        look = {s['key']: (s['value'], s['from']) for s in d['look']}
+        self.assertEqual(look['look.block'], ('nordic', 'universe'))
+        self.assertEqual(look['look.markings'], ('none', 'universe'))
+        self.assertEqual(look['look.asphalt'], ('worn', 'default'))      # the pack's own
+        # what the universe turns off in the generator is listed as its doing
+        changed = {k['key']: (k['value'], k['from']) for k in d['changed']}
+        self.assertEqual(changed['lanes'], (False, 'universe'))
+        self.assertEqual(changed['wear'], (False, 'universe'))
+        self.assertEqual(changed['maxGrass'], (0, 'universe'))
+        # taken out of its universe by hand: no universe, nothing changed
+        lua.execute("lab.set('universe', 'none', 'polygon:-12_-5')")
+        d = self.detail(lua)
+        self.assertNotIn('universe', d)
+        self.assertEqual(next(r for r in d['rules'] if r['key'] == 'universe')['from'], 'tile')
+        self.assertEqual(to_py(d['changed']), {})
+
+    def test_the_page_gets_the_card_with_the_plan(self):
+        lua = card_world('SN-B2')
+        lua.execute('pushed = {}; mod.polygonList()')
+        sent = to_py(lua.eval('pushed[#pushed]'))
+        json.dumps(sent)
+        self.assertEqual(sent['name'], 'EarthNGPolygon')
+        data = sent['data']
+        self.assertEqual((data['here'], data['detail']['code'], data['mounted']), ('SN-B2', 'SN-B2', True))
+        self.assertEqual(set(data['plan']['themes']), set(__import__('proving_zones').THEMES))
+        # off the plan's subjects (the ring road, the sea): the rules are told all the same
+        lua.execute('at.i, at.j = 40, 40; pushed = {}; mod.polygonList()')
+        data = to_py(lua.eval('pushed[#pushed].data'))
+        self.assertNotIn('here', data)
+        self.assertNotIn('code', data['detail'])
+        self.assertEqual(data['detail']['key'], '40_40')
+        self.assertEqual(len(data['detail']['look']), 7)
 
 
 class PageTests(unittest.TestCase):

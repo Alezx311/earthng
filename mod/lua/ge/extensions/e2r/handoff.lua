@@ -17,14 +17,32 @@
 --     swapped: the teleport would put two cars in one place.
 --   - The game's AI does not see the flow's traffic lights: a real car on a lit approach is held
 --     (api.hold, a speed limit of 0) while its light is red, as the flow car in its place would be.
+--   - Nor does it see a flow car, which has no collision: a real car behind one keeps that car's
+--     pace (flow.leadAt, api.limit), so it joins a queue of flow cars instead of driving through it.
+--   - A real car that stands for no reason (a wreck) goes back into the flow once the player is
+--     away from it, and its place in the pool is free for a car that drives.
 -- The game calls go through `api` (M.gameApi below), so earthng/test_flow.py runs this in lupa.
 local M = {}
 
 M.SIZE, M.ENTER_R, M.LEAVE_R = 8, 90, 130
 M.SPARE = .5              -- the pool's inactive spares, a share of the cars that may drive at once
-local CLEAR_R = 12        -- m between real cars a swap needs: the teleport would put two in one place
-local PLAYER_R = 8        -- m from the player's car: a car's length and a margin (12 left a flow car
-                          -- queued right ahead of a stopped player a ghost one could drive through)
+-- Room a swap needs, so the teleport puts no two cars in one place. Cars on lanes that run the same
+-- way stand a car's length and the jam gap apart (6.8 m) and a lane apart (2.6 m and more): a
+-- circle of 12 m left every second car of a queue a ghost for good, as each stood within it of the
+-- real car in front. So beside or behind a car heading the same way the room is a rectangle; a car
+-- across (a junction) keeps the circle.
+local CLEAR_R = 6.5       -- m between two cars that do not head the same way
+local CLEAR_ALONG, CLEAR_ACROSS = 5.6, 2.3   -- m between two that do: along the lane, across it
+local PLAYER_R = 8        -- m from the player's car when its heading is not known
+local PLAYER_ALONG, PLAYER_ACROSS = 6.4, 2.5
+-- a real car behind a flow car (flow.leadAt): no faster than its leader plus what closes the gap
+-- beyond FOLLOW_GAP in FOLLOW_T s; told to the AI when it changes by FOLLOW_STEP or to a stop
+local FOLLOW_GAP, FOLLOW_T, FOLLOW_FREE, FOLLOW_STEP = 2.5, 1.3, 22, 1.5
+-- a real car that stood STUCK_S s with no light and no leader to wait for (a wreck, a car the AI
+-- gave up on) goes back into the flow once it is STUCK_R behind the player, or ENTER_R away any
+-- way (a wreck that mends itself in front of the player would be seen): its place in the pool is
+-- for a car that drives
+local STUCK_S, STUCK_R = 20, 40
 local EVERY = .25         -- s between hand-off checks
 local SPAWN_EVERY = .5    -- s between two pool spawns
 local SWAPS = 2           -- flow cars made real a check: a woken car's first physics frames cost (flow-10)
@@ -138,6 +156,26 @@ function M.prewarm(H, api, fx, fy)
   end
 end
 
+-- one more car for the pool, when it is short of one (a landing fills the pool a car at a time
+-- ahead of the drive, world.lua flowPoolWarm)
+function M.prewarmOne(H, api, fx, fy)
+  if #H.pool < M.target(H) then return addCar(H, api, fx, fy) end
+end
+
+-- Every car parked and the pool kept: a landing leaves the roads the cars were on, and the pool
+-- spawned again was ~5 s of one frame at every touch-down (a spawn is 0.4-0.5 s, twelve of them).
+function M.park(H, api)
+  for k = #H.pool, 1, -1 do
+    local e = H.pool[k]
+    if not api.alive(e.id) then
+      table.remove(H.pool, k)
+    elseif e.active then
+      api.deactivate(e.id)
+    end
+    e.active, e.held, e.limit, e.still, e.kept = false, false, nil, nil, nil
+  end
+end
+
 -- How near a thing at (x, y) moving (vx, vy) comes to the player's car at (fx, fy) moving
 -- (pvx, pvy) within LOOK s, and whether the two are drawing apart now.
 local function approach(x, y, vx, vy, fx, fy, pvx, pvy)
@@ -150,10 +188,23 @@ local function approach(x, y, vx, vy, fx, fy, pvx, pvy)
 end
 M.approach = approach
 
+-- whether a car at (x, y) heading (hx, hy) has no room beside one at (ox, oy) heading (ohx, ohy)
+-- (nil: not known): within r of it, unless both head the same way and it is a car's length along
+-- the lane or a lane across away
+local function crowded(x, y, hx, hy, ox, oy, ohx, ohy, r, along, across)
+  local dx, dy = ox - x, oy - y
+  if dx * dx + dy * dy >= r * r then return false end
+  if ohx and math.abs(hx * ohx + hy * ohy) > .9 then
+    return math.abs(dx * hx + dy * hy) < along and math.abs(dx * hy - dy * hx) < across
+  end
+  return true
+end
+M.crowded = crowded
+
 -- a real car goes back into the flow, or out of the game when no lane takes it; keep: then it stays
 -- real instead (returns false), as a car vanishing in plain sight is worse than one more real car
 local function demote(H, flow, F, api, e, x, y, vx, vy, hx, hy, keep)
-  local car = flow.put(F, x, y, hx, hy, math.sqrt(vx * vx + vy * vy), e.paint, e.flowBody or e.body, keep)
+  local car = flow.put(F, x, y, hx, hy, math.sqrt(vx * vx + vy * vy), e.paint, e.flowBody or e.body, keep, e.flowVariant)
   if not car and keep then
     -- counted once a car: it is tried again every check
     if not e.kept then H.stats.kept = (H.stats.kept or 0) + 1; e.kept = true end
@@ -162,7 +213,7 @@ local function demote(H, flow, F, api, e, x, y, vx, vy, hx, hy, keep)
   e.kept = nil
   if car then H.stats.demoted = H.stats.demoted + 1 else H.stats.dropped = H.stats.dropped + 1 end
   api.deactivate(e.id)
-  e.active, e.held = false, false
+  e.active, e.held, e.limit, e.still = false, false, nil, nil
   return true
 end
 
@@ -183,9 +234,9 @@ local function preempt(H, flow, F, api, active, fx, fy, body)
   end
 end
 
--- one step at time now; (fx, fy) the player's car, (pvx, pvy) its velocity; flow the flow module,
--- F its state
-function M.step(H, flow, F, fx, fy, now, api, pvx, pvy)
+-- one step at time now; (fx, fy) the player's car, (pvx, pvy) its velocity, (phx, phy) the way it
+-- faces (nil: not known); flow the flow module, F its state
+function M.step(H, flow, F, fx, fy, now, api, pvx, pvy, phx, phy)
   pvx, pvy = pvx or 0, pvy or 0
   -- a smaller pool (the widget's setting): parked cars go first, a driving one back into the flow
   while #H.pool > M.target(H) do
@@ -234,6 +285,13 @@ function M.step(H, flow, F, fx, fy, now, api, pvx, pvy)
       local soon, away = approach(x, y, vx, vy, fx, fy, pvx, pvy)
       local gone = d2 > M.LEAVE_R * M.LEAVE_R and (away or d2 > MAX_R * MAX_R) and
         demote(H, flow, F, api, e, x, y, vx, vy, hx, hy, d2 < MAX_R * MAX_R)
+      -- a car that stands for no reason gives its place in the pool back
+      if not gone and e.still and now - e.still > STUCK_S and d2 > STUCK_R * STUCK_R and soon > STUCK_R
+          and (d2 > M.ENTER_R * M.ENTER_R or (phx and (x - fx) * phx + (y - fy) * phy < 0))
+          and demote(H, flow, F, api, e, x, y, vx, vy, hx, hy, true) then
+        gone = true
+        H.stats.unstuck = (H.stats.unstuck or 0) + 1
+      end
       if not gone then
         active[#active + 1] = {x = x, y = y, vx = vx, vy = vy, hx = hx, hy = hy, e = e,
           spare = away and soon > SPARE_R}
@@ -241,9 +299,28 @@ function M.step(H, flow, F, fx, fy, now, api, pvx, pvy)
         local hold = flow.holdAt and flow.holdAt(F, x, y, hx, hy, v) or false
         if hold ~= (e.held or false) then
           api.hold(e.id, hold)
-          e.held = hold
+          e.held, e.limit = hold, nil
           H.stats.held = (H.stats.held or 0) + (hold and 1 or 0)
         end
+        -- behind a flow car it keeps that car's pace: the AI does not see what has no collision
+        local limit
+        if not hold and flow.leadAt and api.limit then
+          local gap, lv = flow.leadAt(F, x, y, hx, hy)
+          if gap then
+            limit = math.max(0, (lv or 0) + (gap - FOLLOW_GAP) / FOLLOW_T)
+            -- a crawl is a stop: under the step it is told in, a limit of 0.4 m/s stayed and the
+            -- car crept through its leader
+            if limit < .5 then limit = 0 elseif limit > FOLLOW_FREE then limit = nil end
+          end
+          local was = e.limit
+          if (limit == nil) ~= (was == nil)
+              or (limit and (math.abs(limit - was) > FOLLOW_STEP or (limit < .5) ~= (was < .5))) then
+            api.limit(e.id, limit)
+            e.limit = limit
+            if limit and not was then H.stats.followed = (H.stats.followed or 0) + 1 end
+          end
+        end
+        if v < .5 and not hold and not (limit and limit < 1) then e.still = e.still or now else e.still = nil end
       end
     end
   end
@@ -263,9 +340,10 @@ function M.step(H, flow, F, fx, fy, now, api, pvx, pvy)
   local swaps = 0
   for _, c in ipairs(list) do
     if swaps >= SWAPS then break end
-    local clear = c.d > PLAYER_R
+    local chx, chy = math.cos(c.yaw), math.sin(c.yaw)
+    local clear = not crowded(c.x, c.y, chx, chy, fx, fy, phx, phy, PLAYER_R, PLAYER_ALONG, PLAYER_ACROSS)
     for _, a in ipairs(active) do
-      if clear and (a.x - c.x) ^ 2 + (a.y - c.y) ^ 2 < CLEAR_R * CLEAR_R then clear = false end
+      if clear and crowded(c.x, c.y, chx, chy, a.x, a.y, a.hx, a.hy, CLEAR_R, CLEAR_ALONG, CLEAR_ACROSS) then clear = false end
     end
     if clear then
       local urgent = c.soon < URGENT_R
@@ -284,10 +362,10 @@ function M.step(H, flow, F, fx, fy, now, api, pvx, pvy)
       -- than a sedan turning into a van in plain sight
       if e and (own or urgent) then
         local v = c.car.v
-        e.flowBody, e.paint = c.car.body, c.car.paint   -- the flow car it comes back as
+        e.flowBody, e.paint, e.flowVariant = c.car.body, c.car.paint, c.car.variant   -- the flow car it comes back as
         flow.take(F, c.car)
         api.activate(e.id, c.x, c.y, c.z, c.yaw, v, c.car.paint)
-        e.active, e.held = true, false
+        e.active, e.held, e.limit, e.still = true, false, nil, nil
         if flow.holdAt and flow.holdAt(F, c.x, c.y, math.cos(c.yaw), math.sin(c.yaw), v) then
           api.hold(e.id, true)
           e.held = true
@@ -379,6 +457,18 @@ function M.gameApi(rgb, group)
     if on then
       obj:queueLuaCommand('ai.setSpeedMode("limit")')
       obj:queueLuaCommand('ai.setSpeed(0)')
+    else
+      obj:queueLuaCommand('ai.setSpeedMode("legal")')
+      obj:queueLuaCommand('ai.setSpeed()')
+    end
+  end
+  -- no faster than speed m/s (behind a flow car), or by the road's own limit again (nil)
+  function api.limit(id, speed)
+    local obj = getObjectByID(id)
+    if not obj then return end
+    if speed then
+      obj:queueLuaCommand('ai.setSpeedMode("limit")')
+      obj:queueLuaCommand(string.format('ai.setSpeed(%.1f)', speed))
     else
       obj:queueLuaCommand('ai.setSpeedMode("legal")')
       obj:queueLuaCommand('ai.setSpeed()')

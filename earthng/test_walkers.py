@@ -994,6 +994,70 @@ class WalkerTests(unittest.TestCase):
         ''')
         self.assertEqual((out[1], out[2], out[3]), (1, 1, 1))
 
+    def test_with_the_fal_people_a_walker_is_one_of_the_figures_in_its_own_shape_of_the_pose(self):
+        lua = self.lua()
+        lua.execute(self.BATCHES)
+        lua.globals().sb = lua.execute(WALKERS.with_name('shapebatch.lua').read_text(encoding='utf8'))
+        out = lua.execute('''
+          -- three figures, each with its shapes by pose and the colours of its clothes
+          local chars = {}
+          for c = 1, 3 do
+            local s = {stand = 'c' .. c .. '_stand', sit = 'c' .. c .. '_sit', far = 'c' .. c .. '_far'}
+            for q = 0, walkers.POSES - 1 do s['walk' .. q] = 'c' .. c .. '_walk' .. q end
+            chars[c] = {name = 'c' .. c, shapes = s, look = {shirt = {c / 10, 0, 0}, pants = {0, c / 10, 0}, skin = {0, 0, c / 10}}}
+          end
+          walkers.CHARS = chars
+          local W = walkers.new{seed = 5, spacing = 0}
+          walkers.sync(W, grid(12, 100), 550, 550)
+          local P = sb.new(nil)
+          local V = walkers.view(W, shapes(), nil, P)
+          V.chars = chars
+          walkers.setTarget(W, 600)
+          for t = 1, 600 do
+            walkers.step(W, 1 / 60, 550, 550)
+            walkers.draw(W, V, 550, 550)
+          end
+          walkers.draw(W, V, 550, 550)
+          local copies, wrong, farShapes, nearShapes, used = 0, 0, 0, 0, {}
+          for slot, w in pairs(W.slots) do
+            local B, i = V.bb[slot], V.bi[slot]
+            if B then
+              copies = copies + 1
+              local char = walkers.charOf(w)
+              used[char.name] = true
+              local d = math.sqrt((w.x - 550) ^ 2 + (w.y - 550) ^ 2)
+              local shape = B.obj.shape
+              -- its own figure's shape, without a remap, in no colour (white)
+              if shape:sub(1, 2) ~= char.name or B.obj.remap ~= nil or B.obj.at[i][7][1] ~= 1 then wrong = wrong + 1 end
+              if shape == char.shapes.far then
+                farShapes = farShapes + 1
+                if d < 59 then wrong = wrong + 1 end
+              elseif not w.stay then
+                nearShapes = nearShapes + 1
+                if d > 71 or shape ~= char.shapes['walk' .. walkers.poseOf(w)] and shape ~= char.shapes.stand then wrong = wrong + 1 end
+              end
+            end
+          end
+          local n = 0
+          for _ in pairs(used) do n = n + 1 end
+          -- the body that takes a walker's place wears its figure's colours
+          local w = W.slots[1]
+          local shirt, pants, skin = walkers.coloursOf(w)
+          local own = walkers.charOf(w).look
+          local same = shirt == own.shirt and pants == own.pants and skin == own.skin
+          walkers.CHARS = nil
+          local a = walkers.coloursOf(w)
+          return {copies, wrong, farShapes, nearShapes, n, same, a == walkers.SHIRTS[w.shirt]}
+        ''')
+        copies, wrong, far, near, figures, same, palette = list(out.values())
+        self.assertGreater(copies, 100)
+        self.assertEqual(wrong, 0)
+        self.assertGreater(far, 20)
+        self.assertGreater(near, 5)
+        self.assertEqual(figures, 3)
+        self.assertTrue(same)
+        self.assertTrue(palette)      # without the figures: the palettes, as before
+
     def test_people_art_bakes_the_walkers_trousers_and_skins_for_the_batches(self):
         import json
         import sys
