@@ -531,8 +531,22 @@ class BuildingStyleTests(unittest.TestCase):
             self.assertLessEqual(albedo(real, name)[0], top, name)
         # house paints and grass lose their loudness, glass towers and road paint keep their colour
         for name in ('e2rf_hw_render_ochre', 'e2rf_hw_yellow', 'e2rf_ground', 'e2rf_scrub', 'e2rf_orchard'):
-            self.assertLessEqual(albedo(real, name)[1], .33, name)
+            # (open land is the colour it has from above, fast_tone.SATELLITE: scrub is .35 there)
+            self.assertLessEqual(albedo(real, name)[1], .36 if name == 'e2rf_scrub' else .33, name)
             self.assertLess(albedo(real, name)[1], albedo(raw, name)[1], name)
+        # open land is the colour the Sentinel-2 composite has for its class (ground_targets.json)
+        targets = tone.satellite()
+        self.assertGreaterEqual(set(targets), {'ground', 'meadow', 'park', 'orchard', 'scrub', 'wetland', 'forest'})
+        for kind, cls in tone.SATELLITE.items():
+            f, m = real['e2rf_' + kind], means[tone.key(real['e2rf_' + kind]['baseColorMap'])]
+            rgb = [m[i] * tone._lin(float(x)) for i, x in enumerate(f['baseColorFactor'].split()[:3])]
+            for got, want in zip(rgb, targets[cls]):
+                self.assertAlmostEqual(tone._enc(got), tone._enc(want), delta=.012, msg=kind)
+        # the lush grass and the verge move with the common grass: none greener than the picture
+        for name in ('e2rf_grass_lush', 'e2rf_edge_grass'):
+            f, m = real[name], means[tone.key(real[name]['baseColorMap'])]
+            rgb = [m[i] * tone._lin(float(x)) for i, x in enumerate(f['baseColorFactor'].split()[:3])]
+            self.assertLess(tone._enc(rgb[1]) - tone._enc(rgb[0]), .04, name)
         for name in ('e2rf_wall_off_blue', 'e2rf_mark', 'e2rf_mark_yellow', 'e2rf_water', 'e2rf_lens_red'):
             self.assertEqual(real[name].get('baseColorFactor'), raw[name].get('baseColorFactor'), name)
         # the level's materials are the real pack: the same tone, or a switch back would change them

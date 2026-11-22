@@ -529,6 +529,20 @@ SHEETS = {
     'sh_setts': ('mat_setts', 'plan'), 'sh_soil': ('mat_soil', 'plan'), 'sh_stubble': ('mat_stubble', 'plan'),
     'sh_laterite': ('mat_laterite', 'plan'),
 }
+# EarthNG's own surfaces (own_art.py: made with fal, kept out of Git), where all of them are
+# there: the walls and roofs of outbuildings and a few house walls (fast_style OWN_WALLS, OWN_ROOFS)
+import own_art
+OWN_SHEETS = {
+    'sh_o_cinder': ('own_cinder', 'wall'), 'sh_o_shell': ('own_shell', 'wall'), 'sh_o_silicate': ('own_silicate', 'wall'),
+    'sh_o_brick': ('own_brick_rough', 'wall'), 'sh_o_boards': ('own_boards_grey', 'wall'),
+    'sh_o_paint': ('own_boards_paint', 'wall grey'), 'sh_o_steel': ('own_steel', 'wall grey'), 'sh_o_osb': ('own_osb', 'wall'),
+    'sh_o_poly': ('own_poly', 'wall'), 'sh_o_log': ('own_log', 'wall'), 'sh_o_limewash': ('own_limewash', 'wall'),
+    'sh_o_slab': ('own_slab', 'wall'),
+    'sh_o_wave': ('own_wave', 'roof'), 'sh_o_felt': ('own_felt', 'roof'), 'sh_o_ondulin': ('own_ondulin', 'roof grey'),
+    'sh_o_tin': ('own_tin', 'roof'),
+}
+if own_art.ready():
+    SHEETS.update(OWN_SHEETS)
 SHEET_PX, SHEET_NORMAL_PX = 1024, 512
 # Photos too dark for a baseColorFactor (at most 1) to bring up: their own colour times this. A
 # 'grey' sheet is levelled to GREY_MEAN (linear), which its kinds' factors count from.

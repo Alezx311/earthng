@@ -123,6 +123,35 @@ M.DEFS = {
   {source = 'floor', src = 'Purple_flowers', name = 'Purple_flowers_pine', layer = 'e2rTurfPine', share = .35, still = true},
   {source = 'hirochi', src = 'small_grass_close', name = 'small_grass_pine', layer = 'e2rTurfPine', share = .3, still = true},
 }
+-- The grass's colour. The stock lawn materials are a racing circuit's watered green; over land
+-- whose sheet is the colour the place has from above (fast_tone.SATELLITE: 91 91 63 round Kyiv)
+-- the blades stood as a second, louder green (own-01: the lawn read 70 125 35 in the sun). The
+-- common and the lush grass are drawn in copies of their materials with the base colour factor
+-- multiplied by M.TINT, about half of the way from the stock green to the picture's olive: less
+-- green, more red and blue. Flowers, ferns and the dry grass keep their materials.
+M.TINT = {1.18, .96, 1.3}
+M.TINTED = {m_grass_green_short_01 = true, m_grass_green_long_01 = true}
+M.TINT_LAYERS = {e2rTurfGrass = true, e2rTurfLush = true}
+
+-- Pure: the copy of a stock material definition `m` under `name` with its colour factor tinted.
+function M.tinted(m, name, tint)
+  local c = {}
+  for k, v in pairs(m) do c[k] = v end
+  c.name, c.mapTo, c.persistentId = name, name, nil
+  c.Stages = {}
+  for i, stage in ipairs(m.Stages or {}) do
+    local st = {}
+    for k, v in pairs(stage) do st[k] = v end
+    c.Stages[i] = st
+  end
+  local st = c.Stages[1]
+  if st then
+    local f = type(st.baseColorFactor) == 'table' and st.baseColorFactor or {1, 1, 1, 1}
+    st.baseColorFactor = {(f[1] or 1) * tint[1], (f[2] or 1) * tint[2], (f[3] or 1) * tint[3], f[4] or 1}
+  end
+  return c
+end
+
 M.PREFIX = 'e2rTurfGC_'
 -- CPU placement: all cells regrow in the frame of a move (flushGroundCoverGrids); GPU-placed
 -- cells draw a frame later and read a layer copy the hidden block never refreshes (BeamNG.Earth)
@@ -341,6 +370,29 @@ function M.wanted(d)
   return true
 end
 
+-- the tinted copy of a stock grass material, made once (nil: the stock one stays)
+local tintMade = {}
+local function tintedMaterial(files, material)
+  if not M.TINTED[material] then return nil end
+  local name = 'e2rTurf_' .. material
+  if tintMade[name] ~= nil then return tintMade[name] or nil end
+  tintMade[name] = false
+  pcall(function()
+    for _, file in ipairs(files) do
+      local defs = jsonReadFile(file)
+      local m = type(defs) == 'table' and defs[material]
+      if m then
+        local out = 'e2r_world/turf_' .. material .. '.json'
+        jsonWriteFile(out, {[name] = M.tinted(m, name, M.TINT)}, false)
+        loadJsonMaterialsFile('/' .. out)
+        tintMade[name] = name
+        return
+      end
+    end
+  end)
+  return tintMade[name] or nil
+end
+
 local function makeCover(d, name)
   if defsCache[d.source] == nil then
     local files = M.SOURCES[d.source].materials
@@ -366,6 +418,12 @@ local function makeCover(d, name)
     gc:setField(k, 0, tostring(RADIUS[k] and tonumber(v) and tonumber(v) * dist or v))
   end
   for _, f in ipairs(M.PLACEMENT) do gc:setField(f[1], 0, f[2]) end
+  -- the common and the lush grass in the land's own tone (M.TINT)
+  if M.TINT and M.TINT_LAYERS[d.layer] and type(def.material) == 'string' then
+    local files = M.SOURCES[d.source].materials
+    local tinted = tintedMaterial(type(files) == 'table' and files or {files}, def.material)
+    if tinted then gc:setField('material', 0, tinted) end
+  end
   gc.canSave = false
   gc:registerObject(name)
   scenetree.MissionGroup:addObject(gc)

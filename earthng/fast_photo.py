@@ -321,15 +321,26 @@ GROUND = {
     # ploughed black earth with last year's straw on it and paler dry stretches
     'farmland':  (('mat_soil', 2.0), ('mat_stubble', 2.0, .42), ('photo_worn', 3.0, .1), (.98, .94, .86), .9),
 }
+# The tone and saturation of a sheet drawn from EarthNG's own sets (own_art.GROUND), where they
+# differ from the CC0 photos': the own leaf litter is a redder brown than Leaves photographs, and
+# under the first recipe the wood's floor came out orange (92 62 31 against 94 79 57).
+GROUND_OWN = {'forest': ((.96, .95, .86), .5)}
 # Mean brightness (0..1, after tone and saturation) a sheet is brought to: Snow005 photographs
 # grey, the dune sand dark; a kind not named keeps its photos' own.
 GROUND_LEVEL = {'snow': .74, 'snow_edge': .64, 'glacier': .7, 'dune': .62, 'desert': .5, 'alpine': .42, 'forest': .24}
 
 
+def own(name):
+    """The set that stands in for `name` where EarthNG's own library has one (own_art.GROUND: the
+    ground's surfaces made in one style), else `name`."""
+    import own_art
+    return own_art.stand_ins().get(name, name)
+
+
 def _layer(name, metres, which):
     repeats = round(GROUND_M / metres)
     cell = GROUND_PX // repeats
-    im = Image.open(TEXTURES / name / f'{which}.jpg').convert('RGB')
+    im = Image.open(TEXTURES / own(name) / f'{which}.jpg').convert('RGB')
     tile = np.asarray(im.resize((cell, cell), Image.LANCZOS), dtype=np.float32) / 255
     sheet = np.tile(tile, (repeats, repeats, 1))
     if sheet.shape[0] != GROUND_PX:
@@ -372,6 +383,8 @@ def ground_sheet(kind):
     grid, patches and worn spots on noise masks that repeat with the sheet. Normal green is
     flipped for BeamNG (ambientCG ships OpenGL normals)."""
     (base, bm), (patch, pm, pc), (wear, wm, wc), tone, saturation = GROUND[kind]
+    if kind in GROUND_OWN and own(base) != base:
+        tone, saturation = GROUND_OWN[kind]
     key = int.from_bytes(hashlib.sha256(kind.encode()).digest()[:4], 'big')
     layers = {n: (_layer(n, m, 'albedo'), _layer(n, m, 'normal')) for n, m in ((base, bm), (patch, pm), (wear, wm))}
     shift = GROUND_PX // round(GROUND_M / bm) // 2
@@ -514,7 +527,7 @@ def _photo_sheet(name, metres, which='albedo'):
     it on a noise mask to hide its grid; float RGB 0..1 (sRGB)."""
     repeats = max(1, round(FIELD_M / metres))
     cell = FIELD_PX // repeats
-    im = Image.open(TEXTURES / name / f'{which}.jpg').convert('RGB').resize((cell, cell), Image.LANCZOS)
+    im = Image.open(TEXTURES / own(name) / f'{which}.jpg').convert('RGB').resize((cell, cell), Image.LANCZOS)
     tile = np.asarray(im, dtype=np.float32) / 255
     sheet = np.tile(tile, (repeats, repeats, 1))[:FIELD_PX, :FIELD_PX]
     if sheet.shape[0] != FIELD_PX:

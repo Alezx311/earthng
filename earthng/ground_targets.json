@@ -1,0 +1,107 @@
+{
+ "source": "\u00a9 ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium",
+ "license": "CC-BY-4.0",
+ "pack": "earthng_kyiv-oblast.zip",
+ "tone": {
+  "gain": 1.4,
+  "saturation": 1.45
+ },
+ "kinds": {
+  "ground": {
+   "srgb": [
+    91,
+    91,
+    63
+   ],
+   "texels": 60666,
+   "spread": [
+    0.0898,
+    0.1152
+   ]
+  },
+  "farmland": {
+   "srgb": [
+    91,
+    88,
+    66
+   ],
+   "texels": 39122,
+   "spread": [
+    0.0829,
+    0.1149
+   ]
+  },
+  "meadow": {
+   "srgb": [
+    90,
+    90,
+    59
+   ],
+   "texels": 2820,
+   "spread": [
+    0.0884,
+    0.1097
+   ]
+  },
+  "forest": {
+   "srgb": [
+    58,
+    75,
+    46
+   ],
+   "texels": 51482,
+   "spread": [
+    0.0545,
+    0.0713
+   ]
+  },
+  "orchard": {
+   "srgb": [
+    82,
+    89,
+    60
+   ],
+   "texels": 675,
+   "spread": [
+    0.084,
+    0.1028
+   ]
+  },
+  "park": {
+   "srgb": [
+    73,
+    82,
+    53
+   ],
+   "texels": 172,
+   "spread": [
+    0.0679,
+    0.0942
+   ]
+  },
+  "wetland": {
+   "srgb": [
+    83,
+    85,
+    55
+   ],
+   "texels": 663,
+   "spread": [
+    0.0768,
+    0.0962
+   ]
+  },
+  "scrub": {
+   "srgb": [
+    79,
+    85,
+    55
+   ],
+   "texels": 192,
+   "spread": [
+    0.0703,
+    0.0994
+   ]
+  }
+ }
+}

@@ -1110,7 +1110,8 @@ def material(kind):
 # game's own (HOUSE_WALLS; generator.lua BLD.regions, BLD.wallScale), the roofs with ROOFS
 # (BLD.regions, BLD.repeats).
 import fast_facade as _facade
-_ROUGH = {'sh_tin_rust': (.72, .4), 'sh_tin_zinc': (.55, .6), 'sh_profile': (.5, .55), 'sh_roof_tin': (.72, .4),
+_ROUGH = {'sh_o_steel': (.6, .45), 'sh_o_tin': (.68, .45), 'sh_o_poly': (.32, 0), 'sh_o_felt': (.84, 0), 'sh_o_osb': (.8, 0),
+          'sh_tin_rust': (.72, .4), 'sh_tin_zinc': (.55, .6), 'sh_profile': (.5, .55), 'sh_roof_tin': (.72, .4),
           'sh_roof_zinc': (.55, .6), 'sh_roof_profile': (.5, .55), 'sh_roof_slate': (.6, 0), 'sh_setts': (.8, 0)}
 for _s in _facade.SHEETS:
     _rough, _metal = _ROUGH.get(_s, (.92, 0))
@@ -1152,6 +1153,61 @@ for _k, (_tex, _rgb, _m, _mean) in SHEET_ROOFS.items():
         TINT[_k] = _factor(_rgb, _mean)
     EXTRA[_k] = {'doubleSided': True}
 ROOFS += tuple(SHEET_ROOFS)
+# EarthNG's own surfaces (own_art.py, fast_facade.OWN_SHEETS), where its paid sources are there.
+# Outbuildings (generator.lua BLD.small): 'clad_o_*' walls, a garage's sheet steel and a shed's
+# or a house's painted boards each in several paints, and the roofs of garages and sheds (wave
+# slate, roofing felt, bituminous sheet in three paints, rusting tin). Garage doors are the
+# game's roll-up door in the paints garage doors take (no map of their own).
+import own_art as _own
+OWN_WALLS, OWN_ROOFS, OWN_DOORS = {}, {}, {}
+if _own.ready():
+    OWN_WALLS = {   # kind: (sheet, colour of the wall, metres a repeat, linear mean of the sheet when tinted)
+        'clad_o_cinder': ('sh_o_cinder', (150, 148, 142), 2.4, None), 'clad_o_shell': ('sh_o_shell', (206, 190, 150), 2.4, None),
+        'clad_o_silicate': ('sh_o_silicate', (196, 192, 182), 2.4, None), 'clad_o_brick': ('sh_o_brick', (140, 84, 62), 2.4, None),
+        'clad_o_boards': ('sh_o_boards', (128, 124, 116), 2.0, None), 'clad_o_osb': ('sh_o_osb', (176, 144, 96), 2.4, None),
+        'clad_o_poly': ('sh_o_poly', (212, 218, 214), 2.0, None), 'clad_o_log': ('sh_o_log', (104, 84, 66), 2.4, None),
+        'clad_o_limewash': ('sh_o_limewash', (226, 222, 210), 3.0, None), 'clad_o_slab': ('sh_o_slab', (150, 148, 142), 3.0, None),
+        'clad_o_bd_green': ('sh_o_paint', (88, 122, 92), 2.0, _G), 'clad_o_bd_blue': ('sh_o_paint', (104, 140, 170), 2.0, _G),
+        'clad_o_bd_brown': ('sh_o_paint', (118, 78, 58), 2.0, _G), 'clad_o_bd_ochre': ('sh_o_paint', (196, 160, 96), 2.0, _G),
+        'clad_o_st_green': ('sh_o_steel', (70, 104, 80), 2.5, _G), 'clad_o_st_brown': ('sh_o_steel', (110, 70, 54), 2.5, _G),
+        'clad_o_st_grey': ('sh_o_steel', (132, 134, 132), 2.5, _G), 'clad_o_st_blue': ('sh_o_steel', (84, 116, 150), 2.5, _G),
+        'clad_o_st_white': ('sh_o_steel', (214, 214, 206), 2.5, _G),
+        # the same boards, limewash, logs and shell stone as a house's walls (BLD.house, BLD.dress)
+        'hw_bd_green': ('sh_o_paint', (96, 132, 100), 2.0, _G), 'hw_bd_blue': ('sh_o_paint', (112, 150, 180), 2.0, _G),
+        'hw_bd_brown': ('sh_o_paint', (124, 84, 62), 2.0, _G), 'hw_bd_ochre': ('sh_o_paint', (204, 168, 104), 2.0, _G),
+        'hw_limewash': ('sh_o_limewash', (228, 224, 212), 3.0, None), 'hw_log': ('sh_o_log', (104, 84, 66), 2.4, None),
+        'hw_shell': ('sh_o_shell', (206, 190, 150), 2.4, None),
+    }
+    for _k, (_tex, _rgb, _m, _mean) in OWN_WALLS.items():
+        KINDS[_k] = (_tex, [_c / 255 for _c in _rgb] + [1], 'METAL' if _tex == 'sh_o_steel' else 'ROCK', _m, 'wall')
+        if _mean:
+            TINT[_k] = _factor(_rgb, _mean)
+    EXTRA['clad_o_poly'] = {'doubleSided': True}
+    OWN_ROOFS = {
+        'roof_o_wave': ('sh_o_wave', (150, 150, 142), 1.75, None), 'roof_o_felt': ('sh_o_felt', (70, 70, 74), 4.0, None),
+        'roof_o_tin': ('sh_o_tin', (128, 104, 88), 1.8, None), 'roof_o_poly': ('sh_o_poly', (212, 218, 214), 2.0, None),
+        'roof_o_ond_red': ('sh_o_ondulin', (116, 50, 42), 1.9, _G), 'roof_o_ond_green': ('sh_o_ondulin', (52, 88, 62), 1.9, _G),
+        'roof_o_ond_brown': ('sh_o_ondulin', (82, 60, 50), 1.9, _G),
+    }
+    for _k, (_tex, _rgb, _m, _mean) in OWN_ROOFS.items():
+        KINDS[_k] = (_tex, [_c / 255 for _c in _rgb] + [1], 'METAL' if _tex == 'sh_o_tin' else 'ROCK', _m, 'roof')
+        if _mean:
+            TINT[_k] = _factor(_rgb, _mean)
+        EXTRA[_k] = {'doubleSided': True}
+    ROOFS += tuple(OWN_ROOFS)
+    # (the roll-up door's own grey is .42: a paint is that door under a colour)
+    OWN_DOORS = {'door_g_green': (.44, .62, .48), 'door_g_brown': (.64, .44, .36), 'door_g_blue': (.42, .54, .72),
+                 'door_g_red': (.68, .34, .30), 'door_g_cream': (.84, .80, .66)}
+    for _k, _rgb in OWN_DOORS.items():
+        KINDS[_k] = ('rollup', [_c * .42 for _c in _rgb] + [1], 'METAL', 3.0, 'wall')
+        TINT[_k] = [*_rgb, 1]
+        BUILDING_FALLBACK[_k] = 'block'
+        FALLBACK[_k] = 'block'
+    # the atlas of garage and shed doors (own_art.cells), where its sheet is there: a door a cell
+    if _own.cells_ready():
+        TEXTURES['ob_cells'] = {'baseColorMap': f'{ART}/real/ob_cells.color.png', 'roughnessFactor': .72, 'metallicFactor': .15}
+        KINDS['door_ob'] = ('ob_cells', [.42, .40, .38, 1], 'METAL', 3.0, 'wall')
+        OWN_WALLS['door_ob'] = ('ob_cells', (107, 102, 97), 3.0, None)
 # Fences (generator.lua BLD.fenceKind): profiled sheet in its three usual paints, brick and rubble
 # walls, a fence of upright boards with its gaps cut by opacity
 TEXTURES['fence_boards'] = {'baseColorMap': f'{ART}/real/fence_boards.color.png', 'opacityMap': f'{ART}/real/fence_boards_o.data.png',
@@ -1169,8 +1225,8 @@ for _k in ('fence_brick', 'fence_stone'):
     EXTRA[_k] = {'doubleSided': True}
 # a street of granite setts: what the tyres feel stays asphalt, as the worn road it replaces
 KINDS['road_sett'] = ('sh_setts', [.45, .44, .42, 1], 'ASPHALT', 3.0, 'plan')
-SHEET_KINDS = (*SHEET_WALLS, *SHEET_ROOFS, 'fence_prof_green', 'fence_prof_brown', 'fence_prof_grey', 'fence_brick', 'fence_stone',
-               'fence_boards', 'road_sett')
+SHEET_KINDS = (*SHEET_WALLS, *SHEET_ROOFS, *OWN_WALLS, *OWN_ROOFS, 'fence_prof_green', 'fence_prof_brown', 'fence_prof_grey',
+               'fence_brick', 'fence_stone', 'fence_boards', 'road_sett')
 # The building kit (kit.lua, generator.lua BLD.kit): its walls, each a generated PBR surface and
 # some in several paints; one atlas of windows and doors whose glass mirrors the sky; one sheet
 # of trim bands. Only where its paid sources are present (kit_art.ready): a checkout without

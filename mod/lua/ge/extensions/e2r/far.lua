@@ -64,28 +64,33 @@ function M.skirt(L)
   return 8 + 1.5 * half * (2 * math.sqrt(2) * s) / FAR.R_EFF
 end
 
--- class -> {material, sRGB colour, roughness}; earthng/far_preview.py COLOURS is the same order
+-- class -> {material, sRGB colour, roughness}; earthng/far_preview.py COLOURS is the same order.
+-- The open land's classes are the colours the land has from above: the Sentinel-2 composite's
+-- median of each class (earthng/ground_targets.json, ground_colour.py; 22.11, Kyiv oblast), which
+-- the near ground's sheets are toned to as well (fast_tone.SATELLITE). They were a painter's
+-- greens before (grass .42 .62 .28, farmland .74 .66 .34), brighter than any picture from space.
 local CLASS = {
-  [0] = {'e2rfar_grass', {.42, .62, .28}, .95},
-  {'e2rfar_farmland', {.74, .66, .34}, .95},
-  {'e2rfar_meadow', {.50, .66, .32}, .95},
-  {'e2rfar_forest', {.10, .32, .12}, .95},
-  {'e2rfar_orchard', {.36, .52, .22}, .95},
+  [0] = {'e2rfar_grass', {.357, .357, .247}, .95},
+  {'e2rfar_farmland', {.357, .345, .259}, .95},
+  {'e2rfar_meadow', {.353, .353, .231}, .95},
+  {'e2rfar_forest', {.227, .294, .180}, .95},
+  {'e2rfar_orchard', {.322, .349, .235}, .95},
   {'e2rfar_town', {.46, .42, .38}, .9},
   {'e2rfar_water', {.22, .52, .74}, .12},
   {'e2rfar_paved', {.50, .50, .48}, .9},
-  {'e2rfar_park', {.33, .45, .26}, .95},
-  {'e2rfar_wetland', {.36, .42, .30}, .95},
+  {'e2rfar_park', {.286, .322, .208}, .95},
+  {'e2rfar_wetland', {.325, .333, .216}, .95},
   {'e2rfar_bare', {.60, .55, .44}, .95},
-  {'e2rfar_scrub', {.36, .42, .27}, .95},
+  {'e2rfar_scrub', {.310, .333, .216}, .95},
   {'e2rfar_snow', {.90, .92, .95}, .6},
   {'e2rfar_water', {.26, .42, .52}, .12},
   {'e2rfar_rock', {.48, .46, .43}, .95},
 }
 local FOREST, TOWN, PAVED, WATER, SEA, NO_DATA = 3, 5, 7, 6, 13, 255
 local EXTRA = {
-  {'e2rfar_canopy', {.08, .26, .10}, .95},
-  {'e2rfar_canopy_side', {.06, .18, .07}, .95},
+  -- (a wood from above is the forest class's colour; its side stands in its own shade)
+  {'e2rfar_canopy', {.215, .285, .170}, .95},
+  {'e2rfar_canopy_side', {.150, .200, .120}, .95},
   {'e2rfar_roofs', {.40, .36, .33}, .85},
   {'e2rfar_walls', {.50, .46, .42}, .85},
   {'e2rfar_tower', {.42, .41, .39}, .8},

@@ -5930,7 +5930,8 @@ BLD.colour = {red = 'roof_mtile_red', darkred = 'roof_mtile_red', maroon = 'roof
   darkgreen = 'roof_mtile_green', grey = 'roof_sheet', gray = 'roof_sheet', lightgrey = 'roof_sheet',
   white = 'roof_sheet', silver = 'roof_metal'}
 -- metres per texture repeat on a pitched roof (u along the ridge, v down the slope)
-BLD.repeats = {roof_tile = 2, roof_metal = 2, roof_sheet = 1.75, roof_mtile_red = 1.4,
+BLD.repeats = {roof_o_wave = 1.75, roof_o_felt = 4, roof_o_tin = 1.8, roof_o_poly = 2, roof_o_ond_red = 1.9,
+  roof_o_ond_green = 1.9, roof_o_ond_brown = 1.9, roof_tile = 2, roof_metal = 2, roof_sheet = 1.75, roof_mtile_red = 1.4,
   roof_mtile_brown = 1.4, roof_mtile_green = 1.4, roof_slate = 3, roof_shingle = 8, roof_zinc = 1.8}
 
 -- A region's own buildings by look.block (looks.py), for a planet whose art has them: what stands
@@ -5948,6 +5949,11 @@ BLD.spec = {
     new = 'pls_d_new 2 brk_d_new 1',
     houses = 'hw_white 7 hw_yellow 5 hw_blue 6 hw_green 4 hw_pink 2 hw_aged 6 hw_dash 4 hw_dash_cream 4 hw_brick_red 9 hw_oldbrick 6 hw_flatbrick 5 '
       .. 'hw_flaking 6 hw_flaking_yellow 4 hw_stone 5 hw_silicate 9 hw_siding 8 hw_boards 10',
+    -- with EarthNG's own surfaces (BLD.ownArt): limewashed clay, boards in the paints of a village
+    -- street, logs, the south's shell stone (the plaster first, under 38)
+    housesOwn = 'hw_white 6 hw_limewash 6 hw_yellow 4 hw_blue 4 hw_green 3 hw_pink 2 hw_aged 5 hw_dash 4 hw_dash_cream 3 '
+      .. 'hw_brick_red 7 hw_oldbrick 5 hw_flatbrick 4 hw_flaking 5 hw_flaking_yellow 3 hw_stone 4 hw_silicate 7 hw_siding 5 hw_boards 6 '
+      .. 'hw_bd_green 4 hw_bd_blue 3 hw_bd_brown 3 hw_bd_ochre 2 hw_log 4 hw_shell 1',
     roofs = 'roof_sheet 6 roof_mtile_red 3 roof_mtile_brown 3 roof_mtile_green 2 roof_prof_red 2 roof_prof_brown 2 roof_prof_green 1 '
       .. 'roof_prof_grey 1 roof_metal 2 roof_tile 1 roof_shingle 2',
     fences = 'fence_prof_green 3 fence_prof_brown 3 fence_prof_grey 2 fence_boards 5 fence_mesh 3'},
@@ -6082,6 +6088,156 @@ function BLD.drawnArt()
   return BLD.artFound
 end
 
+-- The planet's art has EarthNG's own surfaces (earthng/own_art.py: the outbuildings' walls and
+-- roofs, a few house walls). A planet built without them draws outbuildings as before.
+function BLD.ownArt()
+  if BLD.ownFound == nil then
+    BLD.ownFound = FS and FS:fileExists('/e2r_stream/fast-art/v10/real/sh_o_cinder.color.dds') or false
+  end
+  return BLD.ownFound
+end
+
+-- Outbuildings (garages, sheds, huts, kiosks, greenhouses, barns and what stands unnamed and small
+-- in a yard): each use has its walls, its roofs and the shapes of its roof, as 'kind weight' words.
+-- A garage is silicate brick, cinder block or welded sheet steel under roofing felt that falls a
+-- hand to the back; a shed is grey boards or tin under a lean-to of wave slate; a hut has a low
+-- gable; a kiosk is painted sheet steel with a counter window; a greenhouse is polycarbonate. Before
+-- this every one of them had a house's 28 degree gable over cement walls (bld-small-01).
+-- shapes: flat (a fall of 3 %), lean (a lean-to, BLD.SMALL.lean rise a metre of width), gable.
+BLD.SMALL = {lean = {.12, .26}, leanMax = 1.5, gable = {14, 24}, tiny = 30,
+  garage = {walls = 'clad_o_silicate 3 clad_o_brick 3 clad_o_cinder 3 clad_o_slab 2 clad_o_st_green 2 clad_o_st_brown 2 clad_o_st_grey 1 clad_o_shell 1',
+    roofs = 'roof_o_felt 6 roof_o_wave 3 roof_o_tin 1', shapes = 'flat 6 lean 4'},
+  garages = {walls = 'clad_o_silicate 4 clad_o_brick 3 clad_o_cinder 2 clad_o_slab 3',
+    roofs = 'roof_o_felt 7 roof_o_wave 2 roof_o_tin 1', shapes = 'flat 7 lean 3'},
+  shed = {walls = 'clad_o_boards 4 clad_o_bd_green 1 clad_o_bd_brown 1 clad_o_cinder 2 clad_tin 2 clad_o_osb 1 clad_o_brick 1',
+    roofs = 'roof_o_wave 4 roof_o_felt 3 roof_o_tin 2 roof_o_ond_brown 1', shapes = 'lean 6 gable 4', front = 'door'},
+  hut = {walls = 'clad_o_log 3 clad_o_bd_green 2 clad_o_bd_blue 1 clad_o_bd_brown 2 clad_o_limewash 2',
+    roofs = 'roof_o_wave 5 roof_o_ond_red 2 roof_o_ond_green 1 roof_o_tin 2', shapes = 'gable 8 lean 2', front = 'door'},
+  toilets = {walls = 'clad_o_boards 4 clad_o_brick 2 clad_o_limewash 2 clad_o_cinder 2',
+    roofs = 'roof_o_wave 5 roof_o_felt 3 roof_o_tin 2', shapes = 'lean 8 flat 2', front = 'door'},
+  kiosk = {walls = 'clad_o_st_white 4 clad_o_st_blue 3 clad_o_st_green 2 clad_o_st_grey 1',
+    roofs = 'roof_o_felt 6 roof_o_tin 4', shapes = 'flat 10', front = 'kiosk'},
+  greenhouse = {walls = 'clad_o_poly 1', roofs = 'roof_o_poly 1', shapes = 'gable 1', pitch = 24},
+  barn = {walls = 'clad_o_silicate 3 clad_o_brick 3 clad_o_cinder 2 clad_o_slab 2 clad_o_boards 2',
+    roofs = 'roof_o_wave 7 roof_o_tin 2 roof_o_ond_brown 1', shapes = 'gable 10', pitch = 20, front = 'gate'}}
+BLD.SMALL.cabin, BLD.SMALL.cowshed, BLD.SMALL.stable, BLD.SMALL.farm_auxiliary = BLD.SMALL.hut, BLD.SMALL.barn, BLD.SMALL.barn, BLD.SMALL.barn
+-- what a mapped material makes of an outbuilding's walls
+BLD.SMALL.material = {brick = 'clad_o_brick', wood = 'clad_o_boards', timber_framing = 'clad_o_boards', log = 'clad_o_log',
+  metal = 'clad_o_st_grey', steel = 'clad_o_st_grey', concrete = 'clad_o_slab', stone = 'clad_o_shell', plaster = 'clad_o_limewash',
+  cement_block = 'clad_o_cinder', glass = 'clad_o_poly', plastic = 'clad_o_poly'}
+BLD.SMALL.doors = {'door_garage', 'door_g_green', 'door_g_brown', 'door_rust', 'door_g_blue', 'door_g_red', 'door_g_green',
+  'door_garage', 'door_g_cream', 'door_g_brown', 'door_rust'}
+-- The atlas of doors (own_art.cells, kind door_ob): four cells across and two down of 512 px with
+-- a 6 px gutter. 0-5 garage doors (green, primer, grey, blue, rust, a white sectional one), 6 a
+-- barn's plank gate, 7 a shed's double door (its left leaf alone is a shed's door). A row of
+-- garages deals its doors from garageCells: the old steel ones mostly, a new one now and then.
+BLD.SMALL.cells = {cols = 4, rows = 2, px = 512, gutter = 6.5, gate = 6, shed = 7,
+  garageCells = {0, 2, 1, 4, 3, 0, 1, 5, 2, 4, 0, 3, 1}}
+
+function BLD.ownCells()
+  if BLD.cellsFound == nil then
+    BLD.cellsFound = FS and FS:fileExists('/e2r_stream/fast-art/v10/real/ob_cells.color.dds') or false
+  end
+  return BLD.cellsFound
+end
+
+-- A garage door of the atlas between two points of its wall, from z0 up to z1: an old steel one
+-- of its own paint, whole in its cell (pick: any number, the door by it).
+function BLD.cellDoor(scene, x0, y0, x1, y1, z0, z1, pick)
+  local list = BLD.SMALL.cells.garageCells
+  local u0, v0, u1, v1 = BLD.obCell(list[pick % #list + 1])
+  scene.polygon('door_ob', {{x0, y0, z0, u0, v1}, {x1, y1, z0, u1, v1}, {x1, y1, z1, u1, v0}, {x0, y0, z1, u0, v0}}, false)
+end
+
+-- u0, v0, u1, v1 of cell k (v0 the picture's top); half: its left half alone
+function BLD.obCell(k, half)
+  local C = BLD.SMALL.cells
+  local col, row = k % C.cols, math.floor(k / C.cols)
+  local w, h = C.cols * C.px, C.rows * C.px
+  local u0, u1 = (col * C.px + C.gutter) / w, ((col + 1) * C.px - C.gutter) / w
+  if half then u1 = (u0 + u1) / 2 end
+  return u0, (row * C.px + C.gutter) / h, u1, ((row + 1) * C.px - C.gutter) / h
+end
+
+-- An outbuilding's plan: {wall, roof, shape, rise (m over the walls' top: flat and lean roofs),
+-- pitch (degrees: gables), front}, or nil for any other building and for a planet without the
+-- own surfaces. width: the footprint's shorter side. area: m2.
+function BLD.small(tags, h, height, area, width)
+  if not BLD.ownArt() or tags.e2r_part or height > 7 then return nil end
+  local use, S = tags.building or 'yes', BLD.SMALL
+  local spec = S[use]
+  -- small and unnamed in a yard: a shed
+  if type(spec) ~= 'table' or not spec.walls then
+    spec = use == 'yes' and area < S.tiny and not tags.shop and not tags.amenity and not tags.office and S.shed or nil
+  end
+  if not spec then return nil end
+  if not spec.lists then
+    spec.lists = {walls = BLD.words(spec.walls), roofs = BLD.words(spec.roofs), shapes = BLD.words(spec.shapes)}
+  end
+  local L = spec.lists
+  local plan = {wall = S.material[tostring(tags['building:material'] or '')] or L.walls[h % #L.walls + 1],
+    roof = L.roofs[math.floor(h / 7) % #L.roofs + 1], shape = L.shapes[math.floor(h / 13) % #L.shapes + 1], front = spec.front}
+  -- a roof OSM names keeps its shape (pitchedRoof, BLD.skillion); ours only where it names none
+  if tags['roof:shape'] then
+    plan.shape = 'mapped'
+  elseif plan.shape == 'flat' then
+    plan.rise = math.max(.1, (width or 3) * .03)
+  elseif plan.shape == 'lean' then
+    local t = (math.floor(h / 17) % 8) / 7
+    plan.rise = math.min(S.leanMax, (width or 3) * (S.lean[1] + (S.lean[2] - S.lean[1]) * t))
+  else
+    plan.pitch = spec.pitch or (S.gable[1] + math.floor(h / 19) % (S.gable[2] - S.gable[1] + 1))
+  end
+  return plan
+end
+
+-- What an outbuilding has on its longest wall: a shed's board door, a barn's gate, a kiosk's
+-- counter window under an awning with its door beside it. 2 cm off the wall.
+function BLD.smallFront(scene, a, b, length, base, height, plan, h)
+  local P = BLD.wallPoint
+  local function quad(kind, s0, s1, z0, z1, u0, v0, u1, v1, out)
+    scene.polygon(kind, {P(a, b, length, s0, out or .02, z0, u0, v0), P(a, b, length, s1, out or .02, z0, u1, v0),
+      P(a, b, length, s1, out or .02, z1, u1, v1), P(a, b, length, s0, out or .02, z1, u0, v1)}, false)
+  end
+  if plan.front == 'door' and length > 1.6 then
+    local w, top = .9, math.min(height - .15, 1.9)
+    local s = (h % 3 == 0) and length - .5 - w or .5
+    if BLD.ownCells() then
+      local u0, v0, u1, v1 = BLD.obCell(BLD.SMALL.cells.shed, true)
+      quad('door_ob', s, s + w, base + .05, base + top, u0, v1, u1, v0)
+    else
+      quad('gable', s, s + w, base + .05, base + top, 0, 0, w / 1.5, top / 1.5)
+    end
+    -- its frame: a board down either side and one over it
+    quad('gable', s - .08, s, base, base + top + .08, 0, 0, .06, 1, .035)
+    quad('gable', s + w, s + w + .08, base, base + top + .08, 0, 0, .06, 1, .035)
+    quad('gable', s - .08, s + w + .08, base + top, base + top + .08, 0, 0, 1, .06, .035)
+  elseif plan.front == 'gate' and length > 4 then
+    local w, top = math.min(3.2, length - 1.2), math.min(height - .3, 3)
+    local s = (length - w) / 2
+    if BLD.ownCells() then
+      local u0, v0, u1, v1 = BLD.obCell(BLD.SMALL.cells.gate)
+      quad('door_ob', s, s + w, base, base + top, u0, v1, u1, v0)
+    else
+      quad(h % 2 == 0 and 'door_rust' or 'gable', s, s + w, base, base + top, 0, 0, 1, 1)
+    end
+  elseif plan.front == 'kiosk' and length > 2.2 then
+    local w = math.min(length - 1.5, 2.4)
+    local s, cell = .3, BLD.windows.win_pvc.cells[1]
+    quad('win_pvc', s, s + w, base + .95, base + math.min(height - .35, 2.05), cell[1], cell[4], cell[3], cell[2])
+    -- the counter's sill and the awning over the window
+    scene.polygon('pipe', {P(a, b, length, s - .05, .02, base + .95, 0, 0), P(a, b, length, s - .05, .22, base + .95, 0, .2),
+      P(a, b, length, s + w + .05, .22, base + .95, 1, .2), P(a, b, length, s + w + .05, .02, base + .95, 1, 0)}, true)
+    local z = base + math.min(height - .2, 2.2)
+    scene.polygon(plan.wall, {P(a, b, length, s - .15, .02, z, 0, 0), P(a, b, length, s - .15, .75, z - .22, 0, .3),
+      P(a, b, length, s + w + .15, .75, z - .22, 1, .3), P(a, b, length, s + w + .15, .02, z, 1, 0)}, true)
+    if length - (s + w) > 1.1 then
+      local d = BLD.doors
+      quad('door_house', s + w + .2, s + w + .2 + .8, base + .05, base + 1.95, d.cells[1][1], d.cells[1][4], d.cells[1][3], d.cells[1][2])
+    end
+  end
+end
+
 -- The expanded lists of a look's block, or NONE.
 function BLD.region(look)
   local block = type(look) == 'table' and look.block or BLD.packBlock
@@ -6094,7 +6250,7 @@ function BLD.region(look)
     for _, key in ipairs({'panel', 'brick', 'plaster', 'new', 'roofs', 'fences'}) do
       if spec[key] then r[key] = BLD.words(spec[key]) end
     end
-    r.houses = spec.houses and BLD.bounds(spec.houses)
+    r.houses = spec.houses and BLD.bounds(BLD.ownArt() and spec.housesOwn or spec.houses)
     r.byHeight = spec.byHeight
     BLD.regions[block] = r
   end
@@ -6158,7 +6314,12 @@ BLD.wallColour = {white = 'hw_white', ivory = 'hw_white', cream = 'hw_aged', bei
   orange = 'hw_yellow', blue = 'hw_blue', lightblue = 'hw_blue', green = 'hw_green', lightgreen = 'hw_green',
   pink = 'hw_pink', red = 'hw_brick_red', brown = 'hw_brick_red', grey = 'hw_silicate', gray = 'hw_silicate'}
 -- metres per texture repeat on a house wall. Big flat bricks and stone courses are wider than a plaster repeat.
-BLD.wallScale = {hw_brick_red = 1.6, hw_oldbrick = 1.6, hw_flatbrick = 2.4, hw_stone = 2,
+BLD.wallScale = {hw_bd_green = 2, hw_bd_blue = 2, hw_bd_brown = 2, hw_bd_ochre = 2, hw_limewash = 3, hw_log = 2.4, hw_shell = 2.4,
+  clad_o_cinder = 2.4, clad_o_shell = 2.4, clad_o_silicate = 2.4, clad_o_brick = 2.4, clad_o_boards = 2, clad_o_osb = 2.4,
+  clad_o_poly = 2, clad_o_log = 2.4, clad_o_limewash = 3, clad_o_slab = 3, clad_o_bd_green = 2, clad_o_bd_blue = 2,
+  clad_o_bd_brown = 2, clad_o_bd_ochre = 2, clad_o_st_green = 2.5, clad_o_st_brown = 2.5, clad_o_st_grey = 2.5,
+  clad_o_st_blue = 2.5, clad_o_st_white = 2.5,
+  hw_brick_red = 1.6, hw_oldbrick = 1.6, hw_flatbrick = 2.4, hw_stone = 2,
   hw_silicate = 1.6, hw_siding = 1.2, hw_boards = 1.2, hw_wood = 2,
   hw_dash = 1.5, hw_dash_cream = 1.5, hw_flaking = 2.5, hw_flaking_yellow = 2.5, hw_render_white = 2.5, hw_render_ochre = 2.5,
   hw_render_terracotta = 2.5, hw_render_sand = 2.5, hw_render_teal = 2.5, hw_render_pink = 2.5, hw_adobe = 2, hw_ashlar = 2,
@@ -6210,6 +6371,7 @@ end
 -- One house's openings: its window style and cell, door cell, plinth, gable and roof guesses.
 function BLD.dress(kind, h)
   local old = kind == 'hw_wood' or kind == 'hw_aged' or kind == 'hw_blue' or kind == 'hw_green'
+    or kind == 'hw_limewash' or kind == 'hw_log' or kind:find('hw_bd_', 1, true) == 1
     or kind == 'hw_oldbrick' or kind == 'hw_flatbrick' or kind == 'hw_stone' or kind == 'hw_boards'
     or kind == 'hw_flaking' or kind == 'hw_flaking_yellow' or kind == 'hw_adobe' or kind == 'hw_fieldstone'
     or kind == 'hw_falu' or kind == 'hw_tin' or kind == 'hw_block'
@@ -6219,8 +6381,11 @@ function BLD.dress(kind, h)
     door = BLD.doors.cells[math.floor(h / 17) % #BLD.doors.cells + 1],
     plinth = (h % 20 < 7) and 'plinth_brown' or 'plinth',
     gable = (kind == 'hw_siding' or kind == 'hw_wood' or kind == 'hw_boards' or kind == 'hw_falu' or kind:find('hw_clapboard', 1, true)
+      or kind == 'hw_log' or kind:find('hw_bd_', 1, true) == 1
       or kind:find('hw_vinyl', 1, true) or math.floor(h / 3) % 3 ~= 0) and kind or 'gable',
-    shape = math.floor(h / 23) % 20 < 9 and 'hipped' or 'gabled', pitch = 26 + math.floor(h / 29) % 13}
+    -- hipped, gabled, and a gable with its ends clipped (a quarter of the gables)
+    shape = math.floor(h / 23) % 20 < 9 and 'hipped' or (math.floor(h / 31) % 4 == 0 and 'half-hipped' or 'gabled'),
+    pitch = 26 + math.floor(h / 29) % 13}
 end
 
 -- Bays along a wall. Balanced and above keep a window about every 2.9 m (at most 8).
@@ -6381,7 +6546,7 @@ local function facadeScale(kind)
   if kind:find('_d_', 1, true) then return 12 end       -- drawn facades (fast_facade.REPEAT_M)
   if kind:find('door_', 1, true) == 1 or kind:find('clad_', 1, true) == 1 or kind == 'plinth' then return 3 end
   if kind == 'gable' then return 1.5 end
-  if kind:find('hw_', 1, true) == 1 then return BLD.wallScale[kind] or 3 end
+  if kind:find('hw_', 1, true) == 1 or kind:find('clad_o_', 1, true) == 1 then return BLD.wallScale[kind] or 3 end
   if kind:find('wall_lgg_', 1, true) == 1 then return 33 end
   if kind:find('wall_pnl_', 1, true) == 1 then return 12 end
   if kind == 'wall_block' then return 3 end
@@ -15296,6 +15461,11 @@ local function build(cells, i, j, options)
   -- before the verges and the drapes: a verge's land and a meadow's drape depend on it
   bio.landOff = options.land == false
   bio.s2 = VEG.real.tile(options, rect, distant)
+  -- EarthNG's own surfaces: there or not by the planet's art; options.ownArt says so for a test or a bench
+  if options.ownArt ~= nil and (options.ownArt and true or false) ~= BLD.ownFound then
+    BLD.ownFound, BLD.regions = options.ownArt and true or false, nil
+  end
+  if options.ownCells ~= nil then BLD.cellsFound = options.ownCells and true or false end
   -- The land at a point (VEG.land): moisture -1 (dry) .. 1 (lush) and bareness 0 .. 1, from the
   -- raw DEM `reach` m round it, so neighbouring tiles agree. Among buildings it stays lawn.
   function bio.landAt(x, y, d)
@@ -16532,6 +16702,14 @@ local function build(cells, i, j, options)
       local scene = options.realStyle ~= false and (tags['bridge:support'] or tags['tower:type'] == 'bridge' or tags.e2r_part)
         and ROADS.clearTower(scene, asphaltBins, rings, rect, span) or scene
       local top, kind = base + height, BLD.wallMaterial(building, look, height, footprint)
+      -- an outbuilding (BLD.small): its own walls, roof and front, far and near alike (its box
+      -- keeps its wall's colour as it comes near)
+      BLD.smallPlan = nil
+      if options.realStyle ~= false and not lifted and tags.building ~= 'roof' and (BLD.low[tags.building or ''] or footprint < BLD.SMALL.tiny) then
+        BLD.frameOf = #rings == 1 and #exterior >= 3 and BLD.footprintFrame(exterior) or nil
+        BLD.smallPlan = BLD.small(tags, h, height, footprint, BLD.frameOf and (BLD.frameOf.v1 - BLD.frameOf.v0) or nil)
+        if BLD.smallPlan then kind = BLD.smallPlan.wall end
+      end
       -- a far box of a building the kit draws near keeps the kit's wall colour (kit.lua M.far)
       if options.far and BLD.kit and not tags.e2r_part and tags.building ~= 'roof' and kind:find('wall_', 1, true) == 1 then
         kind = BLD.kit.farKind(tags, height, footprint, h, look.block or BLD.packBlock, options, building.rings) or kind
@@ -16597,10 +16775,14 @@ local function build(cells, i, j, options)
       if BLD.city then BLD.faces = {} end
       -- a skillion over the walls; wall=no on a part leaves the plane alone (the Eiffel Tower's legs)
       BLD.plane = not options.far and not open and BLD.skillion(rings, tags, top) or nil
+      -- an outbuilding's flat or lean-to roof: a skillion of its own rise, falling across its width
+      if BLD.smallPlan and BLD.smallPlan.rise and not options.far and not open then
+        BLD.plane = BLD.skillion(rings, setmetatable({['roof:shape'] = 'skillion', ['roof:height'] = BLD.smallPlan.rise}, {__index = tags}), top)
+      end
       BLD.bare = BLD.plane and tags.e2r_part and tags.wall == 'no'
       local doors = (use == 'garage' or use == 'garages') and (h % 3 == 0 and 'door_rust' or 'door_garage')
       -- the kit's facade instead of the photo wall and what is hung on it (canopies, AC, balconies)
-      BLD.kitPlan = not dress and not open and not lifted and not shopWalls and not doors and not BLD.plane and not distant
+      BLD.kitPlan = not dress and not open and not lifted and not shopWalls and not doors and not BLD.plane and not distant and not BLD.smallPlan
         and BLD.kitFor(building, tags, rings, height, footprint, h, look.block or BLD.packBlock, options, rect, ground, segmentBins) or nil
       local detailed = options.experimentalDetail and BLD.city and not options.far
       BLD.report = type(options.detailReport) == 'table' and options.detailReport or nil
@@ -16629,8 +16811,15 @@ local function build(cells, i, j, options)
             span.hiddenWalls[#span.hiddenWalls + 1] = {a, b, full, runs}
           end
         end
-        -- a house's door goes on its longest open outer wall
+        -- a house's door goes on its longest open outer wall, and so does an outbuilding's front
         local doorWall = 0
+        BLD.smallWall = nil
+        if BLD.smallPlan and BLD.smallPlan.front and raw == rings[1] and not options.far then
+          BLD.smallWall = 0
+          for _, piece in ipairs(walls) do
+            if not piece[5] then BLD.smallWall = math.max(BLD.smallWall, piece[3] ^ 2) end
+          end
+        end
         if dress and raw == rings[1] and not options.far then
           for _, piece in ipairs(walls) do
             if not piece[5] then doorWall = math.max(doorWall, piece[3] ^ 2) end
@@ -16712,10 +16901,16 @@ local function build(cells, i, j, options)
             for n = 0, bays - 1 do
               local s0 = (n + .5) * length / bays - width / 2
               local s1 = s0 + width
+              -- each owner painted his own door (BLD.SMALL.doors), where the planet has the paints
+              local doors = BLD.smallPlan and BLD.SMALL.doors[(h + n * 7 + k * 3) % #BLD.SMALL.doors + 1] or doors
+              if BLD.smallPlan and BLD.ownCells() then
+                BLD.cellDoor(scene, a[1] + dx * s0 + ox, a[2] + dy * s0 + oy, a[1] + dx * s1 + ox, a[2] + dy * s1 + oy, base, z1, h + n * 7 + k * 3)
+              else
               scene.polygon(doors, {{a[1] + dx * s0 + ox, a[2] + dy * s0 + oy, z0, 0, (z0 - base) / d.height},
                 {a[1] + dx * s1 + ox, a[2] + dy * s1 + oy, z0, 1, (z0 - base) / d.height},
                 {a[1] + dx * s1 + ox, a[2] + dy * s1 + oy, z1, 1, 1},
                 {a[1] + dx * s0 + ox, a[2] + dy * s0 + oy, z1, 0, 1}}, false)
+              end
             end
           end
           if detailed and raw == rings[1] then
@@ -16724,6 +16919,10 @@ local function build(cells, i, j, options)
             BLD.balconies(scene, a, b, length, along, base, height, wallKind, h, spans)
           end
           if dress and dress.mass and length > .4 then BLD.cornice(scene, a, b, length, top) end
+          if BLD.smallWall and BLD.smallWall > 0 and length * length >= BLD.smallWall - 1e-6 then
+            BLD.smallFront(scene, a, b, length, base, height, BLD.smallPlan, h)
+            BLD.smallWall = nil
+          end
           if BLD.city and raw == rings[1] and length > 6 and not plinth then BLD.socle(scene, a, b, length, bottom, base) end
           if BLD.city and raw == rings[1] and length >= 6 then
             BLD.probe = BLD.wallPoint(a, b, length, length * .5, 8, 0, 0, 0)
@@ -16747,7 +16946,27 @@ local function build(cells, i, j, options)
         BLD.addressPlate(scene, rings, tags, base, height, lists.roads)
       end
       if dress then dress.hidden = span.hiddenWalls end
-      if options.far or open or not BLD.pitchedRoof(scene, rings, tags, top, base, kind, height, BLD.roof(tags, h, postsoviet, BLD.region(look)), dress) then
+      -- an outbuilding: its plan's roof; a gable of its own low pitch, its ends in the wall's kind
+      BLD.smallRoof = BLD.smallPlan and not options.far and not open and BLD.smallPlan or nil
+      if BLD.smallRoof and BLD.smallRoof.pitch then
+        -- (named a gable, so a long barn or a greenhouse has one whatever its size)
+        BLD.smallRoof = BLD.pitchedRoof(scene, rings, setmetatable({['roof:shape'] = 'gabled'}, {__index = tags}), top, base, kind,
+          height, BLD.smallPlan.roof, {shape = 'gabled', pitch = BLD.smallPlan.pitch, gable = kind}) and 'done' or BLD.smallPlan
+      end
+      if BLD.smallRoof == 'done' then
+        -- drawn
+      elseif BLD.smallRoof and BLD.smallRoof.shape ~= 'mapped' then
+        -- flat or lean-to: the sheets run down the fall (v), BLD.repeats metres a repeat
+        local f, m = BLD.frameOf, BLD.repeats[BLD.smallPlan.roof] or 2
+        for _, tri in ipairs(triangulate(rings, pause, rect)) do
+          for _, p in ipairs(tri) do
+            p[3] = BLD.plane and BLD.plane(p[1], p[2]) or top
+            if f then p[4], p[5] = (p[1] * f.ax + p[2] * f.ay) / m, (p[1] * f.bx + p[2] * f.by) / m end
+          end
+          scene.polygon(BLD.smallPlan.roof, tri, true)
+        end
+      elseif options.far or open or not BLD.pitchedRoof(scene, rings, tags, top, base, kind, height,
+          BLD.smallPlan and BLD.smallPlan.roof or BLD.roof(tags, h, postsoviet, BLD.region(look)), dress) then
         for _, tri in ipairs(triangulate(rings, pause, rect)) do
           for _, p in ipairs(tri) do p[3] = BLD.plane and BLD.plane(p[1], p[2]) or top end
           scene.polygon(BLD.kitPlan and 'kw_bitumen' or 'roof', tri, true)
@@ -18826,6 +19045,7 @@ function M.resumeBuild(co)
     BLD.packBlock, BLD.city, BLD.face, BLD.faces = ctx.packBlock, ctx.city, ctx.face, ctx.faces
     BLD.plane, BLD.bare, BLD.report = ctx.plane, ctx.bare, ctx.report
     BLD.probe, BLD.onroad = ctx.probe, ctx.onroad
+    BLD.smallPlan, BLD.frameOf, BLD.smallWall, BLD.smallRoof = ctx.smallPlan, ctx.frameOf, ctx.smallWall, ctx.smallRoof
   end
   local ok, result = coroutine.resume(co)
   if coroutine.status(co) == 'dead' then
@@ -18836,6 +19056,7 @@ function M.resumeBuild(co)
     ctx.packBlock, ctx.city, ctx.face, ctx.faces = BLD.packBlock, BLD.city, BLD.face, BLD.faces
     ctx.plane, ctx.bare, ctx.report = BLD.plane, BLD.bare, BLD.report
     ctx.probe, ctx.onroad = BLD.probe, BLD.onroad
+    ctx.smallPlan, ctx.frameOf, ctx.smallWall, ctx.smallRoof = BLD.smallPlan, BLD.frameOf, BLD.smallWall, BLD.smallRoof
     buildContexts[co] = ctx
   end
   return ok, result

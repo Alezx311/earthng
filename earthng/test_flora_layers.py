@@ -25,6 +25,23 @@ class TurfLayersTest(unittest.TestCase):
         self.assertEqual(layer(1024), 0)
         self.assertEqual(layer(16), 2)
 
+    def test_the_lawns_grass_is_a_tinted_copy_and_the_stock_material_stays(self):
+        stock = self.lua.eval('''{name = 'm_grass_green_short_01', mapTo = 'm_grass_green_short_01', alphaTest = true,
+          persistentId = 'abc', Stages = {{baseColorMap = 'grass_b.png', baseColorFactor = {.88, .89, .82, 1}}, {}, {}, {}}}''')
+        copy = self.turf.tinted(stock, 'e2rTurf_m_grass_green_short_01', self.turf.TINT)
+        self.assertEqual((copy.name, copy.mapTo, copy.persistentId), ('e2rTurf_m_grass_green_short_01',) * 2 + (None,))
+        self.assertTrue(copy.alphaTest)
+        self.assertEqual(copy.Stages[1].baseColorMap, 'grass_b.png')
+        factor = list(copy.Stages[1].baseColorFactor.values())
+        # less green, more red and blue: towards the olive the land has from above
+        self.assertGreater(factor[0], .88)
+        self.assertLess(factor[1], .89)
+        self.assertGreater(factor[2], .82)
+        self.assertEqual(list(stock.Stages[1].baseColorFactor.values()), [.88, .89, .82, 1])
+        # only the common and the lush grass: flowers, ferns and dry grass keep their materials
+        self.assertEqual(set(self.turf.TINT_LAYERS), {'e2rTurfGrass', 'e2rTurfLush'})
+        self.assertEqual(set(self.turf.TINTED), {'m_grass_green_short_01', 'm_grass_green_long_01'})
+
     def test_every_definition_names_a_layer_and_a_source(self):
         layers = set(self.turf.LAYERS.values())
         names = set()

@@ -632,11 +632,30 @@ def land_art(real):
     mask.save(real / 'land_blend_o.data.png')
     # the land a piece comes into is cut by the inverse (fast_style.CUTS)
     ImageChops.invert(mask).save(real / 'land_blend_inv_o.data.png')
-    (real / 'land.version').write_text(LAND_ART_VERSION)
+    (real / 'land.version').write_text(LAND_ART_VERSION + own_tag())
 
 
 LAND_ART_VERSION = '7'  # change whenever a land sheet, the relief, a field's crop or the mask (or its mips) changes
-WOOD_ART_VERSION = '8'  # change whenever the wood's floor sheet does (fast_photo.GROUND['forest'])
+WOOD_ART_VERSION = '9'  # change whenever the wood's floor sheet does (fast_photo.GROUND['forest'], GROUND_OWN)
+GROUND_ART_VERSION = '1'  # change whenever a photo ground sheet's recipe does (fast_photo.GROUND)
+
+
+def own_tag():
+    """What a stamp of art drawn from the texture library adds where EarthNG's own sets stand in
+    (own_art.py): the sheets are drawn again when the sets come, go or change."""
+    import own_art
+    names = sorted(own_art.stand_ins().values()) + (sorted(fast_facade.OWN_SHEETS) if own_art.ready() else [])
+    names += ['doors'] if own_art.ready() and own_art.cells_ready() else []
+    return f'+own{own_art.VERSION}:{len(names)}' if names else ''
+
+
+def ground_art(real):
+    """The photo ground sheets again (fast_photo.GROUND), in the sets of today."""
+    for kind in style.PHOTO_GROUND:
+        if kind != 'forest':
+            im, nm = ground_sheet(kind)
+            im.save(real / f'ground_{kind}.color.png'); nm.save(real / f'ground_{kind}.normal.png')
+    (real / 'ground.version').write_text(GROUND_ART_VERSION + own_tag())
 
 
 def wood_art(real):
@@ -644,7 +663,7 @@ def wood_art(real):
     im, nm = ground_sheet('forest')
     im.save(real / 'ground_forest.color.png')
     nm.save(real / 'ground_forest.normal.png')
-    (real / 'wood.version').write_text(WOOD_ART_VERSION)
+    (real / 'wood.version').write_text(WOOD_ART_VERSION + own_tag())
 
 
 def ensure(user):
@@ -729,13 +748,18 @@ def prebuild(distributable=False):
             to_dds(shared / 'real')
         # and the open land's sheets (generator.lua VEG.land)
         stamp = shared / 'real' / 'land.version'
-        if not stamp.exists() or stamp.read_text() != LAND_ART_VERSION:
+        if not stamp.exists() or stamp.read_text() != LAND_ART_VERSION + own_tag():
             land_art(shared / 'real')
             to_dds(shared / 'real')
         # and the wood's floor
         stamp = shared / 'real' / 'wood.version'
-        if not stamp.exists() or stamp.read_text() != WOOD_ART_VERSION:
+        if not stamp.exists() or stamp.read_text() != WOOD_ART_VERSION + own_tag():
             wood_art(shared / 'real')
+            to_dds(shared / 'real')
+        # and the other photo ground sheets, where the sets they are drawn from changed
+        stamp = shared / 'real' / 'ground.version'
+        if (stamp.read_text() if stamp.exists() else GROUND_ART_VERSION) != GROUND_ART_VERSION + own_tag():
+            ground_art(shared / 'real')
             to_dds(shared / 'real')
         # and the yard's paint and railing (generator.lua YARD)
         if not (shared / 'real' / 'railing_o.data.dds').exists():
@@ -765,7 +789,7 @@ def prebuild(distributable=False):
             to_dds(shared / 'real')
         # and the drawn facades and plain sheets
         stamp = shared / 'real' / 'facade.version'
-        if not stamp.exists() or stamp.read_text() != FACADE_ART_VERSION:
+        if not stamp.exists() or stamp.read_text() != FACADE_ART_VERSION + own_tag():
             facade_art(shared)
             to_dds(shared)
         # and the building kit's walls, cells and trim (kit_art, generator.lua BLD.kit)
@@ -814,7 +838,8 @@ def build(r, game_assets=True):
     for kind in style.PHOTO_GROUND:
         im, nm = ground_sheet(kind)
         im.save(r / 'real' / f'ground_{kind}.color.png'); nm.save(r / 'real' / f'ground_{kind}.normal.png')
-    (r / 'real' / 'wood.version').write_text(WOOD_ART_VERSION)
+    (r / 'real' / 'wood.version').write_text(WOOD_ART_VERSION + own_tag())
+    (r / 'real' / 'ground.version').write_text(GROUND_ART_VERSION + own_tag())
     # footpaths: ambientCG photos as they are (normal green flipped for BeamNG)
     for name, src in (('paving', 'paving'), ('trodden', 'photo_trodden')):
         Image.open(photo.TEXTURES / src / 'albedo.jpg').convert('RGB').resize((1024, 1024), Image.LANCZOS).save(r / 'real' / f'{name}.color.png')
@@ -888,11 +913,15 @@ def facade_art(r):
         im, nm = fast_facade.sheet(name)
         im.save(real / f'{name}.color.png')
         nm.save(real / f'{name}.normal.png')
+    # the outbuildings' doors (own_art.cells: generator.lua BLD.SMALL.cells)
+    import own_art
+    if own_art.ready() and own_art.cells_ready():
+        own_art.cells().save(real / 'ob_cells.color.png')
     boards, gaps = fast_facade.fence_boards()
     boards.save(real / 'fence_boards.color.png')
     gaps.save(real / 'fence_boards_o.data.png')
     fast_packs.layout_glows(r)
-    (real / 'facade.version').write_text(FACADE_ART_VERSION)
+    (real / 'facade.version').write_text(FACADE_ART_VERSION + own_tag())
 
 
 # alphaRef per opacity map whose mips keep its coverage (fast_dds.keep_coverage)

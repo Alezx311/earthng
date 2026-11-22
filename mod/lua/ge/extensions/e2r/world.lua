@@ -2271,7 +2271,7 @@ end
 -- ones round where it struck instead of one large one that stood off its curves.
 -- one table, not locals: the main chunk is at LuaJIT's 200 locals
 local BLOOD = {dir = '/levels/e2r_world/art/people/', max = 96, ttl = 1200, carTtl = 900, farR = 1500,
-  carMax = 10, lift = .025, carLift = .06, maxDec = 200, decR = 170, decDepth = 3, dry = 200, tint = .46}
+  carMax = 10, lift = .025, carLift = .06, maxDec = 200, decR = 170, decDepth = 3, dry = 200, tint = .4}
 
 -- the stains by kind, read once; false without them (the two drawn quads of people_art then)
 function BLOOD.load()
