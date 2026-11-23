@@ -11,6 +11,7 @@ import argparse
 import io
 import json
 import math
+import os
 from pathlib import Path
 import shutil
 import zipfile
@@ -232,6 +233,29 @@ def build(out, lang='en'):
     return path
 
 
+def install(source, target):
+    """Put the planet into the game's mods folder whole or not at all.
+
+    The game unmounts every ZIP mod when one ZIP in mods/ is not a valid archive. A plain copy cut
+    short (23.11.2026: the machine went down in the middle of one) left half a planet under the
+    planet's own name. So the bytes go to a name the game does not read, are flushed to the disk,
+    and only then take the planet's name in one step.
+    """
+    source, target = Path(source), Path(target)
+    partial = target.with_name(target.stem + '.installing')
+    with open(source, 'rb') as src, open(partial, 'wb') as dst:
+        shutil.copyfileobj(src, dst, 1 << 22)
+        dst.flush()
+        os.fsync(dst.fileno())
+    if partial.stat().st_size != source.stat().st_size:
+        size = partial.stat().st_size
+        partial.unlink()
+        raise SystemExit(f'{target}: the copy is {size} bytes, not {source.stat().st_size}')
+    shutil.copystat(source, partial)
+    os.replace(partial, target)
+    return target
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('--out', type=Path, required=True)
@@ -250,7 +274,7 @@ def main():
                 raise SystemExit(f'Old and backed-up legacy mods both exist; move {old} aside before installing')
             old.rename(backup)
             print('legacy mod backed up', backup)
-        shutil.copy2(path, mods / ZIP)
+        install(path, mods / ZIP)
         print('installed', mods / ZIP)
 
 

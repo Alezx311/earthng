@@ -73,3 +73,25 @@ class SharedPlanetTests(unittest.TestCase):
                 archive.writestr('earthng/planet/photos/index.json', json.dumps([{'maxZoom': 18}]))
             with self.assertRaisesRegex(ValueError, 'regional imagery'):
                 prepare_release.check_planet(planet)
+
+
+class InstallTests(unittest.TestCase):
+    def test_the_planet_takes_its_name_only_when_whole(self):
+        # a copy cut short left half a planet in the game's mods folder, and the game unmounts
+        # every ZIP mod over one bad archive (23.11.2026)
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp) / 'built.zip', Path(tmp) / 'mods' / build_mod.ZIP
+            target.parent.mkdir()
+            source.write_bytes(b'new planet' * 1000)
+            target.write_bytes(b'old planet')
+            build_mod.install(source, target)
+            self.assertEqual(target.read_bytes(), source.read_bytes())
+            self.assertEqual([f.name for f in target.parent.iterdir()], [build_mod.ZIP])
+
+    def test_a_failed_copy_leaves_the_old_planet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / build_mod.ZIP
+            target.write_bytes(b'old planet')
+            with self.assertRaises(OSError):
+                build_mod.install(Path(tmp) / 'missing.zip', target)
+            self.assertEqual(target.read_bytes(), b'old planet')
