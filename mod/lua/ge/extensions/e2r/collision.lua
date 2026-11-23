@@ -16,7 +16,17 @@
 --     takes those same cover materials where a cover fills a cell, so they stay solid there;
 --   - railway tracks (generator.lua RAIL): flush on a carriageway, 20 cm over the ground beside it.
 -- Hiding and showing ~1000 meshes costs ~1.5 ms; rendering does not see it (one Lua call).
-local M = {}
+--
+-- A building on the ground is met only as its proxies (24.11): the shell's quads and its roof's
+-- pieces lie in the proxy of their 64 m cell, and all the building draws is marked quiet where it
+-- is made (generator.lua, the collector's hooks.quiet and hooks.cap; mesh.quiet). Before, only
+-- the photo walls were left out by their name, and a town's rebuild took 0.4-0.9 M triangles of
+-- kit facades, house walls, roofs and parapets every two seconds of a drive (drive-pool-8).
+--
+-- The proxies a rebuild keeps reach KEEP_RING cells round each focus point, and one is asked for
+-- when a proxy within WANT_RING cells is not in: the car covers KEEP_RING - WANT_RING cells
+-- between two rebuilds the proxies ask for. With both at one cell every 64 m of a drive asked.
+local M = {WANT_RING = 1, KEEP_RING = 3}
 
 local QUIET = {road = {}, scene = {}}
 -- (and the field tracks' ruts, generator.lua ROADS.ruts: the bed under them collides)
@@ -65,7 +75,8 @@ function M.quiet(meshes, layer)
     -- the proxies are the collision; a facade wall (e2rf_wall_*) is drawn, the shell collides
     -- (col_ground, col_bldg and the grounds a universe is felt by: col_snow, col_sand, col_mud)
     if name:sub(1, 9) == 'e2rf_col_' then return false end
-    local skip = set[name]
+    -- (mesh.quiet: drawn by a building whose shell and roof are in the proxies)
+    local skip = mesh.quiet or set[name]
       or (layer == 'road' and (TERRAIN[name] or name:sub(1, 9) == 'e2rf_cut_' or name:sub(1, 7) == 'e2rf_s2'))
       or (layer == 'scene' and name:sub(1, 10) == 'e2rf_wall_')
     if not skip then return false end
@@ -73,15 +84,16 @@ function M.quiet(meshes, layer)
   return true
 end
 
--- a proxy cell {ix, iy, size} is kept when a focus point lies in its 3x3
-function M.nearCell(cell, points)
+-- is a proxy cell {ix, iy, size} within `ring` cells of a focus point (1, its 3x3, when not given)
+function M.nearCell(cell, points, ring)
   if not cell then return false end
   if not points or #points == 0 then return true end
   local size = cell[3] or 64
   if size < 1 then size = 64 end
+  ring = ring or 1
   for _, q in ipairs(points) do
     local cx, cy = math.floor(q[1] / size), math.floor(q[2] / size)
-    if math.abs(cx - cell[1]) <= 1 and math.abs(cy - cell[2]) <= 1 then return true end
+    if math.abs(cx - cell[1]) <= ring and math.abs(cy - cell[2]) <= ring then return true end
   end
   return false
 end
@@ -135,7 +147,7 @@ function M.new()
     for owner in pairs(self.owners) do
       if not owner.dropped and owner.proxyIds then
         for _, id in ipairs(owner.proxyIds) do
-          if not self.activeProxies[id] and M.nearCell(owner.proxyCell[id], points) then return true end
+          if not self.activeProxies[id] and M.nearCell(owner.proxyCell[id], points, M.WANT_RING) then return true end
         end
       end
     end
@@ -196,7 +208,7 @@ function M.new()
           local id = owner.proxyIds[k]
           local obj = find(id)
           if obj then
-            if not owner.dropped and M.nearCell(cells and cells[id], points) then
+            if not owner.dropped and M.nearCell(cells and cells[id], points, M.KEEP_RING) then
               active[id] = true
               if obj:isHidden() then obj:setHidden(false); opened[#opened + 1] = obj end
             elseif not obj:isHidden() then

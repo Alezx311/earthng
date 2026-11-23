@@ -78,7 +78,8 @@ class NativeTests(unittest.TestCase):
             mod.update(.016, 2)
         self.assertTrue(set(mod.status().stream.ready.keys()))
 
-    def make(self, files=None, real_generator=False):
+    def make(self, files=None, real_generator=False, prelude=None):
+        # prelude: Lua run just before native.lua loads (test_pool_schedule.py: a pool of workers)
         lua = LuaRuntime()
 
         def convert(value):
@@ -158,6 +159,8 @@ class NativeTests(unittest.TestCase):
         lua.execute("require=function(name) if name=='ge/extensions/e2r/countries' then return countries elseif name=='ge/extensions/e2r/coordinates' then return coordinates elseif name=='ge/extensions/e2r/cellformat' then return cellformat elseif name=='ge/extensions/e2r/manual' then return manual elseif name=='ge/extensions/e2r/manual_editor' then return manualEditor else return stubGenerator end end")
         lua.globals().quality = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/quality.lua').read_text(encoding='utf8'))
         lua.execute("local old=require; require=function(n) if n=='ge/extensions/e2r/quality' then return quality else return old(n) end end")
+        if prelude:
+            lua.execute(prelude)
         mod = lua.execute((ROOT / 'mod/lua/ge/extensions/e2r/native.lua').read_text(encoding='utf8'))
         return lua, mod, convert
 

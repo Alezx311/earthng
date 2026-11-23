@@ -150,8 +150,12 @@ end
 -- engine draws and collides), one material. dx, dy, dz: the mesh's origin against the shape's
 -- (the item's pos; 0 when equal). A corner {v, n, u} met again is one vertex. Returns the
 -- triangles added.
+-- pause: called every PAUSE corners (a worker's slice: a mesh of 20 000 triangles held it ~10 ms,
+-- and one over CORNER vertices, whose corners were keyed by a string each, several times that:
+-- the scene's packing was where a worker ran 50-155 ms past its slice, drive-b2).
 local CORNER = 16384
-function Object:add(mesh, dx, dy, dz)
+local PAUSE = 4096
+function Object:add(mesh, dx, dy, dz, pause)
   dx, dy, dz = dx or 0, dy or 0, dz or 0
   local verts, normals, uvs, faces = mesh.verts, mesh.normals, mesh.uvs, mesh.faces
   local count = #faces
@@ -167,11 +171,19 @@ function Object:add(mesh, dx, dy, dz)
   for t = 1, count do
     local f = faces[t]
     local vi, ni, ui = f.v, f.n, f.u
-    local key = wide and (vi .. ':' .. ni .. ':' .. ui) or ((vi * CORNER + ni) * CORNER + ui)
-    local index = seen[key]
+    -- a corner's key: one number; in a wide mesh a table a vertex, keyed by its normal and uv
+    local set, key = seen, nil
+    if wide then
+      set = seen[vi]
+      if not set then set = {}; seen[vi] = set end
+      key = ni * 4194304 + ui
+    else
+      key = (vi * CORNER + ni) * CORNER + ui
+    end
+    local index = set[key]
     if not index then
       index = n
-      seen[key] = n
+      set[key] = n
       local p, q, w = verts[vi + 1], normals[ni + 1], uvs[ui + 1]
       local x, y, z = p.x + dx, p.y + dy, p.z + dz
       local a, b = n * 3, n * 2
@@ -188,6 +200,7 @@ function Object:add(mesh, dx, dy, dz)
     end
     at = at + 1
     idx[at] = index
+    if pause and t % PAUSE == 0 then pause() end
   end
   lo[1], lo[2], lo[3], hi[1], hi[2], hi[3] = lx, ly, lz, hx, hy, hz
   self.n, part.n = n, at
@@ -204,6 +217,7 @@ local function tangents(self, indices, count, pause)
   local tan, bx = {}, {}
   for k = 1, n * 4 do tan[k] = 0 end
   for k = 1, n * 3 do bx[k] = 0 end
+  if pause then pause() end
   for t = 1, count - 2, 3 do
     local a, b, c = indices[t], indices[t + 1], indices[t + 2]
     local a3, b3, c3 = a * 3, b * 3, c * 3
@@ -224,9 +238,10 @@ local function tangents(self, indices, count, pause)
       bx[b3 + 1], bx[b3 + 2], bx[b3 + 3] = bx[b3 + 1] + ux, bx[b3 + 2] + uy, bx[b3 + 3] + uz
       bx[c3 + 1], bx[c3 + 2], bx[c3 + 3] = bx[c3 + 1] + ux, bx[c3 + 2] + uy, bx[c3 + 3] + uz
     end
-    if pause and t % 24576 == 1 then pause() end
+    if pause and t % 6144 == 1 then pause() end
   end
   for v = 0, n - 1 do
+    if pause and v % 8192 == 8191 then pause() end
     local v3, v4 = v * 3, v * 4
     local nx, ny, nz = nor[v3 + 1], nor[v3 + 2], nor[v3 + 3]
     local tx, ty, tz = tan[v4 + 1], tan[v4 + 2], tan[v4 + 3]
@@ -278,7 +293,7 @@ function Builder:object(name)
 end
 
 -- name: the class the mesh belongs to; its meshes in the file are name, name_2, name_3, ...
-function Builder:add(name, mesh, dx, dy, dz)
+function Builder:add(name, mesh, dx, dy, dz, pause)
   local part = self.parts[name] or 1
   local object = self:object(part == 1 and name or (name .. '_' .. part))
   -- every corner of the mesh may be a new vertex
@@ -287,7 +302,7 @@ function Builder:add(name, mesh, dx, dy, dz)
     self.parts[name] = part
     object = self:object(name .. '_' .. part)
   end
-  local n = object:add(mesh, dx, dy, dz)
+  local n = object:add(mesh, dx, dy, dz, pause)
   self.triangles = self.triangles + n
   return n
 end
@@ -355,7 +370,10 @@ function Builder:encode(visibleSize, pause)
       local part = object.parts[material]
       if part.n > 0 then
         local idx = part.idx
-        for k = 1, part.n do indices[total + k] = idx[k] end
+        for k = 1, part.n do
+          indices[total + k] = idx[k]
+          if pause and k % 16384 == 0 then pause() end
+        end
         prims[#prims + 1] = ffi.string(ffi.new('uint32_t[3]', total, part.n, INDEXED + materialOf(material)), 12)
         total = total + part.n
         if pause then pause() end

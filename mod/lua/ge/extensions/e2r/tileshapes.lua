@@ -76,7 +76,7 @@ function M.pack(manifest, layer, file, write, pause)
       for k = 1, #meshes do
         local mesh = meshes[k]
         local b = shapeOf(class, variant, mesh.material or '')
-        b.triangles = b.triangles + b.shape:add(class, mesh, dx, dy, dz)
+        b.triangles = b.triangles + b.shape:add(class, mesh, dx, dy, dz, pause)
       end
       stats.objects = stats.objects + 1
       if pause then pause() end

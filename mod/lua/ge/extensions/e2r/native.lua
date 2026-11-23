@@ -122,7 +122,15 @@ local REMOTE = {on = false, jobs = {}, bad = {}, sent = 0, done = 0, fell = 0,
   -- near tile's scene was missing 4 s ahead in 45 % of the frames against 3.5 % (ab-pool-6
   -- against ab-pool-5). With no near tile owed they leave `spare` workers free, so a road that
   -- comes due does not wait for a far tile to end.
-  farShare = 3, spare = 2}
+  farShare = 3, spare = 2,
+  -- A near tile's job stops in its worker once the scene is out (tileworker.lua, args.park) and
+  -- goes on to the grass when the scheduler below gives the grass its turn (parkedGrass), the
+  -- worker building other tiles meanwhile. Its turn comes when its worker has nothing else to
+  -- run, or, the car within `goSoon` s of the tile, right after the job that worker has in hand.
+  -- The scheduler keeps up to `grassParked` of them (AHEAD.grassParked, 4, is for builds parked
+  -- in this VM: over it a worker's whole job was thrown away mid-grass and the tile built again
+  -- from its road later). park = false: a worker builds a tile to its end, as until 24.11.
+  park = true, grassParked = 12, goSoon = 8, parking = {}}
 do
   local okW, workers = pcall(require, 'ge/extensions/e2r/workers')
   local okC, codec = pcall(require, 'ge/extensions/e2r/bridge_codec')
@@ -946,6 +954,13 @@ M.pool = function(on)
   return out
 end
 
+-- A worker's job stops after its scene and builds its grass when asked (REMOTE.park); off: it
+-- builds a tile to its end (test_world.py --no-park, E2R_PARK = false in the console).
+M.park = function(on)
+  if on ~= nil then REMOTE.park = on and true or false end
+  return REMOTE.park ~= false
+end
+
 -- How pressing the pool's work is, for the workers' slice of a frame (workers.lua): 2 a near road
 -- is due within seconds, 1 near tiles are owed, 0 only the far ring is left.
 M.poolNeed = function()
@@ -1471,13 +1486,18 @@ function REMOTE.send(key, wanted, options, size)
       data[name] = value
     end
   end
+  local park = REMOTE.park ~= false and options.roadReady ~= nil and options.sceneReady ~= nil
+    and type(REMOTE.workers.go) == 'function'
   local id = REMOTE.workers.submit({manifest = active.region.descriptor.manifest, i = wanted.i, j = wanted.j,
     size = size, options = data, roadEarly = options.roadReady ~= nil, sceneEarly = options.sceneReady ~= nil,
+    -- the job stops after its scene until it is told to go on (REMOTE.receive)
+    park = park or nil,
     -- a vista block is built from the cells' elevation grids alone (loadTerrain)
     vista = wanted.vista and true or nil})
   if id then
     REMOTE.jobs[key] = id
     REMOTE.sent = REMOTE.sent + 1
+    REMOTE.parking[id] = park or nil
   end
   return id
 end
@@ -1487,9 +1507,19 @@ function REMOTE.drop(key)
   local id = REMOTE.jobs[key]
   if id then
     REMOTE.workers.cancel(id)
-    REMOTE.jobs[key] = nil
+    REMOTE.jobs[key], REMOTE.parking[id] = nil, nil
   end
   if active and active.waiting then active.waiting[key] = nil end
+end
+
+-- A parked grass build of a worker's whose turn cannot come yet: its job's worker has another
+-- job in hand and the car is not about to reach the tile (eta s away).
+function REMOTE.held(key, eta)
+  local id = REMOTE.jobs[key]
+  if not id or not REMOTE.parking[id] or REMOTE.workers.ready(id) then return false end
+  -- (a job that has ended, by an error, has something to say: its build goes on to hear it)
+  if REMOTE.workers.news(id) then return false end
+  return eta > REMOTE.goSoon
 end
 
 -- Wait for the worker's parts and deliver them as the generator would here: the road through
@@ -1508,7 +1538,7 @@ function REMOTE.receive(key, job, roadReady, sceneReady)
     if parts == nil then error('e2r worker: the job is gone: ' .. key, 0) end
     for _, part in ipairs(parts) do
       if part.kind == 'error' then
-        REMOTE.bad[key], REMOTE.jobs[key] = true, nil
+        REMOTE.bad[key], REMOTE.jobs[key], REMOTE.parking[job] = true, nil, nil
         REMOTE.fell, REMOTE.lastError = REMOTE.fell + 1, tostring(part.a)
         if type(log) == 'function' then log('E', 'e2r_pool', 'tile ' .. key .. ': ' .. tostring(part.a)) end
         if road or scene then error('e2r worker: ' .. tostring(part.a), 0) end
@@ -1520,13 +1550,15 @@ function REMOTE.receive(key, job, roadReady, sceneReady)
       elseif part.kind == 'scene' then
         scene = open(part.a).scene
         if sceneReady then sceneReady(scene) end
+        -- (sceneReady parked this build until the grass's turn: the worker's job goes on now)
+        if REMOTE.parking[job] then REMOTE.workers.go(job) end
       elseif part.kind == 'final' then
         final = open(part.a)
       end
     end
     if not final then coroutine.yield(WAIT) end
   end
-  REMOTE.jobs[key] = nil
+  REMOTE.jobs[key], REMOTE.parking[job] = nil, nil
   REMOTE.done = REMOTE.done + 1
   for cellKey, low in pairs(final.lows or NONE_LIST) do
     if active.lows[cellKey] == nil then active.lows[cellKey] = low end
@@ -1773,6 +1805,9 @@ local function buildTile(key, wanted)
       -- info stands, plaques and blade signs at the points of interest (BLD.poiInfo); M.poiInfo
       -- false: the player's switch
       poiInfo = M.poiInfo,
+      -- M.shell false: a building's own meshes collide, as until 24.11 (generator.lua, the
+      -- building loop; test_world.py --no-shell)
+      shell = M.shell,
       cellSize = s}
   local road, scene, far, nav, grass
   local job = remote and REMOTE.send(key, wanted, options, size) or nil
@@ -2127,7 +2162,10 @@ local function update(dt, budgetMs, farBudgetMs, now)
         else
           local priority = grassRank(want.priority, leftOf(slot, 'grass'))
           grassCount = grassCount + 1
-          if not grassPriority or priority < grassPriority then grassKey, grassPriority = key, priority end
+          -- (a worker's parked job waits for its worker to have nothing else to run: REMOTE.held)
+          if not REMOTE.held(key, want.priority) and (not grassPriority or priority < grassPriority) then
+            grassKey, grassPriority = key, priority
+          end
         end
       end
       local farKey, farPriority
@@ -2245,7 +2283,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
           worstKey, worstPriority = parkedKey, priority
         end
       end
-      if count > AHEAD.grassParked then loseGrass(worstKey) end
+      if count > (poolNow and REMOTE.park ~= false and REMOTE.grassParked or AHEAD.grassParked) then loseGrass(worstKey) end
     elseif coroutine.status(active.work) == 'dead' then
       -- (a tile built whole, at a landing or without the early road, says nothing of a layer)
       if kind ~= 'road' then spent(kind) end

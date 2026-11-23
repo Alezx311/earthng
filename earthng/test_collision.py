@@ -80,6 +80,51 @@ class CollisionTests(unittest.TestCase):
           assert(not seen[awayRoad] and seen[mark] and seen[horizon])
         ''')
 
+    def test_what_a_building_draws_is_quiet_whatever_its_material(self):
+        lua = self.make()
+        lua.execute('''
+          local q = collision.quiet
+          local function marked(...) local out = mesh(...) for _, m in ipairs(out) do m.quiet = true end return out end
+          -- (generator.lua marks the meshes a building on the ground draws: its shell is in the proxies)
+          assert(q(marked('roof', 'kw_plaster_ochre', 'hw_brick_red', 'parapet', 'gable', 'plinth'), 'scene'))
+          assert(not q(mesh('roof'), 'scene') and not q(mesh('kw_plaster_ochre'), 'scene'))
+          -- one mesh that is not marked keeps the object solid, and a proxy is never quiet
+          local mixed = marked('roof')
+          mixed[2] = {material = 'e2rf_fence_wall'}
+          assert(not q(mixed, 'scene'))
+          assert(not q(marked('col_bldg'), 'scene'))
+        ''')
+
+    def test_proxies_are_kept_further_than_they_are_asked_for(self):
+        lua = self.make()
+        lua.execute('''
+          local tile = {i = 0, j = 0}
+          local ids = {}
+          local function proxy(ix)
+            serial = serial + 1
+            objects[serial] = {id = serial, hidden = true,
+              isHidden = function(self) return self.hidden end,
+              setHidden = function(self, h) self.hidden = h end}
+            coll:track(tile, serial, false, 12, 'scene', {ix, 0, 64})
+            ids[ix] = serial
+          end
+          for ix = 0, 12 do proxy(ix) end
+          local function at(x) return {{x, 32, 200, 400}} end
+          assert(collision.WANT_RING == 1 and collision.KEEP_RING == 3)
+          -- the car in cell 2: a proxy of its 3x3 is not in, so a rebuild is asked for
+          assert(coll:missingProxies(at(2 * 64 + 32)))
+          local kept = {}
+          coll:rebuild(at(2 * 64 + 32), 500, find, function()
+            for ix, id in pairs(ids) do kept[ix] = not objects[id].hidden end
+          end)
+          -- it takes the cells three either side of the car, and hides them again after
+          for ix = 0, 12 do assert(kept[ix] == (ix <= 5), ix) end
+          for _, id in pairs(ids) do assert(objects[id].hidden) end
+          -- two cells on nothing is asked: cells 3..5 are in. A third cell, and cell 6 is wanted
+          assert(not coll:missingProxies(at(3 * 64 + 32)) and not coll:missingProxies(at(4 * 64 + 32)))
+          assert(coll:missingProxies(at(5 * 64 + 32)))
+        ''')
+
     def test_the_scene_keeps_to_its_own_window(self):
         lua = self.make()
         lua.execute('''
@@ -112,6 +157,63 @@ class CollisionTests(unittest.TestCase):
           -- walls never stay where the ground goes
           coll:rebuild({{250, 250, 100, 200, 1000, 1000}}, 500, find, reload)
           assert(seen[besideRoad] and seen[besideWall] and not seen[wall])
+        ''')
+
+    def test_a_building_collides_as_its_shell_and_its_roof(self):
+        # generator.lua: what a building on the ground draws is marked quiet, each wall piece is a
+        # quad of its cell's proxy and so is every piece of the roof
+        lua = self.make()
+        g = lua.execute((ROOT / 'generator.lua').read_text(encoding='utf8'))
+        lua.globals().generator = g
+        lua.execute('''
+          local function build(tags, shell)
+            local cell = {roads = {{id = 'street', nodes = {'a', 'b'}, width = 8, tags = {highway = 'residential'},
+              points = {{0, 90, 0}, {400, 90, 0}}}},
+              buildings = {{id = 'b', height = 12, tags = tags, rings = {{{100, 200}, {140, 200}, {140, 230}, {100, 230}}}}}}
+            local _, scene = generator.build({cell}, 0, 0, {terrainStep = 100, maxTrees = 0, relief = false, shell = shell})
+            return scene
+          end
+          -- triangles by class: {solid = {material = n}, quiet = {...}, proxy = {...}}, and the proxies' own
+          local function census(scene)
+            local out = {solid = {}, quiet = {}, proxy = {}, caps = 0, walls = 0}
+            for _, it in ipairs(scene.items) do
+              if it.kind == 'proc' then
+                local class = it.proxy and 'proxy' or (collision.quiet(it.meshes, 'scene') and 'quiet' or 'solid')
+                for _, m in ipairs(it.meshes) do
+                  out[class][m.material] = (out[class][m.material] or 0) + #m.faces / 3
+                  if it.proxy then
+                    assert(not m.quiet, 'a proxy is never quiet')
+                    for t = 1, #m.faces - 2, 3 do
+                      local a, b, c = m.verts[m.faces[t].v + 1], m.verts[m.faces[t + 1].v + 1], m.verts[m.faces[t + 2].v + 1]
+                      if math.abs(a.z - b.z) < .01 and math.abs(a.z - c.z) < .01 then out.caps = out.caps + 1 else out.walls = out.walls + 1 end
+                    end
+                  end
+                end
+              end
+            end
+            return out
+          end
+          local function count(set, prefix)
+            local n = 0
+            for material, tris in pairs(set) do if material:sub(1, #prefix) == prefix then n = n + tris end end
+            return n
+          end
+          -- as it was until 24.11: the roof, the plinth and the parapet collide as drawn, the
+          -- photo walls are quiet by their name, and the proxy holds the shell alone: four walls
+          local was = census(build({building = 'apartments'}, false))
+          assert(count(was.solid, 'e2rf_roof') > 0 and count(was.solid, 'e2rf_p') > 0)
+          assert(count(was.proxy, 'e2rf_col_bldg') == 8 and was.caps == 0)
+          -- now nothing the building draws is left solid
+          local now = census(build({building = 'apartments'}))
+          assert(next(now.solid) == nil, 'solid pieces of a building')
+          assert(count(now.quiet, 'e2rf_roof') == count(was.solid, 'e2rf_roof') and count(now.quiet, 'e2rf_wall_') > 0)
+          assert(count(now.quiet, 'e2rf_p') == count(was.solid, 'e2rf_p'))
+          -- and the proxy holds the same shell and what faces up: the roof, the parapet's top
+          assert(now.caps >= count(now.quiet, 'e2rf_roof') and now.caps >= 2, now.caps)
+          assert(count(now.proxy, 'e2rf_col_bldg') >= 8 + now.caps)
+          -- a roof on columns is driven under: it collides as drawn, nothing of it is marked
+          local canopy = census(build({building = 'roof'}))
+          assert(count(canopy.solid, 'e2rf_roof') > 0 and next(canopy.proxy) == nil and next(canopy.quiet) == nil)
         ''')
 
     def test_at_speed_the_world_keeps_a_lane_ahead(self):

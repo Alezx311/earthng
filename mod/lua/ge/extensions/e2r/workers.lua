@@ -21,7 +21,11 @@ M.SLICE, M.SLICE_LANDING = 4, 40
 M.SLICES = {[0] = 2, [1] = 4, [2] = 6}
 M.FOLDER = '/temp/e2r_tiles'
 
-local pool = {}        -- [k] = {veh, id, state = 'loading' | 'idle' | 'busy', job}
+-- [k] = {veh, id, state = 'loading' | 'idle' | 'busy', sent = the commands sent to it (a job, a
+-- go, a cancel), parked = the jobs it holds stopped after their scene}. A worker is idle from
+-- its "free" that counts every command sent (tileworker.lua): it has nothing to run then,
+-- whatever it holds parked.
+local pool = {}
 local byId = {}        -- vehicle id -> k
 local jobs = {}        -- [job id] = {worker, parts = {}, state = 'running' | 'done' | 'error', args}
 local inbox = {}
@@ -62,7 +66,7 @@ local function spawnOne(k)
   pcall(function() veh.playerUsable = false end)
   pcall(function() veh:setHidden(true) end)
   local id = veh:getID()
-  pool[k] = {veh = veh, id = id, state = 'loading'}
+  pool[k] = {veh = veh, id = id, state = 'loading', sent = 0, parked = 0}
   byId[id] = k
   stats.spawned = stats.spawned + 1
   veh:queueLuaCommand(string.format(
@@ -106,10 +110,13 @@ function M.count()
   return ready, free
 end
 
+-- an idle worker: the one that holds the fewest parked jobs
 function M.free()
+  local best
   for k, w in pairs(pool) do
-    if w.state == 'idle' then return k end
+    if w.state == 'idle' and (not best or w.parked < pool[best].parked) then best = k end
   end
+  return best
 end
 
 -- Hand a tile to a free worker. args: what tileworker.job takes, without id, worker, notify and
@@ -122,11 +129,44 @@ function M.submit(args)
   args.id, args.worker, args.notify = id, k, NOTIFY
   args.out = string.format('%s/%s/%d_%d_%d', M.FOLDER, session, args.i, args.j, id)
   local w = pool[k]
-  w.state, w.job = 'busy', id
+  w.state, w.sent = 'busy', w.sent + 1
   jobs[id] = {worker = k, parts = {}, state = 'running', timer = hptimer(), key = args.i .. '_' .. args.j}
   stats.jobs = stats.jobs + 1
   w.veh:queueLuaCommand('if e2rTileWorker then e2rTileWorker.job(' .. serialize(args) .. ') end')
   return id
+end
+
+-- Is the job stopped after its scene (args.park), its worker gone on to other tiles?
+function M.parked(id)
+  local job = jobs[id]
+  return job ~= nil and job.parked == true
+end
+
+-- Can the rest of a parked job start at once: its worker has nothing else to run. (Its build
+-- lives in that worker's VM: no other worker can take it.)
+function M.ready(id)
+  local job = jobs[id]
+  local w = job and pool[job.worker]
+  return job ~= nil and job.state == 'running' and not job.went and w ~= nil and w.state == 'idle'
+end
+
+-- Ask for the rest of the job (its grass layer). Its worker runs it after the job it has in hand.
+-- True when the job was told now or before.
+function M.go(id)
+  local job = jobs[id]
+  if not job or job.state ~= 'running' then return false end
+  if job.went then return true end
+  local w = pool[job.worker]
+  if not w then return false end
+  job.went = true
+  if job.parked then
+    job.parked = false
+    w.parked = math.max(0, w.parked - 1)
+    stats.resumed = (stats.resumed or 0) + 1
+  end
+  w.state, w.sent = 'busy', w.sent + 1
+  w.veh:queueLuaCommand('if e2rTileWorker then e2rTileWorker.go(' .. id .. ') end')
+  return true
 end
 
 -- Give the job up: its worker drops it and is free again; what it wrote already is removed.
@@ -135,9 +175,14 @@ function M.cancel(id)
   if not job then return end
   if job.state == 'running' then
     local w = pool[job.worker]
-    if w and w.job == id then
+    if w then
+      -- (the worker says "free" when the cancel leaves it nothing to run)
+      w.sent = w.sent + 1
       w.veh:queueLuaCommand('if e2rTileWorker then e2rTileWorker.cancel(' .. id .. ') end')
-      w.state, w.job = 'idle', nil
+      if job.parked then
+        w.parked = math.max(0, w.parked - 1)
+        stats.parkedDropped = (stats.parkedDropped or 0) + 1
+      end
     end
     stats.cancelled = stats.cancelled + 1
   end
@@ -198,8 +243,9 @@ local function sweep()
   end
 end
 
--- Every frame: spawn what is owed, take what the workers said, give the busy ones their slice.
-function M.update(landing, need)
+-- Every frame: spawn what is owed and take what the workers said (update), then give the busy
+-- ones their slice (tick). A caller that never calls tick has update do both, as until 24.11.
+function M.update(landing, need, noTick)
   if not exists() then return end
   if at and #pool < wanted then spawnOne(#pool + 1) end
   local said = inbox
@@ -208,19 +254,43 @@ function M.update(landing, need)
     for _, part in ipairs(said) do
       local w = pool[part.worker]
       if part.id == 0 then
-        if w then w.state = part.kind == 'ready' and 'idle' or 'broken' end
-        if part.kind ~= 'ready' then stats.broken = tostring(part.a) end
+        if part.kind == 'free' then
+          -- nothing to run, as of the commands it had taken: idle unless one was sent since
+          if w and w.state ~= 'loading' and w.state ~= 'broken' and tonumber(part.a) == w.sent then w.state = 'idle' end
+        else
+          if w then w.state = part.kind == 'ready' and 'idle' or 'broken' end
+          if part.kind ~= 'ready' then stats.broken = tostring(part.a) end
+        end
+      elseif part.kind == 'parked' then
+        -- its scene is out and it waits for go(): the worker goes on to other jobs
+        local job = jobs[part.id]
+        if job and job.state == 'running' and not job.went and not job.parked then
+          job.parked = true
+          if w then w.parked = w.parked + 1 end
+          stats.parks = (stats.parks or 0) + 1
+        end
       else
         local job = jobs[part.id]
         local ended = part.kind == 'done' or part.kind == 'error'
-        -- the worker is free whether or not anyone still waits for the job
-        if ended and w and w.job == part.id then w.state, w.job = 'idle', nil end
         if ended then
           if part.kind == 'done' then
             stats.done = stats.done + 1
             local d = type(part.detail) == 'table' and part.detail or {}
             stats.busyMs = stats.busyMs + (d.ms or 0)
+            stats.packMs = (stats.packMs or 0) + (d.packMs or 0)
+            -- the workers' ticks by their length against the slice asked (tileworker.lua)
+            stats.slices = (stats.slices or 0) + (d.slices or 0)
+            stats.gcMs, stats.askedMs = (stats.gcMs or 0) + (d.gcMs or 0), (stats.askedMs or 0) + (d.askedMs or 0)
+            stats.ticks = stats.ticks or {0, 0, 0, 0}
+            for k = 1, 4 do stats.ticks[k] = stats.ticks[k] + (type(d.ticks) == 'table' and d.ticks[k] or 0) end
             if job then stats.wallMs = stats.wallMs + job.timer:stop() end
+            -- (part.a: 'stage=ms stage=ms ...', the generator's stages of this job)
+            stats.stages = stats.stages or {}
+            for stage, ms in tostring(part.a or ''):gmatch('([%w_%-]+)=(%d+)') do
+              -- ('parked' is the time the job stood stopped, not work)
+              if stage == 'parked' then stats.parkedMs = (stats.parkedMs or 0) + tonumber(ms)
+              else stats.stages[stage] = (stats.stages[stage] or 0) + tonumber(ms) end
+            end
             if (d.longest or 0) > stats.longest then stats.longest = d.longest end
             -- the slices that ran far past what was asked, by the generator's stage they began
             -- in: where it needs a pause point (the frame waits for a vehicle's Lua)
@@ -247,11 +317,7 @@ function M.update(landing, need)
       end
     end
   end
-  local slice = landing and M.SLICE_LANDING or (M.SLICES[need or 1] or M.SLICE)
-  local tick = string.format('if e2rTileWorker then e2rTileWorker.tick(%.1f) end', slice)
-  for _, w in pairs(pool) do
-    if w.state == 'busy' then w.veh:queueLuaCommand(tick) end
-  end
+  if not noTick then M.tick(landing, need) end
   if #owned > 0 then sweep() end
   for k = #doomed, 1, -1 do
     local d = doomed[k]
@@ -263,9 +329,38 @@ function M.update(landing, need)
   end
 end
 
+-- The busy workers' slice of this frame. A vehicle's VM runs what is queued to it after GE Lua's
+-- update of this frame and has until the end of GE Lua's update of the next one: a slice that
+-- fits there costs the frame nothing, and one that does not makes it wait (research/fast-tiles
+-- p10, 24.11: 15 ms of plain work in eight VMs under a 20 ms step of the game thread: frame
+-- 31.4 ms with it and 31.5 without; 16 ms in a 10 ms frame: 22 ms). boostMs: the ms the game
+-- thread's next update will take over its usual (a new shape file, a collision rebuild: the
+-- world knows a frame ahead): the slice grows by BOOST of it, BOOST_MAX at most.
+M.BOOST, M.BOOST_MAX = .7, 24
+function M.tick(landing, need, boostMs)
+  if not exists() then return end
+  local slice = landing and M.SLICE_LANDING or (M.SLICES[need or 1] or M.SLICE)
+  local boost = 0
+  if not landing and boostMs and boostMs > 0 then boost = math.min(M.BOOST_MAX, boostMs * M.BOOST) end
+  local tick = string.format('if e2rTileWorker then e2rTileWorker.tick(%.1f) end', slice + boost)
+  -- (M.sliced, M.boosted: the ms of building asked of the pool this frame, for the world's ledger)
+  M.sliced, M.boosted = 0, 0
+  for _, w in pairs(pool) do
+    if w.state == 'busy' then
+      w.veh:queueLuaCommand(tick)
+      M.sliced, M.boosted = M.sliced + slice + boost, M.boosted + boost
+    end
+  end
+  if boost > 0 then
+    stats.boosts, stats.boostMs = (stats.boosts or 0) + 1, (stats.boostMs or 0) + M.boosted
+  end
+end
+
 function M.stats()
   local ready, free = M.count()
   local out = {workers = ready, free = free, wanted = wanted}
+  out.parkedNow = 0
+  for _, w in pairs(pool) do out.parkedNow = out.parkedNow + (w.parked or 0) end
   for k, v in pairs(stats) do out[k] = v end
   return out
 end

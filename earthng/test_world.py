@@ -138,6 +138,14 @@ def main():
     p.add_argument('--pool', type=int, help='tile workers: near tiles are built in this many vehicle VMs (workers.lua; the mod uses 6; 0: none)')
     p.add_argument('--no-far-turn', action='store_true', help="far tiles' shapes through the spawn queue alone, without their own turn (A/B)")
     p.add_argument('--no-pool', action='store_true', help='no tile workers: every tile is built on the game thread, as before (A/B)')
+    p.add_argument('--no-park', action='store_true', help="a worker builds a tile to its end, its grass at once, as until 24.11 (A/B)")
+    p.add_argument('--slices', help="the workers' ms a frame by need (far ring only, near owed, road due): 2,4,6 in the mod (A/B)")
+    p.add_argument('--boost', help="the workers' longer slice before a long step at any speed: the share of the step and "
+                   "its cap in ms, 0.7,24 (the mod: by the car's speed, none under 54 km/h; A/B)")
+    p.add_argument('--no-boost', action='store_true',
+                   help="the workers' slice does not grow the frame before a long step of the game thread (A/B)")
+    p.add_argument('--no-shell', action='store_true',
+                   help="a building's own meshes collide and proxies are kept one cell round the car, as until 24.11 (A/B)")
     p.add_argument('--no-batches', action='store_true',
                    help='flow cars and walkers as a TSStatic each, not DynamicShapeBatch copies (A/B)')
     p.add_argument('--walk-bodies', type=int, help='physical bodies for walkers about to be hit (pedhit.lua, default 24)')
@@ -295,6 +303,16 @@ def main():
         test['batches'] = False
     if a.no_far_turn:
         test['farTurn'] = False
+    if a.no_park:
+        test['park'] = False
+    if a.no_boost:
+        test['boost'] = False
+    if a.slices:
+        test['slices'] = [float(v) for v in a.slices.split(',')]
+    if a.boost:
+        test['boostBy'] = [float(v) for v in a.boost.split(',')]
+    if a.no_shell:
+        test['shell'] = False
     if a.no_pool:
         test['pool'] = 0
     elif a.pool is not None:

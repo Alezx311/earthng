@@ -1652,6 +1652,15 @@ local PIECE_TRIS, MIXED_TRIS, MIXED_MATS = 2500, 4000, 4
 -- A mixed piece may have 4000 * 3 unique corners: 8192 aliases a normal with the next UV.
 -- All three indices remain below 16384 and the packed key remains exact in a Lua double.
 local CORNER_BASE = 16384
+-- the bucket of a material's quiet pieces (collector hooks.quiet): one string a material, not one a triangle
+local QUIET_KEY = setmetatable({}, {__index = function(t, material)
+  local key = material .. '\0q'
+  t[material] = key
+  return key
+end})
+-- a roof's piece that joins the shell's proxy (collector hooks.cap): facing up at least this much
+-- (a pitch of 70 degrees) and at least this large (twice its area, m2)
+local CAP = {nz = .34, len = 1}
 local function collector(rect, key, layer, pause, mixed)
   local origin = {(rect[1] + rect[3]) * 0.5, (rect[2] + rect[4]) * 0.5, 0}
   local items, groups, used, operations, total = {}, {}, {}, 0, 0
@@ -1664,7 +1673,7 @@ local function collector(rect, key, layer, pause, mixed)
     local named = mesh.material or material
     items[#items + 1] = {kind = 'proc', name = 'e2rl_' .. key .. '_' .. layer .. '_' .. #items,
       pos = origin, meshes = {mesh}, triangles = triangles, mats = {named}, layer = layer,
-      proxy = mesh.cell ~= nil, cell = mesh.cell}
+      proxy = mesh.cell ~= nil, cell = mesh.cell, quiet = mesh.quiet}
     groups[material] = nil
   end
   local function flush()
@@ -1783,6 +1792,11 @@ local function collector(rect, key, layer, pause, mixed)
   -- flat shaded and box-mapped hooks.scale m a repeat, or false to leave it out (ROADS.wing)
   -- hooks.bore(kind, a, b, c): the pieces of a triangle that are drawn instead of it (none: a
   -- tunnel's tube takes it whole), or nil to draw it as it is (ROADS.bore)
+  -- hooks.quiet: what is drawn now is only drawn: its own mesh of the material, marked quiet, which
+  -- no collision rebuild takes (collision.lua M.quiet). A building sets it for all it draws: the
+  -- car meets its shell, one quad a wall in the proxy of the wall's cell (ROADS.collisionWall).
+  -- hooks.cap = the proxy cell's size: a piece drawn quiet that faces up (a roof) goes into the
+  -- proxy of its cell as well, so a car that comes down on a roof still lands on it.
   local hooks = {}
   local function triangle(kind, a, b, c, up)
     if hooks.bore and not hooks.boring then
@@ -1820,13 +1834,23 @@ local function collector(rect, key, layer, pause, mixed)
     local material = 'e2rf_' .. kind
     -- hooks.cell buckets an invisible collision proxy into its own object ({ix, iy, size})
     local gkey = material
-    if hooks.cell then gkey = material .. '\0' .. hooks.cell[1] .. ':' .. hooks.cell[2] end
+    local quiet = false
+    if hooks.cell then gkey = material .. '\0' .. hooks.cell[1] .. ':' .. hooks.cell[2]
+    elseif hooks.quiet and not mixed then
+      gkey, quiet = QUIET_KEY[material], true
+      if hooks.cap and nz >= CAP.nz and len >= CAP.len then
+        local size = hooks.cap
+        hooks.cell = {floor((a[1] + b[1] + c[1]) / 3 / size), floor((a[2] + b[2] + c[2]) / 3 / size), size}
+        triangle('col_bldg', a, b, c, up)
+        hooks.cell = nil
+      end
+    end
     if mixed and total >= mixed then flush() end
     local mesh = groups[gkey]
     if not mixed and mesh and mesh.tris >= PIECE_TRIS then flushMaterial(gkey); mesh = nil end
     if not mesh then
       mesh = {verts = {}, normals = {}, uvs = {}, faces = {}, material = material,
-        vmap = {}, nmap = {}, umap = {}, fmap = {}, tris = 0,
+        vmap = {}, nmap = {}, umap = {}, fmap = {}, tris = 0, quiet = quiet or nil,
         -- a far colour map spans a whole region: 1/1024 of it is ~100 m, no welding of its UVs
         -- (a real-colour sheet spans 3.2 km, VEG.real: 3 m, and the detail maps ride on its UVs)
         uvExact = kind:sub(1, 7) == 'farmap_' or kind:sub(1, 2) == 's2' or nil,
@@ -1872,12 +1896,14 @@ local function collector(rect, key, layer, pause, mixed)
     end
     local material = 'e2rf_' .. kind
     if mixed and total >= mixed then flush() end
-    local mesh = groups[material]
-    if not mixed and mesh and mesh.tris >= PIECE_TRIS then flushMaterial(material); mesh = nil end
+    local quiet = hooks.quiet and not mixed or false
+    local gkey = quiet and QUIET_KEY[material] or material
+    local mesh = groups[gkey]
+    if not mixed and mesh and mesh.tris >= PIECE_TRIS then flushMaterial(gkey); mesh = nil end
     if not mesh then
       mesh = {verts = {}, normals = {}, uvs = {}, faces = {}, material = material,
-        vmap = {}, nmap = {}, umap = {}, fmap = {}, tris = 0}
-      groups[material], used[material] = mesh, true
+        vmap = {}, nmap = {}, umap = {}, fmap = {}, tris = 0, quiet = quiet or nil}
+      groups[gkey], used[material] = mesh, true
     end
     local n = normalIndex(mesh, nx / len, ny / len, nz / len)
     local fa, fb, fc, fd = cornerFace(mesh, a, n, 1), cornerFace(mesh, b, n, 1), cornerFace(mesh, c, n, 1), cornerFace(mesh, d, n, 1)
@@ -17800,6 +17826,16 @@ local function build(cells, i, j, options)
         height = math.max(height, tags['building:levels'] and BLD.SHOP.canopy.levels or BLD.SHOP.canopy.height)
         top = base + height
       end
+      -- A building on the ground is met as its shell (ROADS.collisionWall, a quad a wall piece in
+      -- the proxy of the wall's 64 m cell) and its roof (the collector's hooks.cap): what it draws
+      -- (kit facades, house walls, roofs, parapets, gables, plinths) stays out of every collision
+      -- rebuild. Until 24.11 only its photo walls did, and the rest was most of the 0.4-0.9 M
+      -- triangles a town's rebuild took every two seconds (drive-pool-8: scene 357-951 k).
+      -- A roof on columns, a part of a 3D building and a bridge's tower collide as drawn, as before.
+      if not distant and not open and not lifted and not tags.e2r_part and not tags['bridge:support']
+          and tags['tower:type'] ~= 'bridge' and options.shell ~= false then
+        scene.hooks.quiet, scene.hooks.cap = true, math.max(64, (step or 16) * 4)
+      end
       BLD.kitShop = nil
       if not distant and not open and height >= 2.2 then
         local own, points, box = shops.own[building] or BLD.shopCell(nil, tags), {}, ringBounds(rings)
@@ -18072,6 +18108,7 @@ local function build(cells, i, j, options)
         for part, n in pairs(BLD.kitPlan.parts) do report.parts[part] = (report.parts[part] or 0) + n end
       end
       BLD.city, BLD.face, BLD.faces, BLD.kitPlan = nil, nil, nil, nil
+      scene.hooks.quiet, scene.hooks.cap = nil, nil
     end
     pause()
   end

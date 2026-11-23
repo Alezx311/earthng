@@ -11,6 +11,17 @@
 -- GE Lua drives it with queued commands: job(args), tick(ms) every frame, cancel(id). A tick
 -- resumes the build for about `ms`: the frame waits for a vehicle's Lua, so a slice stays under
 -- the frame's own length. Answers go back by obj:queueGameEngineLua(<notify>(worker, id, ...)).
+--
+-- A tile is built in stages, and the worker is free between them (24.11). A job with args.park
+-- stops once its scene is out: it says "parked" and waits, its build suspended in this VM (what
+-- it holds beyond the VM's cell cache is a few MB), until go(id) asks for the rest, the grass
+-- layer. Meanwhile the worker takes other jobs. Before, a worker went on to the grass of a tile
+-- 800 m from the car, a third of the tile's time, while a road the car was driving towards
+-- waited for a worker; and when the game gave the grass up, the whole job was thrown away and
+-- the tile built again later for its grass alone. The worker runs one job at a time: a new job
+-- first, then a parked one that has been told to go. It says "free" with the count of the
+-- commands it has taken when it has nothing to run, so GE Lua knows whether that answer is
+-- older than the last command it sent.
 local M = {}
 local clock = os.clock   -- a vehicle VM has no hptimer; os.clock is the wall clock on Windows
 
@@ -274,6 +285,13 @@ local function run(job, pause)
       options.sceneReady = function(scene)
         pack(scene, 'scene')
         send('scene', {scene = scene})
+        -- the rest (the grass layer) when it is asked for: the worker is free meanwhile
+        if args.park and not job.go then
+          mark('parked')
+          job.where = 'parked'
+          job.stop()
+          mark('grass-start')
+        end
       end
     end
   end
@@ -292,18 +310,55 @@ local function run(job, pause)
   job.where = 'collect'
   GC.running = true
   while not gcStep(1) do pause() end
+  -- the job's own ms by the stage a slice began in (job.stageBusy: the clock between two marks
+  -- also counts the frames between slices, three to five times the work)
   local stages = {}
-  for name, ms in pairs(stageMs) do stages[#stages + 1] = string.format('%s=%.0f', name, ms) end
-  say(job, '"done", %q, %d, %.1f, {ms = %.1f, packMs = %.1f, shapes = %d, cells = %d, heapMB = %.0f, slices = %d, longest = %.1f, longestAt = %q, encodeMs = %.1f, over50 = %q}',
+  for name, ms in pairs(job.stageBusy or stageMs) do stages[#stages + 1] = string.format('%s=%.0f', name, ms) end
+  -- (ticks: how long this VM was held a tick, the build and the collector's share together, in
+  -- frames of the tick's own slice: up to 1.5 of it, to 3, to 6, over 6; gcMs: the collector's)
+  local h = job.ticks
+  say(job, '"done", %q, %d, %.1f, {ms = %.1f, packMs = %.1f, shapes = %d, cells = %d, heapMB = %.0f, slices = %d, longest = %.1f, longestAt = %q, encodeMs = %.1f, over50 = %q, gcMs = %.1f, askedMs = %.1f, ticks = {%d, %d, %d, %d}}',
     table.concat(stages, ' '), bytesOut, (clock() - t0) * 1000, job.busyMs, packMs, shapeCount, cellCount,
-    collectgarbage('count') / 1024, job.slices, job.longest, tostring(job.longestAt), job.encodeMs or 0, table.concat(job.over, ' '))
+    collectgarbage('count') / 1024, job.slices, job.longest, tostring(job.longestAt), job.encodeMs or 0, table.concat(job.over, ' '),
+    job.gcMs, job.askedMs, h[1], h[2], h[3], h[4])
 end
 
+-- The job being built, the new ones waiting for it to end or park, the parked ones by id, the
+-- commands taken so far and the count the last "free" was said with.
 local current
--- A new job; the one in hand, if any, is dropped (GE Lua gives a worker one job at a time).
+local queue, parked, seen, saidFree = {}, {}, 0, nil
+local PARK = {}   -- a job's yield at the end of a stage
+local who         -- {notify, worker}: where "free" is said (from the first job)
+
+-- the next job to run: a new one, else a parked one that was told to go
+local function nextJob()
+  if #queue > 0 then return table.remove(queue, 1) end
+  for id, job in pairs(parked) do
+    if job.go then
+      parked[id] = nil
+      return job
+    end
+  end
+end
+
+-- say "free" once there is nothing to run (GE Lua holds it against the commands it has sent)
+local function settle()
+  if not current then current = nextJob() end
+  if not current and who and saidFree ~= seen then
+    saidFree = seen
+    local count = 0
+    for _ in pairs(parked) do count = count + 1 end
+    obj:queueGameEngineLua(string.format('%s(%d, 0, "free", %d, %d)', who.notify, who.worker, seen, count))
+  end
+end
+
+-- A new job. It runs when the one in hand has ended or parked.
 function M.job(args)
+  seen = seen + 1
   local job = args
+  who = who or {notify = job.notify, worker = job.worker}
   job.busyMs, job.slices, job.longest, job.over = 0, 0, 0, {}
+  job.gcMs, job.askedMs, job.ticks = 0, 0, {0, 0, 0, 0}
   local deadline = 0
   local function pause()
     if clock() >= deadline then
@@ -311,36 +366,93 @@ function M.job(args)
     end
   end
   job.setDeadline = function(t) deadline = t end
+  job.stop = function() coroutine.yield(PARK) end   -- (args.park is the job's own switch)
   job.co = coroutine.create(function() run(job, pause) end)
-  current = job
+  queue[#queue + 1] = job
+  settle()
+end
+
+-- The rest of a parked job is wanted (one that has not reached its stop yet will not make it).
+function M.go(id)
+  seen = seen + 1
+  local job = parked[id]
+  if job then
+    job.go = true
+  elseif current and current.id == id then
+    current.go = true
+  else
+    for _, waiting in ipairs(queue) do
+      if waiting.id == id then waiting.go = true end
+    end
+  end
+  settle()
 end
 
 function M.cancel(id)
+  seen = seen + 1
   if current and (id == nil or current.id == id) then current = nil end
+  if id == nil then
+    queue, parked = {}, {}
+  else
+    parked[id] = nil
+    for k = #queue, 1, -1 do
+      if queue[k].id == id then table.remove(queue, k) end
+    end
+  end
+  settle()
 end
 
--- Resume the job for about `ms`.
+-- Resume the job in hand for about `ms`.
 function M.tick(ms)
   local job = current
-  if not job then return end
+  if not job then settle(); return end
   local t = clock()
   job.setDeadline(t + ms / 1000)
   local before = job.where
-  local ok, err = coroutine.resume(job.co)
+  -- (builds of several tiles take turns in this VM: the generator keeps each one's scratch state)
+  local ok, err = (generator and generator.resumeBuild or coroutine.resume)(job.co)
   local used = (clock() - t) * 1000
   job.busyMs, job.slices = job.busyMs + used, job.slices + 1
+  local busy = job.stageBusy
+  if not busy then busy = {}; job.stageBusy = busy end
+  local at = tostring(before or 'start')
+  busy[at] = (busy[at] or 0) + used
   if ok and job.where ~= 'collect' then gcPace(ms) end
+  -- the whole tick against what was asked (the frame waits for the longest of the pool's)
+  local held = (clock() - t) * 1000
+  local share = held / math.max(ms, .5)
+  local h = job.ticks
+  local bin = share <= 1.5 and 1 or (share <= 3 and 2 or (share <= 6 and 3 or 4))
+  h[bin] = h[bin] + 1
+  job.gcMs, job.askedMs = job.gcMs + (held - used), job.askedMs + ms
   if used > job.longest then job.longest, job.longestAt = used, tostring(before) .. '>' .. tostring(job.where) end
   -- a slice far over what was asked: where it began and ended, for the report
   if used > ms + 50 and #job.over < 12 then job.over[#job.over + 1] = string.format('%s>%s:%.0f', tostring(before), tostring(job.where), used) end
-  if not ok then
+  if current ~= job then
+    -- (cancelled from inside its own slice: nothing to do)
+  elseif not ok then
     current = nil
     say(job, '"error", %q, 0, 0', tostring(err) .. '\n' .. debug.traceback(job.co))
   elseif coroutine.status(job.co) == 'dead' then
     current = nil
+  elseif err == PARK then
+    if job.go then
+      -- told to go on before it got here: no stop
+    else
+      current = nil
+      parked[job.id] = job
+      say(job, '"parked", "", 0, %.1f', job.busyMs)
+    end
   end
+  if not current then settle() end
 end
 
-function M.idle() return current == nil end
+function M.idle() return current == nil and #queue == 0 end
+-- (for the tests: the jobs parked here)
+function M.parkedCount()
+  local n = 0
+  for _ in pairs(parked) do n = n + 1 end
+  return n
+end
 
 return M

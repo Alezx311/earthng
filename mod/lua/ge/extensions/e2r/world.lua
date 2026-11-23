@@ -871,6 +871,7 @@ local function forestCommit()
     result.forestProps = math.max(0, (result.forestProps or 0) + added - removed)
   end
   result.forestCommits = (result.forestCommits or 0) + 1
+  LIMIT.did('forest')
   result.forestCommitKinds = math.max(result.forestCommitKinds or 0, kinds)
   result.forestCommitLive = math.max(result.forestCommitLive or 0, live)
   local ms = timer:stop()
@@ -1112,6 +1113,7 @@ local function spawnItem(it, group, pause, tile, layer)
     -- frame time, which drops a lone slow frame but not a run of them (pace.lua; the first drive
     -- with the pool loaded a tile's fifteen files in fifteen frames in a row)
     S.shapeWait = LIMIT.shapeGap
+    LIMIT.did('shape'); LIMIT.did('shapeMats', #(it.mats or {})); LIMIT.did('shapeTris', it.triangles or 0)
     if M.workers then M.workers.own(it.file, obj:getID()) end
     if NATIVE and tile and it.solid then
       S.coll = S.coll or collision.new()
@@ -1144,6 +1146,7 @@ local function spawnItem(it, group, pause, tile, layer)
     end
     if it.lens and M.signals then M.signals.addMesh(obj:getID(), it.lens, it.colour) end
     local ms = t:stop()
+    LIMIT.did('proc')
     if ms > (result.createMeshMs or 0) then result.createMeshMs, result.createMeshItem = ms, it.name end
   else
     if it.editorObject then
@@ -3768,7 +3771,8 @@ local function stepQueue(burst)
   local function pause() if over() then coroutine.yield() end end
   if S.co and S.job and S.job.tile.dropped then S.co, S.job = nil, nil end
   -- the far ring's own turn (LIMIT.farTurn), before the queue's shapes
-  local farTook = LIMIT.farTurn()
+  -- (not in a frame an announced shape is due in: the frame takes one shape)
+  local farTook = not LIMIT.armedDue() and LIMIT.farTurn()
   if not S.co and LIMIT.shareRing() then
     -- (screenshot mode at rest: shotShare of them, in their order; a still is its distance too)
     local q, front = S.queue, 0
@@ -3793,6 +3797,13 @@ local function stepQueue(burst)
         table.insert(S.queue, 1, job)
         break
       end
+      -- a shape file is a long step: the workers hear of it a frame ahead (LIMIT.arm)
+      if job.item.kind == 'shape' and not LIMIT.arm(job,
+          LIMIT.boostShape.fixed + LIMIT.boostShape.material * #(job.item.mats or {})) then
+        table.insert(S.queue, 1, job)
+        break
+      end
+      LIMIT.disarm(job)
       S.job = job
       local group = ((job.far or job.horizon) and ((job.item.cards and job.tile.cards) or job.tile.group))
         or (job.item.decor and job.tile.decor) or (job.scene and job.tile.sceneGroup) or job.tile.group
@@ -4274,6 +4285,10 @@ local function updateCollision()
     end
   end
   if not near then return end
+  -- a rebuild is a long step: the workers hear of it a frame ahead (LIMIT.arm), unless the car
+  -- stands on ground that has none yet
+  if wait > 0 and not LIMIT.arm('collision', S.collisionLastMs or 40) then return end
+  LIMIT.disarm('collision')
   local timer = hptimer()
   if NATIVE then
     S.coll = S.coll or collision.new()
@@ -4293,6 +4308,8 @@ local function updateCollision()
       table.insert(result.collisionLog, {math.floor(S.now * 10) / 10, math.floor(ms), S.coll.lastSolid, S.coll.lastHidden, k})
     end
   end
+  LIMIT.did('collision')
+  S.collisionLastMs = ms
   result.reloadCollisionMs = math.max(result.reloadCollisionMs or 0, ms)
   result.collisionReloads = (result.collisionReloads or 0) + 1
   result.collisionMsSum = (result.collisionMsSum or 0) + ms
@@ -6551,6 +6568,20 @@ function LIMIT.poolStart()
   -- test_world.py --pool N / --no-pool (read here: the landing is asked for before the test's
   -- other switches are, and the first A/B ran both ways with the pool on)
   if test and test.pool ~= nil then n = tonumber(test.pool) or 0 end
+  -- test_world.py --no-park / --no-shell, or E2R_PARK = false / E2R_SHELL = false in the console
+  -- before a landing: the pool and the collision as they were until 24.11, for an A/B on one planet
+  if native.park and ((test and test.park == false) or rawget(_G, 'E2R_PARK') == false) then native.park(false) end
+  if (test and test.shell == false) or rawget(_G, 'E2R_SHELL') == false then
+    native.shell = false
+    collision.KEEP_RING = collision.WANT_RING
+  end
+  -- test_world.py --slices a,b,c and --boost share,cap: the workers' slices for an A/B
+  if test and type(test.slices) == 'table' and M.workers then
+    M.workers.SLICES = {[0] = test.slices[1], [1] = test.slices[2] or test.slices[1], [2] = test.slices[3] or test.slices[2] or test.slices[1]}
+  end
+  if test and type(test.boostBy) == 'table' and M.workers then
+    M.workers.BOOST, M.workers.BOOST_MAX = test.boostBy[1], test.boostBy[2] or M.workers.BOOST_MAX
+  end
   if n <= 0 then
     native.pool(false)
     return
@@ -6586,6 +6617,174 @@ function LIMIT.slowFrame(frameMs)
   row[1], row[2] = row[1] + 1, math.floor(row[2] + frameMs)
 end
 LIMIT.shapeGap = 2   -- frames between two shape files of a scene while driving
+-- A long step of the game thread, told a frame ahead (LIMIT.arm), and the workers' slices
+-- (LIMIT.poolTick). A vehicle's VM runs its slice from the end of this frame's GE Lua to the end
+-- of the next frame's (workers.lua M.tick), so the frame before a long step the workers get a
+-- slice longer by most of that step, which neither frame waits for while the slice ends in
+-- time: a drive put in ~490 shape files of ~17 ms of GE Lua each and rebuilt the collision ~35
+-- times at ~36 ms (drive-b2).
+-- arm(what, ms): true when `what` (a queue job, 'collision') was announced in an earlier frame
+-- and may run now; the first time it only announces it, and the step waits a frame.
+-- boostShape: GE Lua's ms for a new shape file by its materials (the ledger's shape frames:
+-- Lua 9.3 ms with one material, 24.9 with twelve, 7.4 without a shape).
+LIMIT.boostShape = {fixed = .5, material = 1.4}
+-- What it buys and costs (24.11, Kyiv centre, one planet): the workers do 20-45 % more a second.
+-- Flown through at 90 km/h the ground 2 km ahead stood in 76 % of the frames against 6 %
+-- (replay-c1 against replay-b1), and the frame was 21.1 ms against 16.9: the game thread now had
+-- that ground to put in, and one tick in ten runs 1.5-3 times its slice, a long one further
+-- (the wait for vehicles in a shape's frame: median 0.1 ms either way, the worst tenth 19 ms
+-- against 1). Driven at 58 km/h, where nothing ahead was missing, it only cost: 25-27 ms a frame
+-- against 22 (drive-c1, -c2 against drive-b2). So it follows the speed: nothing up to
+-- boostFrom m/s, whole from boostFull (M.boost 'auto'; 'on' and 'off', test_world.py --boost
+-- and --no-boost, E2R_BOOST = true / false in the console).
+-- (under boostLeast of the whole nothing is announced: a step put off a frame for a slice a
+-- millisecond longer only moves the gate)
+LIMIT.boostFrom, LIMIT.boostFull, LIMIT.boostLeast = 15, 30, .2
+function LIMIT.boostShare()
+  local mode = M.boost
+  if rawget(_G, 'E2R_BOOST') ~= nil then mode = rawget(_G, 'E2R_BOOST') and 'on' or 'off' end
+  if test and test.boost == false then mode = 'off' elseif test and type(test.boostBy) == 'table' then mode = 'on' end
+  if mode == 'off' or mode == false then return 0 end
+  if mode == 'on' or mode == true then return 1 end
+  local _, v = focus()
+  local speed = v and v:length() or 0
+  return math.max(0, math.min(1, (speed - LIMIT.boostFrom) / (LIMIT.boostFull - LIMIT.boostFrom)))
+end
+-- (several steps may be announced in one frame, a rebuild and a shape: each runs in a later
+-- frame of its own, and the slice grows by the longest; LIMIT.disarm once a step has run)
+function LIMIT.arm(what, ms)
+  if not (S.poolStarted and M.workers and M.workers.tick) or S.state ~= 'driving' or (S.boostShare or 0) < LIMIT.boostLeast then return true end
+  local armed = S.armed
+  if not armed then armed = {}; S.armed = armed end
+  local at = armed[what]
+  if at and at ~= S.frameNo then return true end
+  if not at then
+    armed[what] = S.frameNo or 0
+    S.boostNext = math.max(S.boostNext or 0, ms * S.boostShare)
+  end
+  return false
+end
+function LIMIT.disarm(what)
+  if S.armed then S.armed[what] = nil end
+end
+-- A step announced in the frame before: the workers' longer slice is running now, so the step
+-- runs in this frame whatever the gate says (drive-c1: the gate found the frame of the longer
+-- slice not calm and put the shape off, the slice ran with nothing to hide under, and the wait
+-- for the vehicles went from 5.9 to 8.5 ms a frame).
+function LIMIT.armedDue()
+  local last = (S.frameNo or 0) - 1
+  for _, at in pairs(S.armed or {}) do
+    if at == last then return true end
+  end
+  return false
+end
+-- The gate's last quiet frame: the shape at the head of the queue is announced now, so that it
+-- still goes in on the frame the gate opens (announced on that frame it went in a frame later,
+-- and a drive's scenes came in at half their pace).
+function LIMIT.prearm(gate)
+  if gate.frame - gate.last ~= M.pace.QUIET or (S.shapeWait or 0) > 0 or S.co then return end
+  local job = S.queue[1]
+  if job and job.item and job.item.kind == 'shape' and job.tile and not job.tile.dropped then
+    LIMIT.arm(job, LIMIT.boostShape.fixed + LIMIT.boostShape.material * #(job.item.mats or {}))
+  end
+end
+function LIMIT.poolTick()
+  S.frameNo = (S.frameNo or 0) + 1
+  if not (NATIVE and M.workers and M.workers.tick and S.poolStarted) then return end
+  -- (the share for the frames to come, once a frame)
+  S.boostShare = S.state == 'driving' and LIMIT.boostShare() or 0
+  local boost = S.boostNext
+  S.boostNext = nil
+  -- (an announcement nobody came back for within a few frames, a job dropped meanwhile, is
+  -- forgotten: the step is announced again, since the slice it was announced with is long over)
+  for what, at in pairs(S.armed or {}) do
+    if S.frameNo - at > 3 then S.armed[what] = nil end
+  end
+  M.workers.tick(S.state ~= 'driving', native.poolNeed and native.poolNeed(), boost)
+  if (M.workers.sliced or 0) > 0 then LIMIT.did('slice', M.workers.sliced) end
+  if (M.workers.boosted or 0) > 0 then LIMIT.did('boost', M.workers.boosted) end
+end
+-- What a frame did that the engine pays for (the ledger below reads it at the next frame's start).
+function LIMIT.did(what, n)
+  local d = S.frameDid
+  if not d then d = {}; S.frameDid = d end
+  d[what] = (d[what] or 0) + (n or 1)
+end
+-- The ledger of a drive's frames, for the report (result.ledger; automation only: it reads the
+-- engine's split of every frame). Even frames need each frame's cost known before it is spent,
+-- and until now only the frames over 100 ms said what they were made of (slow100).
+--   engine: the engine's own parts summed over the drive (ms), with `frames` their count
+--   bands: frames by length ('17-33', '33-50', '50-100', '100+') and by what they did: a
+--     collision rebuild, a new shape file, new meshes, a Forest commit, else the engine's largest
+--     part or our Lua's ({cause = {frames, ms}})
+--   calm: frames that did nothing and had no worker building ({frames, ms}); worked: the same
+--     with workers building ({frames, ms, the workers' slices summed}): the pool's price a frame
+--   shapes: frames that put in one shape file and nothing else, up to 400: {materials,
+--     triangles, frame ms, PhysicsAndVLUA, RenderShadows, Render, Lua, LuaGC} (a file's cost by
+--     its materials, without a probe)
+LIMIT.ledgerBands = {{17, '0-17'}, {33.4, '17-33'}, {50, '33-50'}, {100, '50-100'}, {math.huge, '100+'}}
+function LIMIT.ledger(frameMs)
+  local L = result.ledger
+  if not L then
+    L = {frames = 0, ms = 0, engine = {}, bands = {}, calm = {0, 0}, worked = {0, 0, 0}, shapes = {},
+      -- the frames that changed nothing, by their wait for the vehicles' Lua (PhysicsAndVLUA):
+      -- under 1 ms, to 3, to 6, to 10, to 20, over
+      waits = {0, 0, 0, 0, 0, 0}}
+    result.ledger = L
+  end
+  local did = S.frameDid or {}
+  local m = S.ledgerMetrics or {}
+  S.ledgerMetrics = m
+  local have = Engine and Engine.Debug and Engine.Debug.getLastPerformanceMetrics
+    and pcall(Engine.Debug.getLastPerformanceMetrics, m)
+  L.frames, L.ms = L.frames + 1, L.ms + frameMs
+  if have then
+    for name, ms in pairs(m) do
+      if type(ms) == 'number' and ms < 1e5 then L.engine[name] = (L.engine[name] or 0) + ms end
+    end
+  end
+  local cause = did.collision and 'collision' or (did.shape and 'shape') or (did.proc and 'mesh') or (did.forest and 'forest') or nil
+  if not cause then
+    local top, topMs, sum = 'other', 0, 0
+    for part, ms in pairs(S.frameParts or {}) do
+      sum = sum + ms
+      if ms > topMs then top, topMs = 'lua:' .. part, ms end
+    end
+    if have and sum < frameMs * .4 then
+      top, topMs = 'engine', 0
+      for name, ms in pairs(m) do
+        if type(ms) == 'number' and ms < 1e5 and name ~= 'Lua' and ms > topMs then top, topMs = 'engine:' .. name, ms end
+      end
+    end
+    cause = top
+    local slices = did.slice or 0
+    local row = slices > 0 and L.worked or L.calm
+    row[1], row[2] = row[1] + 1, row[2] + frameMs
+    if slices > 0 then row[3] = row[3] + slices end
+    if have then
+      local w = m.PhysicsAndVLUA or 0
+      local bin = w < 1 and 1 or (w < 3 and 2 or (w < 6 and 3 or (w < 10 and 4 or (w < 20 and 5 or 6))))
+      L.waits[bin] = L.waits[bin] + 1
+    end
+  end
+  for _, band in ipairs(LIMIT.ledgerBands) do
+    if frameMs < band[1] then
+      if band[2] ~= '0-17' then
+        local tally = L.bands[band[2]] or {}
+        L.bands[band[2]] = tally
+        local row = tally[cause] or {0, 0}
+        tally[cause] = row
+        row[1], row[2] = row[1] + 1, math.floor(row[2] + frameMs)
+      end
+      break
+    end
+  end
+  if did.shape == 1 and not did.collision and not did.proc and not did.forest and #L.shapes < 400 then
+    L.shapes[#L.shapes + 1] = {did.shapeMats or 0, did.shapeTris or 0, math.floor(frameMs * 10) / 10,
+      math.floor((m.PhysicsAndVLUA or 0) * 10) / 10, math.floor((m.RenderShadows or 0) * 10) / 10,
+      math.floor((m.Render or 0) * 10) / 10, math.floor((m.Lua or 0) * 10) / 10, math.floor((m.LuaGC or 0) * 10) / 10}
+  end
+end
 function LIMIT.poolStop()
   if M.workers then pcall(M.workers.stop) end
   if NATIVE and native.pool then pcall(native.pool, false) end
@@ -7372,6 +7571,8 @@ function M.onUpdate(dtReal, dtSim)
   S.recent[S.recentAt] = frameMs
   if S.driveAcc and S.state == 'driving' then accFrame(S.driveAcc, frameMs, S.now) end
   if S.driveAcc and S.state == 'driving' and frameMs > 100 then LIMIT.slowFrame(frameMs) end
+  if test and S.driveAcc and S.state == 'driving' then LIMIT.ledger(frameMs) end
+  for k in pairs(S.frameDid or {}) do S.frameDid[k] = nil end
   if frameMs > 300 and S.stream then
     result.hitches = result.hitches or {}
     -- {s, ms, state, heap MB before the frame, after it, {part = ms} of the frame's Lua over 20 ms}
@@ -7503,7 +7704,10 @@ function M.tick(dt)
       if S.shotBudget then genBudget = LIMIT.shotNativeMs end
     end
     -- the workers' slices and what they have sent, before the generator looks for it
-    if M.workers and S.poolStarted then M.workers.update(S.state ~= 'driving', native.poolNeed and native.poolNeed()) end
+    if M.workers and S.poolStarted then
+      -- (their slices at the end of the frame's own work: LIMIT.poolTick)
+      M.workers.update(S.state ~= 'driving', native.poolNeed and native.poolNeed(), M.workers.tick ~= nil)
+    end
     native.update(dt, genBudget, test and test.genBudget or (S.shotBudget and LIMIT.shotNativeMs or nil), S.now)
     S.nativeMs = t:stop()
     profAdd('native', S.nativeMs, collectgarbage('count') - kb)
@@ -7554,7 +7758,9 @@ function M.tick(dt)
     -- one step: the collision rebuild, a band of the far view, a Forest commit, or a burst of the
     -- spawn queue with the graves and the detail stream. Without it every frame does a little.
     local gate = S.gate
-    local work = not gate or gate:open()
+    local due = LIMIT.armedDue()
+    local work = not gate or gate:open() or due
+    if gate and not work then LIMIT.prearm(gate) end
     local changed = false
     -- a long grave list blocks new tiles (allowLoad waits for fewer than 16 groups).
     -- Dig on the open gate, before the tiles are chosen, so a stopped car still clears the
@@ -7591,7 +7797,7 @@ function M.tick(dt)
     -- near roads and buildings spawn on every open gate (20 ms, a few materials). Grass and
     -- the far ring still share one packet a second. An idle decor slot is yielded.
     if work and not changed then
-      local allowed = LIMIT.allowSpawn(gate, true)
+      local allowed = due or LIMIT.allowSpawn(gate, true)
       local p, vel = focus()
       if allowed then
         if gate and not LIMIT.nearQueued() and not S.urgentRoad then S.burstAt = S.now end
@@ -7648,6 +7854,7 @@ function M.tick(dt)
       end
     end
   end
+  LIMIT.poolTick()
   if S.state == 'spawning' then
     local sp = S.landing.spawn.pos
     local loaded = countTiles()
