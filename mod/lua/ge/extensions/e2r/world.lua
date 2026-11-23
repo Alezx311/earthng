@@ -1437,9 +1437,19 @@ function LIMIT.lodScale(base, current, speed, dt)
   local step = L.rate * base * dt
   return current + math.max(-step, math.min(step, want - current))
 end
+-- The engine's variables: 0.40 has VariableRegistry and logs an error with a stack trace on every
+-- TorqueScriptLua.getVar (five a second here: 2651 of them in ten minutes of a test game's log,
+-- research/fast-tiles); 0.39 has only TorqueScriptLua.
+function LIMIT.lodVars()
+  local reg = rawget(_G, 'VariableRegistry')
+  if reg and reg.get and reg.set then return reg.get, reg.set end
+  local old = rawget(_G, 'TorqueScriptLua')
+  if old and old.getVar and old.setVar then return old.getVar, old.setVar end
+end
 function LIMIT.lodStep(speed)
   local L = LIMIT.lod
-  if S.lodOff or not (TorqueScriptLua and TorqueScriptLua.getVar and TorqueScriptLua.setVar) then return end
+  local getVar, setVar = LIMIT.lodVars()
+  if S.lodOff or not getVar then return end
   if S.mode and S.mode ~= 'auto' then
     if S.lodSet then LIMIT.lodRestore() end
     return
@@ -1447,20 +1457,21 @@ function LIMIT.lodStep(speed)
   if S.lodAt and S.now - S.lodAt < L.every then return end
   local dt = S.lodAt and math.min(1, S.now - S.lodAt) or 0
   S.lodAt = S.now
-  local now = tonumber(TorqueScriptLua.getVar(L.var))
+  local now = tonumber(getVar(L.var))
   if not now or now <= 0 then return end
   if not S.lodSet or math.abs(now - S.lodSet) > 1e-3 then S.lodBase, S.lodSet = now, nil end
   local next = LIMIT.lodScale(S.lodBase, S.lodSet or S.lodBase, speed or 0, dt)
   if math.abs(next - now) > 1e-3 then
-    TorqueScriptLua.setVar(L.var, tostring(next))
+    setVar(L.var, tostring(next))
     S.lodSet = next
     result.lodScale = math.floor(next / S.lodBase * 100 + .5) / 100
   end
 end
 -- the player's own scale back (the level ends, the option goes off)
 function LIMIT.lodRestore()
-  if S.lodBase and S.lodSet and TorqueScriptLua and TorqueScriptLua.setVar then
-    pcall(TorqueScriptLua.setVar, LIMIT.lod.var, tostring(S.lodBase))
+  local _, setVar = LIMIT.lodVars()
+  if S.lodBase and S.lodSet and setVar then
+    pcall(setVar, LIMIT.lod.var, tostring(S.lodBase))
   end
   S.lodSet, S.lodBase, S.lodAt = nil, nil, nil
 end
