@@ -1,13 +1,19 @@
 -- Shared, deterministic quality policy. No engine graphics settings are changed.
 local M = {}
+-- Crowns a tile: a third of what they were until 23.11 (700 / 1800 / 2400 near, 120 / 400 / 800
+-- far). The user: driving through a wood nothing is seen but trunks, and a park reads as a wood.
+-- The generator thins its lattice by the same third (generator.lua VEG.thin), so a small wood
+-- that never reached the cap is thinner too. M.REV marks a tune that counts crowns this way;
+-- M.migrate brings a saved one over once.
 local anchors = {
-  {nearM=800, farM=1400, maxTrees=700, maxFarTrees=120, maxGrass=2600, maxRocks=70,
+  {nearM=800, farM=1400, maxTrees=233, maxFarTrees=40, maxGrass=2600, maxRocks=70,
     forestSpacing=8, groundSpacing=12, grassM=45, rockM=220, grassBudget=600, rockBudget=250, propSpacing=30},
-  {nearM=1000, farM=2400, maxTrees=1800, maxFarTrees=400, maxGrass=4000, maxRocks=120,
+  {nearM=1000, farM=2400, maxTrees=600, maxFarTrees=133, maxGrass=4000, maxRocks=120,
     forestSpacing=6, groundSpacing=8, grassM=100, rockM=500, grassBudget=9000, rockBudget=700, propSpacing=12},
-  {nearM=1400, farM=4000, maxTrees=2400, maxFarTrees=800, maxGrass=4800, maxRocks=200,
+  {nearM=1400, farM=4000, maxTrees=800, maxFarTrees=267, maxGrass=4800, maxRocks=200,
     forestSpacing=5, groundSpacing=6, grassM=220, rockM=900, grassBudget=14000, rockBudget=1600, propSpacing=6},
 }
+M.REV = 2
 local function number(v, default, lo, hi)
   v = tonumber(v)
   if not v or v ~= v or v == math.huge or v == -math.huge then v = default end
@@ -17,7 +23,7 @@ M.number = number
 function M.preset(detail, distance)
   detail, distance = number(detail, 50, 0, 100), number(distance, detail, 0, 100)
   -- parkedCars: the game's parked cars kept round the player (parking.lua); 0 disables parked cars
-  local out = {quality=detail, detail=detail, distance=distance, groundTrees=true, parkedCars=8}
+  local out = {quality=detail, detail=detail, distance=distance, groundTrees=true, parkedCars=8, rev=M.REV}
   for key in pairs(anchors[1]) do
     local q = (key == 'nearM' or key == 'farM' or key == 'grassM' or key == 'rockM') and distance or detail
     local a = q < 50 and 1 or 2
@@ -36,6 +42,39 @@ function M.clamp(tune)
   out.groundTrees = t.groundTrees ~= false and t.groundTrees ~= 0
   out.farM = math.max(out.nearM, out.farM)
   out.maxFarTrees = math.min(out.maxTrees, out.maxFarTrees)
+  return out
+end
+-- A tune saved before M.REV counted crowns as they were planted then: a third of each cap, once.
+-- Returns a copy (the same table when there is nothing to do, nil for no table).
+function M.migrate(tune)
+  if type(tune) ~= 'table' then return nil end
+  if (tonumber(tune.rev) or 1) >= M.REV then return tune end
+  local out = {}
+  for key, value in pairs(tune) do out[key] = value end
+  for _, key in ipairs({'maxTrees', 'maxFarTrees'}) do
+    local v = tonumber(out[key])
+    if v and v == v then out[key] = math.floor(v / 3 + .5) end
+  end
+  out.rev = M.REV
+  return out
+end
+-- The generator's modes (world.lua's option `mode`, native.lua M.setMode):
+--   auto        detail by the car's speed, as the scheduler has always done;
+--   extreme     every setting at its top (M.extreme) and nothing held back for speed;
+--   screenshot  extreme, and the land drawn SHOT.reach m on along the camera's look.
+M.MODES = {'auto', 'extreme', 'screenshot'}
+M.SHOT = {reach = 10000, half = 35, near = 2500, nearHalf = 28}
+function M.mode(name)
+  for _, known in ipairs(M.MODES) do if known == name then return known end end
+  return 'auto'
+end
+-- The tune a mode runs with: the player's own in auto, everything at its top otherwise. The
+-- crowns keep the top preset's (reduced) numbers: the user asked for all but the trees.
+function M.modeTune(tune, mode)
+  if M.mode(mode) == 'auto' then return tune end
+  local out = M.preset(100, 100)
+  out.parkedCars = type(tune) == 'table' and tune.parkedCars or out.parkedCars
+  if type(tune) == 'table' and (tune.groundTrees == false or tune.groundTrees == 0) then out.groundTrees = false end
   return out
 end
 function M.name(q)

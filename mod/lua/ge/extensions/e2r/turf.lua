@@ -804,7 +804,9 @@ function M.step(p, now, tune)
   if M.off then return false end
   -- standing still: the layers fill up; moving off: back to what a moving car reads
   local was = M.still
+  -- (M.full, world.lua's extreme and screenshot modes: the full layers at any speed)
   if M.stillOn ~= false then M.motion(p, now) else M.still = false end
+  if M.full and M.stillOn ~= false then M.still = true end
   if block and (M.still ~= was or (M.coversLeft or 0) > 0) then
     local T = M.STILL
     local moving = (M.speed or 0) > T.crawl

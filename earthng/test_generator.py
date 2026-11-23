@@ -1589,7 +1589,7 @@ class GeneratorTests(unittest.TestCase):
         second = self.build(source, terrainStep=100)[1]
         statics = [item for item in first['items'].values() if item.kind == 'static']
         trees = [item for item in statics if 'groundcover' not in item.shape and 'rock' not in item.shape and '_bush_' not in item.shape]
-        self.assertEqual(len(trees), 2400)
+        self.assertEqual(len(trees), 800)   # the default cap: a third of 2400 (VEG.thin)
         self.assertTrue(any('grass' in item.shape for item in statics))
         self.assertTrue(any('_bush_' in item.shape for item in statics))
         self.assertTrue(all(not (100 < item.pos[1] < 300 and 100 < item.pos[2] < 300) for item in statics))

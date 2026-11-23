@@ -55,7 +55,7 @@ class FloraTileTest(unittest.TestCase):
     def test_a_polissia_pinewood_is_pine_with_birch_and_oak_in_it(self):
         cell = {'terrain': terrain(), 'areas': [patch('forest', tags={'leaf_type': 'needleleaved'})]}
         trees = [i for i in self.trees(self.statics(cell)) if not i.fill]
-        self.assertGreater(len(trees), 1500)
+        self.assertGreater(len(trees), 700)   # the default cap is 800 (a third of 2400, VEG.thin)
         shapes = Counter('pine' if 'scots_pine' in i.shape else 'other' for i in trees)
         self.assertGreater(shapes['pine'] / len(trees), .6)
         self.assertGreater(shapes['other'] / len(trees), .08, 'a pinewood has birch, oak and aspen in it')
@@ -106,8 +106,9 @@ class FloraTileTest(unittest.TestCase):
         items = self.statics(cell)
         under = [i for i in items if '_bush_' in i.name]
         dead = [i for i in items if '_dead_' in i.name]
-        self.assertGreater(len(under), 500)
-        self.assertLessEqual(len(under), 900)
+        # a third of the understory's lattice and of its cap of 900 (VEG.thin)
+        self.assertGreater(len(under), 200)
+        self.assertLessEqual(len(under), 300)
         self.assertTrue(any('Juniper' in i.shape for i in under), 'juniper stands under Polissia pines')
         self.assertTrue(any('bush' in i.shape for i in under))
         self.assertGreater(len(dead), 20)
@@ -146,7 +147,7 @@ class FloraTileTest(unittest.TestCase):
         marsh = {'terrain': terrain(), 'areas': [patch('wetland', tags={'wetland': 'marsh'})]}
         bog_trees = self.trees(self.statics(bog))
         marsh_trees = self.trees(self.statics(marsh))
-        self.assertGreater(len(bog_trees), 150)
+        self.assertGreater(len(bog_trees), 100)   # a third of the lattice (VEG.thin): 410 before 23.11
         self.assertGreater(sum('scots_pine' in i.shape for i in bog_trees) / len(bog_trees), .6)
         wood = {'terrain': terrain(), 'areas': [patch('forest', tags={'leaf_type': 'needleleaved'})]}
         grown = self.heights([i for i in self.trees(self.statics(wood)) if 'scots_pine' in i.shape])

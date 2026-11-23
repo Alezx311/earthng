@@ -292,6 +292,34 @@ class WidgetSyncTests(unittest.TestCase):
         self.assertEqual((w['value'], listed['walkersOn']['value'], listed['knock']['value']), (200, False, True))
         self.assertEqual(len(lua.eval('fake.calls')), 0)
 
+    def test_the_generator_mode_is_an_option_that_keeps_the_players_sliders(self):
+        lua = self.world()
+
+        def listed():
+            return {d['key']: d for d in to_py(lua.eval('o.list()'))}
+        mode = listed()['mode']
+        self.assertEqual([v['value'] for v in mode['values']], ['auto', 'extreme', 'screenshot'])
+        self.assertEqual((mode['value'], mode['group'], mode['default']), ('auto', 'quality', 'auto'))
+        self.assertIn('hint', mode)
+        self.assertEqual(to_py(lua.eval('o.payload()'))['groups'][0]['options'][0]['key'], 'mode')
+        lua.execute("assert(o.set('quality', 30, 'ui') == 30); assert(o.set('mode', 'extreme', 'ui') == 'extreme')")
+        self.assertEqual((lua.eval('S.mode'), lua.eval('mod.modeGet()')), ('extreme', 'extreme'))
+        # the sliders are the player's own: kept, and out of reach until auto is back
+        now = listed()
+        for key in ('quality', 'detail', 'distance', 'maxTrees', 'farM'):
+            self.assertTrue(now[key].get('disabled'), key)
+        self.assertNotIn('disabled', now['mode'])
+        self.assertTrue(lua.eval("select('#', o.set('quality', 80, 'ui')) == 2 and (o.set('quality', 80, 'ui')) == nil"))
+        self.assertEqual(lua.eval('S.tune.quality'), 30)
+        # a still's mode is for the session: the file keeps extreme
+        lua.execute("assert(o.set('mode', 'screenshot', 'ui') == 'screenshot')")
+        self.assertEqual(lua.eval("o.save({}).mode"), 'extreme')
+        lua.execute("assert(o.set('mode', 'auto', 'ui') == 'auto')")
+        self.assertEqual(lua.eval("o.save({}).mode"), 'auto')
+        self.assertNotIn('disabled', listed()['quality'])
+        self.assertEqual(lua.eval('S.tune.quality'), 30)
+        self.assertIsNone(lua.eval("(o.set('mode', 'turbo', 'ui'))"))
+
     def test_registry_change_reaches_the_widget(self):
         lua = self.world()
         lua.execute('''
@@ -300,8 +328,8 @@ class WidgetSyncTests(unittest.TestCase):
           assert(o.set('quality', 100, 'ui') == 100)
         ''')
         self.assertEqual(lua.eval('S.tune.quality'), 100)
-        self.assertEqual(lua.eval('S.tune.maxTrees'), 2400)           # the OASIS preset, as the widget's slider
-        self.assertEqual(lua.eval('tunePtr.maxTrees[0]'), 2400)        # the widget's slider copy follows
+        self.assertEqual(lua.eval('S.tune.maxTrees'), 800)            # the OASIS preset, as the widget's slider
+        self.assertEqual(lua.eval('tunePtr.maxTrees[0]'), 800)         # the widget's slider copy follows
         self.assertEqual(lua.eval('tunePtr.quality[0]'), 100)
         lua.execute("o.set('groundTrees', false)")
         self.assertFalse(lua.eval('tunePtr.groundTrees[0]'))

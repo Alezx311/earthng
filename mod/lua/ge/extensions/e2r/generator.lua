@@ -558,6 +558,28 @@ VEG.yardBuilt = .12
 -- and a residential polygon's groves on its 16 m lattice, stood every clearing, pasture and
 -- village slope as a savanna (the user, 13.11).
 VEG.copse = {size = 26, from = .74, chance = .55, lone = .012, bush = 3}
+-- Every lattice of trees and of a wood's understory keeps this share of its points (23.11, the
+-- user: a third of the trees a tile, in every mode; driving through a wood nothing was seen
+-- but trunks, and a town's parks read as woods). The caps of quality.lua went down by the same
+-- third. The points kept are a subset of the ones planted before, the same near and far.
+-- Mapped trees (OSM tree rows, single trees) and a street's own stay as they are surveyed.
+VEG.thin = 1 / 3
+-- Whether a lattice point stands: h is its hash, chance what it had before the thinning (over 1:
+-- the thinning itself is that much weaker), thin the share kept (VEG.thin). The chance reads the
+-- hash's last three digits, as it always did, and the thinning the three above them. Every
+-- keyHash of one point is another's plus a constant, so a second test on the same digits chose
+-- the species with the point: a pinewood thinned that way lost its birch and oak.
+function VEG.kept(h, chance, thin)
+  thin = thin or VEG.thin
+  if chance > 1 then thin, chance = math.min(1, thin * chance), 1 end
+  return h % 1000 / 1000 < chance and math.floor(h / 1000) % 1000 / 1000 < thin
+end
+-- A wood drawn inside a park is the park's (VEG.parkWoods): its ground is the park's lawn, its
+-- trees the park's species on the park's lattice, `chance` of it before the thinning (a plain
+-- park has .5), with no understory, dead wood or fill. It stood as a forest with a forest's
+-- floor: the parks that read as woods. `share`: the part of the wood's own outline that must
+-- lie in a park.
+VEG.parkWood = {chance = 2, share = .6, samples = 24}
 -- Open land (ground without a mapped cover, and meadows) is not one sheet of grass: it dries on
 -- slopes and ridges, the more the more a slope faces the sun, grows lush in hollows, and is bare
 -- loam where it is steep (build(): bio.landAt). The relief reads by it. A ProceduralMesh has no
@@ -11449,6 +11471,47 @@ function VEG.roadside(bins, x, y, reach)
   best = math.sqrt(best)
   return inside and -best or best, bx, by, bz
 end
+-- The woods that lie in a park become the park's cover (VEG.parkWood): area.parkWood, and its
+-- kind 'park'. A wood is in a park when `share` of the points a third of the way in from its
+-- outline are: its own vertices lie on the park's edge where the two were drawn together. Areas
+-- come clipped to their cell, the park's piece with the wood's, so a cell read again gives the
+-- same answer; an area is judged once (cells are kept between tiles).
+function VEG.parkWoods(areas, pause)
+  local W, parks = VEG.parkWood, nil
+  for _, area in ipairs(areas) do
+    if area.kind == 'forest' and area.parkWood == nil then
+      if not parks then
+        parks = {}
+        for _, other in ipairs(areas) do
+          if other.kind == 'park' and not other.parkWood then parks[#parks + 1] = {other.rings, ringBounds(other.rings)} end
+        end
+      end
+      area.parkWood = false
+      local ring = area.rings and area.rings[1]
+      if #parks > 0 and ring and #ring >= 3 then
+        local cx, cy = 0, 0
+        for k = 1, #ring do cx, cy = cx + ring[k][1], cy + ring[k][2] end
+        cx, cy = cx / #ring, cy / #ring
+        local own, park = 0, 0
+        for k = 1, #ring, math.max(1, math.floor(#ring / W.samples)) do
+          local x, y = ring[k][1] + (cx - ring[k][1]) * .34, ring[k][2] + (cy - ring[k][2]) * .34
+          if inside(area.rings, x, y) then
+            own = own + 1
+            for _, p in ipairs(parks) do
+              local b = p[2]
+              if x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] and inside(p[1], x, y) then
+                park = park + 1
+                break
+              end
+            end
+          end
+        end
+        if own > 0 and park >= own * W.share then area.parkWood, area.kind = true, 'park' end
+      end
+      if pause then pause() end
+    end
+  end
+end
 function VEG.streetBlocked(bins, x, y)
   for _, s in ipairs(bins[math.floor(x / 50) * 65536 + math.floor(y / 50)] or NONE) do
     if pointSegment2(x, y, s.a[1], s.a[2], s.a[1] + s.dx, s.a[2] + s.dy) < s.r * s.r then return true end
@@ -15180,6 +15243,7 @@ local function build(cells, i, j, options)
   end
   -- Spatially indexed mapped cover, shared by terrain and vegetation at all LODs.
   -- Explicit OSM wins over WorldCover. Tie-breaking never depends on load order.
+  VEG.parkWoods(lists.areas, pause)
   local coverBins = {}
   for _, area in ipairs(lists.areas) do
     if CLAIM[area.kind] or area.kind == 'residential' then
@@ -19354,7 +19418,10 @@ local function build(cells, i, j, options)
                   local p = bio.on and bio.at(x, y)
                   if p and p.arid then chance = chance * math.max(.25, bio.woodland(p, rawHeight(x, y) - bio.sea)) end
                 end
-                if keyHash(4, position) % 1000 / 1000 < chance then
+                -- a park's own wood (VEG.parkWoods): more of the park's trees than its lawns have
+                if owner.parkWood then chance = VEG.parkWood.chance end
+                -- (scrub and heath are bushes: the thinning is the trees')
+                if VEG.kept(keyHash(4, position), chance, (kind == 'scrub' or kind == 'heath') and 1 or nil) then
                   candidates[#candidates + 1] = {x=x, y=y, hash=h, key=position, kind=kind, tags=owner.tags or NONE,
                     wooded=wooded}
                 end
@@ -19412,7 +19479,8 @@ local function build(cells, i, j, options)
             local p, shrub = bio.on and bio.at(x, y), false
             if p then chance, kind, shrub = bio.open(p, x, y, chance, kind, rawHeight(x, y) - bio.sea) end
             if copse and kind == 'ground' and h % C.bush == 0 then shrub = true end
-            if keyHash(4, position) % 1000 / 1000 < chance and not (shrub and distant) then
+            -- (a far tile takes the shrubs into its count without planting them: bio.accept)
+            if VEG.kept(keyHash(4, position), chance, shrub and 1 or nil) then
               candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = kind, tags = NONE, shrub = shrub}
             end
           end
@@ -19430,9 +19498,10 @@ local function build(cells, i, j, options)
     local treeline = tonumber(config.treeLine) or (latitude > 65 and 800 or latitude > 55 and 1500 or latitude > 35 and 2200 or 3600)
     local coniferStart = tonumber(config.coniferStart) or (latitude > 55 and 0 or 1000)
     -- 0 is a real cap. `or` would also keep it (0 is truthy in Lua); optNum clamps it.
-    local maxTrees = optNum('maxTrees', 2400, 0, 2400)
+    -- (the defaults are quality.lua's top preset: a third of 2400 and of 800, VEG.thin)
+    local maxTrees = optNum('maxTrees', 800, 0, 2400)
     -- (cards are four triangles a tree: a far tile of them stands twice the Forest's far crowns)
-    if distant then maxTrees = math.min(maxTrees, optNum('maxFarTrees', 800, 0, 1200) * (options.farCards and 2 or 1)) end
+    if distant then maxTrees = math.min(maxTrees, optNum('maxFarTrees', 267, 0, 1200) * (options.farCards and 2 or 1)) end
     -- A global hash prefix spends the whole cap on whichever grove hashed lowest,
     -- so the next street or hillside stays a green sheet. Round-robin gives every
     -- 25 m cell a turn. Far stops earlier on that same sequence, so it stays a prefix.
@@ -19600,6 +19669,11 @@ local function build(cells, i, j, options)
       if not (nz >= (bush and .64 or .72) and elevation < line + (bush and shrubLine or 0)
           and (not sea or z > sea) and not blocked(x, y, settled and (kind == 'garden' and 3 or 4) or nil,
             bush and 1.5 or (settled and (kind == 'garden' and 3 or 4.5) or WALL))) then return false end
+      -- Open land's shrubs do not read from 3 km: a far tile leaves them out. It counts them as
+      -- planted all the same, so its trees are the first the near tile plants. Left out of the
+      -- candidates they changed which cells were a wood's edge, the order with it, and a far
+      -- tile under its cap stood trees the near tile under its own did not.
+      if distant and candidate.shrub then return true end
       local leaf = candidate.tags.leaf_type or candidate.tags.wood
       local needle = leaf == 'needleleaved' or leaf == 'coniferous'
       if leaf ~= 'broadleaved' and leaf ~= 'deciduous' and not needle and candidate.kind == 'forest' then
@@ -19703,7 +19777,8 @@ local function build(cells, i, j, options)
                 local kind, where = coverAt(x, y)
                 local chance = spacingOf[kind] == spacing and chanceOf[kind] or 0
                 if type(chance) == 'function' then chance = chance(x, y, where) end
-                if chance > 0 and keyHash(seed + 100, position) % 1000 / 1000 < chance
+                -- (chanceOf.thin[kind]: the share of the kind's points kept, VEG.kept)
+                if chance > 0 and VEG.kept(keyHash(seed + 100, position), chance, chanceOf.thin and chanceOf.thin[kind] or 1)
                     and not (where and VEG.fields[(where.tags or NONE).leisure]) then
                   positions[position] = true
                   candidates[#candidates + 1] = {x = x, y = y, hash = h, key = position, kind = kind, tags = where and where.tags}
@@ -19991,8 +20066,10 @@ local function build(cells, i, j, options)
           local chance = U.chance * (U.young + (U.old - U.young) * stand.age)
           if bio.band('wood', bio.WOOD, U.edge, 13, x, y) then chance = chance * 2 end
           return chance
-        end},
-        VEG.have('bush'), math.min(U.hard, math.max(maxUnder, opt('maxUnderstory', U.cap, U.hard))), 0, .85, 1.3, .72,
+        end,
+        -- (a third of it, as of the trees: the understory is what closes a wood at eye level)
+        thin = {forest = VEG.thin}},
+        VEG.have('bush'), floor(math.min(U.hard, math.max(maxUnder, opt('maxUnderstory', U.cap, U.hard))) * VEG.thin), 0, .85, 1.3, .72,
         {forest = treeline + 80}, function(c, x, y, z, e)
           if c.kind ~= 'forest' then
             local set = VEG.have('bush')
@@ -20019,7 +20096,7 @@ local function build(cells, i, j, options)
       end
     else
       scatter('bush', {forest = 14, park = 18},
-        {forest = .4, park = .22},
+        {forest = .4, park = .22, thin = {forest = VEG.thin}},
         VEG.have('bush'), maxUnder, 0, .85, 1.3, .72, {forest = treeline + 80})
     end
     -- clover and daisy patches (2.3 and 1.5 m across) and ferns under the trees

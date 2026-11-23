@@ -215,7 +215,18 @@ local LIMIT = {pairsDriving = 3, pairsCatch = 6, pairsLanding = 24, plantBatch =
   pathPad = 200, pathM = 1000, pathStraightS = 12, pathOffRoute = 1.5, nearHoldS = 4, nearHoldSlowS = 20,
   -- s a far tile's cards stay after the near tile's scene is in (the Forest plants its crowns
   -- a kind every forestKind s)
-  cardsKeep = 3.5}
+  cardsKeep = 3.5,
+  -- Screenshot mode (M.setMode), a camera under shotSlow m/s: the generator's and the spawn
+  -- queue's ms a frame (the frame's length does not matter to a still), and the s the count of
+  -- far tiles in the camera's sector must stand unchanged before the far view is planned again
+  -- round them (far.lua M.refresh)
+  shotNativeMs = 40, shotQueueMs = 30, shotSlow = 15, shotSettle = 3, shotGrown = 60,
+  -- and there the far ring's share of the spawn queue: `shotShare` of its pieces go first in
+  -- every other burst (one in every fifth while driving: LIMIT.shareRing), and a far tile is
+  -- taken from the generator while under `shotQueue` pieces wait. With the driving shares the
+  -- near tiles of a town held the queue for the three minutes a view was given, the generator
+  -- built far tiles nobody took, and its cache threw them out again (shot-01).
+  shotShare = 12, shotQueue = 1500}
 -- Read-only view for the development probe (earthng/probe.py); nothing in the mod calls it.
 function M.dbg() return {S = S, result = result, native = native, detail = detailStream, test = test} end
 
@@ -913,7 +924,8 @@ function M.fillStep(p, now)
     -- (a landing or a camera's jump is not a drive)
     if v < 200 then
       F.vx, F.vy = vx, vy
-      if v > LIMIT.fillSlow then F.slowSince = nil else F.slowSince = F.slowSince or now end
+      -- (extreme and screenshot: the wood is whole at any speed)
+      if v > LIMIT.fillSlow and (S.mode or 'auto') == 'auto' then F.slowSince = nil else F.slowSince = F.slowSince or now end
     end
   end
   if not last or now > last.t then F.at = {x = p.x, y = p.y, t = now} end
@@ -1412,7 +1424,12 @@ end
 -- scale and every level are back. It moves `rate` of the player's scale a second, so a touch
 -- of the pedal does not swap a wood's models. The value found changed by another hand (the
 -- game's options) is the player's new one.
-LIMIT.lod = {slow = 14, fast = 42, least = .45, rate = .2, every = .2, var = '$pref::TS::detailAdjust'}
+-- 23.11, the user: pulling away, the models are seen to lose their detail step by step. It
+-- began at 50 km/h and was at its least by 150: every drive through a town crossed the whole
+-- range. Now nothing changes under 110 km/h, the least (.6, was .45) comes at 230, and the
+-- scale moves half as fast. Only in the generator's auto mode: extreme and screenshot keep the
+-- player's own scale.
+LIMIT.lod = {slow = 30.5, fast = 64, least = .6, rate = .1, every = .2, var = '$pref::TS::detailAdjust'}
 function LIMIT.lodScale(base, current, speed, dt)
   local L = LIMIT.lod
   local w = math.max(0, math.min(1, (speed - L.slow) / (L.fast - L.slow)))
@@ -1423,6 +1440,10 @@ end
 function LIMIT.lodStep(speed)
   local L = LIMIT.lod
   if S.lodOff or not (TorqueScriptLua and TorqueScriptLua.getVar and TorqueScriptLua.setVar) then return end
+  if S.mode and S.mode ~= 'auto' then
+    if S.lodSet then LIMIT.lodRestore() end
+    return
+  end
   if S.lodAt and S.now - S.lodAt < L.every then return end
   local dt = S.lodAt and math.min(1, S.now - S.lodAt) or 0
   S.lodAt = S.now
@@ -1442,6 +1463,93 @@ function LIMIT.lodRestore()
     pcall(TorqueScriptLua.setVar, LIMIT.lod.var, tostring(S.lodBase))
   end
   S.lodSet, S.lodBase, S.lodAt = nil, nil, nil
+end
+
+-- The hour a landing starts at: dawn, the sun DAWN.sun degrees over the horizon on its way up
+-- (23.11, the user: the default time is the dawn, for its light). The game's `time` is the civil
+-- clock of the place as a day's fraction with noon at 0 (0.40's core_celestial: the zone is the
+-- nearest 15 degree meridian, summer time by the EU, US or Australian rule; the level's date).
+-- So the dawn is worked out for the landing's latitude, longitude and date: 0.75 (6:00) is the
+-- low sun in Kyiv in July, night in Reykjavik's winter and mid-morning light in Singapore.
+-- DAWN.level: the level's own TimeOfDay (build_mod.py), Kyiv's dawn; a time found to be neither
+-- that nor the one set at the last landing is the player's own, and stays.
+LIMIT.DAWN = {sun = 9, level = .757, cum = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334}}
+-- the day of the year; a day past its month's end counts on (the level's day 40 of June)
+function LIMIT.DAWN.dayOf(y, mo, d)
+  local leap = (y % 4 == 0 and y % 100 ~= 0) or y % 400 == 0
+  return LIMIT.DAWN.cum[mo] + d + ((leap and mo > 2) and 1 or 0)
+end
+-- the day of the year of the n-th Sunday of a month (n = 0: its last)
+function LIMIT.DAWN.sunday(y, mo, n)
+  local function weekday(d)   -- 0 Sunday (Zeller)
+    local m, yy = mo, y
+    if m < 3 then m, yy = m + 12, yy - 1 end
+    local k, j = yy % 100, math.floor(yy / 100)
+    return ((d + math.floor(13 * (m + 1) / 5) + k + math.floor(k / 4) + math.floor(j / 4) + 5 * j) % 7 + 6) % 7
+  end
+  local d
+  if n == 0 then
+    local last = (mo == 4 or mo == 9 or mo == 11) and 30 or 31
+    d = last - weekday(last)
+  else
+    d = 1 + (7 - weekday(1)) % 7 + 7 * (n - 1)
+  end
+  return LIMIT.DAWN.dayOf(y, mo, d)
+end
+-- hours the place's clock is ahead of UTC (offset: the level's own, summer time included)
+function LIMIT.DAWN.zone(lat, lon, y, mo, d, offset, rule)
+  if tonumber(offset) then return tonumber(offset) end
+  local D = LIMIT.DAWN
+  local n, std = D.dayOf(y, mo, d), math.floor(lon / 15 + .5)
+  if rule == nil or rule == 'auto' then
+    rule = lat <= -30 and 'au' or (lat >= 30 and ((lon > -170 and lon < -30) and 'us' or 'eu')) or 'none'
+  end
+  local summer = false
+  if rule == 'eu' then summer = n >= D.sunday(y, 3, 0) and n < D.sunday(y, 10, 0)
+  elseif rule == 'us' then summer = n >= D.sunday(y, 3, 2) and n < D.sunday(y, 11, 1)
+  elseif rule == 'au' then summer = n >= D.sunday(y, 10, 1) or n < D.sunday(y, 4, 1) end
+  return std + (summer and 1 or 0)
+end
+-- The game's `time` of the dawn at a place and a date, and the sun's height meant (degrees): the
+-- day's highest where it never climbs to DAWN.sun (a polar winter), 6:00 where it never sets.
+function LIMIT.DAWN.time(lat, lon, y, mo, d, offset, rule)
+  local D = LIMIT.DAWN
+  y, mo, d = tonumber(y) or 2026, tonumber(mo) or 6, tonumber(d) or 20
+  mo = math.max(1, math.min(12, math.floor(mo)))
+  lat = math.max(-89, math.min(89, lat))
+  local g = 2 * math.pi * (D.dayOf(y, mo, d) - 81) / 365
+  local dec = math.rad(23.44) * math.sin(g)
+  local eot = 9.87 * math.sin(2 * g) - 7.53 * math.cos(g) - 1.5 * math.sin(g)   -- minutes
+  local phi = math.rad(lat)
+  local cosH = (math.sin(math.rad(D.sun)) - math.sin(phi) * math.sin(dec)) / (math.cos(phi) * math.cos(dec))
+  local solar, sun = 6, D.sun
+  if cosH >= 1 then
+    solar, sun = 12, math.deg(math.asin(math.sin(phi) * math.sin(dec) + math.cos(phi) * math.cos(dec)))
+  elseif cosH > -1 then
+    solar = 12 - math.deg(math.acos(cosH)) / 15
+  end
+  local civil = solar - eot / 60 - lon / 15 + D.zone(lat, lon, y, mo, d, offset, rule)
+  return (civil / 24 - .5) % 1, sun
+end
+-- At a landing: the level's sun is the place's, and its hour the place's dawn unless the player
+-- (or a test) has set one.
+function LIMIT.DAWN.apply(lat, lon)
+  local set = {latitude = lat, longitude = lon}
+  local D = LIMIT.DAWN
+  local okNow, now = pcall(function() return core_environment.getTimeOfDay().time end)
+  local untouched = okNow and type(now) == 'number'
+    and (math.abs(now - D.level) < 2e-3 or (S.todSet and math.abs(now - S.todSet) < 2e-3))
+  if untouched and not (test and test.tod) then
+    local tod = scenetree.tod
+    local function field(name)
+      local ok, v = pcall(function() return tod and tod[name] end)
+      return ok and v or nil
+    end
+    local ok, time = pcall(D.time, lat, lon, field('year'), field('month'), field('day'), field('utcOffset'), field('dstRule'))
+    if ok and time then set.time, S.todSet = time, time end
+  end
+  core_environment.setTimeOfDay(set)
+  result.dawn = set.time
 end
 
 -- The ground cover's set by the climate under the car (turf.lua M.SETS), asked every 5 s.
@@ -1490,6 +1598,11 @@ local function writePose()
     local ok, path = pcall(LIMIT.pathAhead, p, v)
     pose.path = ok and path or nil
     if not ok then result.pathError = tostring(path) end
+    -- screenshot mode: where the camera looks (native.lua MODE draws the land on along it)
+    if S.mode == 'screenshot' then
+      local okLook, look = pcall(function() return core_camera.getForward() end)
+      if okLook and look then pose.look = {look.x, look.y} end
+    end
     native.pose(pose)
     return
   end
@@ -3352,6 +3465,8 @@ local function updateTiles()
     -- 300 km/h doubled be:reloadCollision). Native far ground is the mountain ring, so it
     -- keeps loading; only its buildings and trees wait for a slower speed.
     local farLoadR = (not NATIVE and speed > (st.farFast or 25)) and 0 or farR
+    -- screenshot mode: far tiles along the camera's look stand past the ring (native.lua MODE)
+    local farReach = NATIVE and S.mode == 'screenshot' and (st.farReach or 0) > farR and st.farReach or nil
     for key, far in pairs(S.far) do
       local cx, cy = tileCentre(far.i, far.j)
       local d = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
@@ -3361,7 +3476,9 @@ local function updateTiles()
       -- the ground they left the land bare until the scene came. Each kind goes in the commit
       -- that plants the near tile's crowns of that kind (M.farSwap).
       local groundReady = near and near.roadComplete and not near.failed and not near.dropped
-      if d > farR + 500 or groundReady or behind(cx, cy, d) then
+      -- (screenshot mode: a far tile of the camera's sector lives while native.lua wants it)
+      local sector = farReach and d <= farReach + 500 and wantedNow[key] ~= nil
+      if (d > farR + 500 and not sector) or groundReady or behind(cx, cy, d) then
         -- under a near tile its crowns stay until the near tile's own are in (M.farSwap)
         if groundReady and not near.sceneComplete then retireForest(far, near) else retireForest(far) end
         -- and its cards (LIMIT.cardsKeep); with no near tile to take them they go with the ground
@@ -3377,6 +3494,10 @@ local function updateTiles()
         far.dropped = true
         S.far[key] = nil
         if NATIVE then native.unload(key, 'far') end
+        -- why far tiles go, for the reports: the near ground is in, past the ring, behind the car
+        result.farDrops = result.farDrops or {ground = 0, beyond = 0, behind = 0}
+        local why = groundReady and 'ground' or ((d > farR + 500 and not sector) and 'beyond' or 'behind')
+        result.farDrops[why] = result.farDrops[why] + 1
       end
     end
     for key, token in pairs(st.far or {}) do
@@ -3391,6 +3512,7 @@ local function updateTiles()
     end
     -- a deep city queue used to block the ring for the whole drive (far-view-10: horizonResident 0)
     local canRing = (allowLoad and graveBacklog < 8 and #S.queue < 60) or (LIMIT.ringTurn() and #S.queue < 200)
+      or (farReach ~= nil and S.shotBudget and #S.queue < LIMIT.shotQueue)
     if canRing then
       local bestF, bestFD
       for key in pairs(st.far or {}) do
@@ -3403,7 +3525,8 @@ local function updateTiles()
           local d = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
           -- natively by native.lua's own order: at speed the ground ahead of the car first
           local order = NATIVE and wantedNow[key] or d
-          if d <= farLoadR and not behind(cx, cy, d) and (not bestFD or order < bestFD) then
+          local inReach = d <= farLoadR or (farReach and d <= farReach + 250 and wantedNow[key] ~= nil)
+          if inReach and not behind(cx, cy, d) and (not bestFD or order < bestFD) then
             bestF, bestFD = {key, i, j}, order
           end
         end
@@ -3497,6 +3620,24 @@ local function updateTiles()
       local holeR = (horizonR > 0 and horizonR or (st.farRadius or 3000)) - 354
       local on = M.farEnabled ~= false
       native.farActive = on
+      -- Screenshot mode: level 0 leaves out the far tiles standing along the camera's look, as
+      -- far as they reach, and is planned again once their number has stood still for
+      -- shotSettle s and grown by shotGrown, or stood four times as long (it is planned from the
+      -- ground standing then, and they come over minutes; a plan every pause took 28 of them
+      -- and 54 s of Lua in shot-02).
+      M.far.builtReach = farReach
+      if farReach then
+        local count = 0
+        for _, far in pairs(S.far) do if far.left == 0 then count = count + 1 end end
+        local grown = math.abs(count - (S.shotFarPlanned or 0))
+        if count ~= S.shotFar then S.shotFar, S.shotFarAt = count, S.now
+        elseif grown > 0 and S.shotFarAt
+            and S.now - S.shotFarAt >= LIMIT.shotSettle * (grown >= LIMIT.shotGrown and 1 or 4) then
+          S.shotFarPlanned, M.far.refresh = count, true
+        end
+      else
+        S.shotFar, S.shotFarAt, S.shotFarPlanned = nil, nil, nil
+      end
       local okFar, errFar = pcall(M.far.update, p, native.farSource(), on and LIMIT.groundHole(p, holeR) or holeR, function(id, triangles)
         S.coll = S.coll or collision.new()
         M.farOwner = M.farOwner or {horizon = true}
@@ -3550,16 +3691,20 @@ local function stepQueue(burst)
     and (wanted[head.key] or 1e6) < LIMIT.roadUrgent
   local budget = test and test.genBudget or (S.state == 'spawning' and (S.landOwed == false and LIMIT.loadQueueLastMs or LIMIT.loadQueueMs))
     or burst or math.max(urgent and LIMIT.roadFloorMs or .5, BUDGET_MS - (S.nativeMs or 0))
+  -- screenshot mode, the camera at rest: the place must finish loading, the frame may be long
+  if S.shotBudget and S.state == 'driving' then budget = math.max(budget, LIMIT.shotQueueMs) end
   local function over() return frame:stop() >= budget end
   local function pause() if over() then coroutine.yield() end end
   if S.co and S.job and S.job.tile.dropped then S.co, S.job = nil, nil end
   if not S.co and LIMIT.shareRing() then
-    local q = S.queue
+    -- (screenshot mode at rest: shotShare of them, in their order; a still is its distance too)
+    local q, front = S.queue, 0
     for i = 1, #q do
       local job = q[i]
       if job and not (job.tile and job.tile.dropped) and (job.far or job.horizon) then
-        if i > 1 then table.remove(q, i); table.insert(q, 1, job) end
-        break
+        front = front + 1
+        if i > front then table.remove(q, i); table.insert(q, front, job) end
+        if front >= (S.shotBudget and LIMIT.shotShare or 1) then break end
       end
     end
   end
@@ -3756,7 +3901,8 @@ end
 function LIMIT.shareRing()
   if not LIMIT.nearQueued() then return false end
   S.ringShare = (S.ringShare or 0) + 1
-  return S.ringShare % 5 == 0
+  -- (screenshot mode at rest: every other burst is the distance's)
+  return S.ringShare % (S.shotBudget and 2 or 5) == 0
 end
 
 -- Where the far view's level 0 may start round p: the planned DEM horizon (maxR), or nearer
@@ -3857,7 +4003,7 @@ end
 -- tile while the city queue is still deep. shareRing itself runs later, in the spawn.
 function LIMIT.ringTurn()
   local n = S.ringShare or 0
-  if not LIMIT.nearQueued() or n == 0 or n % 5 ~= 0 then return false end
+  if not LIMIT.nearQueued() or n == 0 or n % (S.shotBudget and 2 or 5) ~= 0 then return false end
   S.ringShare = n + 1
   return true
 end
@@ -4457,7 +4603,12 @@ local function beginArrival(job, early)
         lat, lon = tonumber(c.sun.lat), tonumber(c.sun.lon)
       end
     end
-    pcall(function() core_environment.setTimeOfDay({latitude = lat, longitude = lon}) end)
+    -- and the hour is the place's dawn, unless the player has set one (LIMIT.DAWN)
+    local okDawn, errDawn = pcall(LIMIT.DAWN.apply, lat, lon)
+    if not okDawn then
+      result.dawnError = tostring(errDawn)
+      pcall(function() core_environment.setTimeOfDay({latitude = lat, longitude = lon}) end)
+    end
   end
   S.landing = manifest
   S.knownMats = {}
@@ -5687,20 +5838,24 @@ end
 applyTune = function(force)
   ensureTune()
   if not NATIVE or not native.setTune then return end
-  local applied = native.setTune(S.tune)
-  if type(applied) == 'table' then
-    S.tune = applied
+  -- The player's own tune (S.tune: the sliders, the file) and the one in force: the same in the
+  -- generator's auto mode, everything at its top in extreme and screenshot (quality.modeTune).
+  local own = (S.mode or 'auto') == 'auto'
+  local now = native.setTune(quality.modeTune(S.tune, S.mode))
+  if type(now) ~= 'table' then now = S.tune end
+  if own then
+    S.tune = now
     for key, ptr in pairs(tunePtr) do
-      if key == 'groundTrees' then ptr[0] = applied.groundTrees and true or false
-      elseif applied[key] then ptr[0] = applied[key] end
+      if key == 'groundTrees' then ptr[0] = now.groundTrees and true or false
+      elseif now[key] then ptr[0] = now[key] end
     end
   end
   local base = S.appliedTune or TUNE_DEFAULT
   local rebuild = force and true or false
   for _, key in ipairs({'maxTrees','maxFarTrees','maxGrass','maxRocks','forestSpacing','groundSpacing','groundTrees','propSpacing'}) do
-    if S.tune[key] ~= base[key] then rebuild = true end
+    if now[key] ~= base[key] then rebuild = true end
   end
-  if ((S.tune.parkedCars or 0) > 0) ~= ((base.parkedCars or 0) > 0) then rebuild = true end
+  if ((now.parkedCars or 0) > 0) ~= ((base.parkedCars or 0) > 0) then rebuild = true end
   if rebuild then
     local keep = {}
     for _, job in ipairs(S.queue or {}) do
@@ -5730,9 +5885,33 @@ applyTune = function(force)
   cfg.lang, cfg.tune = lang, S.tune
   pcall(jsonWriteFile, LANG_FILE, cfg, true)
   result.tuneApplied = S.now
-  S.appliedTune = {}
-  for k, v in pairs(S.tune) do S.appliedTune[k] = v end
+  S.appliedTune, S.ownApplied = {}, {}
+  for k, v in pairs(now) do S.appliedTune[k] = v end
+  for k, v in pairs(S.tune) do S.ownApplied[k] = v end
 end
+
+-- The generator's mode (quality.lua M.MODES), from the option `mode`:
+--   auto        detail by the car's speed;
+--   extreme     every quality setting at its top and nothing held back for speed: the models
+--               keep the player's detail scale, the grass its full layers, a wood its fill, a far
+--               tile its buildings and trees, the far ring its whole disk;
+--   screenshot  extreme, and the land along the camera's look drawn on to quality.SHOT.reach m,
+--               the generator and the spawn queue taking a long frame while the camera rests.
+-- The player's own sliders are kept (S.tune) and come back with auto.
+function M.setMode(name)
+  name = quality.mode(name)
+  local was = S.mode or 'auto'
+  S.mode = name
+  if NATIVE and native.setMode then native.setMode(name) end
+  if name ~= 'auto' then LIMIT.lodRestore() end
+  local T = detail.turf
+  if T then T.full = name ~= 'auto' end
+  result.mode = name
+  if name ~= was or not S.appliedTune then applyTune() end   -- rebuilds the scenery when the density changed
+  return name
+end
+
+function M.modeGet() return S.mode or 'auto' end
 
 -- Parked cars (parking.lua): the spots of the loaded tiles go to the game every parking.EVERY s,
 -- the pool follows the setting. The cars load (~0.5 s a car) while the camera comes down, round
@@ -5798,15 +5977,35 @@ local function tuneSlider(key, lo, hi, uk, en)
 end
 
 local function tuneDiffers()
-  local base = S.appliedTune or TUNE_DEFAULT
+  -- (the player's own tune as last applied: in extreme and screenshot another is in force)
+  local base = S.ownApplied or S.appliedTune or TUNE_DEFAULT
   for key, value in pairs(S.tune) do
     if value ~= base[key] then return true end
   end
   return false
 end
 
+-- the generator's modes, for the widget and the option (quality.lua M.MODES)
+LIMIT.MODES = {{'auto', 'Авто', 'Auto'}, {'extreme', 'Екстрим', 'Extreme'}, {'screenshot', 'Скриншот', 'Screenshot'}}
+
 local function drawTune()
   ensureTune()
+  im.Text(L('Режим генератора:', 'Generator mode:'))
+  do
+    local width = math.floor((im.GetContentRegionAvailWidth() - 2 * im.GetStyle().ItemSpacing.x) / 3)
+    for k, m in ipairs(LIMIT.MODES) do
+      if k > 1 then im.SameLine() end
+      local active = (S.mode or 'auto') == m[1]
+      if active then
+        im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
+        im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
+      end
+      if im.Button(L(m[2], m[3]) .. '##mode_' .. m[1], im.ImVec2(width, 0)) and not active then
+        if M.options and M.options.has('mode') then M.options.set('mode', m[1], 'widget') else M.setMode(m[1]) end
+      end
+      if active then im.PopStyleColor(2) end
+    end
+  end
   local function quick(key, uk, en)
     local before = S.tune[key]
     tuneSlider(key, 0, 100, uk, en)
@@ -6246,6 +6445,11 @@ local function runTest()
     local busy = queued > 0 or building > 0 or loading > 0 or #S.queue > 0 or (S.reloadQueue and #S.reloadQueue > 0) or false
     return busy, string.format('%d/%d/%d/%d/%d/q%d', loaded, near, far, horizon, #S.queue, queued)
   end
+  -- test.mode: the generator's mode for the run (test_world.py --mode)
+  if test.mode and not S.testMode and S.state == 'pick' then
+    S.testMode = true
+    result.mode = M.setMode(test.mode)
+  end
   if (test.quality or test.propSpacing) and not S.testQuality and S.state == 'pick' then
     S.testQuality = true
     S.tune = quality.preset(test.quality or 50)
@@ -6294,6 +6498,7 @@ local function runTest()
       job = {state = job.state, progress = job.progress, message = job.message, stage = job.stage},
       built = stream.built, ready = stream.readyCount, error = S.lastError,
       cachedTiles = stream.cachedTiles, cachedCells = stream.cachedCells, rebuilds = stream.rebuilds,
+      farEvicted = stream.farEvicted, farUnloaded = stream.farUnloaded, mode = stream.mode, farReach = stream.farReach,
       slowResumes = stream.slowResumes, spentMs = stream.spentMs, stageMs = stream.stageMs,
       ioStats = stream.ioStats, lost = stream.lost}
     if M.live and M.live.status then
@@ -7081,8 +7286,12 @@ function M.tick(dt)
       local speed = vel and vel:length() or 0
       if speed >= 15 then genBudget = LIMIT.driveNativeMs
       elseif speed < 2 then genBudget = LIMIT.parkNativeMs end
+      -- screenshot mode: a still's camera is at rest or drifts, and the frame's length does not
+      -- matter to it; a camera flying faster keeps the driving budgets
+      S.shotBudget = S.mode == 'screenshot' and speed < LIMIT.shotSlow or nil
+      if S.shotBudget then genBudget = LIMIT.shotNativeMs end
     end
-    native.update(dt, genBudget, test and test.genBudget, S.now)
+    native.update(dt, genBudget, test and test.genBudget or (S.shotBudget and LIMIT.shotNativeMs or nil), S.now)
     S.nativeMs = t:stop()
     profAdd('native', S.nativeMs, collectgarbage('count') - kb)
     S.profKb = collectgarbage('count')
@@ -7531,16 +7740,40 @@ function M.optionsBind()
   o.group{key = 'traffic', label = {uk = 'Трафік і люди', en = 'Traffic and people'}}
   o.group{key = 'view', label = {uk = 'Інтерфейс і стиль', en = 'Interface and style'}}
   o.group{key = 'advanced', label = {uk = 'Точні налаштування', en = 'Advanced settings'}, collapsed = true}
+  -- the generator's mode (M.setMode); the sliders below are the player's own and act in auto
+  local modes = {}
+  for k, m in ipairs(LIMIT.MODES) do modes[k] = {m[1], m[2], m[3]} end
+  local function auto() return (S.mode or 'auto') == 'auto' end
+  o.define{key = 'mode', kind = 'enum', values = modes, default = 'auto', group = 'quality', path = {'mode'},
+    label = {uk = 'Режим генератора', en = 'Generator mode'},
+    hint = {uk = 'Авто: деталізація за швидкістю авто. Екстрим: усе на максимум на будь-якій швидкості (кадр важчий). '
+        .. 'Скриншот: екстрим, і в напрямку камери світ промальовується на 10 км; зупиніть камеру й дайте йому '
+        .. 'кілька хвилин (у центрі великого міста 5-7), рядок нижче показує, скільки ще в черзі',
+      en = "Auto: detail by the car's speed. Extreme: everything at its top at any speed (a heavier frame). "
+        .. "Screenshot: extreme, and the world is drawn 10 km on along the camera's look; rest the camera and give it "
+        .. "a few minutes (5-7 in a big city's centre), the line below shows what is still queued"},
+    read = function() return S.mode or 'auto' end, apply = function(v) M.setMode(v) end,
+    -- (a still's mode is for the session: the next one starts in extreme, not drawing 10 km on)
+    encode = function(v) return v == 'screenshot' and 'extreme' or v end,
+    watch = function() return S.mode == 'screenshot' and (S.shotFar or 0) or -1 end,
+    note = function()
+      if S.mode ~= 'screenshot' or S.state ~= 'driving' then return nil end
+      local st = S.status and S.status.stream or {}
+      local left = (st.queued or 0) + #S.queue
+      return {uk = string.format('Далеких тайлів стоїть %d · у черзі %d', S.shotFar or 0, left),
+        en = string.format('Far tiles standing %d · queued %d', S.shotFar or 0, left)}
+    end}
   o.define{key = 'quality', kind = 'int', min = 0, max = 100, step = 1, group = 'quality',
     label = {uk = 'Якість (Potato - OASIS)', en = 'Quality (Potato - OASIS)'},
-    hint = {uk = 'Задає деталізацію і дальність разом', en = 'Sets detail and draw distance together'},
-    read = tuneRead('quality'), apply = tuneApply('quality')}
+    hint = {uk = 'Задає деталізацію і дальність разом; діє в режимі «Авто»', en = 'Sets detail and draw distance together; acts in Auto mode'},
+    available = auto, read = tuneRead('quality'), apply = tuneApply('quality')}
   o.define{key = 'detail', kind = 'int', min = 0, max = 100, step = 1, group = 'quality',
     label = {uk = 'Деталізація', en = 'Detail'},
     hint = {uk = 'Густота дерев, трави й каміння; зміна перебудовує сцену', en = 'Trees, grass and rocks; a change rebuilds the scenery'},
-    read = tuneRead('detail'), apply = tuneApply('detail')}
+    available = auto, read = tuneRead('detail'), apply = tuneApply('detail')}
   o.define{key = 'distance', kind = 'int', min = 0, max = 100, step = 1, group = 'quality',
-    label = {uk = 'Дальність малювання', en = 'Draw distance'}, read = tuneRead('distance'), apply = tuneApply('distance')}
+    label = {uk = 'Дальність малювання', en = 'Draw distance'}, available = auto,
+    read = tuneRead('distance'), apply = tuneApply('distance')}
   for _, t in ipairs({
     {'grassM', 0, 220, 5, 'Дальність трави, м', 'Grass distance, m'},
     {'rockM', 0, 900, 10, 'Дальність каміння, м', 'Rock distance, m'},
@@ -7555,7 +7788,7 @@ function M.optionsBind()
     {'forestSpacing', 4, 24, 1, 'Крок лісу, м', 'Forest spacing, m'},
     {'groundSpacing', 4, 30, 1, 'Крок на відкритому ґрунті, м', 'Open-ground spacing, m'}}) do
     o.define{key = t[1], kind = 'int', min = t[2], max = t[3], step = t[4], group = 'advanced',
-      label = {uk = t[5], en = t[6]}, read = tuneRead(t[1]), apply = tuneApply(t[1])}
+      label = {uk = t[5], en = t[6]}, available = auto, read = tuneRead(t[1]), apply = tuneApply(t[1])}
   end
   o.define{key = 'groundTrees', kind = 'bool', group = 'advanced',
     label = {uk = 'Дерева на відкритому ґрунті', en = 'Trees on open ground'},
@@ -7646,8 +7879,8 @@ function M.optionsBind()
     end}
   o.define{key = 'lodSpeed', kind = 'bool', group = 'quality', default = true, path = {'lodSpeed'},
     label = {uk = 'Деталізація моделей за швидкістю', en = 'Model detail by speed'},
-    hint = {uk = 'На швидкості дерева середньої відстані лишаються білбордами й не міняють модель на ходу; на місці повертається повна деталізація',
-      en = 'At speed the trees of the middle distance stay billboards and do not change their model on the way; standing, full detail is back'},
+    hint = {uk = 'Від 110 км/год дерева середньої відстані поступово лишаються білбордами й не міняють модель на ходу; повільніше діє повна деталізація. Лише в режимі «Авто»',
+      en = 'From 110 km/h the trees of the middle distance stay billboards and do not change their model on the way; slower, full detail holds. In Auto mode only'},
     read = function() return not S.lodOff end,
     apply = function(v)
       S.lodOff = not v
@@ -8060,7 +8293,8 @@ function M.onExtensionLoaded()
   if NATIVE then
     native.refresh()
     local ok, cfg = pcall(jsonReadFile, LANG_FILE)
-    S.tune = quality.clamp(ok and type(cfg) == 'table' and cfg.tune or nil)
+    -- (a tune saved before 23.11 counted three times the crowns: quality.migrate)
+    S.tune = quality.clamp(quality.migrate(ok and type(cfg) == 'table' and cfg.tune or nil))
     S.appliedTune = native.setTune(S.tune)
     -- the world's style: the landing applies S.pack once the planet's styles are read
     local style = ok and type(cfg) == 'table' and cfg.style or nil

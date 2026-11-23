@@ -93,7 +93,20 @@ local PATH = {seconds = 24, reach = 2500, minShare = .4, stopShare = .85, bubble
   late = .5, grassLate = .15, sceneAfter = 2, grassAfter = 3, parked = 4,
   -- a far tile's trees are cards (generator.lua VEG.CARD), cheap enough to stand until this speed
   -- (its buildings wait for stream.farFast, as before)
-  treesFast = 45}
+  treesFast = 45,
+  -- ms a frame the generator gets at least while a near road is owed and due within `owedS` s,
+  -- the car under `owedUnder` m/s (23.11, the user: the car reaches a tile and the far one still
+  -- lies there). Between 2 and 15 m/s the frame gave 4 ms, and a town's roads alone asked for
+  -- more than that; from 15 m/s the game gives 8 already (world.lua driveNativeMs).
+  owedMs = 6, owedS = 20, owedUnder = 15}
+-- The generator's mode (quality.lua M.MODES; world.lua's option `mode`). auto: everything below
+-- as it reads. extreme: nothing is held back for speed (a far tile keeps its buildings and its
+-- trees, the far ring stays a disk, the horizon a ring). screenshot: extreme, and the land along
+-- the camera's look (pose.look) is wanted on: near tiles to SHOT.near m and far ones, with their
+-- buildings and trees, to SHOT.reach m, inside SHOT.nearHalf / SHOT.half degrees of the look.
+-- cache: the generator's cache of far geometry not yet taken, in TRIANGLE_LIMITs: a still's
+-- generator runs well ahead of the renderer.
+local MODE = {name = 'auto', cache = 1, shotCache = 3}
 -- what a layer costs (ms of the generator, a running mean) and the generator's ms a second
 local SPEND = {road = 350, scene = 900, grass = 300, far = 120, horizon = 40, rate = 150, mix = .3}
 local GRASS = {}   -- buildTile's yield once the scene is out (AHEAD marks the road)
@@ -947,6 +960,7 @@ local function land(req)
     state.stream.loadRadius = pendingTune.nearM
     state.stream.farRadius = pendingTune.farM
   end
+  state.stream.mode = MODE.name
   state.job.region, state.job.country, state.job.tileSize = descriptor.id, country.id, r.data.tileSize
   state.job.generator = state.stream.generator
   return state.job
@@ -967,7 +981,13 @@ local function priorities()
   local look = math.min(math.max(radius, PATH.reach), math.max(radius * PATH.minShare, speed * PATH.seconds))
   local wb = math.max(0, math.min(1, (speed - AHEAD.slow) / (AHEAD.fast - AHEAD.slow)))
   local bubble = radius * PATH.stopShare * (1 - wb) + PATH.bubbleFast * wb
+  -- A tile that stands near stays near inside the bubble of a slow car, whatever the speed: the
+  -- narrow bubble is there to ask for fewer new tiles, and it also gave up the built ones, so a
+  -- car pulling away saw the streets beside it turn into far tiles from 40 km/h on (the user,
+  -- 23.11: the models are replaced too early). Tiles behind the car still go (keepBack).
+  local bubbleBuilt = radius * PATH.stopShare
   local pace = math.max(speed, 5)
+  local extreme = MODE.name ~= 'auto'
   -- the cheapest cost of the path in each tile (pose.path). Without a path from the renderer (a
   -- test without world.lua, an older world) the heading's line stands in: a tile within
   -- PATH.half m of it costs its distance along it plus AHEAD.across times its distance across.
@@ -977,6 +997,7 @@ local function priorities()
   st.look, st.bubble = look, bubble
   -- The far ring: a disk while slow, a sleeve along the path at speed (PATH.sleeveFrom..Full)
   local ws = math.max(0, math.min(1, (speed - PATH.sleeveFrom) / (PATH.sleeveFull - PATH.sleeveFrom)))
+  if extreme then ws = 0 end
   local farHalf = farRadius * (1 - ws) + PATH.farSleeve * ws
   local farBack = farRadius * (1 - ws) + t * .25 * ws
   local horizonHalf = HORIZON_RADIUS * (1 - ws) + PATH.horizonSleeve * ws
@@ -1001,21 +1022,34 @@ local function priorities()
     local edge = math.sqrt((nx - p.x) ^ 2 + (ny - p.y) ^ 2)
     local cached = a.tiles[key]
     local margin = cached and cached.road and PATH.keep or 0
+    -- (whole: its scene is out too. A road alone would ask for its scene at speed.)
+    local whole = cached and cached.road and cached.scene and not cached.sceneLost
     local cost = path and path[key]
     if line and along > 0 then
       local acrossE = math.max(0, math.abs((cx - p.x) * uy - (cy - p.y) * ux) - ext)
       if acrossE <= PATH.half then cost = math.max(0, along - ext) + AHEAD.across * acrossE end
     end
     local onPath = cost and cost <= look + margin
-    if edge <= bubble + margin or onPath then
+    local inBubble = edge <= (whole and math.max(bubble, bubbleBuilt) or bubble) + margin
+    if inBubble or onPath then
       local round = edge * (along < 0 and speed > 1 and AHEAD.back or 1)
-      return math.min(edge <= bubble + margin and round / pace or math.huge, onPath and cost / pace or math.huge)
+      return math.min(inBubble and round / pace or math.huge, onPath and cost / pace or math.huge)
     end
   end
+  -- The camera's look in screenshot mode (MODE.look, a unit vector): cosines of the two sectors
+  local shot = MODE.name == 'screenshot' and MODE.look and quality.SHOT or nil
+  local shotCos, shotNearCos = shot and math.cos(math.rad(shot.half)), shot and math.cos(math.rad(shot.nearHalf))
+  -- the share of the look a tile's centre lies along (1 dead ahead); a tile round the camera counts
+  local function lookCos(cx, cy, d)
+    if d <= t then return 1 end
+    return ((cx - p.x) * MODE.look[1] + (cy - p.y) * MODE.look[2]) / d
+  end
+  local farReach = shot and math.max(farRadius, shot.reach) or farRadius
+  st.farReach = farReach
   local ex, ey = p.x + ux * (line and look or 0), p.y + uy * (line and look or 0)
   local span = PATH.half + t
-  for i = math.floor(math.min(p.x - farRadius, ex - span) / t), math.floor(math.max(p.x + farRadius, ex + span) / t) do
-    for j = math.floor(math.min(p.y - farRadius, ey - span) / t), math.floor(math.max(p.y + farRadius, ey + span) / t) do
+  for i = math.floor(math.min(p.x - farReach, ex - span) / t), math.floor(math.max(p.x + farReach, ex + span) / t) do
+    for j = math.floor(math.min(p.y - farReach, ey - span) / t), math.floor(math.max(p.y + farReach, ey + span) / t) do
       local cx, cy = (i + 0.5) * t, (j + 0.5) * t
       local farD = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
       local along = (cx - p.x) * ux + (cy - p.y) * uy
@@ -1029,8 +1063,16 @@ local function priorities()
       if tileCovered(a.region, i, j) then
         local key = keyOf(i, j)
         local eta = underfoot and 0 or (not behind and nearTile(i, j, key, cx, cy, along))
+        local seen = shot and farD <= shot.reach and lookCos(cx, cy, farD) or nil
+        if not eta and seen and seen >= shotNearCos and farD <= shot.near then
+          -- along the look: after the tiles round the car, the nearest first
+          eta = 30 + farD / pace
+        end
         if eta then
           out[key] = {i = i, j = j, priority = eta, size = t}
+        elseif seen and seen >= shotCos and farD > farRadius then
+          -- the land the camera looks at, past the far ring: whole far tiles, the nearest first
+          out[key] = {i = i, j = j, far = true, decor = true, trees = true, priority = 1e6 + farD, size = t}
         elseif farD <= farRadius and not behind and along >= -farBack
             and (across <= farHalf or (beside and beside[key])) then
           -- Ground ahead and beside the path. Buildings and trees are the part that used to churn
@@ -1039,7 +1081,8 @@ local function priorities()
           -- car is driving towards goes first, not the nearest: what it passes within three
           -- seconds would stand behind it by the time it was built.
           local order = math.max(0, along) + 2 * across + (along < speed * 3 and 4000 or 0)
-          out[key] = {i = i, j = j, far = true, decor = speed <= st.farFast, trees = speed <= PATH.treesFast,
+          out[key] = {i = i, j = j, far = true, decor = extreme or speed <= st.farFast,
+            trees = extreme or speed <= PATH.treesFast,
             priority = 1e6 + farD * (1 - ws) + order * ws, size = t}
         end
       end
@@ -1130,6 +1173,8 @@ local function priorities()
         local alongH = (cx - p.x) * ux + (cy - p.y) * uy
         local acrossH = math.abs((cx - p.x) * uy - (cy - p.y) * ux)
         if ws > 0 and (alongH < -horizonBack or acrossH > horizonHalf) then
+        elseif shot and out[keyOf(q[1], q[2])] then
+          -- (the camera's sector has this land as a tile of its own)
         elseif dist > farRadius and dist <= HORIZON_RADIUS then
           horizon[#horizon + 1] = {i = q[1], j = q[2], d = dist, x = cx, y = cy}
         elseif dist > HORIZON_RADIUS and dist <= outer then
@@ -1213,11 +1258,24 @@ local function trimTiles()
   local a, st = active, state.stream
   local count, triangles, vertices, cellCount = 0, 0, 0, 0
   for _ in pairs(a.cells) do cellCount = cellCount + 1 end
-  for _, entry in pairs(a.tiles) do
+  -- nearT, nearV: the geometry of the tiles wanted near. It cannot be thrown out (below), so it
+  -- does not count against the budget either: while a town's near tiles waited for the renderer,
+  -- each of them over the whole budget, every far tile was thrown out the moment it was built
+  -- and built again once it "fitted" (shot-04, a camera at rest: 361 far layers built for
+  -- nothing in 200 s; a drive through a town paid the same). The far tiles' own share is held
+  -- by update()'s `full`.
+  local nearT, nearV = 0, 0
+  local function nearWanted(key)
+    local want = a.desired[key]
+    return want and not want.far and not want.horizon
+  end
+  for key, entry in pairs(a.tiles) do
     count, triangles, vertices = count + 1, triangles + entry.triangles, vertices + entry.vertices
+    if nearWanted(key) then nearT, nearV = nearT + entry.triangles, nearV + entry.vertices end
   end
   local limit = a.tileLimit or TILE_LIMIT
-  while count > limit or triangles > TRIANGLE_LIMIT or vertices > VERTEX_LIMIT do
+  local triangleLimit, vertexLimit = TRIANGLE_LIMIT * MODE.cache, VERTEX_LIMIT * MODE.cache
+  while count > limit or triangles - nearT > triangleLimit or vertices - nearV > vertexLimit do
     -- Over the geometry budget only an entry that holds geometry helps. Delivered layers weigh
     -- nothing: evicting them freed no triangles, dropped the whole far ring's bookkeeping and
     -- rebuilt it at the next epoch while its meshes were still on screen.
@@ -1243,9 +1301,11 @@ local function trimTiles()
     if not worst then break end -- The startup neighbourhood is the minimum working set.
     local removed = a.tiles[worst]
     count, triangles, vertices = count - 1, triangles - removed.triangles, vertices - removed.vertices
+    if nearWanted(worst) then nearT, nearV = nearT - removed.triangles, nearV - removed.vertices end
     a.tiles[worst] = nil
     if removed.road then a.evicted[worst .. ':road'] = a.epoch end
     if removed.far then
+      st.farEvicted = (st.farEvicted or 0) + 1   -- for the reports: far layers thrown out of the cache
       a.evicted[worst .. ':far'] = a.epoch
       -- its size: built again in this epoch once it fits (update)
       a.evictedSize = a.evictedSize or {}
@@ -1257,8 +1317,10 @@ local function trimTiles()
   for _, entry in pairs(a.tiles) do if entry.road then readyCount = readyCount + 1 end end
   st.readyCount, st.cachedTiles, st.cachedCells = readyCount, count, cellCount
   st.cachedTriangles, st.cachedVertices = triangles, vertices
-  st.cacheLimits = {tiles = limit, cells = CELL_LIMIT, triangles = TRIANGLE_LIMIT, vertices = VERTEX_LIMIT}
-  st.cacheOverBudget = count > limit or triangles > TRIANGLE_LIMIT or vertices > VERTEX_LIMIT
+  -- (what counts against the budget: update() builds an evicted far tile again when it fits)
+  st.cachedSpareTriangles, st.cachedSpareVertices = triangles - nearT, vertices - nearV
+  st.cacheLimits = {tiles = limit, cells = CELL_LIMIT, triangles = triangleLimit, vertices = vertexLimit}
+  st.cacheOverBudget = count > limit or triangles - nearT > triangleLimit or vertices - nearV > vertexLimit
 end
 
 local function trimHorizon()
@@ -1633,12 +1695,14 @@ local function nearPending(wanted)
   local p = active.pose
   local slow = (p.vx or 0) ^ 2 + (p.vy or 0) ^ 2 < AHEAD.slow ^ 2
   local grassLost = 0
+  active.nearOwed = false   -- a near road due within PATH.owedS s (update's floor of PATH.owedMs)
   for key, entry in pairs(wanted) do
     if not entry.far and not entry.horizon and not active.failed[key] then
       local cached = active.tiles[key]
       if cached and (cached.grassLost or cached.grassAgain) then grassLost = grassLost + 1 end
       if not (cached and cached.road) then
         pending, urgent = true, urgent or entry.priority < AHEAD.urgent
+        if entry.priority < PATH.owedS then active.nearOwed = true end
       elseif cached.sceneLost or (cached.grassLost and slow) then
         pending = true
       end
@@ -1703,6 +1767,10 @@ local function update(dt, budgetMs, farBudgetMs, now)
   end
   -- the road the car reaches within seconds is missing: the frame pays for it rather than the car
   if not active.startupPinned and not farBudgetMs and active.nearUrgent then budgetMs = math.max(budgetMs, AHEAD.urgentMs) end
+  -- and a road due within PATH.owedS s is not left to the 4 ms of a town's pace
+  if not active.startupPinned and not farBudgetMs and active.nearOwed and speed < PATH.owedUnder then
+    budgetMs = math.max(budgetMs, PATH.owedMs)
+  end
   state.stream.budgetMs = budgetMs
   active.timer, active.budget = timer, budgetMs
   local slow = speed < AHEAD.slow
@@ -1766,13 +1834,13 @@ local function update(dt, budgetMs, farBudgetMs, now)
           end
         end
       end
-      local full = farTriangles > TRIANGLE_LIMIT * .5 or farVertices > VERTEX_LIMIT * .5
+      local full = farTriangles > TRIANGLE_LIMIT * MODE.cache * .5 or farVertices > VERTEX_LIMIT * MODE.cache * .5
       -- A far tile evicted in this epoch is built again once it fits in the cache. Until the next
       -- epoch (250 m of travel) it used to stay a hole, and a parked car never got there: after a
       -- fast drive the near refill kept the cache over budget, each far tile was evicted as soon
       -- as it was built, and the far ring stayed ~20 of ~160 tiles for good (out/all-10).
-      local roomT = TRIANGLE_LIMIT - (state.stream.cachedTriangles or 0)
-      local roomV = VERTEX_LIMIT - (state.stream.cachedVertices or 0)
+      local roomT = TRIANGLE_LIMIT * MODE.cache - (state.stream.cachedSpareTriangles or state.stream.cachedTriangles or 0)
+      local roomV = VERTEX_LIMIT * MODE.cache - (state.stream.cachedSpareVertices or state.stream.cachedVertices or 0)
       local sizes = active.evictedSize or {}
       for key, entry in pairs(wanted) do
         local cached = entry.horizon and active.horizon[key] or active.tiles[key]
@@ -1781,9 +1849,12 @@ local function update(dt, budgetMs, farBudgetMs, now)
         elseif entry.far then
           ready = cached and cached.far and (not entry.decor or cached.decor) and (not entry.trees or cached.trees)
         else
-          -- a tile that lost its grass is built again for it one at a time, the car slow
+          -- A tile that lost its grass is built again for it, one at a time. At any speed (23.11,
+          -- the user: some parks never get their grass): it used to wait for a car under
+          -- AHEAD.slow, 36 km/h, so a town driven at 50 kept its lost lawns bare for good. Its
+          -- rank (grassRank) puts one that cannot be on time after the far ground ahead.
           ready = cached and cached.road and not cached.sceneLost
-            and not (cached.grassLost and slow and next(active.parkedGrass) == nil)
+            and not (cached.grassLost and next(active.parkedGrass) == nil)
           -- a scene owed is built from the start (its road's part again), and a grass layer after
           -- it: each when it can be on time, as a parked one
           if cached and cached.road then
@@ -1986,10 +2057,15 @@ local function pose(p)
   local ex = speed > 0 and p.x + active.pose.vx / speed * reach or p.x
   local ey = speed > 0 and p.y + active.pose.vy / speed * reach or p.y
   local refresh = t / 5
-  local signature = string.format('%d_%d_%d_%d_%d_%d_%d_%s_%s_%d', math.floor(p.x / refresh), math.floor(p.y / refresh),
+  -- the camera's look (screenshot mode), in steps of 8 degrees: the sector follows it
+  local look = MODE.name == 'screenshot' and type(p.look) == 'table' and finite(p.look[1]) and finite(p.look[2]) and p.look or nil
+  local length = look and math.sqrt(look[1] ^ 2 + look[2] ^ 2) or 0
+  MODE.look = length > 1e-6 and {look[1] / length, look[2] / length} or nil
+  local turn = MODE.look and math.floor(math.deg(math.atan2(MODE.look[2], MODE.look[1])) / 8) or -99
+  local signature = string.format('%d_%d_%d_%d_%d_%d_%d_%s_%s_%d_%s%d', math.floor(p.x / refresh), math.floor(p.y / refresh),
     math.floor(ax / t), math.floor(ay / t), math.floor(ex / t), math.floor(ey / t), math.floor(speed / 10),
     tostring(speed <= state.stream.farFast) .. tostring(speed <= PATH.treesFast), tostring(speed < VISTA_SPEED),
-    finite(p.z) and math.floor(p.z / 100) or 0)
+    finite(p.z) and math.floor(p.z / 100) or 0, MODE.name, turn)
   if signature ~= active.poseSignature then active.poseSignature, active.prioritiesDirty = signature, true end
   -- The predicted path (world.lua, predict.lua: x, y, cost triples): the cheapest cost in each
   -- tile, for priorities() (PATH). The wanted set is computed again when a tile joins or leaves
@@ -2113,6 +2189,7 @@ unload = function(key, layer)
     trimHorizon()
     return entry ~= nil
   elseif farOnly then
+    if entry and entry.far then st.farUnloaded = (st.farUnloaded or 0) + 1 end   -- and those the renderer gave back
     if entry then entry.far, entry.farDelivered, entry.farTaken = nil, nil, nil end
     st.far[key], active.evicted[key .. ':far'] = nil, nil
     active.manifests[key .. ':far'] = nil
@@ -2419,6 +2496,19 @@ end
 
 M.unload = unload
 M.setTune = setTune
+-- The generator's mode (MODE above): 'auto', 'extreme' or 'screenshot'; the wanted set is read
+-- again. Returns the mode in force.
+M.setMode = function(name)
+  name = quality.mode(name)
+  if name ~= MODE.name then
+    MODE.name, MODE.look = name, nil
+    MODE.cache = name == 'screenshot' and MODE.shotCache or 1
+    if active then active.prioritiesDirty, active.poseSignature = true, nil end
+  end
+  if state and state.stream then state.stream.mode = name end
+  return name
+end
+M.mode = function() return MODE.name end
 -- The climate of a point of the landing's frame (biome.lua's place: group, class, west), a
 -- universe's or the lab's own where the tile has one; nil without the climate grid.
 M.placeAt = function(x, y)

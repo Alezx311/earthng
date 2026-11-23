@@ -1358,7 +1358,8 @@ function M.update(p, source, holeR, track, enabled, dropR, built, cellT)
   for L = FAR.LEVELS - 1, 0, -1 do
     local o, old = P[L], LV[L]
     -- M.stale (world.lua): ground held for the hole in sight has no ground of its own left under it
-    if not old or old.cx ~= o.cx or old.cy ~= o.cy or (L == 0 and (M.stale or (old.circle[1] - p.x) ^ 2 + (old.circle[2] - p.y) ^ 2 > FAR.DRIFT ^ 2
+    -- M.refresh (world.lua, screenshot mode): the far tiles along the camera's look are in
+    if not old or old.cx ~= o.cx or old.cy ~= o.cy or (L == 0 and (M.stale or M.refresh or (old.circle[1] - p.x) ^ 2 + (old.circle[2] - p.y) ^ 2 > FAR.DRIFT ^ 2
         or abs(old.circle[3] - holeR) > 200 or abs((old.circle[4] or old.circle[3]) - dropR) > 200)) then
       from = L
       break
@@ -1367,7 +1368,9 @@ function M.update(p, source, holeR, track, enabled, dropR, built, cellT)
   local marksDue = not LV.marks or (LV.marks.x - p.x) ^ 2 + (LV.marks.y - p.y) ^ 2 > 1500 ^ 2
   if not from and not marksDue then return end
   -- the built cells at the start of the build: shownHole/pendingHole carry them (world.lua bury)
-  if from and built then P[0].circle[5] = M.cellsBuilt(p, dropR, built, cellT) end
+  -- (M.builtReach: built cells are looked for this far, past the planned horizon)
+  if from and built then P[0].circle[5] = M.cellsBuilt(p, max(dropR, M.builtReach or 0), built, cellT) end
+  if from then M.refresh = nil end
   local pos = {x = p.x, y = p.y}
   local cam = {x = pos.x, y = pos.y, z = p.z or 0, r0 = dropR}
   job = {plan = P, out = {}, p = pos, cam = cam}

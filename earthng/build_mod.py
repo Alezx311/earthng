@@ -48,10 +48,12 @@ SKY = [
     # The engine counts `day` from about the June solstice (measured at Kyiv, time 0.08: day 20 ->
     # 61 degrees, 110 -> 40, 200 -> 15, 290 -> 37): 'day 200' meant July but lit a green summer
     # world with the December sun, low, long-shadowed and blue (docs/VISUAL_1_0.md). Day 40 is mid
-    # July; time 0.16 an afternoon sun at ~47 degrees from the WSW, as the stock levels pick
-    # (9-10 am or 3-4 pm): it models facades where the noon sun flattens them.
+    # July. The hour is the dawn (23.11, the user: the default time, for its light): 0.757 is 6:09 by
+    # Kyiv's clock, the sun 9 degrees up in the east-north-east (until then 0.16, an afternoon sun at
+    # ~47 degrees). world.lua LIMIT.DAWN works the same hour out for every landing's own place and
+    # knows this value as the level's untouched one (DAWN.level): change both together.
     {'class': 'TimeOfDay', 'name': 'tod', 'position': [0, 0, 0], 'axisTilt': 23.44, 'day': 40, 'dayLength': 1800,
-     'latitude': 50.45, 'longitude': 30.52, 'play': False, 'startTime': 0.16, 'time': 0.16, 'version': 2},
+     'latitude': 50.45, 'longitude': 30.52, 'play': False, 'startTime': 0.757, 'time': 0.757, 'version': 2},
     {'class': 'Precipitation', 'name': 'e2r_weather_rain', 'position': [0, 0, 0], 'dataBlock': 'rain_drop', 'numDrops': 0,
      'boxWidth': 50, 'boxHeight': 50, 'dropSize': 0.2, 'splashSize': 0.2, 'minSpeed': 0.35, 'maxSpeed': 0.4,
      'hitVehicles': True, 'useTurbulence': True},

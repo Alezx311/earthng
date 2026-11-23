@@ -442,7 +442,10 @@ class NativeTests(unittest.TestCase):
         # The renderer still needs all startup tiles during warm-up/descent.
         # Its first driving pose is the explicit release of that working set.
         self.assertGreaterEqual(mod.status().stream.readyCount, 9)
-        self.assertTrue(mod.status().stream.cacheOverBudget)
+        # (nine near tiles of 20 000 triangles wait for the renderer: more than the budget, and
+        # not over it, as what is wanted near is held whatever it weighs)
+        self.assertGreater(mod.status().stream.cachedTriangles, 80000)
+        self.assertFalse(mod.status().stream.cacheOverBudget)
         for _ in range(30):
             mod.update(.016, 2)
         self.assertGreaterEqual(mod.status().stream.readyCount, 9)
@@ -567,11 +570,13 @@ class NativeTests(unittest.TestCase):
         self.assertLessEqual(stream.cachedTriangles, 80000)
         self.assertGreaterEqual(len(list(stream.far.keys())), len(far_wanted))
 
-    def test_far_tiles_evicted_by_a_near_refill_come_back_without_moving(self):
+    def test_far_tiles_are_not_evicted_by_a_near_refill(self):
         # After a fast drive the car stops and the near disk is built again: its geometry, not yet
-        # taken, keeps the cache over budget, and each far tile built then is evicted at once. An
+        # taken, kept the cache over budget, and each far tile built then was evicted at once. An
         # evicted tile waited for the next epoch (250 m of travel), so a parked car kept the holes
-        # for good (out/all-10: ~20 of ~160 far tiles). It is built again once it fits.
+        # for good (out/all-10: ~20 of ~160 far tiles); then it was built again once it fitted,
+        # which in a town it never did for long (23.11, a still: 361 far layers built for nothing
+        # in 200 s). What is wanted near no longer counts against the far tiles' budget.
         lua, mod, cv = self.make(fixture(20))
         lat, lon = geographic(10000, 10000)
         mod.land(cv(dict(seq=9, lat=lat, lon=lon)))
@@ -596,8 +601,12 @@ class NativeTests(unittest.TestCase):
             mod.unload(key)
         for key in far_wanted:
             mod.unload(key, 'far')
-        run(1500, False)     # the renderer is busy: the near layers wait, the cache is over budget
-        self.assertLess(len(list(mod.status().stream.far.keys())), len(far_wanted) // 2)
+        run(1500, False)     # the renderer is busy with the far ring: the near layers wait
+        stream = mod.status().stream
+        self.assertGreater(stream.cachedTriangles, 80000)
+        self.assertGreaterEqual(len(list(stream.far.keys())), len(far_wanted))
+        self.assertFalse(stream.farEvicted)
+        self.assertEqual(stream.rebuilds, len(far_wanted) + len(near_wanted))   # once each after the unload
         run(3000, True)      # it catches up; the car has not moved
         stream = mod.status().stream
         self.assertGreaterEqual(len(list(stream.far.keys())), len(far_wanted))
@@ -741,7 +750,8 @@ class NativeTests(unittest.TestCase):
         for _ in range(2000):
             mod.update(.016, 2)
         stream = mod.status().stream
-        self.assertTrue(stream.cacheOverBudget)
+        self.assertGreater(stream.cachedTriangles, 80000)
+        self.assertFalse(stream.cacheOverBudget)    # held: it is wanted near
         self.assertEqual(stream.rebuilds, 0)
         self.assertGreater(len(list(stream.ready.keys())), 9)
 
@@ -1120,18 +1130,26 @@ class NativeV2Tests(NativeTests.__base__):
         # and the far ground a sleeve along it: 750 m ahead is near, 500 m beside is far ground,
         # 1000 m beside is not wanted at all
         self.assertAlmostEqual(wanted['7_10'], 7.5)
-        self.assertGreaterEqual(wanted['5_11'], 1_000_000)
-        self.assertGreaterEqual(wanted['5_9'], 1_000_000)
-        self.assertIsNone(wanted['5_12'])
-        self.assertIsNone(wanted['5_8'])
+        self.assertGreaterEqual(wanted['7_11'], 1_000_000)
+        self.assertGreaterEqual(wanted['7_9'], 1_000_000)
+        self.assertIsNone(wanted['7_12'])
+        self.assertIsNone(wanted['7_8'])
+        # (the tiles beside the car itself were built whole by the landing, and a whole tile stays
+        # near in the bubble of a slow car: test_modes)
+        self.assertLess(wanted['5_11'], 1_000_000)
         # the path is read 24 s ahead (2400 m at 100 m/s); past its end is not near
         self.assertAlmostEqual(wanted['8_10'], 12.5)
         self.assertAlmostEqual(wanted['9_10'], 17.5)
         near = {k for k, p in wanted.items() if p is not None and p < 1_000_000}
         self.assertIn('10_10', near)
         self.assertNotIn('11_10', near)
-        # the ground the car drives towards goes before the ground beside it
-        self.assertLess(wanted['9_11'], wanted['5_11'])
+        # the ground the car drives towards goes before the ground beside it (a car further on,
+        # where no tile beside it stands yet: 7_11 is 150 m ahead of it and 500 m to the side)
+        mod.pose(cv(dict(x=3600, y=5250, vx=100, vy=0, state='driving')))
+        mod.update(.016, 2)
+        wanted = mod.status().stream.wanted
+        self.assertGreaterEqual(wanted['7_11'], 1_000_000)
+        self.assertLess(wanted['11_11'], wanted['7_11'])
         # standing still it is the distance again, the same all round
         mod.pose(cv(dict(x=2750, y=5250, vx=0, vy=0, state='driving')))
         mod.update(.016, 2)
