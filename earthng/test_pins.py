@@ -102,9 +102,15 @@ class PinRulesTests(unittest.TestCase):
     def test_pin_keeps_few_tags_and_its_bank(self):
         tags = fast_style.pin_tags({'amenity': 'atm', 'operator': 'ПриватБанк', 'opening_hours': '24/7',
                                     'phone': '+380 00 000 0000', 'name': ''})
-        self.assertEqual(tags, {'operator': 'ПриватБанк', 'e2r_cat': 'atm', 'e2r_brand': 'privatbank'})
+        self.assertEqual(tags, {'operator': 'ПриватБанк', 'amenity': 'atm', 'e2r_cat': 'atm', 'e2r_brand': 'privatbank'})
         hotel = fast_style.pin_tags({'tourism': 'hotel', 'name': 'Hotel Alpenrose', 'stars': '3', 'brand': 'Sense'})
-        self.assertEqual(hotel, {'name': 'Hotel Alpenrose', 'brand': 'Sense', 'e2r_cat': 'hotel'})   # no bank for a hotel
+        self.assertEqual(hotel, {'name': 'Hotel Alpenrose', 'brand': 'Sense', 'tourism': 'hotel', 'e2r_cat': 'hotel'})   # no bank for a hotel
+        # what the point is and what is known of it (poi_types.py), and no free text
+        castle = fast_style.pin_tags({'historic': 'castle', 'name': 'Olesko', 'start_date': '1327', 'heritage': '2',
+                                      'wikipedia': 'uk:Олеський замок', 'description': 'A long story', 'website': 'https://x'})
+        self.assertEqual(castle, {'name': 'Olesko', 'historic': 'castle', 'start_date': '1327', 'heritage': '2',
+                                  'wikipedia': 'uk:Олеський замок', 'e2r_cat': 'castle'})
+        self.assertEqual(list(castle), ['name', 'historic', 'start_date', 'heritage', 'wikipedia', 'e2r_cat'], 'in the order of PIN_TAGS')
         # a passage's ATM, a mall's kiosk: on the map, no object in the street
         for under in ({'level': '-1'}, {'level': ' -2;-1'}, {'indoor': 'yes'}, {'location': 'underground'}):
             self.assertEqual(fast_style.pin_tags({'amenity': 'atm', **under}).get('e2r_in'), 'yes', under)

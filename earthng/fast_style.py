@@ -326,6 +326,14 @@ LENS = {'lens_red': (1., .09, .05), 'lens_yellow': (1., .62, .05), 'lens_green':
 for _kind, _glow in LENS.items():
     KINDS[_kind] = (None, [*_glow, 1], 'METAL', 1.0, 'wall')
 EXTRA['glyphs'] = {'alphaTest': True, 'alphaRef': 110, 'castShadows': False}
+# The pictograms of the points of interest (poi_art.py, generator.lua BLD.poiMark): marks cut by
+# opacity like the letters, white on a plate of its group's colour and dark on a white board
+TEXTURES['poi_marks'] = {'baseColorMap': f'{ART}/real/poi_marks.color.png', 'opacityMap': f'{ART}/real/poi_marks_o.data.png'}
+KINDS['poi_marks'] = ('poi_marks', [.96, .96, .94, 1], 'METAL', 1.0, 'wall')
+KINDS['poi_marks_dark'] = ('poi_marks', [.03, .03, .035, 1], 'METAL', 1.0, 'wall')
+POI_MARKS_REF = 110
+for _kind in ('poi_marks', 'poi_marks_dark'):
+    EXTRA[_kind] = {'alphaTest': True, 'alphaRef': POI_MARKS_REF, 'castShadows': False}
 # covers in the asphalt (generator.lua ROADS.covers): the Italy manhole sheet and the grid
 # drain, cut by their opacity like the lines; drawn only where the game has these maps
 TEXTURES['manhole'] = _maps('/assets/materials/baked_props/italy_ground_parts', 't_manhole_01_decal', 'b', 'nm', 'r', 'ao', 'o')
@@ -446,6 +454,7 @@ TINT = {'ground': [.55, .85, .42, 1], 'forest': [.36, .58, .28, 1], 'paved': [.6
 TINT.update({_k: _v[1] for _k, _v in RUTS.items()})
 TINT['glyphs_dark'] = [.03, .03, .035, 1]
 TINT['glyphs_red'] = [.72, .08, .06, 1]
+TINT['poi_marks_dark'] = [.03, .03, .035, 1]
 TINT.update({_k: [_c / 255 for _c in _rgb] + [1] for _k, _rgb in RAILINGS.items()})
 # Lines as East Coast paints them. The edge grass tint was set from linear means but acts as an
 # sRGB factor (_factor below); in game it sits at .9 of the verge, so it stays. The dirt edge is
@@ -782,7 +791,12 @@ PIN_RULES = (
 PIN_TAGS = ('name', 'name:uk', 'name:en', 'brand', 'operator', 'ele', 'access', 'fee', 'summit:cross',
             'support', 'fire_hydrant:type', 'recycling_type', 'country', 'height',
             # what the coming looks read (docs/POI.md: a tag only when it shows something)
-            'shop', 'cuisine', 'historic', 'memorial', 'artwork_type', 'tower:type', 'brand:wikidata')
+            'shop', 'cuisine', 'historic', 'memorial', 'artwork_type', 'tower:type', 'brand:wikidata',
+            # what the point is and what is known of it (poi_types.py: its type by the most telling
+            # key; the info stand's year, the card's author and article). No free text: a
+            # description or an inscription stays in the map sidecar (build_map.POI_DETAILS)
+            'tourism', 'amenity', 'leisure', 'natural', 'man_made', 'railway', 'aeroway', 'waterway', 'information',
+            'healthcare', 'start_date', 'heritage', 'wikipedia', 'architect', 'artist_name')
 PIN_MONEY = ('atm', 'payment_terminal', 'exchange')
 # categories drawn in the world and on no map or search (generator.lua BLD.PIN.offMap)
 PIN_OFF_MAP = frozenset(('billboard', 'ad_column', 'waste_disposal', 'recycling', 'gazebo', 'hydrant', 'flagpole',

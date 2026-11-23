@@ -1546,6 +1546,9 @@ local function buildTile(key, wanted)
       -- lane arrows in every pack, not only where a pack's experiment asks. The one mode there is
       -- yet: detail by the car's speed (full under 60 km/h, the road alone over 250) comes later.
       hyper = switch(knob.hyper, realStyle or nil) or nil,
+      -- info stands, plaques and blade signs at the points of interest (BLD.poiInfo); M.poiInfo
+      -- false: the player's switch
+      poiInfo = M.poiInfo,
       cellSize = s})
   if type(road) ~= 'table' or type(road.items) ~= 'table' or type(road.mats) ~= 'table'
     or type(scene) ~= 'table' or type(scene.items) ~= 'table' then error('generator returned an invalid tile manifest') end

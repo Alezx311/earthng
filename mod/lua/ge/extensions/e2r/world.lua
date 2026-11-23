@@ -30,6 +30,9 @@ M.navigator = NATIVE and require('ge/extensions/e2r/navigator') or nil
 -- where the car will be in the next seconds (predict.lua): sent to native.lua with the pose
 M.predict = NATIVE and require('ge/extensions/e2r/predict') or nil
 M.location = NATIVE and require('ge/extensions/e2r/location') or nil
+-- the card of the point of interest by the car and the journal of found places (poicard.lua)
+M.poicard = NATIVE and select(2, pcall(require, 'ge/extensions/e2r/poicard')) or nil
+if type(M.poicard) ~= 'table' then M.poicard = nil end
 M.compass = NATIVE and require('ge/extensions/e2r/compass') or nil
 -- the world map on M: points of interest, filters, OSM facts on hover (worldmap.lua)
 M.worldmap = NATIVE and select(2, pcall(require, 'ge/extensions/e2r/worldmap')) or nil
@@ -1821,6 +1824,37 @@ function M.locationStep()
   env.leftHand = native.keepsLeft and native.keepsLeft() or nil
   env.exitBlue = native.signFamily and native.signFamily().exitBlue or nil
   M.location.step(S.location, S.now, p.x, p.y, v and v.x or 0, v and v.y or 0, env)
+end
+
+-- The card of the point of interest by the car (poicard.lua): looked up four times a second over
+-- the streamed tiles' records. The journal of found places is settings/earthng_journal.json; the
+-- map sidecar's OSM facts join the card where the world map has indexed them already.
+function M.poiStep()
+  if not M.poicard or S.poiCardOff or S.now < (S.poiAt or 0) then return end
+  S.poiAt = S.now + .25
+  local p, v = focus()
+  if not p then return end
+  if not S.poi then
+    S.poi = M.poicard.new()
+    if FS:fileExists('/settings/earthng_journal.json') then
+      local ok, data = pcall(jsonReadFile, '/settings/earthng_journal.json')
+      M.poicard.load(S.poi, ok and data or nil)
+    end
+    S.poiEnv = {
+      found = function(t) pcall(jsonWriteFile, 'settings/earthng_journal.json', M.poicard.save(t), true) end,
+      details = function(rec)
+        local index = M.worldmap and M.worldmap.index
+        if not index then return nil end
+        local ok, found = pcall(function()
+          local lat, lon = native.toGeo(rec.x, rec.y)
+          local e, i = index.find(lat, lon, rec.cat)
+          return e and index.details(e, i) or nil
+        end)
+        return ok and found or nil
+      end}
+  end
+  S.poiEnv.lang = lang
+  M.poicard.step(S.poi, p.x, p.y, v and math.sqrt(v.x * v.x + v.y * v.y) or 0, S.tiles, S.poiEnv)
 end
 
 local function trafficRunning()
@@ -5949,6 +5983,9 @@ local function drawWindow()
   if M.location and S.location and S.state == 'driving' and not S.locationOff then
     M.location.draw(im, S.location, M.navigator and M.navigator.lines(L), M.compassOffset)
   end
+  if M.poicard and S.poi and S.state == 'driving' and not S.poiCardOff and not S.bigMap and not S.pickerOpen then
+    M.poicard.draw(im, S.poi, M.pins)
+  end
   if NATIVE then planetMap.update(S.status and S.status.countries) end
   pushTheme()
   if S.widgetHidden then
@@ -7165,6 +7202,7 @@ function M.tick(dt)
       navStep()
       if M.navigator then M.navigator.step(focus, S.now, lang) end
       M.locationStep()
+      M.poiStep()
       if M.signals then M.signals.step(S.now, trafficRunning()) end
       local t0 = timer:stop()
       if S.flow then M.flowStep() end
@@ -7636,6 +7674,19 @@ function M.optionsBind()
       S.locationOff = not v
       if S.locationShown then S.locationShown[0] = v end
     end}
+  -- the points of interest: what stands by them in the world, and the card by the car
+  o.define{key = 'poiInfo', kind = 'bool', group = 'view', default = true, path = {'poiInfo'},
+    label = {uk = 'Стенди й таблички точок інтересу', en = 'Info stands and plaques at points of interest'},
+    hint = {uk = "Інформаційний стенд біля пам'ятки, табличка чи вивіска на будівлі; для щойно завантажених околиць",
+      en = 'An info stand by a sight, a plaque or a sign on a building; for newly loaded surroundings'},
+    read = function() return not native or native.poiInfo ~= false end,
+    apply = function(v) if native then native.poiInfo = (not v) and false or nil end end}
+  o.define{key = 'poiCard', kind = 'bool', group = 'view', default = true, path = {'poiCard'},
+    label = {uk = 'Картка місця біля авто', en = 'Place card by the car'},
+    hint = {uk = "Що це за місце і що про нього відомо, коли під'їжджаєте до точки інтересу; знайдені місця йдуть у журнал",
+      en = 'What the place is and what is known of it as you drive up to a point of interest; found places go to the journal'},
+    read = function() return not S.poiCardOff end,
+    apply = function(v) S.poiCardOff = not v end}
   -- (the styles are known after a landing: the saved one is read by onExtensionLoaded, not restore)
   o.define{key = 'style', kind = 'enum', group = 'view', label = {uk = 'Стиль світу', en = 'World style'}, path = {'style'},
     available = function() return S.packs ~= nil end,

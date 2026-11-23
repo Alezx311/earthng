@@ -23,6 +23,7 @@ import fast_pixel
 import fast_storefront
 import fast_tone
 import kit_art
+import poi_art
 import street_art
 import fast_photo as photo
 import fast_style as style
@@ -99,6 +100,7 @@ FLAT = {   # kind: (toon colour, model colour)
     'sign_yellow': ((248, 196, 16), (248, 196, 16)), 'sign_green': ((0, 108, 58), (0, 108, 58)),
     'sign_blue': ((10, 66, 148), (10, 66, 148)), 'sign_black': ((12, 12, 14), (12, 12, 14)),
     'glyphs_red': ((184, 22, 16), (184, 22, 16)),
+    'poi_marks': ((240, 240, 236), (240, 240, 236)), 'poi_marks_dark': ((10, 10, 12), (10, 10, 12)),
     'paint_red': ((184, 30, 24), (220, 220, 220)), 'fascia': ((30, 32, 35), (200, 200, 200)),
     'patch': ((52, 52, 54), (180, 180, 180)),
     'wire': ((40, 40, 42), (190, 190, 190)), 'roof_gold': ((212, 170, 60), (230, 230, 230)),
@@ -793,6 +795,11 @@ def prebuild(distributable=False):
         stamp = shared / 'real' / 'glyphs.version'
         if (not stamp.exists() or stamp.read_text() != GLYPH_ART_VERSION) and glyph_art(shared / 'real'):
             to_dds(shared / 'real')
+        # and the points of interest's pictograms (poi_art, generator.lua BLD.poiInfo)
+        stamp = shared / 'real' / 'poi.version'
+        if not stamp.exists() or stamp.read_text() != poi_art.VERSION:
+            poi_art.build(shared / 'real')
+            to_dds(shared / 'real')
         # and the drawn facades and plain sheets
         stamp = shared / 'real' / 'facade.version'
         if not stamp.exists() or stamp.read_text() != FACADE_ART_VERSION + own_tag():
@@ -869,6 +876,7 @@ def build(r, game_assets=True):
     ruts_art(r / 'real')
     brand_art(r / 'real')
     glyph_art(r / 'real')
+    poi_art.build(r / 'real')
     # the PO-2 concrete fence: one 2.5 m x 2 m slab... laid over a 2.5 m repeat, the slab in the
     # lower 0.8 of it (fences are 2 m tall), upside down like the facades
     slab = Image.open(photo.TEXTURES / 'panelka_fence/albedo.jpg').convert('RGB')
@@ -959,7 +967,9 @@ MIP_REFS = {'chainlink_o.data.png': style.CHAINLINK_MIP_REF, 'line_o.data.png': 
             'track_o.data.png': style.TRACK_MIP_REF, 'land_blend_o.data.png': 'uniform', 'land_blend_inv_o.data.png': 'uniform',
             'ruts_o.data.png': style.RUTS_REF, 'ruts_two_o.data.png': style.RUTS_REF,
             # the signs' letters: a box filter thins their strokes away from the 16 px level on
-            'glyphs_o.data.png': style.EXTRA['glyphs']['alphaRef']}
+            'glyphs_o.data.png': style.EXTRA['glyphs']['alphaRef'],
+            # and the points of interest's pictograms, for the same reason
+            'poi_marks_o.data.png': style.POI_MARKS_REF}
 # The yard atlas (generator.lua YARD.cell keeps the same order): playground paint, wood, metal,
 # sand, container screens and the yellow of the hemisphere bollards.
 YARD_COLOURS = [(196, 52, 40), (236, 188, 40), (46, 108, 186), (62, 148, 70), (228, 118, 40), (146, 104, 62),

@@ -12259,7 +12259,30 @@ end
 -- a steel panel with its screen and keypad, the bank's sign over it. homes: BLD.pinIndoors' cache.
 -- Returns true when drawn.
 function BLD.pinOnWall(mesh, cache, buildings, x, y, ground, cell, seed)
-  local W, c = BLD.PIN.wall, YARD.cell
+  local c = YARD.cell
+  local best = BLD.pinWallSpot(cache, buildings, x, y)
+  if not best then return false end
+  local z = ground(best.x + best.nx, best.y + best.ny)
+  local T = SOLID.frame(best.x, best.y, z, math.atan2(best.nx, -best.ny))
+  local box = function(colour, x0, y0, z0, x1, y1, z1) SOLID.box(mesh, 'yard', colour, T, x0, y0, z0, x1, y1, z1) end
+  box(c.metal, -.42, -.1, .55, .42, .02, 1.75)                   -- the panel, a little into the wall
+  box(c.dark, -.25, -.12, 1.22, .25, -.1, 1.55)                  -- the screen
+  box(c.metal, -.3, -.3, 1.0, .3, -.1, 1.06)                     -- the keypad's shelf
+  box(c.dark, -.08, -.12, 1.1, .08, -.1, 1.14)                   -- the card slot
+  if cell then
+    BLD.shopBox(mesh, T, -.42, -.12, 1.8, .42, .02, 2.1, BLD.shopFlat(cell), {front = BLD.shopUV(cell)})
+  else
+    box(seed % 2 == 0 and c.green or c.blue, -.42, -.12, 1.8, .42, .02, 2.1)
+  end
+  return true
+end
+
+-- The place on the outside of the building x, y lies in for a thing hung on its wall: the nearest
+-- point of an open wall (BLD.PIN.wall) as {x, y, nx, ny (out of the wall), height (the building's)},
+-- or nil. cache: BLD.pinIndoors' table.
+function BLD.pinWallSpot(cache, buildings, x, y, reach)
+  local W = BLD.PIN.wall
+  if reach then W = {reach = reach, clear = W.clear, edge = W.edge} end
   BLD.pinIndoors(cache, buildings, x, y)
   local best
   for _, home in ipairs(cache.homes) do
@@ -12278,27 +12301,14 @@ function BLD.pinOnWall(mesh, cache, buildings, x, y, ground, cell, seed)
           local nx, ny = dy / len, -dx / len
           if d <= W.reach and (not best or d < best.d)
               and not BLD.pinIndoors(cache, buildings, px + nx * W.clear, py + ny * W.clear) then
-            best = {d = d, x = px, y = py, nx = nx, ny = ny}
+            best = {d = d, x = px, y = py, nx = nx, ny = ny, height = home.height}
           end
         end
       end
       break
     end
   end
-  if not best then return false end
-  local z = ground(best.x + best.nx, best.y + best.ny)
-  local T = SOLID.frame(best.x, best.y, z, math.atan2(best.nx, -best.ny))
-  local box = function(colour, x0, y0, z0, x1, y1, z1) SOLID.box(mesh, 'yard', colour, T, x0, y0, z0, x1, y1, z1) end
-  box(c.metal, -.42, -.1, .55, .42, .02, 1.75)                   -- the panel, a little into the wall
-  box(c.dark, -.25, -.12, 1.22, .25, -.1, 1.55)                  -- the screen
-  box(c.metal, -.3, -.3, 1.0, .3, -.1, 1.06)                     -- the keypad's shelf
-  box(c.dark, -.08, -.12, 1.1, .08, -.1, 1.14)                   -- the card slot
-  if cell then
-    BLD.shopBox(mesh, T, -.42, -.12, 1.8, .42, .02, 2.1, BLD.shopFlat(cell), {front = BLD.shopUV(cell)})
-  else
-    box(seed % 2 == 0 and c.green or c.blue, -.42, -.12, 1.8, .42, .02, 2.1)
-  end
-  return true
+  return best
 end
 
 -- true when x, y lies inside a building of the tile; cache: a table kept for the tile
@@ -12306,7 +12316,7 @@ function BLD.pinIndoors(cache, buildings, x, y)
   if not cache.homes then
     cache.homes = {}
     for _, building in ipairs(buildings) do
-      cache.homes[#cache.homes + 1] = {bounds = ringBounds(building.rings), rings = building.rings}
+      cache.homes[#cache.homes + 1] = {bounds = ringBounds(building.rings), rings = building.rings, height = building.height}
     end
   end
   for _, home in ipairs(cache.homes) do
@@ -12420,6 +12430,216 @@ function BLD.pin(mesh, cat, x, y, z, a, seed, cell, tags, hand)
     box(c.blue, -.24, -.22, 1.15, .24, .12, 1.42)
     box(c.dark, -.2, -.3, 1.2, -.04, -.22, 1.36)
     box(c.dark, .04, -.3, 1.2, .2, -.22, 1.36)
+  end
+end
+
+-- What a point of interest is, said in the world (docs/POI.md "Енциклопедія"; poi.lua, poi_lib.lua).
+-- A pin's type (its OSM tags, else its category) has a pictogram in the 'poi_marks' atlas and a
+-- look: in the open an info stand (two posts, a white board under a small roof: the type's mark,
+-- the point's OSM name in the colour of its group, its height above the sea and its year where OSM
+-- has them), beside the category's own object where it has one; in a building a plaque on the
+-- nearest open wall (the mark and the name on a plate of the group's colour), or for a shop a
+-- blade sign hung out from the wall so that it reads along the street. Never a word of ours: the
+-- words are on the card by the car (poicard.lua). A tile takes at most `stands` and `walls` of
+-- them, two wall marks no nearer than `apart` m; a wall lower than a mark's top gets none. Where
+-- a tile has more points than stands, the ones worth the drive come first (BLD.poiRank).
+BLD.PIN.info = {stands = 8, walls = 36, aside = 2.3, apart = 1.2, reach = 40,
+  stand = {wide = 1.5, post = .09, low = .95, high = 2.05, eave = .2, pad = .07, mark = .6, letter = .15, least = .07,
+    fact = .13, depth = .03},
+  plaque = {wide = .58, z = 1.42, mark = .34, letter = .075, least = .04, out = .03, pad = .05},
+  blade = {side = .62, z = 2.5, arm = .14, thick = .05, mark = .5}}
+do
+  local ok, poi = pcall(require, 'ge/extensions/e2r/poi')
+  BLD.poi = ok and type(poi) == 'table' and poi.typeOf and poi or nil
+end
+
+-- A type's mark on the plane y of frame T: a square of `size` from x0 (dir +1: read from -y, x0
+-- its left; -1: read from +y), z0 its foot
+function BLD.poiMark(mesh, material, T, cell, x0, y, z0, size, dir)
+  local u0, v0, u1, v1 = BLD.poi.uv(cell)
+  local a, b = T(x0, y, z0), T(x0 + size * dir, y, z0)
+  local d, e = T(x0 + size * dir, y, z0 + size), T(x0, y, z0 + size)
+  mesh.polygon(material, {{a[1], a[2], a[3], u0, v0}, {b[1], b[2], b[3], u1, v0}, {d[1], d[2], d[3], u1, v1},
+    {e[1], e[2], e[3], u0, v1}}, false)
+end
+
+-- A name on a plate `width` m wide: one line, or two cut at the space nearest its middle, each
+-- {letters, their height}, at most `letter` and no smaller than `least`; nil when it cannot be read
+function BLD.poiName(name, width, letter, least)
+  if not name then return nil end
+  local aspect = BLD.PLATE.aspect
+  local function fit(text)
+    local chars = BLD.glyphs(text)
+    return chars, math.min(letter, width / math.max(1, #chars) / aspect)
+  end
+  local chars, size = fit(name)
+  local cut, best
+  for at in name:gmatch('() ') do
+    local uneven = math.abs(at - 1 - (#name - at))
+    if not best or uneven < best then cut, best = at, uneven end
+  end
+  if cut and size < letter then
+    local a, sa = fit(name:sub(1, cut - 1))
+    local b, sb = fit(name:sub(cut + 1))
+    local two = math.min(sa, sb)
+    if two >= least and two > size * 1.25 then return {{a, two}, {b, two}} end
+  end
+  if size >= least then return {{chars, size}} end
+  return nil
+end
+
+-- lines of BLD.poiName centred at x on the plane y of frame T, the first with its foot at z, the
+-- next ones under it; returns the height they took
+function BLD.poiWrite(mesh, material, T, lines, x, y, z, dir)
+  local aspect, down = BLD.PLATE.aspect, 0
+  for _, line in ipairs(lines) do
+    local chars, size = line[1], line[2]
+    SIGNS.word(mesh, material, T, chars, size, x - #chars * size * aspect / 2 * dir, y, z - down, dir)
+    down = down + size * 1.25
+  end
+  return down
+end
+
+-- An info stand in frame T, its board to -y: type t (poi_lib), the point's name or nil, its facts
+-- (poi.facts: short strings)
+function BLD.poiStand(mesh, T, t, name, facts, seed)
+  local c, Q = YARD.cell, BLD.PIN.info.stand
+  local box = function(colour, x0, y0, z0, x1, y1, z1) SOLID.box(mesh, 'yard', colour, T, x0, y0, z0, x1, y1, z1) end
+  local w, wood = Q.wide / 2, seed % 2 == 0 and c.wood or c.brown
+  local colour = c[BLD.poi.lib.groups[t.group] or 'brown'] or c.brown
+  box(wood, -w - Q.post, -Q.post / 2, 0, -w, Q.post / 2, Q.high + .1)
+  box(wood, w, -Q.post / 2, 0, w + Q.post, Q.post / 2, Q.high + .1)
+  box(c.dark, -w - Q.post - Q.eave, -.28, Q.high + .1, w + Q.post + Q.eave, .28, Q.high + .16)
+  SOLID.box(mesh, 'sign_white', 0, T, -w, -Q.depth, Q.low, w, Q.depth, Q.high)
+  local face = -Q.depth - .006
+  -- the head: the name in white on the group's colour, as tall as its lines need
+  local lines = BLD.poiName(name, Q.wide - 2 * Q.pad, Q.letter, Q.least)
+  local head = Q.pad
+  if lines then head = #lines * lines[1][2] * 1.25 + 1.4 * Q.pad end
+  box(colour, -w, face, Q.high - head, w, -Q.depth, Q.high)
+  if lines then BLD.poiWrite(mesh, 'glyphs', T, lines, 0, face - .004, Q.high - .8 * Q.pad - lines[1][2], 1) end
+  -- the body: the mark in dark ink, the facts beside it; alone it stands in the middle
+  local room = Q.high - head - Q.low
+  local mark = math.min(Q.mark, room - 2 * Q.pad)
+  local z0 = Q.low + (room - mark) / 2
+  local some = facts and #facts > 0
+  BLD.poiMark(mesh, 'poi_marks_dark', T, t.cell, some and -w + Q.pad or -mark / 2, face, z0, mark, 1)
+  if some then
+    local x0, zf = -w + Q.pad + mark + (w * 2 - mark - 2 * Q.pad) / 2, z0 + mark / 2 + (#facts - 1) * Q.fact * .7 - Q.fact / 2
+    for _, fact in ipairs(facts) do
+      local chars, size = SIGNS.fit(fact, Q.fact, Q.least, Q.wide - mark - 3 * Q.pad)
+      SIGNS.word(mesh, 'glyphs_dark', T, chars, size, x0 - #chars * size * BLD.PLATE.aspect / 2, face, zf, 1)
+      zf = zf - Q.fact * 1.4
+    end
+  end
+  -- a strip of the group's colour along the foot of the board
+  box(colour, -w, face, Q.low, w, -Q.depth, Q.low + .05)
+end
+
+-- A plaque on a wall at spot (BLD.pinWallSpot): the type's mark over the point's name on a plate
+-- of its group's colour; z the ground before the wall
+function BLD.poiPlaque(mesh, spot, z, t, name)
+  local c, P = YARD.cell, BLD.PIN.info.plaque
+  local T = SOLID.frame(spot.x, spot.y, z, math.atan2(spot.nx, -spot.ny))
+  local colour = c[BLD.poi.lib.groups[t.group] or 'brown'] or c.brown
+  local w = P.wide / 2
+  local lines = BLD.poiName(name, P.wide - 2 * P.pad, P.letter, P.least)
+  local text = lines and #lines * lines[1][2] * 1.25 + P.pad or 0
+  local tall = P.mark + 2 * P.pad + text
+  SOLID.box(mesh, 'yard', c.metal, T, -w - .015, -P.out + .008, P.z - .015, w + .015, 0, P.z + tall + .015)
+  SOLID.box(mesh, 'yard', colour, T, -w, -P.out, P.z, w, 0, P.z + tall)
+  local face = -P.out - .005
+  BLD.poiMark(mesh, 'poi_marks', T, t.cell, -P.mark / 2, face, P.z + tall - P.pad - P.mark, P.mark, 1)
+  if lines then BLD.poiWrite(mesh, 'glyphs', T, lines, 0, face, P.z + text - lines[1][2], 1) end
+end
+
+-- A blade sign hung out from a wall at spot: a square plate across the pavement on its bracket,
+-- the type's mark on both of its faces
+function BLD.poiBlade(mesh, spot, z, t)
+  local c, B = YARD.cell, BLD.PIN.info.blade
+  local yaw = math.atan2(spot.nx, -spot.ny)
+  local T = SOLID.frame(spot.x, spot.y, z, yaw)
+  local colour = c[BLD.poi.lib.groups[t.group] or 'orange'] or c.orange
+  local top = B.z + B.side
+  SOLID.box(mesh, 'yard', c.dark, T, -.02, -B.arm - B.side, top, .02, 0, top + .04)
+  -- the plate in a frame turned a quarter: its faces look along the wall
+  local out = B.arm + B.side / 2
+  local R = SOLID.frame(spot.x + spot.nx * out, spot.y + spot.ny * out, z, yaw + math.pi / 2)
+  local h, half = B.side / 2, B.thick / 2
+  SOLID.box(mesh, 'yard', colour, R, -h, -half, B.z, h, half, top)
+  local inset = (B.side - B.mark) / 2
+  BLD.poiMark(mesh, 'poi_marks', R, t.cell, -h + inset, -half - .005, B.z + inset, B.mark, 1)
+  BLD.poiMark(mesh, 'poi_marks', R, t.cell, h - inset, half + .005, B.z + inset, B.mark, -1)
+end
+
+-- What says what the pin `point` at p is (BLD.PIN.info): hand: the tile's helpers (ground,
+-- onAsphalt, nearestOn, its pinIndoors cache and `info`, the tile's count). Returns 'stand',
+-- 'plaque' or 'blade' when drawn.
+function BLD.poiInfo(mesh, point, p, hand, buildings, rect)
+  local Q, tags, state = BLD.PIN.info, point.tags or NONE, hand.info
+  if not BLD.poi or Q.off or not state or tags.e2r_in or p[1] < rect[1] or p[1] >= rect[3] or p[2] < rect[2] or p[2] >= rect[4] then
+    return nil
+  end
+  local _, t = BLD.poi.typeOf(tags)
+  if not t or t.look == '' then return nil end
+  local name = BLD.pinName(tags)
+  local x, y = p[1], p[2]
+  if BLD.pinIndoors(hand, buildings, x, y) then
+    -- (a place whose name is on a fascia of its own, BLD.PIN.signs, needs no plaque under it)
+    if state.walls >= Q.walls or (name and BLD.PIN.signs[tags.e2r_cat]) then return nil end
+    local blade = t.look == 'blade'
+    local spot = BLD.pinWallSpot(hand, buildings, x, y, Q.reach)
+    local top = blade and Q.blade.z + Q.blade.side or Q.plaque.z + Q.plaque.mark + .5
+    if not spot or (spot.height and spot.height < top + .3) then return nil end
+    for _, used in ipairs(state.used) do
+      if (used.x - spot.x) ^ 2 + (used.y - spot.y) ^ 2 < Q.apart * Q.apart then return nil end
+    end
+    local z = hand.ground(spot.x + spot.nx, spot.y + spot.ny)
+    if blade then BLD.poiBlade(mesh, spot, z, t) else BLD.poiPlaque(mesh, spot, z, t, name) end
+    state.walls, state.used[#state.used + 1] = state.walls + 1, spot
+    return blade and 'blade' or 'plaque'
+  end
+  if t.look == 'blade' or not (name or (t.bare and t.look == 'stand')) then return nil end
+  if hand.onAsphalt(x, y) then return nil end
+  local seed = hash(tostring(point.id))
+  local hit = hand.nearestOn(x, y, hand.ground(x, y), false, nil, BLD.PIN.face)
+  local a = hit and math.atan2(hit.x - x, -(hit.y - y)) or (seed % 360) * math.pi / 180
+  if BLD.PIN.objects[tags.e2r_cat] then
+    -- beside the category's own object (a peak's plate stands on its other side), off the asphalt
+    local sx, sy
+    for _, side in ipairs({-1, 1, -2}) do
+      local qx, qy = x + math.cos(a) * Q.aside * side, y + math.sin(a) * Q.aside * side
+      if not hand.nearAsphalt(qx, qy, .8) and not BLD.pinIndoors(hand, buildings, qx, qy) then sx, sy = qx, qy; break end
+    end
+    if not sx then return nil end
+    x, y = sx, sy
+  end
+  -- (kept until the tile's points are all seen: BLD.poiStands draws the best of them)
+  state.wait[#state.wait + 1] = {x = x, y = y, a = a, t = t, name = name, tags = tags, seed = seed,
+    rank = BLD.poiRank(t, name, tags), at = #state.wait}
+  return 'stand'
+end
+
+-- How much a stand is worth when a tile has more points than stands: a thing seen without a name
+-- (a castle, a waterfall, a viewpoint) first, then a named one OSM knows more of (its article,
+-- its year, its place on a heritage list), then one the library has words for
+function BLD.poiRank(t, name, tags)
+  return (t.bare and 4 or 0) + ((tags.wikipedia or tags.heritage) and 2 or 0) + (tags.start_date and 1 or 0)
+    + ((name and t.textUk) and 1 or 0)
+end
+
+-- the tile's stands, the best first (BLD.PIN.info.stands of them), once its points are all seen
+function BLD.poiStands(mesh, hand)
+  local state = hand.info
+  if not state or #state.wait == 0 then return end
+  table.sort(state.wait, function(p, q)
+    if p.rank ~= q.rank then return p.rank > q.rank end
+    return p.at < q.at
+  end)
+  for k = 1, math.min(#state.wait, BLD.PIN.info.stands) do
+    local s = state.wait[k]
+    BLD.poiStand(mesh, SOLID.frame(s.x, s.y, hand.ground(s.x, s.y), s.a), s.t, s.name, BLD.poi.facts(s.tags), s.seed)
+    state.stands = state.stands + 1
   end
 end
 
@@ -14502,6 +14722,7 @@ local function build(cells, i, j, options)
   BLD.packBlock = BLD.blockOf(options.country)
   BLD.hsNow = BLD.houseScope(options, look)
   BLD.neutral = BLD.neutralSigns(lists, options.country)
+  BLD.PIN.info.off = options.poiInfo == false
   -- the country's road signs (signstyle.lua): by the pack, else where the tile is
   if SIGNS.styles then
     local geo, lat, lon = options.geo, nil, nil
@@ -18259,6 +18480,7 @@ local function build(cells, i, j, options)
     return hit
   end
   OFFROAD.stockN = 0
+  OFFROAD.info = {stands = 0, walls = 0, used = {}, wait = {}}   -- the tile's info stands and wall marks (BLD.poiInfo)
   OFFROAD.stock = function(shape, x, y, yaw)
     OFFROAD.stockN = OFFROAD.stockN + 1
     static('pin_' .. OFFROAD.stockN, shape, x, y, ground(x, y), yaw)
@@ -18288,6 +18510,8 @@ local function build(cells, i, j, options)
           BLD.pinOnWall(sceneDecor, OFFROAD, lists.buildings, x, y, ground, brand and brand[1], hash(tostring(point.id)))
         end
       end
+      -- what it is, said beside it or on its wall: an info stand, a plaque, a blade sign
+      BLD.poiInfo(sceneDecor, point, p, OFFROAD, lists.buildings, rect)
     elseif p and point.kind == 'lift_gate' and
         p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
       BLD.liftGate(scene, p, lists.roads, ground)
@@ -18323,6 +18547,7 @@ local function build(cells, i, j, options)
     end
     pause()
   end
+  BLD.poiStands(sceneDecor, OFFROAD)
   if not distant then
     BLD.powerLines(lists.lines, rect, scene, ground, OFFROAD.onAsphalt, function(name, shape, x, y, z, yaw)
       static(name, shape, x, y, z, yaw)
@@ -18569,7 +18794,7 @@ local function build(cells, i, j, options)
           and p[1] >= rect[1] and p[1] < rect[3] and p[2] >= rect[2] and p[2] < rect[4] then
         pins[#pins + 1] = {id = poi.id, kind = 'pin', cat = tags.e2r_cat, x = p[1], y = p[2],
           label = tags.name or tags['name:uk'] or tags['name:en'] or tags.brand or tags.operator,
-          brand = tags.e2r_brand, ele = tags.ele}
+          brand = tags.e2r_brand, ele = tags.ele, info = BLD.poi and BLD.poi.record(tags) or nil}
       end
     end
     if distant and #pins > 0 then out.brandPOIs = pins end

@@ -879,7 +879,7 @@ class NativeScenesTests(unittest.TestCase):
                               'picnic', 'rest_area', 'service_map', 'shop_map', 'shop_map', 'shop_map', 'station_map',
                               'viewpoint', 'water_vending'])
             atm = next(t for t in pins.values() if t.get('operator'))
-            self.assertEqual(atm, {'operator': 'ПриватБанк', 'e2r_cat': 'atm', 'e2r_brand': 'privatbank'})
+            self.assertEqual(atm, {'operator': 'ПриватБанк', 'amenity': 'atm', 'e2r_cat': 'atm', 'e2r_brand': 'privatbank'})
             self.assertEqual(sorted(t['e2r_cat'] for t in pins.values() if t.get('e2r_in') == 'yes'),
                              ['atm', 'kiosk', 'water_vending'])
             self.assertNotIn(-(5 * 10**12 + 100), fids)                    # the hotel's node stays, its area pin goes
@@ -890,7 +890,7 @@ class NativeScenesTests(unittest.TestCase):
             sites = {fid: tags for fid, (kind, tags) in by.items() if kind == 'pin_site'}
             self.assertEqual(sorted(sites), [-(6 * 10**12 + 110), -(6 * 10**12 + 108), -(6 * 10**12 + 106)])
             self.assertEqual(sites[-(6 * 10**12 + 106)], {'name': 'Auto Plaza', 'brand': 'Škoda', 'shop': 'car', 'e2r_cat': 'car_dealer'})
-            self.assertEqual(sites[-(6 * 10**12 + 110)], {'name': 'Motel 7', 'e2r_cat': 'motel', 'e2r_bld': 'yes'})
+            self.assertEqual(sites[-(6 * 10**12 + 110)], {'name': 'Motel 7', 'tourism': 'motel', 'e2r_cat': 'motel', 'e2r_bld': 'yes'})
             self.assertNotIn(-(5 * 10**12 + 106), fids)                    # the dealer's node stays
             with patch.dict(os.environ, {'EARTHNG_NATIVE': '0'}):
                 self.assertIsNotNone(native_tool.build_scene(store, entry, tmp / 'off.scene'))
