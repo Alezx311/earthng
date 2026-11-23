@@ -3562,6 +3562,13 @@ local function updateTiles()
     -- a deep city queue used to block the ring for the whole drive (far-view-10: horizonResident 0)
     local canRing = (allowLoad and graveBacklog < 8 and #S.queue < 60) or (LIMIT.ringTurn() and #S.queue < 200)
       or (farReach ~= nil and S.shotBudget and #S.queue < LIMIT.shotQueue)
+    -- With the tile workers a far tile's ground is a few shapes, which the far ring's own turn
+    -- (LIMIT.farTurn) puts in past the queue: the next tile is taken while few of them wait,
+    -- however long the queue of the near tiles' trees is. The length kept every far tile out for
+    -- a whole drive through a town, built and ready in the generator (ab-pool-11: three turns).
+    local poolRing = S.poolStarted and S.state == 'driving' and graveBacklog < 8 and not LIMIT.farTurnOff()
+      and LIMIT.ringPending() < LIMIT.farPending
+    canRing = canRing or poolRing
     if canRing then
       local bestF, bestFD
       for key in pairs(st.far or {}) do
@@ -3574,6 +3581,12 @@ local function updateTiles()
           local d = math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2)
           -- natively by native.lua's own order: at speed the ground ahead of the car first
           local order = NATIVE and wantedNow[key] or d
+          -- With the tile workers, at speed, the farthest first. The nearest far tile is the next
+          -- to become a near one: taken first, it was thrown away seconds later, and the ring
+          -- never reached 2 km ahead (missing there in 85-95 % of a drive's frames with 85-91 far
+          -- tiles taken, ab-pool-13 and -14). A tile taken as it enters the ring stays the ring's
+          -- for most of a minute.
+          if S.poolStarted and speed >= 15 and not LIMIT.farTurnOff() then order = -d end
           local inReach = d <= farLoadR or (farReach and d <= farReach + 250 and wantedNow[key] ~= nil)
           if inReach and not behind(cx, cy, d) and (not bestFD or order < bestFD) then
             bestF, bestFD = {key, i, j}, order
@@ -3599,6 +3612,9 @@ local function updateTiles()
               break
             end
           end
+          far.shapesLeft = LIMIT.shapeCount(manifest.items)
+          far.shapesAll = far.shapesLeft
+          result.farTaken = (result.farTaken or 0) + 1
           S.far[key] = far
           far.left = queueItems(manifest.items, far, key, 'far')
           if NATIVE and far.left == 0 then native.release(key, 'far') end
@@ -3633,7 +3649,7 @@ local function updateTiles()
           if NATIVE then native.unload(key, 'horizon') end
         end
       end
-      if canRing and #S.queue < 200 then
+      if (canRing and #S.queue < 200) or poolRing then
         local bestH, bestHD
         for key, info in pairs(st.horizon or {}) do
           if not S.horizon[key] and type(info) == 'table' and info.x and info.y then
@@ -3649,6 +3665,8 @@ local function updateTiles()
             local groupName = 'E2RH_' .. bestH:gsub('[^%w_]', '_')
             local horizon = {left = #manifest.items, group = tileGroup(groupName, true), horizon = true,
               serial = info.serial, x = info.x, y = info.y, size = info.size, groupName = groupName}
+            horizon.shapesLeft = LIMIT.shapeCount(manifest.items)
+            horizon.shapesAll = horizon.shapesLeft
             S.horizon[bestH] = horizon
             if horizon.left == 0 then native.release(bestH, 'horizon')
             else
@@ -3749,6 +3767,8 @@ local function stepQueue(burst)
   local function over() return frame:stop() >= budget end
   local function pause() if over() then coroutine.yield() end end
   if S.co and S.job and S.job.tile.dropped then S.co, S.job = nil, nil end
+  -- the far ring's own turn (LIMIT.farTurn), before the queue's shapes
+  local farTook = LIMIT.farTurn()
   if not S.co and LIMIT.shareRing() then
     -- (screenshot mode at rest: shotShare of them, in their order; a still is its distance too)
     local q, front = S.queue, 0
@@ -3802,6 +3822,7 @@ local function stepQueue(burst)
     if coroutine.status(S.co) == 'dead' and (S.job.far or S.job.horizon) then
       S.co = nil
       S.job.tile.left = S.job.tile.left - 1
+      if S.job.item.kind == 'shape' and S.job.tile.shapesLeft then S.job.tile.shapesLeft = S.job.tile.shapesLeft - 1 end
       if NATIVE and S.job.tile.left == 0 then native.release(S.job.key, S.job.horizon and 'horizon' or 'far') end
     elseif coroutine.status(S.co) == 'dead' then
       S.co = nil
@@ -3847,7 +3868,71 @@ local function stepQueue(burst)
       if S.job.scene and not tile.dropped and not S.job.item.decor then S.collisionDirty = true; tile.sceneDirty = true end
     end
   until over()
-  return worked
+  return worked or farTook
+end
+
+-- The far ring's own turn. A far tile's ground sits in the queue behind every item of the near
+-- tiles (their meshes, then their trees and props: thousands a tile, taken as the queue's Lua
+-- budget allows), and at speed in a town the queue never got to it: the workers had the far tiles
+-- built, and the ground 2 km ahead was still missing in 97 % of a drive's frames (ab-pool-8).
+-- But a shape costs the engine's time, not that budget. So every farShapeEvery s of a drive the
+-- frame's one new shape is the first far or horizon shape waiting, whatever stands before it,
+-- taken before the queue's own (a near tile's shapes wait in a row of fifteen to twenty-five:
+-- a turn left to "a frame the queue put no shape in" came three times in a drive, ab-pool-11).
+-- Not more often while the car moves: a shape file is a frame 12-30 ms longer.
+LIMIT.farShapeEvery = .3
+function LIMIT.farTurn()
+  if not S.poolStarted or S.state ~= 'driving' or LIMIT.farTurnOff() then return false end
+  if pairsLeft() <= 0 or (S.shapeWait or 0) > 0 then return false end
+  if S.farShapeAt and S.now - S.farShapeAt < LIMIT.farShapeEvery then
+    local at, v = focus()
+    if at and v and v:length() >= 2 then return false end
+  end
+  local q = S.queue
+  for k = 1, #q do
+    local job = q[k]
+    if (job.far or job.horizon) and job.item.kind == 'shape' and not job.tile.dropped then
+      table.remove(q, k)
+      local group = (job.item.cards and job.tile.cards) or job.tile.group
+      local ok, err = pcall(spawnItem, job.item, group, LIMIT.noPause, job.tile, nil)
+      if not ok then
+        log('E', logTag, tostring(err))
+        result.errors = (result.errors or 0) + 1
+      end
+      job.tile.left = job.tile.left - 1
+      if job.tile.shapesLeft then job.tile.shapesLeft = job.tile.shapesLeft - 1 end
+      if NATIVE and job.tile.left == 0 then native.release(job.key, job.horizon and 'horizon' or 'far') end
+      S.farShapeAt = S.now
+      result.farTurns = (result.farTurns or 0) + 1
+      return true
+    end
+  end
+  return false
+end
+function LIMIT.noPause() end
+-- (test_world.py --no-far-turn, or E2R_FARTURN = false in the console: the far tiles through the
+-- queue alone, for an A/B)
+function LIMIT.farTurnOff()
+  return rawget(_G, 'E2R_FARTURN') == false or (test and test.farTurn == false) or false
+end
+-- far tiles and horizon blocks whose shapes are not all in yet; the next is taken under farPending
+LIMIT.farPending = 3
+function LIMIT.ringPending()
+  local n = 0
+  for _, tile in pairs(S.far or {}) do
+    if not tile.dropped and (tile.shapesLeft or 0) > 0 then n = n + 1 end
+  end
+  for _, tile in pairs(S.horizon or {}) do
+    if not tile.dropped and (tile.shapesLeft or 0) > 0 then n = n + 1 end
+  end
+  return n
+end
+function LIMIT.shapeCount(items)
+  local n = 0
+  for _, it in ipairs(items or {}) do
+    if it.kind == 'shape' then n = n + 1 end
+  end
+  return n
 end
 
 -- be:reloadCollision rebuilds the static collision of the whole loaded world; the call returns in
@@ -3988,10 +4073,16 @@ function LIMIT.groundBuilt(i, j, x, y)
   local near = S.tiles[key]
   if near and near.roadComplete and not near.dropped and not near.failed then return true end
   local ring = S.far and S.far[key]
-  if ring and ring.left == 0 and not ring.dropped then return true end
+  if ring and not ring.dropped and LIMIT.groundIn(ring) then return true end
   local h = S.horizon
   local block = h and (h[string.format('h1000:%d_%d', math.floor(x / 1000), math.floor(y / 1000))] or h['h500:' .. key])
-  return block and block.left == 0 and not block.dropped or false
+  return block and not block.dropped and LIMIT.groundIn(block) or false
+end
+-- A far tile's or a horizon block's ground is in: every item of it, or, built by a worker, every
+-- shape of it. The shapes are its ground, roads and houses, and come in by the far ring's own
+-- turn; its trees stay in the queue behind the near tiles' and may follow much later.
+function LIMIT.groundIn(tile)
+  return tile.left == 0 or ((tile.shapesAll or 0) > 0 and tile.shapesLeft == 0)
 end
 
 -- A ground group leaving while the far view in sight still has its hole over it stays until a far
@@ -7155,6 +7246,8 @@ function M.replayAhead(r, p, d)
   local key = math.floor(x / size) .. '_' .. math.floor(y / size)
   local t, f = S.tiles[key], S.far[key]
   if not ((t and t.roadComplete) or (f and f.left == 0)) then A.ground2km = A.ground2km + 1 end
+  -- (and by its ground alone: a far tile's shapes in, its trees still queued; LIMIT.groundIn)
+  if not ((t and t.roadComplete) or (f and LIMIT.groundIn(f))) then A.ground2kmShapes = (A.ground2kmShapes or 0) + 1 end
 end
 
 local function replayStep(dt)

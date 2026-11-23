@@ -136,6 +136,7 @@ def main():
     p.add_argument('--gc-cycle', help='the collector step of the landing changes every 2 s among these (10,1,400,-10,100)')
     p.add_argument('--walkers', type=int, help='after landing: this many pedestrians (walkers.lua)')
     p.add_argument('--pool', type=int, help='tile workers: near tiles are built in this many vehicle VMs (workers.lua; the mod uses 6; 0: none)')
+    p.add_argument('--no-far-turn', action='store_true', help="far tiles' shapes through the spawn queue alone, without their own turn (A/B)")
     p.add_argument('--no-pool', action='store_true', help='no tile workers: every tile is built on the game thread, as before (A/B)')
     p.add_argument('--no-batches', action='store_true',
                    help='flow cars and walkers as a TSStatic each, not DynamicShapeBatch copies (A/B)')
@@ -292,6 +293,8 @@ def main():
         test['walkBodies'] = a.walk_bodies
     if a.no_batches:
         test['batches'] = False
+    if a.no_far_turn:
+        test['farTurn'] = False
     if a.no_pool:
         test['pool'] = 0
     elif a.pool is not None:
