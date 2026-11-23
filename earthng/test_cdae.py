@@ -165,6 +165,31 @@ class LuaWriter(unittest.TestCase):
         ''')
         self.assertEqual(values, '1 1 63 63 64 64 65 65 200 200')
 
+    def test_a_class_past_the_engines_vertex_limit_is_several_meshes(self):
+        # the engine's indices are 16-bit: 23.11 a town scene of one 150 000-vertex mesh drew beams across streets
+        result = self.build(self.QUAD + '''
+          local writer, shapes, write = ...
+          writer.VERTICES = 10
+          local b = writer.builder()
+          for k = 1, 7 do b:add('solid', quad('m', 0), k * 2, 0, 0) end
+          b:add('quiet', quad('m', 0))
+          local bytes, stats = b:encode(2)
+          write('split.cdae', bytes)
+          return stats.objects, stats.triangles
+        ''')
+        self.assertEqual(tuple(result), (5, 16))
+        shape = cdae.read(Path(self.tmp.name) / 'split.cdae')
+        self.assertEqual(shape['header']['objectNames'], ['solid', 'solid_2', 'solid_3', 'solid_4', 'quiet'])
+        for mesh in shape['meshes']:
+            self.assertLessEqual(mesh['verts'][0], 10)
+            indices = struct.unpack(f"<{mesh['indices'][0]}I", mesh['indices'][2])
+            self.assertLess(max(indices), mesh['verts'][0])
+
+    def test_the_python_writer_refuses_a_mesh_past_the_limit(self):
+        mesh = cdae.grid(256)       # 257 x 257 vertices
+        with self.assertRaises(ValueError):
+            cdae.write(None, [mesh])
+
     def test_a_layer_is_packed_by_collision_class(self):
         result = self.build(self.QUAD + '''
           local writer, shapes, write = ...
@@ -192,6 +217,29 @@ class LuaWriter(unittest.TestCase):
         self.assertEqual((shapes_made, objects, left), (2, 3, 1))
         solid = cdae.read(Path(self.tmp.name) / 'road_solid.cdae')
         self.assertEqual([m['name'] for m in solid['materials']], ['e2rf_road_asphalt', 'e2rf_kerb'])
+
+    def test_a_class_is_cut_into_files_of_a_few_materials(self):
+        # a new shape file holds a frame ~1.3 ms for each of its materials: a hundred in one was 110-230 ms
+        result = self.build(self.QUAD + '''
+          local writer, shapes, write = ...
+          shapes.MATERIALS = 3
+          local items = {}
+          for k = 1, 7 do
+            items[k] = {kind = 'proc', pos = {0, 0, 0}, meshes = {quad('e2rf_wall_' .. k, 0)}, triangles = 2, layer = 'far'}
+          end
+          -- a material met again goes where its first mesh went
+          items[8] = {kind = 'proc', pos = {5, 0, 0}, meshes = {quad('e2rf_wall_2', 0)}, triangles = 2, layer = 'far'}
+          local manifest = {key = '0_0', items = items}
+          local stats = shapes.pack(manifest, 'far', function(name) return 'cut_' .. name .. '.cdae' end, write)
+          local out = {}
+          for _, it in ipairs(manifest.items) do out[#out + 1] = it.name .. '=' .. #it.mats .. ':' .. it.triangles end
+          return table.concat(out, ' '), stats.shapes
+        ''')
+        names, count = result
+        self.assertEqual(names, 'e2rs_0_0_far_solid=3:8 e2rs_0_0_far_solid2=3:6 e2rs_0_0_far_solid3=1:2')
+        self.assertEqual(count, 3)
+        first = cdae.read(Path(self.tmp.name) / 'cut_solid.cdae')
+        self.assertEqual([m['name'] for m in first['materials']], ['e2rf_wall_1', 'e2rf_wall_2', 'e2rf_wall_3'])
 
     def test_a_far_layer_is_one_solid_shape(self):
         kinds = self.build(self.QUAD + '''

@@ -26,6 +26,9 @@ INFO = ('\r\n\r\n\r\nWelcome! This is a binary file :D\r\n'
 # TSDrawPrimitive.matIndex
 TRIANGLES, INDEXED, NO_MATERIAL, MATERIAL_MASK = 0x00000000, 0x20000000, 0x10000000, 0x0FFFFFFF
 STANDARD_MESH, NULL_MESH = 0, 4
+# The engine draws a mesh with 16-bit indices: past this many vertices they wrap (the file still
+# reads back whole). A bigger shape is several meshes.
+MESH_VERTICES = 65535
 
 
 # --- MessagePack, the part the format uses -------------------------------------------------------
@@ -354,6 +357,8 @@ def write(path, meshes, visible_size=2.0, compress=False):
     for mesh in meshes:
         positions = mesh['positions']
         count = len(positions) // 3
+        if count > MESH_VERTICES:
+            raise ValueError(f"{mesh['name']}: {count} vertices; the engine draws a mesh with 16-bit indices")
         mbox = bounds_of(positions)
         mcentre, mradius, _ = sphere_of(mbox)
         indices, primitives = [], b''

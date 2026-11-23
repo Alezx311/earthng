@@ -149,6 +149,39 @@ local function say(job, fmt, ...)
   obj:queueGameEngineLua(string.format('%s(%d, %d, ' .. fmt .. ')', job.notify, job.worker, job.id, ...))
 end
 
+-- The collector of this VM. The engine runs a full collection in a Lua VM whose heap has grown by
+-- a third since the last one (gc.lua found it in GE Lua, 12.11), and the frame waits for it as for
+-- any Lua of a vehicle: the first drives with the pool had 12-14 frames of 100-200 ms spent
+-- waiting for vehicles, with no worker slice over 54 ms (23.11). So the heap is kept from that
+-- line: a held array raises it (the engine counts a third of the heap it found, array included),
+-- and the garbage of a build is collected in steps inside the worker's own slices, a share of
+-- each once the heap has grown, and to the end of a cycle after every tile.
+local GC = {heldMB = 160, rise = 48 * 1024, share = .3, floor = nil, running = false, steps = 0, cycles = 0}
+local function gcStep(ms)
+  local t = clock()
+  repeat
+    GC.steps = GC.steps + 1
+    if collectgarbage('step', 0) then
+      GC.running, GC.cycles = false, GC.cycles + 1
+      GC.floor = collectgarbage('count')
+      return true
+    end
+  until (clock() - t) * 1000 >= ms
+  return false
+end
+local function gcPace(ms)
+  if not GC.held then
+    -- (an FFI array is one object to the collector: nothing to walk)
+    local ok, array = pcall(function() return require('ffi').new('uint8_t[?]', GC.heldMB * 1024 * 1024) end)
+    GC.held = ok and array or false
+    GC.floor = collectgarbage('count')
+  end
+  if GC.running or collectgarbage('count') > (GC.floor or 0) + GC.rise then
+    GC.running = true
+    gcStep(ms * GC.share)
+  end
+end
+
 -- args: {id, worker, notify, manifest, i, j, size, options (native.lua's options without its
 -- functions), roadEarly, sceneEarly, out (the path the files' names start with), shapes (false:
 -- meshes stay tables)}
@@ -193,7 +226,7 @@ local function run(job, pause)
     manifest.key = key
     local t = clock()
     local was = job.where
-    job.where = 'pack ' .. layer
+    job.where = 'pack-' .. layer
     local stats = shapes.pack(manifest, layer,
       function(class) return string.format('%s_%s_%s.cdae', args.out, layer, class) end,
       writeFile_, pause)
@@ -233,10 +266,17 @@ local function run(job, pause)
   pack(far, options.horizon and 'horizon' or 'far')
   pack(grass, 'grass')
   send('final', final)
+  -- the tile is out: let go of it and finish a collector cycle before the next one starts
+  local cellCount = #cells
+  road, scene, far, nav, grass, final, cells, options = nil, nil, nil, nil, nil, nil, nil, nil
+  job.options = nil
+  job.where = 'collect'
+  GC.running = true
+  while not gcStep(1) do pause() end
   local stages = {}
   for name, ms in pairs(stageMs) do stages[#stages + 1] = string.format('%s=%.0f', name, ms) end
   say(job, '"done", %q, %d, %.1f, {ms = %.1f, packMs = %.1f, shapes = %d, cells = %d, heapMB = %.0f, slices = %d, longest = %.1f, longestAt = %q, encodeMs = %.1f, over50 = %q}',
-    table.concat(stages, ' '), bytesOut, (clock() - t0) * 1000, job.busyMs, packMs, shapeCount, #cells,
+    table.concat(stages, ' '), bytesOut, (clock() - t0) * 1000, job.busyMs, packMs, shapeCount, cellCount,
     collectgarbage('count') / 1024, job.slices, job.longest, tostring(job.longestAt), job.encodeMs or 0, table.concat(job.over, ' '))
 end
 
@@ -270,6 +310,7 @@ function M.tick(ms)
   local ok, err = coroutine.resume(job.co)
   local used = (clock() - t) * 1000
   job.busyMs, job.slices = job.busyMs + used, job.slices + 1
+  if ok and job.where ~= 'collect' then gcPace(ms) end
   if used > job.longest then job.longest, job.longestAt = used, tostring(before) .. '>' .. tostring(job.where) end
   -- a slice far over what was asked: where it began and ended, for the report
   if used > ms + 50 and #job.over < 12 then job.over[#job.over + 1] = string.format('%s>%s:%.0f', tostring(before), tostring(job.where), used) end

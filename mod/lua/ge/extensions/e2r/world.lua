@@ -60,6 +60,12 @@ M.knock = require('ge/extensions/e2r/knock')   -- street furniture a vehicle kno
 M.winguard = require('ge/extensions/e2r/winguard')   -- widget windows stay on the game screen (winguard.lua)
 M.waterfx = require('ge/extensions/e2r/waterfx')     -- the water's look by the weather (waterfx.lua)
 M.far = NATIVE and require('ge/extensions/e2r/far') or nil   -- the land to the horizon (far.lua)
+-- The tile workers (workers.lua): near tiles are built in the Lua VMs of bodiless vehicles, off
+-- this thread, and come back as compiled shapes (Knowledge/docs/FAST_TILES.md). M.poolSize: how
+-- many (0: none, every tile is built here as before); a probe or test_world --pool sets it
+-- before the landing.
+M.workers = NATIVE and require('ge/extensions/e2r/workers') or nil
+M.poolSize = 8
 -- the gate: scene changes while driving only after calm frames, one a frame, in bursts (pace.lua)
 M.pace = require('ge/extensions/e2r/pace')
 local detailStream
@@ -431,6 +437,7 @@ local function land(why)
   S.location = nil
   S.landSeq = request({type = 'land', lat = S.marker.lat, lon = S.marker.lon})
   S.landAt = S.now
+  LIMIT.poolStart()
   S.landTimer = hptimer()
   result.loadReal = nil
   M.loadMark('request')
@@ -1083,6 +1090,37 @@ local function spawnItem(it, group, pause, tile, layer)
       obj:setScale(vec3(scale[1], scale[2], scale[3]))
     end
     result.waterSpawned = (result.waterSpawned or 0) + 1
+  elseif it.kind == 'shape' then
+    -- A layer's meshes as one compiled shape a worker wrote (tileshapes.lua), in place of the
+    -- ~70 ProceduralMesh it stands for. A solid one collides, and collision.lua keeps or hides it
+    -- at a rebuild as it does a mesh; a quiet one is only drawn and never joins a rebuild.
+    pause()
+    local t = hptimer()
+    local obj = createObject('TSStatic')
+    obj:setField('shapeName', 0, it.file)
+    obj:setField('collisionType', 0, it.solid and 'Visible Mesh Final' or 'None')
+    obj:setField('decalType', 0, it.solid and 'Visible Mesh Final' or 'None')
+    obj.canSave = false
+    obj:setPosRot(it.pos[1], it.pos[2], it.pos[3] or 0, 0, 0, 0, 1)
+    obj:registerObject(it.name or '')
+    group:addObject(obj)
+    -- a new shape file is ~12 ms and ~1.3 ms for each of its materials: nothing else new this
+    -- frame of a drive. A landing, whose frames nobody sees, takes six a frame: one a frame made
+    -- it 3-9 s longer once a tile was fifteen files (ab-pool-3 and -4 against -1 and -2).
+    S.pairsFrame = (S.pairsFrame or 0) + (S.state == 'driving' and 1000 or 4)
+    -- and the next shape of a scene two frames later: the engine moves the world by a smoothed
+    -- frame time, which drops a lone slow frame but not a run of them (pace.lua; the first drive
+    -- with the pool loaded a tile's fifteen files in fifteen frames in a row)
+    S.shapeWait = LIMIT.shapeGap
+    if M.workers then M.workers.own(it.file, obj:getID()) end
+    if NATIVE and tile and it.solid then
+      S.coll = S.coll or collision.new()
+      S.coll:track(tile, obj:getID(), false, it.triangles, layer)
+    end
+    result.shapes = (result.shapes or 0) + 1
+    local ms = t:stop()
+    result.shapesMs = (result.shapesMs or 0) + ms
+    if ms > (result.shapeMs or 0) then result.shapeMs, result.shapeItem = ms, it.name end
   elseif it.kind == 'proc' then
     local meshes = it.meshes or binMeshes(it.shape, pause)
     S.pairsFrame = (S.pairsFrame or 0) + #(meshes or {})
@@ -2377,7 +2415,7 @@ function M.flowStep()
   for i = 0, be:getObjectCount() - 1 do
     local o = be:getObject(i)
     local id = o and o:getID()
-    if id and not mine[id] and id ~= mainId and be:getObjectActive(id) then
+    if id and not mine[id] and id ~= mainId and be:getObjectActive(id) and not (M.workers and M.workers.is(id)) then
       local q, v = o:getPosition(), o:getVelocity()
       n = LIMIT.obstacle(fl, n, q.x, q.y, v.x, v.y)
     end
@@ -3671,7 +3709,7 @@ local function updateTiles()
     -- fill the frame budget before a single tuft or stone was spawned.
     local function decorRank(job)
       local it = job.item
-      if it and it.kind == 'proc' then return 0 end
+      if it and (it.kind == 'proc' or it.kind == 'shape') then return 0 end
       local name = it and it.name or ''
       if name:find('grass', 1, true) or name:find('rock', 1, true) then return 1 end
       return 2
@@ -3724,7 +3762,13 @@ local function stepQueue(burst)
       local job = table.remove(S.queue, 1)
       while job and job.tile.dropped do job = table.remove(S.queue, 1) end
       if not job then break end
-      if job.item.kind == 'proc' and pairsLeft() <= 0 then table.insert(S.queue, 1, job); break end
+      if (job.item.kind == 'proc' or job.item.kind == 'shape') and pairsLeft() <= 0 then table.insert(S.queue, 1, job); break end
+      -- (a road's shapes do not wait: the car is coming)
+      if job.item.kind == 'shape' and (S.shapeWait or 0) > 0 and S.state == 'driving'
+          and (job.scene or job.grass or job.far or job.horizon) then
+        table.insert(S.queue, 1, job)
+        break
+      end
       S.job = job
       local group = ((job.far or job.horizon) and ((job.item.cards and job.tile.cards) or job.tile.group))
         or (job.item.decor and job.tile.decor) or (job.scene and job.tile.sceneGroup) or job.tile.group
@@ -4074,7 +4118,7 @@ local function collisionPoints(p, v)
     for k = 0, be:getObjectCount() - 1 do
       -- a car the parking pool has hidden needs no ground where it was left
       local obj = be:getObject(k)
-      if obj:getActive() then
+      if obj:getActive() and not (M.workers and M.workers.is(obj:getID())) then
         -- parked cars and traffic: ground under them and a couple of seconds round them (a 300 m
         -- disc each kept 3x3 city tiles in every rebuild); the player's car is points[1]
         local q = obj:getPosition()
@@ -6399,7 +6443,58 @@ local function restorePackState()
   dropLights()
 end
 
+-- The workers of the level: spawned once, at its first landing (a vehicle's spawn is a long
+-- frame, and a landing hides it), where the camera is; they do not move with the player.
+function LIMIT.poolStart()
+  if not (M.workers and NATIVE and native.pool) then return end
+  local n = tonumber(M.poolSize) or 0
+  if rawget(_G, 'E2R_POOL') ~= nil then n = tonumber(rawget(_G, 'E2R_POOL')) or 0 end
+  -- test_world.py --pool N / --no-pool (read here: the landing is asked for before the test's
+  -- other switches are, and the first A/B ran both ways with the pool on)
+  if test and test.pool ~= nil then n = tonumber(test.pool) or 0 end
+  if n <= 0 then
+    native.pool(false)
+    return
+  end
+  if not S.poolStarted then
+    local p = focus()
+    S.poolStarted = M.workers.start(n, p and p.x or 0, p and p.y or 0, p and p.z or 0)
+  end
+  native.pool(S.poolStarted and true or false)
+end
+-- What a driving frame over 100 ms was made of, for the report (result.slow100: {cause = {frames,
+-- ms}}): the part of our Lua that took most of it, or, when our Lua was under 40 % of the frame,
+-- the engine's own largest share of it (its collector, the wait for vehicles' Lua, shadows...).
+function LIMIT.slowFrame(frameMs)
+  local tally = result.slow100 or {}
+  result.slow100 = tally
+  local top, topMs, sum = 'other', 0, 0
+  for part, ms in pairs(S.frameParts or {}) do
+    sum = sum + ms
+    if ms > topMs then top, topMs = 'lua:' .. part, ms end
+  end
+  if sum < frameMs * .4 and Engine and Engine.Debug and Engine.Debug.getLastPerformanceMetrics then
+    local m = S.slowMetrics or {}
+    S.slowMetrics = m
+    Engine.Debug.getLastPerformanceMetrics(m)
+    top, topMs = 'engine', 0
+    for name, ms in pairs(m) do
+      if type(ms) == 'number' and ms < 1e5 and name ~= 'Lua' and ms > topMs then top, topMs = 'engine:' .. name, ms end
+    end
+  end
+  local row = tally[top] or {0, 0}
+  tally[top] = row
+  row[1], row[2] = row[1] + 1, math.floor(row[2] + frameMs)
+end
+LIMIT.shapeGap = 2   -- frames between two shape files of a scene while driving
+function LIMIT.poolStop()
+  if M.workers then pcall(M.workers.stop) end
+  if NATIVE and native.pool then pcall(native.pool, false) end
+  S.poolStarted = nil
+end
+
 function M.onExtensionUnloaded()
+  LIMIT.poolStop()
   M.gc.step(false)
   restorePackState()
   pcall(LIMIT.lodRestore)
@@ -6411,6 +6506,7 @@ function M.onExtensionUnloaded()
 end
 
 function M.onClientEndMission()
+  LIMIT.poolStop()
   restorePackState()
   resetForests()
   -- the real-colour sheets' materials went with the level (s2.lua), and the grass's block (turf.lua)
@@ -6510,6 +6606,7 @@ local function runTest()
       built = stream.built, ready = stream.readyCount, error = S.lastError,
       cachedTiles = stream.cachedTiles, cachedCells = stream.cachedCells, rebuilds = stream.rebuilds,
       farEvicted = stream.farEvicted, farUnloaded = stream.farUnloaded, mode = stream.mode, farReach = stream.farReach,
+      pool = native.pool and native.pool() or nil,
       slowResumes = stream.slowResumes, spentMs = stream.spentMs, stageMs = stream.stageMs,
       ioStats = stream.ioStats, lost = stream.lost}
     if M.live and M.live.status then
@@ -7173,6 +7270,7 @@ function M.onUpdate(dtReal, dtSim)
   S.recent = S.recent or {}
   S.recent[S.recentAt] = frameMs
   if S.driveAcc and S.state == 'driving' then accFrame(S.driveAcc, frameMs, S.now) end
+  if S.driveAcc and S.state == 'driving' and frameMs > 100 then LIMIT.slowFrame(frameMs) end
   if frameMs > 300 and S.stream then
     result.hitches = result.hitches or {}
     -- {s, ms, state, heap MB before the frame, after it, {part = ms} of the frame's Lua over 20 ms}
@@ -7272,6 +7370,7 @@ end
 
 function M.tick(dt)
   S.pairsFrame = 0
+  if (S.shapeWait or 0) > 0 then S.shapeWait = S.shapeWait - 1 end
   if NATIVE then
     local kb, t = collectgarbage('count'), hptimer()
     if S.profKb then
@@ -7302,6 +7401,8 @@ function M.tick(dt)
       S.shotBudget = S.mode == 'screenshot' and speed < LIMIT.shotSlow or nil
       if S.shotBudget then genBudget = LIMIT.shotNativeMs end
     end
+    -- the workers' slices and what they have sent, before the generator looks for it
+    if M.workers and S.poolStarted then M.workers.update(S.state ~= 'driving') end
     native.update(dt, genBudget, test and test.genBudget or (S.shotBudget and LIMIT.shotNativeMs or nil), S.now)
     S.nativeMs = t:stop()
     profAdd('native', S.nativeMs, collectgarbage('count') - kb)

@@ -51,8 +51,8 @@ def main():
         'g20k_m1_c': [square(100, one)],
         'g50k_m20': [square(158, twenty)],
         'g50k_o20': strips(158, twenty),
-        'g200k_m1': [square(316, one)],
-        'g500k_m1': [square(500, one)],
+        'g200k_m1': strips(316, one * 4),       # a mesh holds 65 535 vertices at most
+        'g500k_m1': strips(500, one * 8),
     }
     for name, meshes in made.items():
         data = cdae.write(folder / f'{name}.cdae', meshes, visible_size=2.0)

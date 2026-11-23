@@ -259,7 +259,13 @@ end
 local Builder = {}
 Builder.__index = Builder
 
-function M.builder() return setmetatable({objects = {}, byName = {}, triangles = 0}, Builder) end
+function M.builder() return setmetatable({objects = {}, byName = {}, triangles = 0, parts = {}}, Builder) end
+
+-- The engine draws a mesh with 16-bit indices: past 65 535 vertices they wrap, and triangles join
+-- vertices from the other end of the mesh (23.11: a town tile's scene of 100-190 000 triangles
+-- came out with beams and slabs across the streets; the file itself read back whole). So a class
+-- of geometry is as many meshes of the file as it needs, each under VERTICES.
+M.VERTICES = 65000
 
 function Builder:object(name)
   local object = self.byName[name]
@@ -271,8 +277,17 @@ function Builder:object(name)
   return object
 end
 
+-- name: the class the mesh belongs to; its meshes in the file are name, name_2, name_3, ...
 function Builder:add(name, mesh, dx, dy, dz)
-  local n = self:object(name):add(mesh, dx, dy, dz)
+  local part = self.parts[name] or 1
+  local object = self:object(part == 1 and name or (name .. '_' .. part))
+  -- every corner of the mesh may be a new vertex
+  if object.n > 0 and object.n + #mesh.faces > M.VERTICES then
+    part = part + 1
+    self.parts[name] = part
+    object = self:object(name .. '_' .. part)
+  end
+  local n = object:add(mesh, dx, dy, dz)
   self.triangles = self.triangles + n
   return n
 end

@@ -48,7 +48,7 @@ end
 local t = clock()
 local road, scene, farM = generator.build(list, i, j, {tileSize = 500, far = far, pause = function() end,
   seaLevel = d.seaLevel, latitude = d.geo and d.geo[4], geo = d.geo, nature = d.nature, look = d.look, realStyle = true,
-  cellSize = d.cellSize})
+  cellSize = d.cellSize, hyper = true, farStep = 100, adaptiveFar = true})
 local out = {buildMs = (clock() - t) * 1000, layers = {}}
 for _, pair in ipairs({{'road', road}, {'scene', scene}, {'far', farM}}) do
   local layer, m = pair[1], pair[2]
@@ -65,6 +65,24 @@ for _, pair in ipairs({{'road', road}, {'scene', scene}, {'far', farM}}) do
         end
       end
     end
+    -- the source's own longest triangle edge and height range, to hold the written shape against
+    local long, longest, zlo, zhi = 0, 0, math.huge, -math.huge
+    for _, it in ipairs(m.items) do
+      if it.kind == 'proc' and not it.proxy then
+        for _, mesh in ipairs(it.meshes) do
+          local v, f = mesh.verts, mesh.faces
+          for t = 1, #f - 2, 3 do
+            local a, b, c = v[f[t].v + 1], v[f[t + 1].v + 1], v[f[t + 2].v + 1]
+            local e = math.max((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2 + (a.z - b.z) ^ 2, (b.x - c.x) ^ 2 + (b.y - c.y) ^ 2 + (b.z - c.z) ^ 2,
+              (a.x - c.x) ^ 2 + (a.y - c.y) ^ 2 + (a.z - c.z) ^ 2) ^ .5
+            if e > longest then longest = e end
+            if e > 120 then long = long + 1 end
+            zlo, zhi = math.min(zlo, a.z, b.z, c.z), math.max(zhi, a.z, b.z, c.z)
+          end
+        end
+      end
+    end
+    row.source = string.format('longest edge %.1f m, %d triangles over 120 m, z %.1f..%.1f', longest, long, zlo, zhi)
     m.key = i .. '_' .. j
     local t1 = clock()
     local files = {}
@@ -83,6 +101,32 @@ for _, pair in ipairs({{'road', road}, {'scene', scene}, {'far', farM}}) do
 end
 return out
 '''
+
+
+def edges(path):
+    """The written shape's longest triangle edge, triangles with an edge over 120 m, height range,
+    and the materials of the five longest."""
+    shape = cdae.read(path)
+    longest, long, zlo, zhi, worst = 0.0, 0, 1e9, -1e9, []
+    names = [m['name'] for m in shape['materials']]
+    for mesh in shape['meshes']:
+        n = mesh['verts'][0]
+        pos = struct.unpack(f'<{n * 3}f', mesh['verts'][2])
+        idx = struct.unpack(f"<{mesh['indices'][0]}I", mesh['indices'][2])
+        prims = struct.unpack(f"<{mesh['primitives'][0] * 3}I", mesh['primitives'][2])
+        for k in range(0, len(prims), 3):
+            start, count, material = prims[k], prims[k + 1], prims[k + 2] & 0x0FFFFFFF
+            for t in range(start, start + count - 2, 3):
+                p = [pos[idx[t + c] * 3:idx[t + c] * 3 + 3] for c in range(3)]
+                e = max(sum((p[a][d] - p[b][d]) ** 2 for d in range(3)) for a, b in ((0, 1), (1, 2), (0, 2))) ** .5
+                longest = max(longest, e)
+                if e > 120:
+                    long += 1
+                    worst.append((e, names[material], [tuple(round(v, 1) for v in q) for q in p]))
+                for q in p:
+                    zlo, zhi = min(zlo, q[2]), max(zhi, q[2])
+    worst.sort(reverse=True)
+    return f'longest edge {longest:.1f} m, {long} triangles over 120 m, z {zlo:.1f}..{zhi:.1f}', worst[:5]
 
 
 def facing(path):
@@ -123,7 +167,7 @@ def main():
                    "minstitch=10000000,maxtrace=10000,maxmcode=8192,maxside=25,hotexit=100)")
     a = p.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
-    lua, mods, _ = bench_native.runtime(a.pack, game_structs=True)
+    lua, mods, _ = bench_native.runtime(a.pack, game_structs=True, kit=True, houses=True)
     load = lua.eval('function(source, name) return assert(load(source, "@" .. name))() end')
     g = lua.globals()
     if a.jit:
@@ -164,6 +208,12 @@ def main():
         st = row['stats']
         print(f"  packed: {st['shapes']} shapes for {st['objects']} objects, {int(st['triangles'])} triangles, {st['bytes'] / 1e6:.2f} MB,"
               f" pack {row['packMs']:.0f} ms; left as ProceduralMesh: {row['leftObjects']} ({int(row['leftTris'])} triangles)")
+        print(f"  source: {row['source']}")
+        for path in row['files'].values():
+            text, worst = edges(path)
+            print(f"    {Path(path).name}: {text}")
+            for e, material, corners in worst:
+                print(f"      {e:.0f} m {material} {corners}")
         for path in row['files'].values():
             up, side, down, verts, materials = facing(path)
             print(f"    {Path(path).name}: {verts} vertices, {materials} materials, {Path(path).stat().st_size / 1e6:.2f} MB;"

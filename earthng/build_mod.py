@@ -21,6 +21,7 @@ import flow_art  # noqa: E402 (earthng/ is on sys.path for every caller)
 import people_art  # noqa: E402
 import traffic_art  # noqa: E402
 import ped_body  # noqa: E402
+import worker_vehicle  # noqa: E402
 import blood_art  # noqa: E402
 import turf_art  # noqa: E402
 
@@ -158,6 +159,8 @@ def level_files(lang='uk'):
         # the fal models of the flow and the walkers, when they are cooked (data/traffic-art)
         **traffic_art.level_files(LEVEL),
         **ped_body.vehicle_files(),
+        # the bodiless vehicle a tile worker lives in (workers.lua)
+        **worker_vehicle.vehicle_files(),
         # the hidden terrain block's layers, for the engine's grass (turf.lua)
         **turf_art.level_files(LEVEL),
     }

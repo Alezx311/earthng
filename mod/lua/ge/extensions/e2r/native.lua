@@ -110,6 +110,24 @@ local MODE = {name = 'auto', cache = 1, shotCache = 3}
 -- what a layer costs (ms of the generator, a running mean) and the generator's ms a second
 local SPEND = {road = 350, scene = 900, grass = 300, far = 120, horizon = 40, rate = 150, mix = .3}
 local GRASS = {}   -- buildTile's yield once the scene is out (AHEAD marks the road)
+-- Tiles built off the game thread (Knowledge/docs/FAST_TILES.md): a pool of worker VMs
+-- (workers.lua; tileworker.lua runs in each) builds a near tile with this same generator and
+-- hands it back as files: its meshes as compiled shapes, the rest of each layer through
+-- bridge_codec. buildTile then only waits for the parts (WAIT) and delivers them as its own
+-- generator's roadReady / sceneReady would, so the scheduler below parks and ranks the tile as
+-- before. Off until the world turns it on (M.pool); a host without the modules builds here.
+local REMOTE = {on = false, jobs = {}, bad = {}, sent = 0, done = 0, fell = 0}
+do
+  local okW, workers = pcall(require, 'ge/extensions/e2r/workers')
+  local okC, codec = pcall(require, 'ge/extensions/e2r/bridge_codec')
+  if okW and okC and type(workers) == 'table' and type(workers.submit) == 'function'
+      and type(codec) == 'table' and type(codec.decode) == 'function' then
+    REMOTE.workers, REMOTE.codec = workers, codec
+    -- parts of several tiles may be decoded at once (each pauses at the frame's budget)
+    codec.viewSets(4)
+  end
+end
+local WAIT = {}    -- buildTile's yield while its worker builds
 -- the generator stage each build last finished (status().stream.stageMs: where streaming time goes)
 local STAGE = setmetatable({}, {__mode = 'k'})
 -- the generator's ms a build has taken since its last layer went out (SPEND)
@@ -909,7 +927,23 @@ local function clampTune(tune)
   return quality.clamp(tune)
 end
 
+-- The worker pool on or off (the world's switch), and what it has done: {on, live, sent, done,
+-- fell, waiting, ...workers.stats()}.
+M.pool = function(on)
+  if on ~= nil then REMOTE.on = on and REMOTE.workers ~= nil or false end
+  local out = REMOTE.workers and REMOTE.workers.stats() or {}
+  out.on, out.live, out.sent, out.finished, out.fell, out.lastError = REMOTE.on, REMOTE.live(), REMOTE.sent, REMOTE.done,
+    REMOTE.fell, REMOTE.lastError
+  local waiting = 0
+  for _ in pairs(active and active.waiting or NONE_LIST) do waiting = waiting + 1 end
+  out.waiting = waiting
+  return out
+end
+
 local function land(req)
+  -- the jobs of the landing before this one
+  for key in pairs(REMOTE.jobs) do REMOTE.drop(key) end
+  REMOTE.jobs, REMOTE.bad = {}, {}
   ensure()
   req = type(req) == 'table' and req or {}
   state.job = {seq = req.seq, lat = req.lat, lon = req.lon, state = 'working', stage = 'source', progress = 0}
@@ -1380,12 +1414,113 @@ local function loadTerrain(key, i, j, memo)
   return cell
 end
 
+-- are there workers to build with
+function REMOTE.live()
+  return REMOTE.on and REMOTE.workers ~= nil and REMOTE.workers.count() > 0
+end
+
+-- Can the pool build this tile: a near one whose cells are all the region's own packed cells.
+-- A worker reads the pack by itself, so a tile with a neighbour region's cells, a live window's,
+-- the player's editor objects or a manual plan stays here; so does one drawn in the pack's
+-- Sentinel-2 sheets (s2.lua makes their materials in this VM) and one a worker failed at.
+function REMOTE.fits(key, wanted)
+  if not REMOTE.live() or REMOTE.bad[key] then return false end
+  if wanted.far or wanted.horizon or wanted.vista then return false end
+  local r = active.region
+  local d = r.data
+  if d.schemaVersion ~= 2 or blocksOf(d) ~= cellformat.BLOCK then return false end
+  if #active.editorObjects > 0 or #active.manual > 0 then return false end
+  if sheetsOf(r, wanted, realStyle) then return false end
+  local size = wanted.size or d.tileSize
+  local x0, y0, s, pad, b = wanted.i * size, wanted.j * size, d.cellSize, 40, cellformat.BLOCK
+  for i = math.floor((x0 - pad) / s), math.ceil((x0 + size + pad) / s) - 1 do
+    for j = math.floor((y0 - pad) / s), math.ceil((y0 + size + pad) / s) - 1 do
+      if not ownCell(r, i, j) then
+        if hasCell(r, i, j) then return false end
+      elseif d.blocks[keyOf(math.floor(i / b), math.floor(j / b))].memory then
+        return false
+      end
+    end
+  end
+  return true
+end
+
+-- Hand the tile to a free worker with the options buildTile made for it (its functions stay
+-- here: the worker has its own pause and sends the layers back itself). The job's id, or nil.
+function REMOTE.send(key, wanted, options, size)
+  local data = {}
+  for name, value in pairs(options) do
+    if type(value) ~= 'function' then data[name] = value end
+  end
+  local id = REMOTE.workers.submit({manifest = active.region.descriptor.manifest, i = wanted.i, j = wanted.j,
+    size = size, options = data, roadEarly = options.roadReady ~= nil, sceneEarly = options.sceneReady ~= nil})
+  if id then
+    REMOTE.jobs[key] = id
+    REMOTE.sent = REMOTE.sent + 1
+  end
+  return id
+end
+
+-- The worker's job for the tile is given up (the car left, the scene was lost for a road).
+function REMOTE.drop(key)
+  local id = REMOTE.jobs[key]
+  if id then
+    REMOTE.workers.cancel(id)
+    REMOTE.jobs[key] = nil
+  end
+  if active and active.waiting then active.waiting[key] = nil end
+end
+
+-- Wait for the worker's parts and deliver them as the generator would here: the road through
+-- roadReady, the scene through sceneReady (each parks this build as it does a local one), then
+-- what is left. Returns generator.build's five manifests; nil when the worker failed before
+-- anything went out (the caller builds the tile here).
+function REMOTE.receive(key, job, roadReady, sceneReady)
+  local road, scene, nav, final
+  local function open(path)
+    local bytes = readBytes(path)
+    REMOTE.workers.forget(path)
+    return REMOTE.codec.decode(bytes, nil, active.pause)
+  end
+  while not final do
+    local parts = REMOTE.workers.parts(job)
+    if parts == nil then error('e2r worker: the job is gone: ' .. key, 0) end
+    for _, part in ipairs(parts) do
+      if part.kind == 'error' then
+        REMOTE.bad[key], REMOTE.jobs[key] = true, nil
+        REMOTE.fell, REMOTE.lastError = REMOTE.fell + 1, tostring(part.a)
+        if type(log) == 'function' then log('E', 'e2r_pool', 'tile ' .. key .. ': ' .. tostring(part.a)) end
+        if road or scene then error('e2r worker: ' .. tostring(part.a), 0) end
+        return nil
+      elseif part.kind == 'road' then
+        local value = open(part.a)
+        road, nav = value.road, value.nav
+        if roadReady then roadReady(road, nav) end
+      elseif part.kind == 'scene' then
+        scene = open(part.a).scene
+        if sceneReady then sceneReady(scene) end
+      elseif part.kind == 'final' then
+        final = open(part.a)
+      end
+    end
+    if not final then coroutine.yield(WAIT) end
+  end
+  REMOTE.jobs[key] = nil
+  REMOTE.done = REMOTE.done + 1
+  for cellKey, low in pairs(final.lows or NONE_LIST) do
+    if active.lows[cellKey] == nil then active.lows[cellKey] = low end
+  end
+  return final.road or road, final.scene or scene, final.far, final.nav or nav, final.grass
+end
+
 local function buildTile(key, wanted)
   local r = active.region
   local size = wanted.size or r.data.tileSize
   local x0, y0 = wanted.i * size, wanted.j * size
   local tileRect = {x0, y0, x0 + size, y0 + size}
   local s, cells, seen, memo = r.data.cellSize, {}, {}, {}
+  -- a worker reads the tile's cells itself
+  local remote = REMOTE.fits(key, wanted) and REMOTE.workers.free() ~= nil
   local function addCell(i, j, yield)
     if not hasCell(r, i, j) then return end
     local cellKey = keyOf(i, j)
@@ -1394,6 +1529,7 @@ local function buildTile(key, wanted)
     cells[#cells + 1] = wanted.vista and loadTerrain(cellKey, i, j, memo) or loadCell(cellKey, i, j, tileRect, memo)
     if yield then active.pause() end
   end
+  local function loadCells()
   for i = math.floor(x0 / s), math.ceil((x0 + size) / s) - 1 do
     for j = math.floor(y0 / s), math.ceil((y0 + size) / s) - 1 do addCell(i, j, true) end
   end
@@ -1433,6 +1569,8 @@ local function buildTile(key, wanted)
       end
     end
   end
+  end
+  if not remote then loadCells() end
   local center = active.landing and {active.landing.x, active.landing.y} or nil
   local tune = active.tune or {}
   local st = state.stream
@@ -1454,6 +1592,10 @@ local function buildTile(key, wanted)
   local universes = M.universes
   local universe = universes and realStyle and knob.universe and universes.get(knob.universe) or nil
   local was = universe and universe.option or NONE_LIST
+  if remote and universe then
+    remote = false
+    loadCells()
+  end
   local labTune = knobs.tune
   if universe and universe.tune then
     local merged = {}
@@ -1528,8 +1670,7 @@ local function buildTile(key, wanted)
     split = true
     coroutine.yield(GRASS)
   end
-  local road, scene, far, nav, grass = generator.build(cells, wanted.i, wanted.j,
-    {tileSize = size, regionId = r.descriptor.id, center = center, pause = active.pause,
+  local options = {tileSize = size, regionId = r.descriptor.id, center = center, pause = active.pause,
       materials = '/earthng/planet/materials.json', packs = '/e2r_stream/fast-art/v10/packs.json',
       far = wanted.far, horizon = wanted.horizon, vista = wanted.vista, farDecor = wanted.decor and true or false,
       -- a far tile's trees as cards, where the planet's art has their sheet (M.farCards)
@@ -1611,7 +1752,17 @@ local function buildTile(key, wanted)
       -- info stands, plaques and blade signs at the points of interest (BLD.poiInfo); M.poiInfo
       -- false: the player's switch
       poiInfo = M.poiInfo,
-      cellSize = s})
+      cellSize = s}
+  local road, scene, far, nav, grass
+  local job = remote and REMOTE.send(key, wanted, options, size) or nil
+  if job then
+    road, scene, far, nav, grass = REMOTE.receive(key, job, roadReady or nil, sceneReady or nil)
+    if road == nil then job = nil end
+  end
+  if not job then
+    if remote then loadCells() end
+    road, scene, far, nav, grass = generator.build(cells, wanted.i, wanted.j, options)
+  end
   if type(road) ~= 'table' or type(road.items) ~= 'table' or type(road.mats) ~= 'table'
     or type(scene) ~= 'table' or type(scene.items) ~= 'table' then error('generator returned an invalid tile manifest') end
   if wanted.far and (type(far) ~= 'table' or type(far.items) ~= 'table') then error('generator returned an invalid far manifest') end
@@ -1717,6 +1868,7 @@ end
 local function loseScene(key)
   if active.parked[key] then state.stream.lost.scene = state.stream.lost.scene + 1 end
   active.parked[key] = nil
+  REMOTE.drop(key)
   local entry = active.tiles[key]
   if entry and not entry.scene then entry.sceneLost = true end
   if entry and entry.grassAgain then entry.grassAgain, entry.grassLost = nil, true end
@@ -1727,6 +1879,7 @@ end
 local function loseGrass(key)
   if active.parkedGrass[key] then state.stream.lost.grass = state.stream.lost.grass + 1 end
   active.parkedGrass[key] = nil
+  REMOTE.drop(key)
   local entry = active.tiles[key]
   if entry and not entry.grass then entry.grassLost = true end
 end
@@ -1742,6 +1895,8 @@ local function update(dt, budgetMs, farBudgetMs, now)
   end
   active.parked, active.parkedFar = active.parked or {}, active.parkedFar or {}
   active.parkedGrass = active.parkedGrass or {}
+  -- builds waiting for their workers: [key] = {co, scene, grass} (the layer the build was at)
+  active.waiting = active.waiting or {}
   -- neighbour cells left unlooked-at last frame (FOREIGN_NEW): the wanted set again
   active.foreignNew = 0
   if active.foreignShort then active.foreignShort, active.prioritiesDirty = false, true end
@@ -1800,6 +1955,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
   end
   state.stream.spend = SPEND
   local steps = 0
+  local poolNow = REMOTE.live()
   repeat
     -- At the frame's first step a scene build (its road is out) goes back among the parked, and a
     -- far one too when a road is urgent: a road that came due since then goes first, and the
@@ -1816,9 +1972,34 @@ local function update(dt, budgetMs, farBudgetMs, now)
         active.work = nil
       end
     end
+    -- A build whose worker has sent something goes on first: taking a part is little work, and
+    -- the road in it is already late by the time it took to build. One the car has left is
+    -- given up with its job.
+    if not active.work and next(active.waiting) ~= nil then
+      local pick, pickPriority
+      for key, slot in pairs(active.waiting) do
+        local want = wanted[key]
+        if not want or want.far or want.horizon then
+          active.waiting[key] = nil
+          if slot.grass then loseGrass(key) elseif slot.scene then loseScene(key) else REMOTE.drop(key) end
+        elseif REMOTE.workers.news(REMOTE.jobs[key]) and (not pickPriority or want.priority < pickPriority) then
+          pick, pickPriority = key, want.priority
+        end
+      end
+      if pick then
+        local slot = active.waiting[pick]
+        active.waiting[pick] = nil
+        active.work, active.workKey, active.workFar, active.workHorizon = slot.co, pick, false, false
+        active.workScene, active.workGrass = slot.scene or false, slot.grass or false
+        state.stream.building = 1
+      end
+    end
     if not active.work then
       best, bestKey, bestPriority = nil, nil, nil
       local queued = 0
+      -- with a pool, a tile it can build waits for a free worker rather than be built here
+      local poolLive = REMOTE.live()
+      local poolFree = poolLive and REMOTE.workers.free() ~= nil
       -- Far tiles wait while far geometry the renderer has not taken fills half the budget:
       -- a generator ahead of the renderer (a stills budget, a fast drive) built them only to
       -- evict them, and an evicted tile stays a hole until the next epoch. Near tiles and the
@@ -1868,11 +2049,12 @@ local function update(dt, budgetMs, farBudgetMs, now)
           local size = sizes[key]
           again = size and size[1] < roomT * .8 and size[2] < roomV * .8 or false
         end
-        if not ready and not active.failed[key] and again then
+        if not ready and not active.failed[key] and again and not active.waiting[key] then
           queued = queued + 1
           -- one far build at a time: a parked one is finished before another starts
           local farWaits = (entry.far or entry.horizon) and next(active.parkedFar) ~= nil
-          if not (full and entry.far and not entry.horizon) and not farWaits and (not best or priority < bestPriority or (priority == bestPriority and key < bestKey)) then
+          local poolWaits = poolLive and not poolFree and REMOTE.fits(key, entry)
+          if not poolWaits and not (full and entry.far and not entry.horizon) and not farWaits and (not best or priority < bestPriority or (priority == bestPriority and key < bestKey)) then
             best, bestKey, bestPriority = entry, key, priority
           end
         end
@@ -1964,6 +2146,13 @@ local function update(dt, budgetMs, farBudgetMs, now)
     local before = STAGE[active.work] or 'start'
     local stage = kind .. ' after ' .. before
     active.resumeReadMs, active.resumeConcatMs = 0, 0
+    -- With a pool the near tiles are built elsewhere: the far ring's builds here keep to their
+    -- own small budget even while near tiles are owed (they used to share the near budget).
+    local limit = budgetMs
+    if poolNow and (active.workFar or active.workHorizon) and not active.startupPinned and not farBudgetMs then
+      limit = math.min(budgetMs, speed < 2 and 12 or FAR_BUDGET_MS)
+    end
+    active.budget = limit
     local ok, message = (generator.resumeBuild or coroutine.resume)(active.work)
     local resumeMs = resumeTimer:stop()
     state.stream.spentMs[kind] = state.stream.spentMs[kind] + resumeMs
@@ -1991,6 +2180,10 @@ local function update(dt, budgetMs, farBudgetMs, now)
     if not ok then
       active.failed[active.workKey] = tostring(message)
       if active.landing and active.landing.required[active.workKey] and state.job.state == 'working' then fail(message) end
+      active.work = nil
+    elseif message == WAIT and coroutine.status(active.work) == 'suspended' then
+      -- its worker is still building: the build waits for the next part (above)
+      active.waiting[active.workKey] = {co = active.work, scene = active.workScene, grass = active.workGrass}
       active.work = nil
     elseif message == AHEAD and coroutine.status(active.work) == 'suspended' then
       -- the road is out (buildTile's roadReady): the scene waits for its turn
@@ -2021,7 +2214,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
       trimTiles()
     end
     state.stream.building = active.work and 1 or 0
-  until steps >= 10000 or timer:stop() >= budgetMs
+  until steps >= 10000 or timer:stop() >= limit
   -- the generator's pace (SPEND.rate, ms a second): from the frames it had work for the whole budget
   local used = timer:stop()
   if not active.startupPinned and used >= budgetMs * .9 and finite(dt) and dt > 0 then
