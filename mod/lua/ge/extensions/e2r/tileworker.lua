@@ -138,6 +138,19 @@ local function loadCell(d, key, i, j, keep, pause, lows)
   return cell
 end
 
+-- native.lua loadTerrain: a vista block needs the cell's elevation grid alone
+local function loadTerrain(d, key, i, j, pause, lows)
+  local b, s = blocksOf(d), d.cellSize
+  local block = d.blocks[keyOf(math.floor(i / b), math.floor(j / b))]
+  if block.memory then error('e2r worker: live block') end
+  local loaded = loadBlock(block, pause)
+  local range = loaded.slots[i % b + (j % b) * b]
+  if not range then error('source block lacks cell: ' .. key) end
+  local cell = cellformat.terrain(loaded.data, range[1], range[2], {i * s, j * s, (i + 1) * s, (j + 1) * s}, pause)
+  if lows[key] == nil then lows[key] = cell.low end
+  return cell
+end
+
 local function writeFile_(path, bytes)
   local f = io.open(path, 'wb')
   if not f then error('e2r worker: cannot write ' .. tostring(path)) end
@@ -200,7 +213,8 @@ local function run(job, pause)
     local cellKey = keyOf(i, j)
     if seen[cellKey] then return end
     seen[cellKey] = true
-    cells[#cells + 1] = loadCell(d, cellKey, i, j, tileRect, pause, lows)
+    cells[#cells + 1] = args.vista and loadTerrain(d, cellKey, i, j, pause, lows)
+      or loadCell(d, cellKey, i, j, tileRect, pause, lows)
   end
   for i = math.floor(x0 / s), math.ceil((x0 + size) / s) - 1 do
     for j = math.floor(y0 / s), math.ceil((y0 + size) / s) - 1 do addCell(i, j) end
@@ -218,6 +232,11 @@ local function run(job, pause)
   mark('cells')
   local options = args.options or {}
   options.pause, options.mark = pause, mark
+  -- the far view's colour maps a far or horizon tile is draped in, from their files (farmap.lua)
+  if options.farMapData then
+    options.farMap = require('ge/extensions/e2r/farmap').make(options.farMapData)
+    options.farMapData = nil
+  end
   local key = keyOf(args.i, args.j)
   local packMs, bytesOut, shapeCount, serial = 0, 0, 0, 0
   -- a layer's meshes into shapes, in place

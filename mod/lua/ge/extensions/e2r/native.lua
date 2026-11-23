@@ -116,7 +116,13 @@ local GRASS = {}   -- buildTile's yield once the scene is out (AHEAD marks the r
 -- bridge_codec. buildTile then only waits for the parts (WAIT) and delivers them as its own
 -- generator's roadReady / sceneReady would, so the scheduler below parks and ranks the tile as
 -- before. Off until the world turns it on (M.pool); a host without the modules builds here.
-local REMOTE = {on = false, jobs = {}, bad = {}, sent = 0, done = 0, fell = 0}
+local REMOTE = {on = false, jobs = {}, bad = {}, sent = 0, done = 0, fell = 0,
+  -- The far ring's share of the pool. While near tiles are owed, far and horizon tiles take at
+  -- most farShare workers: the first drive with the ring in the pool gave it five of eight, and a
+  -- near tile's scene was missing 4 s ahead in 45 % of the frames against 3.5 % (ab-pool-6
+  -- against ab-pool-5). With no near tile owed they leave `spare` workers free, so a road that
+  -- comes due does not wait for a far tile to end.
+  farShare = 3, spare = 2}
 do
   local okW, workers = pcall(require, 'ge/extensions/e2r/workers')
   local okC, codec = pcall(require, 'ge/extensions/e2r/bridge_codec')
@@ -940,6 +946,14 @@ M.pool = function(on)
   return out
 end
 
+-- How pressing the pool's work is, for the workers' slice of a frame (workers.lua): 2 a near road
+-- is due within seconds, 1 near tiles are owed, 0 only the far ring is left.
+M.poolNeed = function()
+  if not active then return 1 end
+  if active.nearUrgent or active.nearOwed then return 2 end
+  return active.nearWaiting and 1 or 0
+end
+
 local function land(req)
   -- the jobs of the landing before this one
   for key in pairs(REMOTE.jobs) do REMOTE.drop(key) end
@@ -1304,8 +1318,8 @@ local function trimTiles()
     return want and not want.far and not want.horizon
   end
   for key, entry in pairs(a.tiles) do
-    count, triangles, vertices = count + 1, triangles + entry.triangles, vertices + entry.vertices
-    if nearWanted(key) then nearT, nearV = nearT + entry.triangles, nearV + entry.vertices end
+    count, triangles, vertices = count + 1, triangles + (entry.triangles or 0), vertices + (entry.vertices or 0)
+    if nearWanted(key) then nearT, nearV = nearT + (entry.triangles or 0), nearV + (entry.vertices or 0) end
   end
   local limit = a.tileLimit or TILE_LIMIT
   local triangleLimit, vertexLimit = TRIANGLE_LIMIT * MODE.cache, VERTEX_LIMIT * MODE.cache
@@ -1419,13 +1433,13 @@ function REMOTE.live()
   return REMOTE.on and REMOTE.workers ~= nil and REMOTE.workers.count() > 0
 end
 
--- Can the pool build this tile: a near one whose cells are all the region's own packed cells.
--- A worker reads the pack by itself, so a tile with a neighbour region's cells, a live window's,
--- the player's editor objects or a manual plan stays here; so does one drawn in the pack's
--- Sentinel-2 sheets (s2.lua makes their materials in this VM) and one a worker failed at.
+-- Can the pool build this tile (near, far, a horizon or vista block): its cells are all the
+-- region's own packed cells. A worker reads the pack by itself, so a tile with a neighbour
+-- region's cells, a live window's, the player's editor objects or a manual plan stays here; so
+-- does a near one drawn in the pack's Sentinel-2 sheets (s2.lua makes their materials in this VM)
+-- and one a worker failed at.
 function REMOTE.fits(key, wanted)
   if not REMOTE.live() or REMOTE.bad[key] then return false end
-  if wanted.far or wanted.horizon or wanted.vista then return false end
   local r = active.region
   local d = r.data
   if d.schemaVersion ~= 2 or blocksOf(d) ~= cellformat.BLOCK then return false end
@@ -1450,10 +1464,17 @@ end
 function REMOTE.send(key, wanted, options, size)
   local data = {}
   for name, value in pairs(options) do
-    if type(value) ~= 'function' then data[name] = value end
+    if name == 'farMap' then
+      -- far.lua's answers are functions of this VM: the worker gets what they rest on (farmap.lua)
+      data.farMapData = farModule and farModule.mapExport and farModule.mapExport() or nil
+    elseif type(value) ~= 'function' then
+      data[name] = value
+    end
   end
   local id = REMOTE.workers.submit({manifest = active.region.descriptor.manifest, i = wanted.i, j = wanted.j,
-    size = size, options = data, roadEarly = options.roadReady ~= nil, sceneEarly = options.sceneReady ~= nil})
+    size = size, options = data, roadEarly = options.roadReady ~= nil, sceneEarly = options.sceneReady ~= nil,
+    -- a vista block is built from the cells' elevation grids alone (loadTerrain)
+    vista = wanted.vista and true or nil})
   if id then
     REMOTE.jobs[key] = id
     REMOTE.sent = REMOTE.sent + 1
@@ -1775,6 +1796,11 @@ local function buildTile(key, wanted)
     entry.grass, entry.grassTaken, entry.grassDelivered = grass, nil, nil
     active.manifests[key .. ':grass'] = grass
     entry.used = touch()
+    -- (the cache may have let the tile go while its grass was built: with a worker that is many
+    -- frames. The entry made anew had no size, trimTiles failed on it every frame, and after a
+    -- few such errors the game's own vector stack (mathlib push3) was left full: every vector
+    -- product in the game failed from then on, drive-pool-6.)
+    entry.triangles, entry.vertices = entrySize(entry)
     active.tiles[key] = entry
     st.grass[key] = entry.scene and true or nil
     st.built = st.built + 1
@@ -1979,9 +2005,16 @@ local function update(dt, budgetMs, farBudgetMs, now)
       local pick, pickPriority
       for key, slot in pairs(active.waiting) do
         local want = wanted[key]
-        if not want or want.far or want.horizon then
+        local gone
+        if slot.far or slot.horizon then
+          gone = not want or not want.far or (want.horizon and true or false) ~= (slot.horizon and true or false)
+        else
+          gone = not want or want.far or want.horizon
+        end
+        if gone then
           active.waiting[key] = nil
-          if slot.grass then loseGrass(key) elseif slot.scene then loseScene(key) else REMOTE.drop(key) end
+          if slot.far or slot.horizon then REMOTE.drop(key)
+          elseif slot.grass then loseGrass(key) elseif slot.scene then loseScene(key) else REMOTE.drop(key) end
         elseif REMOTE.workers.news(REMOTE.jobs[key]) and (not pickPriority or want.priority < pickPriority) then
           pick, pickPriority = key, want.priority
         end
@@ -1989,7 +2022,7 @@ local function update(dt, budgetMs, farBudgetMs, now)
       if pick then
         local slot = active.waiting[pick]
         active.waiting[pick] = nil
-        active.work, active.workKey, active.workFar, active.workHorizon = slot.co, pick, false, false
+        active.work, active.workKey, active.workFar, active.workHorizon = slot.co, pick, slot.far or false, slot.horizon or false
         active.workScene, active.workGrass = slot.scene or false, slot.grass or false
         state.stream.building = 1
       end
@@ -1999,7 +2032,12 @@ local function update(dt, budgetMs, farBudgetMs, now)
       local queued = 0
       -- with a pool, a tile it can build waits for a free worker rather than be built here
       local poolLive = REMOTE.live()
-      local poolFree = poolLive and REMOTE.workers.free() ~= nil
+      local poolFree, farReserve = 0, 0
+      if poolLive then
+        local ready, free = REMOTE.workers.count()
+        poolFree = free
+        farReserve = active.nearWaiting and math.max(REMOTE.spare, ready - REMOTE.farShare) or REMOTE.spare
+      end
       -- Far tiles wait while far geometry the renderer has not taken fills half the budget:
       -- a generator ahead of the renderer (a stills budget, a fast drive) built them only to
       -- evict them, and an evicted tile stays a hole until the next epoch. Near tiles and the
@@ -2053,7 +2091,8 @@ local function update(dt, budgetMs, farBudgetMs, now)
           queued = queued + 1
           -- one far build at a time: a parked one is finished before another starts
           local farWaits = (entry.far or entry.horizon) and next(active.parkedFar) ~= nil
-          local poolWaits = poolLive and not poolFree and REMOTE.fits(key, entry)
+          local poolWaits = poolLive and REMOTE.fits(key, entry)
+            and poolFree <= ((entry.far or entry.horizon) and farReserve or 0)
           if not poolWaits and not (full and entry.far and not entry.horizon) and not farWaits and (not best or priority < bestPriority or (priority == bestPriority and key < bestKey)) then
             best, bestKey, bestPriority = entry, key, priority
           end
@@ -2183,7 +2222,8 @@ local function update(dt, budgetMs, farBudgetMs, now)
       active.work = nil
     elseif message == WAIT and coroutine.status(active.work) == 'suspended' then
       -- its worker is still building: the build waits for the next part (above)
-      active.waiting[active.workKey] = {co = active.work, scene = active.workScene, grass = active.workGrass}
+      active.waiting[active.workKey] = {co = active.work, scene = active.workScene, grass = active.workGrass,
+        far = active.workFar or nil, horizon = active.workHorizon or nil}
       active.work = nil
     elseif message == AHEAD and coroutine.status(active.work) == 'suspended' then
       -- the road is out (buildTile's roadReady): the scene waits for its turn

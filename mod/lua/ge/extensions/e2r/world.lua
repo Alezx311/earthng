@@ -3716,7 +3716,11 @@ local function updateTiles()
     end
     table.sort(S.queue, function(a, b)
       local dra, drb = decorRank(a), decorRank(b)
-      local pa, pb = dra == 0, drb == 0
+      -- (a near tile's meshes first. A far tile's used to share that place: built here they came
+      -- one by one. Built by the pool they come by the hundred, and a near scene's trees and
+      -- props waited behind every far shape: no scene 4 s ahead in 45 % of a drive's frames
+      -- against 3.5 %, ab-pool-6 against ab-pool-5.)
+      local pa, pb = dra == 0 and rank(a) == 0, drb == 0 and rank(b) == 0
       if pa ~= pb then return pa end
       local ra, rb = rank(a), rank(b)
       if ra ~= rb then return ra < rb end
@@ -3956,7 +3960,11 @@ end
 function LIMIT.shareRing()
   if not LIMIT.nearQueued() then return false end
   S.ringShare = (S.ringShare or 0) + 1
-  -- (screenshot mode at rest: every other burst is the distance's)
+  -- (screenshot mode at rest: every other burst is the distance's. With the tile workers the
+  -- far tiles are built long before this queue reaches them, and at 90 km/h in a town the ground
+  -- 2 km ahead is still missing in 97 % of the frames; every other burst for them made it 93 %
+  -- and the scenes 8 s ahead late in 7.6 % of the frames against 1.1 %, ab-pool-9 against -8.
+  -- What they need is a turn of their own, not a larger share of this one.)
   return S.ringShare % (S.shotBudget and 2 or 5) == 0
 end
 
@@ -7402,7 +7410,7 @@ function M.tick(dt)
       if S.shotBudget then genBudget = LIMIT.shotNativeMs end
     end
     -- the workers' slices and what they have sent, before the generator looks for it
-    if M.workers and S.poolStarted then M.workers.update(S.state ~= 'driving') end
+    if M.workers and S.poolStarted then M.workers.update(S.state ~= 'driving', native.poolNeed and native.poolNeed()) end
     native.update(dt, genBudget, test and test.genBudget or (S.shotBudget and LIMIT.shotNativeMs or nil), S.now)
     S.nativeMs = t:stop()
     profAdd('native', S.nativeMs, collectgarbage('count') - kb)

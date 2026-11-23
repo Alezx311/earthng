@@ -241,6 +241,31 @@ class LuaWriter(unittest.TestCase):
         first = cdae.read(Path(self.tmp.name) / 'cut_solid.cdae')
         self.assertEqual([m['name'] for m in first['materials']], ['e2rf_wall_1', 'e2rf_wall_2', 'e2rf_wall_3'])
 
+    def test_cards_and_decor_are_shapes_of_their_own_and_a_horizon_is_quiet(self):
+        # world.lua keeps a far tile's tree cards in a group that outlives its ground
+        result = self.build(self.QUAD + '''
+          local writer, shapes, write = ...
+          local function item(material, extra)
+            local it = {kind = 'proc', pos = {0, 0, 0}, meshes = {quad(material, 0)}, triangles = 2, layer = 'far'}
+            for k, v in pairs(extra or {}) do it[k] = v end
+            return it
+          end
+          local far = {key = '0_0', items = {item('e2rf_ground'), item('e2rf_tree_cards', {cards = true}),
+            item('e2rf_roof', {decor = true}), item('e2rf_ground', {decor = true})}}
+          shapes.pack(far, 'far', function(name) return 'v_' .. name .. '.cdae' end, write)
+          local horizon = {key = 'h', items = {item('e2rf_farmap_x')}}
+          shapes.pack(horizon, 'horizon', function(name) return 'h_' .. name .. '.cdae' end, write)
+          local out = {}
+          for _, m in ipairs({far, horizon}) do
+            for _, it in ipairs(m.items) do
+              out[#out + 1] = it.name .. (it.solid and ':solid' or ':quiet') .. (it.cards and ':cards' or '') .. (it.decor and ':decor' or '') .. ':' .. it.triangles
+            end
+          end
+          return table.concat(out, ' ')
+        ''')
+        self.assertEqual(result, 'e2rs_0_0_far_solid:solid:2 e2rs_0_0_far_solid_cards:solid:cards:2 '
+                                 'e2rs_0_0_far_solid_decor:solid:decor:4 e2rs_h_horizon_quiet:quiet:2')
+
     def test_a_far_layer_is_one_solid_shape(self):
         kinds = self.build(self.QUAD + '''
           local writer, shapes, write = ...

@@ -11,6 +11,9 @@
 -- frame, ~12 ms and ~1.3 ms for each material in it whatever its triangles (research/fast-tiles,
 -- p4): a town scene's hundred materials in one file held a frame for 110-230 ms (23.11, the first
 -- drive with the pool), twelve at a time hold one ~28 ms.
+-- A horizon block is never met by a car: it is quiet whole. A far tile's tree cards and a layer's
+-- decor are shapes of their own, with the item's mark (world.lua keeps each in its own group: the
+-- cards outlive the far ground until the near tile's crowns are planted).
 -- Left as they are: the invisible collision proxies of a near tile (each its own cell, shown only
 -- for a rebuild round the car) and a mesh something addresses by itself (a traffic light's lens).
 local M = {}
@@ -32,20 +35,21 @@ function M.pack(manifest, layer, file, write, pause)
   local origin
   -- the shape a material of a class is in: the class's materials in the order they are met,
   -- MATERIALS to a file
-  local function shapeOf(class, material)
-    local c = classes[class]
+  local function shapeOf(class, variant, material)
+    local group = variant == '' and class or (class .. '_' .. variant)
+    local c = classes[group]
     if not c then
       c = {of = {}, count = 0}
-      classes[class] = c
+      classes[group] = c
     end
     local b = c.of[material]
     if not b then
       local part = math.floor(c.count / M.MATERIALS) + 1
       c.count = c.count + 1
-      local name = part == 1 and class or (class .. part)
+      local name = part == 1 and group or (group .. part)
       b = shapes[name]
       if not b then
-        b = {name = name, class = class, shape = cdae.builder(), mats = {}, triangles = 0}
+        b = {name = name, class = class, variant = variant, shape = cdae.builder(), mats = {}, triangles = 0}
         shapes[name] = b
         shapes[#shapes + 1] = b
       end
@@ -64,12 +68,14 @@ function M.pack(manifest, layer, file, write, pause)
       kept[#kept + 1] = it
       if meshes then stats.left = stats.left + 1 end
     else
-      local class = (not distant and not it.forceCollision and collision.quiet(meshes, it.layer or layer)) and 'quiet' or 'solid'
+      local class = (layer == 'horizon' or (not distant and not it.forceCollision
+        and collision.quiet(meshes, it.layer or layer))) and 'quiet' or 'solid'
+      local variant = it.cards and 'cards' or (it.decor and 'decor' or '')
       origin = origin or it.pos
       local dx, dy, dz = it.pos[1] - origin[1], it.pos[2] - origin[2], (it.pos[3] or 0) - (origin[3] or 0)
       for k = 1, #meshes do
         local mesh = meshes[k]
-        local b = shapeOf(class, mesh.material or '')
+        local b = shapeOf(class, variant, mesh.material or '')
         b.triangles = b.triangles + b.shape:add(class, mesh, dx, dy, dz)
       end
       stats.objects = stats.objects + 1
@@ -82,7 +88,8 @@ function M.pack(manifest, layer, file, write, pause)
       local path = file(b.name)
       write(path, bytes)
       kept[#kept + 1] = {kind = 'shape', name = 'e2rs_' .. (manifest.key or '') .. '_' .. layer .. '_' .. b.name,
-        file = path, pos = origin, solid = b.class == 'solid', triangles = b.triangles, mats = b.mats, layer = layer}
+        file = path, pos = origin, solid = b.class == 'solid', triangles = b.triangles, mats = b.mats, layer = layer,
+        cards = b.variant == 'cards' or nil, decor = b.variant == 'decor' or nil}
       stats.shapes, stats.triangles, stats.bytes = stats.shapes + 1, stats.triangles + b.triangles, stats.bytes + #bytes
     end
     if pause then pause() end

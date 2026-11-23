@@ -13,7 +13,12 @@ local NOTIFY = 'e2rWorkerSays'
 -- ms of a frame a worker builds for. The frame waits for a vehicle's Lua, and about three times
 -- the slice when that Lua allocates as the generator does (research/fast-tiles, p6 and p9): 4 ms
 -- took a 9 ms frame to 17. While the player waits for a landing the frame is not what matters.
+-- So the slice follows what is owed (native.lua M.poolNeed): 6 ms while a road is due within
+-- seconds, 4 while near tiles are owed, 2 when only the far ring is left to fill. A town driven
+-- at 58 km/h with 4 ms throughout had the workers busy nearly all the time and the frame no
+-- shorter than without them (24.7 against 24.4 ms, drive-pool-5).
 M.SLICE, M.SLICE_LANDING = 4, 40
+M.SLICES = {[0] = 2, [1] = 4, [2] = 6}
 M.FOLDER = '/temp/e2r_tiles'
 
 local pool = {}        -- [k] = {veh, id, state = 'loading' | 'idle' | 'busy', job}
@@ -194,7 +199,7 @@ local function sweep()
 end
 
 -- Every frame: spawn what is owed, take what the workers said, give the busy ones their slice.
-function M.update(landing)
+function M.update(landing, need)
   if not exists() then return end
   if at and #pool < wanted then spawnOne(#pool + 1) end
   local said = inbox
@@ -242,7 +247,7 @@ function M.update(landing)
       end
     end
   end
-  local slice = landing and M.SLICE_LANDING or M.SLICE
+  local slice = landing and M.SLICE_LANDING or (M.SLICES[need or 1] or M.SLICE)
   local tick = string.format('if e2rTileWorker then e2rTileWorker.tick(%.1f) end', slice)
   for _, w in pairs(pool) do
     if w.state == 'busy' then w.veh:queueLuaCommand(tick) end

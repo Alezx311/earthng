@@ -1409,6 +1409,27 @@ function M.mapAt(x, y)
 end
 M.mapUV = texUV
 
+-- What mapAt, mapUV and liftAt rest on, as data: a far or horizon tile built in a worker VM cannot
+-- call them (workers.lua; farmap.lua answers there from the same raster files). The loaded
+-- rasters that have a colour map, the home region's first, as mapAt looks them up: each its file,
+-- the kind its material is drawn as, and for another region the way into its frame. nil while
+-- none is loaded.
+function M.mapExport()
+  if not RS then return nil end
+  local out = {canopy = FAR.CANOPY, rasters = {}}
+  local function add(R, o)
+    if not (R and R.texMat and R.region) then return end
+    local path = rasterPaths(R.region)[1]
+    if not path then return end
+    local a = o and o.a
+    out.rasters[#out.rasters + 1] = {path = path, texKind = R.texKind, real = R.real or nil,
+      a = a and {a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]} or nil}
+  end
+  add(RS.home)
+  for _, o in ipairs(RS.others or {}) do add(o.R, o) end
+  return #out.rasters > 0 and out or nil
+end
+
 -- How far the land stands up at landing-frame (x, y): a forest pixel its canopy (FAR.CANOPY), 0
 -- elsewhere or where no loaded raster has data (as mapAt, nothing is read from disk here). The
 -- DEM horizon's tiles swell by it (generator.lua), as the raised levels do past them.
