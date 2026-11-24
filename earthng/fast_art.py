@@ -17,6 +17,7 @@ import zipfile
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 import far_tree_art
+import flag_art
 import fast_facade
 import fast_packs
 import fast_pixel
@@ -800,6 +801,10 @@ def prebuild(distributable=False):
         if not stamp.exists() or stamp.read_text() != poi_art.VERSION:
             poi_art.build(shared / 'real')
             to_dds(shared / 'real')
+        # and the flags of the world's countries (flag_art, generator.lua 'flagpole')
+        stamp = shared / 'real' / 'flags.version'
+        if (not stamp.exists() or stamp.read_text() != flag_art.VERSION) and flag_art.build(shared / 'real'):
+            to_dds(shared / 'real')
         # and the drawn facades and plain sheets
         stamp = shared / 'real' / 'facade.version'
         if not stamp.exists() or stamp.read_text() != FACADE_ART_VERSION + own_tag():
@@ -877,6 +882,7 @@ def build(r, game_assets=True):
     brand_art(r / 'real')
     glyph_art(r / 'real')
     poi_art.build(r / 'real')
+    flag_art.build(r / 'real')
     # the PO-2 concrete fence: one 2.5 m x 2 m slab... laid over a 2.5 m repeat, the slab in the
     # lower 0.8 of it (fences are 2 m tall), upside down like the facades
     slab = Image.open(photo.TEXTURES / 'panelka_fence/albedo.jpg').convert('RGB')

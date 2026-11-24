@@ -131,11 +131,11 @@ class PlanTests(unittest.TestCase):
         catalogue = self.plan.catalogue()
         text = json.dumps(catalogue, ensure_ascii=False)
         self.assertLess(len(text.encode('utf8')), 700_000)
-        self.assertEqual([b['id'] for b in catalogue['blocks']], ['main', 'mountains', 'desert', 'snow', 'mud', 'jungle', 'spans'])
+        self.assertEqual([b['id'] for b in catalogue['blocks']], ['main', 'mountains', 'desert', 'snow', 'mud', 'jungle', 'spans', 'thanks'])
         self.assertEqual((catalogue['blocks'][0]['cols'], catalogue['blocks'][0]['rows']),
                          ([ground.COLS[0], ground.COLS[-1]], [ground.ROWS[0], ground.ROWS[-1]]))
         self.assertEqual(catalogue['zones'][0]['id'], 'studio')
-        self.assertEqual([z['id'] for z in catalogue['zones']][-6:], ['mountains', 'desert', 'snow', 'mud', 'jungle', 'spans'])
+        self.assertEqual([z['id'] for z in catalogue['zones']][-7:], ['mountains', 'desert', 'snow', 'mud', 'jungle', 'spans', 'thanks'])
         tile = next(t for t in catalogue['tiles'] if t['code'] == 'D7')
         self.assertEqual((tile['i'], tile['j'], tile['zone'], tile['block']), (-4, 1, 'town', 'main'))
         self.assertNotIn('universe', tile)

@@ -8953,26 +8953,243 @@ function BLD.hidden(index, building, a, b, length, bottom)
   return #out > 0 and out or nil
 end
 
--- Wall a -> b in pieces: {a, b, length, s0, z}, z the hidden height or nil. Gaps under
+-- Wall a -> b in pieces: {a, b, length, s0, z, arch}, z the hidden height or nil, arch true
+-- for the opening of a passage (BLD.archRuns: open up to z, the wall as it is above). Gaps under
 -- BLD.COVER.min between hidden runs join the hidden run before them.
 function BLD.pieces(a, b, length, runs)
   if not runs then return {{a, b, length, 0, nil}} end
   local C = BLD.COVER
   local out, at = {}, 0
   local function point(s) return {a[1] + (b[1] - a[1]) * s / length, a[2] + (b[2] - a[2]) * s / length} end
-  local function add(s0, s1, z)
+  local function add(s0, s1, z, arch)
     local last = out[#out]
-    if last and not z and s1 - s0 < C.min and last[5] then last[2] = point(s1); last[3] = s1 - last[4]; return end
-    if s1 - s0 > 1e-3 then out[#out + 1] = {point(s0), point(s1), s1 - s0, s0, z} end
+    if last and not z and s1 - s0 < C.min and last[5] and not last[6] then last[2] = point(s1); last[3] = s1 - last[4]; return end
+    if s1 - s0 > 1e-3 then out[#out + 1] = {point(s0), point(s1), s1 - s0, s0, z, arch} end
   end
   for _, r in ipairs(runs) do
     if r[1] > at then add(at, r[1], nil) end
-    add(math.max(at, r[1]), r[2], r[3])
+    add(math.max(at, r[1]), r[2], r[3], r[4])
     at = math.max(at, r[2])
   end
   if at < length then add(at, length, nil) end
   out[1][1], out[#out][2] = a, b
   return out
+end
+
+-- An arch through a house. OSM maps the way into a yard under a block as a road with
+-- tunnel=building_passage (and as often tunnel=yes: ROADS.span.open reads both as one, 254 of
+-- Kyiv's 303 tunnels). The road is a ground road and the house stood whole across it: a drive
+-- into a yard ended at a wall. Now the walls the passage crosses are open over it up to `clear`
+-- m above the road (`walk` for a path), `side` m wider than the paving either side, with the
+-- wall as it is above the opening; inside, the passage has its own side walls and a ceiling.
+--   low: a house whose walls stand less than this over the road keeps them (a shed on a track);
+--   lintel: the wall left over the opening at least; reach: the way is read this far past its
+--   ends (it is mapped from wall to wall, and a wall is seldom square to it); sin: a wall more
+--   along the passage than this is its side, not a wall it crosses.
+BLD.ARCH = {clear = 4.3, walk = 3, side = .6, low = 3.6, lintel = .7, reach = 3, sin = .35, sink = .4}
+
+-- The passages of a tile: {line = {{x, y, z}, ...}, hw, clear, box}.
+function BLD.passages(roads, lines)
+  local A, out = BLD.ARCH, nil
+  local function add(points, width, clear)
+    if #points < 2 then return end
+    local line = {}
+    for k, p in ipairs(points) do line[k] = {p[1], p[2], p[3]} end
+    for _, pair in ipairs({{1, 2}, {#line, #line - 1}}) do
+      local e, n = line[pair[1]], line[pair[2]]
+      local dx, dy = e[1] - n[1], e[2] - n[2]
+      local len = math.sqrt(dx * dx + dy * dy)
+      if len > EPS then line[pair[1]] = {e[1] + dx / len * A.reach, e[2] + dy / len * A.reach, e[3]} end
+    end
+    local hw = math.max(.8, math.min(20, width) / 2) + A.side
+    local box = {math.huge, math.huge, -math.huge, -math.huge}
+    for _, p in ipairs(line) do
+      box[1], box[2] = math.min(box[1], p[1] - hw), math.min(box[2], p[2] - hw)
+      box[3], box[4] = math.max(box[3], p[1] + hw), math.max(box[4], p[2] + hw)
+    end
+    out = out or {}
+    out[#out + 1] = {line = line, hw = hw, clear = clear, box = box}
+  end
+  for _, road in ipairs(roads or NONE) do
+    local tags = road.tags or NONE
+    if tags.tunnel == 'building_passage' then
+      local foot = ROADS.foot(tags)
+      add(road.points or NONE, road.width or (foot and 2 or 4), foot and A.walk or A.clear)
+    end
+  end
+  for _, line in ipairs(lines or NONE) do
+    local tags = line.tags or NONE
+    if line.kind == 'path' and tags.tunnel == 'building_passage' then
+      add(line.points or NONE, number(tags.width, 2), A.walk)
+    end
+  end
+  return out
+end
+
+-- The parts of segment p -> q inside the rings: {{t0, t1}, ...}, t in 0..1.
+function BLD.insideParts(rings, p, q)
+  local cuts = {0, 1}
+  local dx, dy = q[1] - p[1], q[2] - p[2]
+  for _, ring in ipairs(rings) do
+    for k, c in ipairs(ring) do
+      local d = ring[k % #ring + 1]
+      local ex, ey = d[1] - c[1], d[2] - c[2]
+      local den = dx * ey - dy * ex
+      if math.abs(den) > 1e-9 then
+        local t = ((c[1] - p[1]) * ey - (c[2] - p[2]) * ex) / den
+        local u = ((c[1] - p[1]) * dy - (c[2] - p[2]) * dx) / den
+        if t > 0 and t < 1 and u >= 0 and u <= 1 then cuts[#cuts + 1] = t end
+      end
+    end
+  end
+  table.sort(cuts)
+  local out = {}
+  for k = 1, #cuts - 1 do
+    local t0, t1 = cuts[k], cuts[k + 1]
+    if t1 - t0 > 1e-6 then
+      local m = (t0 + t1) / 2
+      if inside(rings, p[1] + dx * m, p[2] + dy * m) then
+        local last = out[#out]
+        if last and math.abs(last[2] - t0) < 1e-6 then last[2] = t1 else out[#out + 1] = {t0, t1} end
+      end
+    end
+  end
+  return out
+end
+
+-- The arches of one building: the passages that run under it, each with the height its opening
+-- and its ceiling stand at (`z`) and the road's lowest height under the house (`floor`).
+function BLD.arches(passages, rings, top, ground)
+  local A, out = BLD.ARCH, nil
+  local box = ringBounds(rings)
+  for _, passage in ipairs(passages or NONE) do
+    local pb = passage.box
+    if pb[1] <= box[3] and pb[3] >= box[1] and pb[2] <= box[4] and pb[4] >= box[2] then
+      local line, high, low = passage.line, -math.huge, math.huge
+      for k = 1, #line - 1 do
+        local p, q = line[k], line[k + 1]
+        for _, part in ipairs(BLD.insideParts(rings, p, q)) do
+          for _, t in ipairs(part) do
+            local x, y = p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t
+            local z = p[3] and q[3] and p[3] + (q[3] - p[3]) * t or ground(x, y)
+            high, low = math.max(high, z), math.min(low, z)
+          end
+        end
+      end
+      -- under the house at all, and the house tall enough to be driven under
+      if high > -math.huge and top - high >= A.low then
+        out = out or {}
+        out[#out + 1] = {passage = passage, z = math.min(high + passage.clear, top - A.lintel), floor = low}
+      end
+    end
+  end
+  return out
+end
+
+-- The runs of wall a -> b its arches open, joined with its hidden runs (BLD.hidden; an arch
+-- wins where both lie): a sorted list of {s0, s1, z, arch}. A wall point is in an opening when
+-- it lies within the passage's half width of one of its segments, beside that segment.
+function BLD.archRuns(arches, a, b, length, runs)
+  local A = BLD.ARCH
+  if not arches or length < BLD.COVER.min then return runs end
+  local ux, uy = (b[1] - a[1]) / length, (b[2] - a[2]) / length
+  local open
+  for _, arch in ipairs(arches) do
+    local line, hw = arch.passage.line, arch.passage.hw
+    for k = 1, #line - 1 do
+      local p, q = line[k], line[k + 1]
+      local dx, dy = q[1] - p[1], q[2] - p[2]
+      local len = math.sqrt(dx * dx + dy * dy)
+      if len > EPS then
+        dx, dy = dx / len, dy / len
+        local sin = ux * dy - uy * dx
+        if math.abs(sin) >= A.sin then
+          -- the offset of the wall's point s from the segment's line is o0 + s * sin, its place
+          -- along the segment t0 + s * cos
+          local o0 = (a[1] - p[1]) * dy - (a[2] - p[2]) * dx
+          local s0, s1 = (-hw - o0) / sin, (hw - o0) / sin
+          if s0 > s1 then s0, s1 = s1, s0 end
+          local cos = ux * dx + uy * dy
+          local t0 = (a[1] - p[1]) * dx + (a[2] - p[2]) * dy
+          local m = (s0 + s1) / 2
+          local tm = t0 + m * cos
+          s0, s1 = math.max(0, s0), math.min(length, s1)
+          if tm >= -hw and tm <= len + hw and s1 - s0 > .2 then
+            open = open or {}
+            open[#open + 1] = {s0, s1, arch.z, true}
+          end
+        end
+      end
+    end
+  end
+  if not open then return runs end
+  table.sort(open, function(x, y) return x[1] < y[1] end)
+  local arched = {}
+  for _, r in ipairs(open) do
+    local last = arched[#arched]
+    if last and r[1] <= last[2] + BLD.COVER.min then last[2], last[3] = math.max(last[2], r[2]), math.max(last[3], r[3])
+    else arched[#arched + 1] = r end
+  end
+  -- the hidden runs keep what no arch opens
+  local out = {}
+  for _, r in ipairs(runs or NONE) do
+    local at = r[1]
+    for _, o in ipairs(arched) do
+      if o[2] > at and o[1] < r[2] then
+        if o[1] - at > 1e-3 then out[#out + 1] = {at, o[1], r[3]} end
+        at = math.max(at, o[2])
+      end
+    end
+    if r[2] - at > 1e-3 then out[#out + 1] = {at, r[2], r[3]} end
+  end
+  for _, o in ipairs(arched) do out[#out + 1] = o end
+  table.sort(out, function(x, y) return x[1] < y[1] end)
+  return out
+end
+
+-- The inside of a building's arches: a wall either side of each passage from under the road to
+-- the ceiling, faced to the road, where the passage's edge lies inside the footprint, and the
+-- ceiling between them. The side walls join the shell the car meets (ROADS.collisionWall).
+function BLD.archInside(scene, arches, rings, material, base, step)
+  local A = BLD.ARCH
+  for _, arch in ipairs(arches or NONE) do
+    local line, hw, top, bottom = arch.passage.line, arch.passage.hw, arch.z, arch.floor - A.sink
+    local along = 0
+    for k = 1, #line - 1 do
+      local p, q = line[k], line[k + 1]
+      local dx, dy = q[1] - p[1], q[2] - p[2]
+      local len = math.sqrt(dx * dx + dy * dy)
+      if len > EPS then
+        local nx, ny = -dy / len * hw, dx / len * hw
+        local sides = {}
+        for sign = 1, -1, -2 do
+          local p1, q1 = {p[1] + nx * sign, p[2] + ny * sign}, {q[1] + nx * sign, q[2] + ny * sign}
+          local parts = BLD.insideParts(rings, p1, q1)
+          sides[sign] = {p1, q1, parts}
+          for _, part in ipairs(parts) do
+            local c = {p1[1] + (q1[1] - p1[1]) * part[1], p1[2] + (q1[2] - p1[2]) * part[1]}
+            local d = {p1[1] + (q1[1] - p1[1]) * part[2], p1[2] + (q1[2] - p1[2]) * part[2]}
+            local u0, u1 = (along + len * part[1]) / 3, (along + len * part[2]) / 3
+            -- the left wall runs with the road, the right one against it: each faces the road
+            if sign < 0 then c, d, u0, u1 = d, c, u1, u0 end
+            scene.polygon(material, {{c[1], c[2], bottom, u0, (bottom - base) / 3}, {d[1], d[2], bottom, u1, (bottom - base) / 3},
+              {d[1], d[2], top, u1, (top - base) / 3}, {c[1], c[2], top, u0, (top - base) / 3}}, false)
+            if math.sqrt((d[1] - c[1]) ^ 2 + (d[2] - c[2]) ^ 2) > .4 then ROADS.collisionWall(scene, c, d, bottom, top, step) end
+          end
+        end
+        -- the ceiling between the two walls, looking down
+        local left, right = sides[1], sides[-1]
+        for n = 1, math.min(#left[3], #right[3]) do
+          local l, r = left[3][n], right[3][n]
+          local function at(side, t) return {side[1][1] + (side[2][1] - side[1][1]) * t, side[1][2] + (side[2][2] - side[1][2]) * t, top} end
+          local l0, l1, r0, r1 = at(left, l[1]), at(left, l[2]), at(right, r[1]), at(right, r[2])
+          for _, c in ipairs({l0, l1, r1, r0}) do c[4], c[5] = c[1] / 3, c[2] / 3 end
+          scene.polygon(material, {l0, l1, r1, r0}, false)
+        end
+        along = along + len
+      end
+    end
+  end
 end
 
 -- The blank material over a lower neighbour: a block's own end wall, bare brick behind plaster,
@@ -12047,6 +12264,94 @@ function BLD.pinWords(mesh, material, T, chars, size, x, depth, z)
   SIGNS.word(mesh, material, T, chars, size, x + half, depth, z, -1)
 end
 
+-- The wall of supporters: a billboard a map tags operator = `operator` (the proving ground's
+-- thanks tile, earthng/proving_thanks.py) is a board of the names in supporters.lua, set in
+-- letters of the glyph atlas on both faces. The names stand in columns: as many as bring the
+-- board nearest `ratio` wide to tall, each as wide as the longest name. A list that would make
+-- it wider than `widest` m is set smaller, down to `least` m a letter, and from there the board
+-- grows. Sizes in metres: `foot` the board's underside over the ground, `post` between its legs.
+BLD.PIN.thanks = {operator = 'EarthNG supporters', foot = 2.6, pad = 1.3, title = 1.9, thanks = .85, name = 1.05, least = .45,
+  gap = .5, col = 1.7, widest = 64, ratio = 2.3, post = 8, depth = .4, band = .45, most = 14}
+do
+  local ok, supporters = pcall(require, 'ge/extensions/e2r/supporters')
+  BLD.supporters = ok and type(supporters) == 'table' and supporters or nil
+  -- the flags of the world's countries, where the planet has their atlas (earthng/flag_art.py)
+  local okFlags, flags = pcall(require, 'ge/extensions/e2r/flag_lib')
+  BLD.flagLib = okFlags and type(flags) == 'table' and type(flags.cells) == 'table' and flags or nil
+end
+-- the letters of a line; one the atlas lacks leaves its place empty
+function BLD.wallChars(text)
+  local out = {}
+  for ch in tostring(text or ''):gmatch('[%z\1-\127\194-\244][\128-\191]*') do
+    out[#out + 1] = ch ~= ' ' and BLD.glyphs(ch)[1] or -1
+  end
+  return out
+end
+-- The board's plan for a list: {wide, tall, cols, rows, size, title, thanks, colW, k} (k: the
+-- scale of every size), or nil without names.
+function BLD.wallPlan(list)
+  local W, aspect = BLD.PIN.thanks, BLD.PLATE.aspect
+  local names, longest = {}, 4
+  for _, name in ipairs(list and list.names or NONE) do
+    local chars = BLD.wallChars(name)
+    if #chars > 0 then names[#names + 1] = chars; longest = math.max(longest, #chars) end
+  end
+  if #names == 0 then return nil end
+  local title, thanks = BLD.wallChars(list.title or 'EARTHNG SUPPORTERS'), BLD.wallChars(list.thanks or 'THANK YOU')
+  local head = W.pad + W.band + W.title + W.gap + W.thanks + 2 * W.gap
+  local least = math.max(#title * W.title, #thanks * W.thanks) * aspect + 2 * W.pad
+  local colW = longest * W.name * aspect + W.col
+  local best
+  for cols = 1, W.most do
+    local rows = math.ceil(#names / cols)
+    local wide = math.max(least, cols * colW - W.col + 2 * W.pad)
+    local tall = head + rows * W.name + (rows - 1) * W.gap + W.pad
+    local off = math.abs(wide / tall - W.ratio)
+    if not best or off < best.off - 1e-9 then best = {off = off, cols = cols, rows = rows, wide = wide, tall = tall} end
+  end
+  -- too wide: every size smaller, the letters of a name no smaller than `least`
+  local k = math.min(1, math.max(W.least / W.name, W.widest / best.wide))
+  best.k, best.names, best.title, best.thanks = k, names, title, thanks
+  best.wide, best.tall, best.colW = best.wide * k, best.tall * k, colW * k
+  return best
+end
+function BLD.supportersWall(mesh, T, list)
+  local plan = BLD.wallPlan(list)
+  if not plan then return false end
+  local W, c, k = BLD.PIN.thanks, YARD.cell, plan.k
+  local box = function(colour, x0, y0, z0, x1, y1, z1) SOLID.box(mesh, 'yard', colour, T, x0, y0, z0, x1, y1, z1) end
+  local w, d, foot = plan.wide / 2, W.depth / 2, W.foot
+  local top = foot + plan.tall
+  -- the legs under the board (through it they showed on its face as lines down the names), a
+  -- frame round it, the flag's two bands along its top
+  local legs = math.max(2, math.ceil(plan.wide / W.post) + 1)
+  for n = 0, legs - 1 do
+    local x = -w + .5 + (plan.wide - 1) * n / (legs - 1)
+    box(c.metal, x - .22, -.22, -.5, x + .22, .22, foot - .15)
+  end
+  box(c.metal, -w - .15, -d - .05, foot - .15, w + .15, d + .05, foot)
+  box(c.metal, -w - .15, -d - .05, top, w + .15, d + .05, top + .15)
+  box(c.dark, -w, -d, foot, w, d, top)
+  local band = W.band * k
+  box(c.blue, -w, -d - .02, top - band / 2, w, d + .02, top)
+  box(c.yellow, -w, -d - .02, top - band, w, d + .02, top - band / 2)
+  -- the heading, then the names by columns, each centred in its column
+  local face = d + .03
+  local z = top - (W.pad * .6 + W.band + W.title) * k
+  BLD.pinWords(mesh, 'glyphs', T, plan.title, W.title * k, 0, face, z)
+  z = z - (W.gap + W.thanks) * k
+  BLD.pinWords(mesh, 'glyphs', T, plan.thanks, W.thanks * k, 0, face, z)
+  local first = z - (2 * W.gap + W.name) * k
+  local size, step = W.name * k, (W.name + W.gap) * k
+  local span = plan.cols * plan.colW
+  for n, chars in ipairs(plan.names) do
+    local col, row = (n - 1) % plan.cols, math.floor((n - 1) / plan.cols)
+    local x = -span / 2 + (col + .5) * plan.colW
+    BLD.pinWords(mesh, 'glyphs', T, chars, size, x, face, first - row * step)
+  end
+  return true
+end
+
 -- A street thing (BLD.PIN.street) in frame T, its front (-y) to the road; x, y, a: the frame's
 -- origin and turn, for the stock shapes put(shape, x, y, yaw) sets with their +Y to the road
 function BLD.pinStreet(mesh, cat, T, seed, tags, x, y, a, put)
@@ -12061,6 +12366,8 @@ function BLD.pinStreet(mesh, cat, T, seed, tags, x, y, a, put)
   local wall = tags.support == 'wall_mounted' or tags.support == 'wall'
   if cat == 'billboard' then
     if wall then return end
+    -- the wall of supporters, where the planet has their list
+    if tags.operator == BLD.PIN.thanks.operator and BLD.supportersWall(mesh, T, BLD.supporters) then return end
     local B = BLD.PIN.billboard
     local foot = tags.support == 'ground' and B.low or B.foot
     local w, top = B.width / 2, foot + B.height
@@ -12156,6 +12463,25 @@ function BLD.pinStreet(mesh, cat, T, seed, tags, x, y, a, put)
     local flag = BLD.FLAGS[code] or {plain[seed % 4 + 1]}
     local fw = math.min(2.4, h * .2)
     local fh, top = fw * 2 / 3, h - .15
+    -- the country's own flag from the atlas (flag_lib.lua, earthng/flag_art.py), as wide as its
+    -- proportion; from behind it reads mirrored, as cloth does. Without the atlas, or for a code
+    -- it has not, the drawn stripes below.
+    local cell = BLD.flagLib and BLD.flagLib.cells[code]
+    if cell then
+      local lib = BLD.flagLib
+      local col, row = cell[1] % lib.per, math.floor(cell[1] / lib.per)
+      local u0, u1 = (col + lib.pad[1]) / lib.per, (col + 1 - lib.pad[1]) / lib.per
+      local v0, v1 = 1 - (row + 1 - lib.pad[2]) / lib.per, 1 - (row + lib.pad[2]) / lib.per
+      local wide = fh * math.max(1, math.min(2, cell[2]))
+      local a, b = T(.05, -.012, top - fh), T(.05 + wide, -.012, top - fh)
+      local d, e = T(.05 + wide, -.012, top), T(.05, -.012, top)
+      mesh.polygon('flags', {{a[1], a[2], a[3], u0, v0}, {b[1], b[2], b[3], u1, v0}, {d[1], d[2], d[3], u1, v1},
+        {e[1], e[2], e[3], u0, v1}}, false)
+      a, b, d, e = T(.05 + wide, .012, top - fh), T(.05, .012, top - fh), T(.05, .012, top), T(.05 + wide, .012, top)
+      mesh.polygon('flags', {{a[1], a[2], a[3], u1, v0}, {b[1], b[2], b[3], u0, v0}, {d[1], d[2], d[3], u0, v1},
+        {e[1], e[2], e[3], u1, v1}}, false)
+      flag = NONE
+    end
     for k, name in ipairs(flag) do
       local u0, u1 = (k - 1) / #flag, k / #flag
       if flag.across then
@@ -17786,6 +18112,8 @@ local function build(cells, i, j, options)
   -- A far tile is met as its ground and its roads. What stands on them from here on (the boxes
   -- of its buildings, fences, rails, gantries) is only drawn (the collector's hooks.drawn).
   if distant then scene.hooks.drawn = true end
+  -- the ways that pass under houses (BLD.ARCH): near tiles open their walls over them
+  shops.passages = decor and not distant and options.arches ~= false and BLD.passages(lists.roads, lists.lines) or nil
   for _, building in ipairs(decor and lists.buildings or NONE) do
     if shops.city3d then
       shops.city3d.currentAC = VEG.city3d.acBlocks[tostring(building.id)] and tostring(building.id) or nil
@@ -17802,6 +18130,8 @@ local function build(cells, i, j, options)
       end
       span.hiddenWalls = nil
       local footprint, h, base, height, lifted, bottom = span.footprint, span.h, span.base, span.height, span.lifted, span.bottom
+      span.arches = shops.passages and not lifted and tags.building ~= 'roof'
+        and BLD.arches(shops.passages, rings, base + height, ground) or nil
       -- Extend grounded walls below the surface actually drawn, including road shaping.
       -- Preserve the datum, roof and explicitly elevated building parts.
       if options.realStyle ~= false and not lifted then
@@ -17933,6 +18263,8 @@ local function build(cells, i, j, options)
           local full = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
           local runs = shops.cover and raw == rings[1] and not lifted and not open and BLD.hidden(shops.cover, building, a, b, full, bottom) or nil
           if runs and shopWalls and shopWalls[BLD.wallKey(a, b)] then runs = nil end
+          -- (an arch opens the outer wall and the yard's wall alike)
+          if span.arches then runs = BLD.archRuns(span.arches, a, b, full, runs) end
           for _, piece in ipairs(BLD.pieces(a, b, full, runs)) do
             piece.full, piece.runs = full, runs
             walls[#walls + 1] = piece
@@ -17961,6 +18293,9 @@ local function build(cells, i, j, options)
           local wallKind = kind
           if not distant and not options.far and not hide and length > .4 then
             ROADS.collisionWall(scene, a, b, bottom, top, step)
+          elseif piece[6] and not distant and length > .4 and hide < top - .2 then
+            -- over an arch the shell stands from the opening's top
+            ROADS.collisionWall(scene, a, b, hide, top, step)
           end
           if piece.full < 16 and (kind:find('wall_pnl_', 1, true) == 1 or kind:find('wall_lgg_', 1, true) == 1 or kind:find('wall_brk_', 1, true) == 1) then wallKind = kind .. '_end' end
           local door = doors and ((use == 'garages' and length >= 8) or (use == 'garage' and length <= 4.5))
@@ -17968,7 +18303,8 @@ local function build(cells, i, j, options)
           if hide then
             -- inside the neighbour up to its top; above a lower one, a blank fire wall
             if hide < top - .05 then
-              local fire = BLD.kitPlan and 'kw_' .. BLD.kitPlan.wall or BLD.fireWall(wallKind)
+              -- (over an arch the wall goes on as it is, not blank)
+              local fire = BLD.kitPlan and 'kw_' .. BLD.kitPlan.wall or (piece[6] and wallKind or BLD.fireWall(wallKind))
               local sc, z0 = BLD.kitPlan and BLD.kitPlan.wallM or BLD.facadeScale(fire), math.max(hide, bottom)
               scene.polygon(fire, {{a[1], a[2], z0, along / sc, (z0 - base) / sc},
                 {b[1], b[2], z0, (along + length) / sc, (z0 - base) / sc},
@@ -18071,6 +18407,9 @@ local function build(cells, i, j, options)
           along = along + length
           if k % 32 == 0 then pause() end
         end
+      end
+      if span.arches then
+        BLD.archInside(scene, span.arches, rings, BLD.kitPlan and 'kw_' .. BLD.kitPlan.wall or BLD.fireWall(kind), base, step)
       end
       if detailed then BLD.downpipes(scene, rings, base, top, height, kind, span.hiddenWalls) end
       if options.experimentalDetail and not options.far and not lifted then
@@ -18390,6 +18729,11 @@ local function build(cells, i, j, options)
   sceneDecor.finish()
   for _, item in ipairs(sceneDecor.items) do item.decor = true; scene.items[#scene.items + 1] = item end
   for material in pairs(sceneDecor.used) do scene.used[material] = true end
+  -- How many of the decor collector's items are in the scene. The pins, the signs and the yard
+  -- draw into it after this, and each used to take what came after a count of its own: a pin's
+  -- pieces cut off at PIECE_TRIS before the signs' count was taken were in no count and never
+  -- reached the scene (a tile of two hundred flagpoles drew its flags and none of its poles).
+  sceneDecor.joined = #sceneDecor.items
   -- A bus shelter stands beyond the curb (and sidewalk) of the nearest ground-level road, its open
   -- side to the road (fast.add_street_points): OSM puts most stops on the carriageway itself.
   -- A platform and its stop position nearby make one shelter.
@@ -18683,7 +19027,6 @@ local function build(cells, i, j, options)
   OFFROAD.signRequests = (options.experimentalDetail or options.hyper) and not distant and lists.signMouths and
     SIGNS.plan(lists.roads, lists.signMouths, lists.signOrder, lists.points, cutsOf, pause) or nil
   if OFFROAD.signRequests and #OFFROAD.signRequests > 0 then
-    OFFROAD.signDecorBefore = #sceneDecor.items
     local report = type(options.detailReport) == 'table' and options.detailReport or nil
     -- The small known footprint of a sign/signal must avoid buildings, water, paths and
     -- surveyed furniture as well as roads. Index once; the same positions are passed to the
@@ -18786,11 +19129,12 @@ local function build(cells, i, j, options)
         end}, pause)
     if report then report.signs = counts end
     sceneDecor.finish() -- signals also need flushing when street furniture is disabled
-    for k = OFFROAD.signDecorBefore + 1, #sceneDecor.items do
+    for k = sceneDecor.joined + 1, #sceneDecor.items do
       local item = sceneDecor.items[k]
       item.decor = true
       scene.items[#scene.items + 1] = item
     end
+    sceneDecor.joined = #sceneDecor.items
     for material in pairs(sceneDecor.used) do scene.used[material] = true end
     for _, mesh in pairs(OFFROAD.lenses) do
       mesh.finish()
@@ -18867,17 +19211,17 @@ local function build(cells, i, j, options)
       put = put, lists = lists, strips = strips, segmentBins = segmentBins, reserved = reserved,
       spacing = options.propSpacing or 0, parkedCars = options.parkedCars, lift = lift, pause = pause, have = VEG.have, lamp = LAMP, containers = containers,
       doors = {}, plays = {}}
-    local before = #sceneDecor.items
     -- options.yard == false leaves the yards as the street furniture left them (A/B benches)
     if options.yard ~= false then reserved = YARD.build(yardCtx) end
     -- the scene was finished before the furniture: flush what the yard drew, its cars as decor
     scene.finish()
     sceneDecor.finish()
-    for k = before + 1, #sceneDecor.items do
+    for k = sceneDecor.joined + 1, #sceneDecor.items do
       local item = sceneDecor.items[k]
       item.decor = true
       scene.items[#scene.items + 1] = item
     end
+    sceneDecor.joined = #sceneDecor.items
     for material in pairs(sceneDecor.used) do scene.used[material] = true end
     scene.streetReservations = reserved
     -- what the yard laid out, for the offline maps and tests (cars and kit are mesh, not items)
@@ -20090,6 +20434,15 @@ local function build(cells, i, j, options)
         pause()
       end
     end
+    -- what the decor collector still holds (pins on a tile with no signs and no yard)
+    sceneDecor.finish()
+    for k = sceneDecor.joined + 1, #sceneDecor.items do
+      local item = sceneDecor.items[k]
+      item.decor = true
+      scene.items[#scene.items + 1] = item
+    end
+    sceneDecor.joined = #sceneDecor.items
+    for material in pairs(sceneDecor.used) do scene.used[material] = true end
     if options.sceneReady and not distant then
       SPLIT.scene = SPLIT.out()
       scene.items = {}
@@ -20329,4 +20682,6 @@ M.clip = clip
 M.TUNE = TUNE
 M.EDGE_MAPS = EDGE_MAPS
 M.STREET_PROPS = VEG.props
+-- an arch through a house and the wall of supporters (earthng/test_arches.py, test_supporters.py)
+M.ARCH, M.wallPlan, M.supportersWall = BLD.ARCH, BLD.wallPlan, BLD.supportersWall
 return M

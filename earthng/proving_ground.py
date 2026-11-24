@@ -17,7 +17,8 @@ Round the main grid lie four universes (BLOCKS; mod/lua/ge/extensions/e2r/univer
 mountain range, a desert, deep snow and deep mud. Each has the same sample of the main grid's
 subjects, built by its own rules, and land of its own; the pack's manifest names the universe
 of every tile, and the game builds the tile by it. The north-east corner is the bridges and
-tunnels (proving_spans.py): a span a tile, by the main grid's rules.
+tunnels (proving_spans.py): a span a tile, by the main grid's rules. At the ring road's
+north-west corner stands the wall of supporters (proving_thanks.py).
 """
 import argparse
 from collections import defaultdict
@@ -36,7 +37,7 @@ from osm_tiles import BUFFER, CELL  # noqa: E402
 
 ID = 'polygon'
 TITLE = 'Полігон · точка Немо'
-VERSION = '0.1.0'
+VERSION = '0.2.0'
 POINT_NEMO = (-48.8767, -123.3933)      # lat, lon of the oceanic pole of inaccessibility
 # OSM cells (0.05 degrees) of the package, half-open: 6 x 5 cells, 22 x 28 km of ocean. The
 # frame's origin is the middle of the package box (fast_sources.source_identity): the corner of
@@ -62,6 +63,8 @@ BLOCKS = (
     {'id': 'jungle', 'prefix': 'JG', 'title': 'Джунглі', 'titleEn': 'Jungle', 'tiles': (8, 13, -11, -6), 'universe': 'jungle'},
     # (the north-east corner, between the mountains and the mud: no universe, the main grid's rules)
     {'id': 'spans', 'prefix': 'BR', 'title': 'Мости й тунелі', 'titleEn': 'Bridges and tunnels', 'tiles': (8, 13, 6, 12), 'universe': None},
+    # (one tile of the ring road's corridor, at its north-west corner: the wall of supporters, proving_thanks.py)
+    {'id': 'thanks', 'prefix': 'TY', 'title': 'Алея подяки', 'titleEn': 'Supporters’ wall', 'tiles': (-8, -7, 5, 6), 'universe': None},
 )
 BLOCK = {b['id']: b for b in BLOCKS}
 # the land every block stands on, in metres: the coastline runs SHORE outside it

@@ -376,6 +376,12 @@ KINDS['car'] = ('car', [.6, .6, .62, 1], 'METAL', 1.0, 'wall')       # parked ca
 # a tint over a white map (an sRGB factor: the colour itself over 255).
 TEXTURES['yard'] = {'baseColorMap': f'{ART}/real/yard.color.png'}
 KINDS['yard'] = ('yard', [.6, .6, .6, 1], 'METAL', 1.0, 'wall')
+# the flags of the world's countries on their poles (flag_art.py, generator.lua 'flagpole'): one
+# atlas, a flag a cell, cut by opacity (Nepal's is no rectangle)
+TEXTURES['flags'] = {'baseColorMap': f'{ART}/real/flags.color.png', 'opacityMap': f'{ART}/real/flags_o.data.png'}
+KINDS['flags'] = ('flags', [.94, .94, .94, 1], 'METAL', 1.0, 'wall')
+FLAGS_REF = 128
+EXTRA['flags'] = {'alphaTest': True, 'alphaRef': FLAGS_REF}
 TEXTURES['brand_sign'] = {'baseColorMap': f'{ART}/real/brand_sign.color.png'}
 KINDS['brand_sign'] = ('brand_sign', [1, 1, 1, 1], 'METAL', 1.0, 'wall')
 # photographs of real stores squared up into facades (fast_art.SHOP_PHOTOS)

@@ -1597,6 +1597,11 @@ THEMES = {
               'Дивитися збоку: лінію настилу, його товщину, опори, стик із дорогою, портал.',
               'One bridge or tunnel a tile: over water, over a road, in relief, by its tags, under the ground and through '
               'houses. Look from the side: the deck’s line and depth, its piers, where it meets the road, the portal.'),
+    'thanks': ('Алея подяки', 'Supporters’ wall',
+               'Стіна з іменами людей, які підтримують EarthNG. Імена — у supporters.lua планети: дошка сама '
+               'розкладає їх у колонки й росте разом зі списком.',
+               'A wall with the names of the people who support EarthNG. The names are in the planet’s supporters.lua: '
+               'the board lays them out in columns and grows with the list.'),
     'wild': ('Земля всесвіту', 'The universe’s own land',
              'Рельєф і природа, заради яких блок існує: тут видно клімат, підміну матеріалів і фізику ґрунту всесвіту.',
              'The relief and nature the block exists for: the universe’s climate, swapped materials and ground physics show here.'),
@@ -1634,3 +1639,5 @@ def build(plan):
     proving_universes.build(plan)
     import proving_spans
     proving_spans.build(plan)
+    import proving_thanks
+    proving_thanks.build(plan)

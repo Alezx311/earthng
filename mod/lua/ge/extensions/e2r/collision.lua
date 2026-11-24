@@ -43,7 +43,7 @@ for _, land in ipairs({'dry', 'lush', 'earth'}) do
     QUIET.road['e2rf_fade_' .. land .. level], QUIET.scene['e2rf_fade_' .. land .. level] = true, true
   end
 end
-for _, kind in ipairs({'win_pvc', 'win_wood', 'door_house', 'door_garage', 'door_rust', 'chimney', 'pipe', 'ac_unit', 'dish', 'plate', 'glyphs', 'glyphs_dark', 'glyphs_red', 'sign_white', 'sign_yellow', 'sign_green', 'sign_blue', 'sign_black', 'lens_dark', 'lens_red', 'lens_yellow', 'lens_green', 'paint_red', 'fascia',
+for _, kind in ipairs({'win_pvc', 'win_wood', 'door_house', 'door_garage', 'door_rust', 'chimney', 'pipe', 'ac_unit', 'dish', 'plate', 'glyphs', 'glyphs_dark', 'glyphs_red', 'flags', 'sign_white', 'sign_yellow', 'sign_green', 'sign_blue', 'sign_black', 'lens_dark', 'lens_red', 'lens_yellow', 'lens_green', 'paint_red', 'fascia',
     'footway', 'footway_asphalt', 'trodden', 'ground', 'grass_dry', 'grass_lush', 'earth',
     'paved', 'water', 'glacier', 'bare_rock', 'scree', 'beach', 'wetland', 'orchard', 'vineyard', 'farmland',
     'meadow', 'heath', 'scrub', 'forest', 'park', 'bare_ground', 'ballast', 'track', 'rail', 'rail_side'}) do
