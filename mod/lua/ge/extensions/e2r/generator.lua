@@ -1684,17 +1684,25 @@ local function collector(rect, key, layer, pause, mixed)
       for _, material in ipairs(mats) do flushMaterial(material) end
       return
     end
-    for first = 1, #mats, MIXED_MATS do
-      local meshes, names, triangles = {}, {}, 0
-      for k = first, math.min(#mats, first + MIXED_MATS - 1) do
-        local mesh = groups[mats[k]]
-        mesh.vmap, mesh.nmap, mesh.umap, mesh.fmap = nil, nil, nil, nil
-        triangles = triangles + mesh.tris
-        mesh.tris = nil
-        meshes[#meshes + 1], names[#names + 1] = mesh, mesh.material or mats[k]
+    -- what is only drawn (hooks.drawn) in objects of its own: an object is in a collision
+    -- rebuild whole or not at all
+    for pass = 1, 2 do
+      local part = {}
+      for _, material in ipairs(mats) do
+        if (groups[material].quiet and 2 or 1) == pass then part[#part + 1] = material end
       end
-      items[#items + 1] = {kind = 'proc', name = 'e2rl_' .. key .. '_' .. layer .. '_' .. #items,
-        pos = origin, meshes = meshes, triangles = triangles, mats = names, layer = layer}
+      for first = 1, #part, MIXED_MATS do
+        local meshes, names, triangles = {}, {}, 0
+        for k = first, math.min(#part, first + MIXED_MATS - 1) do
+          local mesh = groups[part[k]]
+          mesh.vmap, mesh.nmap, mesh.umap, mesh.fmap = nil, nil, nil, nil
+          triangles = triangles + mesh.tris
+          mesh.tris = nil
+          meshes[#meshes + 1], names[#names + 1] = mesh, mesh.material or part[k]
+        end
+        items[#items + 1] = {kind = 'proc', name = 'e2rl_' .. key .. '_' .. layer .. '_' .. #items,
+          pos = origin, meshes = meshes, triangles = triangles, mats = names, layer = layer, quiet = pass == 2 or nil}
+      end
     end
     groups, total = {}, 0
   end
@@ -1797,6 +1805,10 @@ local function collector(rect, key, layer, pause, mixed)
   -- car meets its shell, one quad a wall in the proxy of the wall's cell (ROADS.collisionWall).
   -- hooks.cap = the proxy cell's size: a piece drawn quiet that faces up (a roof) goes into the
   -- proxy of its cell as well, so a car that comes down on a roof still lands on it.
+  -- hooks.drawn: the same mark in a far tile's collector (mixed): what stands on its ground (the
+  -- boxes of its buildings, its fences and rails) is drawn and never met. A far building is the
+  -- box of its bounds, wider than the house and across the street beside it; the car met that box,
+  -- and for the seconds between the near tile's road and the next collision rebuild met it unseen.
   local hooks = {}
   local function triangle(kind, a, b, c, up)
     if hooks.bore and not hooks.boring then
@@ -1836,7 +1848,7 @@ local function collector(rect, key, layer, pause, mixed)
     local gkey = material
     local quiet = false
     if hooks.cell then gkey = material .. '\0' .. hooks.cell[1] .. ':' .. hooks.cell[2]
-    elseif hooks.quiet and not mixed then
+    elseif hooks.drawn or (hooks.quiet and not mixed) then
       gkey, quiet = QUIET_KEY[material], true
       if hooks.cap and nz >= CAP.nz and len >= CAP.len then
         local size = hooks.cap
@@ -1896,7 +1908,7 @@ local function collector(rect, key, layer, pause, mixed)
     end
     local material = 'e2rf_' .. kind
     if mixed and total >= mixed then flush() end
-    local quiet = hooks.quiet and not mixed or false
+    local quiet = hooks.drawn or (hooks.quiet and not mixed) or false
     local gkey = quiet and QUIET_KEY[material] or material
     local mesh = groups[gkey]
     if not mixed and mesh and mesh.tris >= PIECE_TRIS then flushMaterial(gkey); mesh = nil end
@@ -17771,6 +17783,9 @@ local function build(cells, i, j, options)
   if shops.city3d then
     for _, item in ipairs(shops.city3d.items) do scene.items[#scene.items + 1] = item end
   end
+  -- A far tile is met as its ground and its roads. What stands on them from here on (the boxes
+  -- of its buildings, fences, rails, gantries) is only drawn (the collector's hooks.drawn).
+  if distant then scene.hooks.drawn = true end
   for _, building in ipairs(decor and lists.buildings or NONE) do
     if shops.city3d then
       shops.city3d.currentAC = VEG.city3d.acBlocks[tostring(building.id)] and tostring(building.id) or nil
@@ -18315,6 +18330,7 @@ local function build(cells, i, j, options)
     end
   end
   mark('decor')
+  scene.hooks.drawn = nil
   -- The far ground is coarse triangles (options.farStep, 100 m) inside the tile and a fan to the fine
   -- lattice at its border: it ignores a road's cutting. Each far road surface vertex is lifted to
   -- ROADS.far.clear over the far ground's own triangle under it (never lowered), so it is not hidden.

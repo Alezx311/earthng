@@ -1140,9 +1140,11 @@ local function spawnItem(it, group, pause, tile, layer)
     if it.proxy then obj:setHidden(true) end
     if NATIVE and tile then
       S.coll = S.coll or collision.new()
-      S.coll:track(tile, obj:getID(),
-        not (tile.far or tile.horizon) and not it.proxy and not it.forceCollision and collision.quiet(meshes, layer),
-        it.triangles, layer, it.proxy and it.cell)
+      -- (a far tile is met as its ground and roads: collision.drawn)
+      local quiet
+      if tile.far or tile.horizon then quiet = collision.drawn(it, meshes)
+      else quiet = not it.proxy and not it.forceCollision and collision.quiet(meshes, layer) end
+      S.coll:track(tile, obj:getID(), quiet, it.triangles, layer, it.proxy and it.cell)
     end
     if it.lens and M.signals then M.signals.addMesh(obj:getID(), it.lens, it.colour) end
     local ms = t:stop()

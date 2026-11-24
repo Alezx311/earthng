@@ -97,7 +97,8 @@ for _, pair in ipairs({{'road', road}, {'scene', scene}, {'grass', grass}, {'far
           row.proxy = row.proxy + n
           local ck = it.cell[1] .. ',' .. it.cell[2] .. ',' .. it.cell[3]
           if not cells[ck] then cells[ck] = true; row.cells = row.cells + 1 end
-        elseif not it.forceCollision and collision.quiet(it.meshes, it.layer or layer) then
+        elseif (far and collision.drawn(it, it.meshes))
+            or (not far and not it.forceCollision and collision.quiet(it.meshes, it.layer or layer)) then
           row.quiet = row.quiet + n
         else
           row.solid = row.solid + n

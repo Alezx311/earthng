@@ -118,6 +118,37 @@ class FarCardTests(Tile):
             self.assertEqual([m for m in item.mats.values()], ['e2rf_far_tree'])
             self.assertEqual((item.layer, item.collision), ('far', 'None'))
 
+    def test_a_far_tile_marks_what_stands_on_it_as_only_drawn(self):
+        # A far building is the box of its bounds (this one, turned 45 degrees, is twice its
+        # footprint and lies across the street beside it), a card is a sheet as wide as the tree
+        # is tall: the car met both, the box unseen once the near tile's road had replaced it.
+        house = {'id': 'b', 'height': 12, 'tags': {'building': 'apartments'},
+                 'rings': [[[200, 150], [250, 200], [200, 250], [150, 200]]]}
+        fence = {'id': 'f', 'kind': 'fence', 'tags': {'barrier': 'fence'}, 'points': [[300, 100, 0], [340, 100, 0]]}
+        street = {'id': 'r', 'width': 8, 'points': line(-100, 260, 600, 260), 'tags': {'highway': 'secondary'}}
+        cell = {'buildings': [house], 'lines': [fence], 'roads': [street],
+                'terrain': {'rect': [-500, -500, 1000, 1000], 'nx': 2, 'ny': 2, 'heights': [20] * 4}}
+        far = self.build([cell], far=True, farCards=True)[2]
+        drawn, met = set(), set()
+        for item in far['items'].values():
+            if item.kind != 'proc':
+                continue
+            marks = {bool(mesh.quiet) for mesh in item.meshes.values()}
+            # an object is in a collision rebuild whole or not at all
+            self.assertEqual(len(marks), 1, list(item.mats.values()))
+            self.assertEqual(bool(item.quiet), marks == {True})
+            (drawn if marks == {True} else met).update(item.mats.values())
+        self.assertTrue(any(m.startswith(('e2rf_wall_', 'e2rf_hw_', 'e2rf_kw_', 'e2rf_clad_')) for m in drawn), drawn)
+        self.assertTrue(any(m.startswith('e2rf_fence') for m in drawn), drawn)
+        self.assertTrue(any(m.startswith('e2rf_roof') for m in drawn), drawn)
+        # the ground and the far road stay what the car stands on
+        self.assertTrue(any(m.startswith('e2rf_road') for m in met), met)
+        self.assertFalse(any(m.startswith(('e2rf_wall_', 'e2rf_hw_', 'e2rf_fence', 'e2rf_roof', 'e2rf_plinth')) for m in met), met)
+        self.assertFalse(drawn & met)
+        # a near tile keeps its shell: the proxies of its building's walls
+        near = self.build([cell])[1]
+        self.assertTrue(any(item.proxy for item in near['items'].values() if item.kind == 'proc'))
+
     def test_the_cards_stand_while_a_far_tiles_buildings_wait(self):
         far = self.build(self.WOOD, far=True, farDecor=False, farCards=True)[2]
         self.assertTrue(any(item.cards for item in far['items'].values()))

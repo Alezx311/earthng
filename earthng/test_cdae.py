@@ -250,8 +250,12 @@ class LuaWriter(unittest.TestCase):
             for k, v in pairs(extra or {}) do it[k] = v end
             return it
           end
+          -- a far tile is met as its ground and roads: its cards and what the generator marked as
+          -- only drawn (mesh.quiet: the boxes of its buildings, its fences) are quiet shapes
+          local box = item('e2rf_wall_pnl_grey')
+          box.meshes[1].quiet = true
           local far = {key = '0_0', items = {item('e2rf_ground'), item('e2rf_tree_cards', {cards = true}),
-            item('e2rf_roof', {decor = true}), item('e2rf_ground', {decor = true})}}
+            item('e2rf_roof', {decor = true}), item('e2rf_ground', {decor = true}), box}}
           shapes.pack(far, 'far', function(name) return 'v_' .. name .. '.cdae' end, write)
           local horizon = {key = 'h', items = {item('e2rf_farmap_x')}}
           shapes.pack(horizon, 'horizon', function(name) return 'h_' .. name .. '.cdae' end, write)
@@ -263,8 +267,9 @@ class LuaWriter(unittest.TestCase):
           end
           return table.concat(out, ' ')
         ''')
-        self.assertEqual(result, 'e2rs_0_0_far_solid:solid:2 e2rs_0_0_far_solid_cards:solid:cards:2 '
-                                 'e2rs_0_0_far_solid_decor:solid:decor:4 e2rs_h_horizon_quiet:quiet:2')
+        self.assertEqual(result, 'e2rs_0_0_far_solid:solid:2 e2rs_0_0_far_quiet_cards:quiet:cards:2 '
+                                 'e2rs_0_0_far_solid_decor:solid:decor:4 e2rs_0_0_far_quiet:quiet:2 '
+                                 'e2rs_h_horizon_quiet:quiet:2')
 
     def test_a_far_layer_is_one_solid_shape(self):
         kinds = self.build(self.QUAD + '''

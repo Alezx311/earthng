@@ -3,7 +3,7 @@
 -- VM); the game thread only loads the files.
 --
 -- A mesh goes into a shape of its collision class, as collision.lua sorts ProceduralMesh:
---   solid: what the car can meet (roads, kerbs, the scene's walls, a far tile's ground). A TSStatic
+--   solid: what the car can meet (roads, kerbs, the scene's walls, a far tile's ground and roads). A TSStatic
 --     with collisionType 'Visible Mesh Final', tracked by collision.lua like the meshes it replaces.
 --   quiet: drawn only (markings, covers, the detailed ground over its proxy). collisionType 'None',
 --     so a rebuild never has to hide it.
@@ -68,7 +68,8 @@ function M.pack(manifest, layer, file, write, pause)
       kept[#kept + 1] = it
       if meshes then stats.left = stats.left + 1 end
     else
-      local class = (layer == 'horizon' or (not distant and not it.forceCollision
+      -- (a far tile: its ground and roads are met, its cards and what stands on it are drawn)
+      local class = (layer == 'horizon' or (distant and collision.drawn(it, meshes)) or (not distant and not it.forceCollision
         and collision.quiet(meshes, it.layer or layer))) and 'quiet' or 'solid'
       local variant = it.cards and 'cards' or (it.decor and 'decor' or '')
       origin = origin or it.pos

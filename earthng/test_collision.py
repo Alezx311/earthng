@@ -95,6 +95,22 @@ class CollisionTests(unittest.TestCase):
           assert(not q(marked('col_bldg'), 'scene'))
         ''')
 
+    def test_a_far_tile_is_met_as_its_ground_and_roads(self):
+        lua = self.make()
+        lua.execute('''
+          local d = collision.drawn
+          local function marked(...) local out = mesh(...) for _, m in ipairs(out) do m.quiet = true end return out end
+          -- a tree's card is two sheets as wide as the tree is tall: never met, whatever its meshes say
+          assert(d({cards = true}, mesh('far_tree')))
+          -- the boxes of its buildings and its fences, marked where the generator made them
+          assert(d({}, marked('wall_pnl_grey', 'roof', 'fence_mesh')))
+          -- its ground and roads are not marked; one of them in an object keeps the object solid
+          assert(not d({}, mesh('ground', 'road_worn')))
+          local both = marked('roof')
+          both[2] = {material = 'e2rf_ground'}
+          assert(not d({}, both) and not d({}, {}) and not d(nil, nil))
+        ''')
+
     def test_proxies_are_kept_further_than_they_are_asked_for(self):
         lua = self.make()
         lua.execute('''

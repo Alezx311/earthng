@@ -84,6 +84,20 @@ function M.quiet(meshes, layer)
   return true
 end
 
+-- A far tile is met as its ground and its roads. true for an object of it that is only drawn:
+-- its trees' cards (item.cards: two crossed sheets as wide as the tree is tall, 16-22 m, mostly
+-- clear, and a rebuild takes a sheet whole: a street tree's card was a wall across the street
+-- nobody could see), and what the generator marked where it made it (mesh.quiet on every mesh:
+-- the boxes of the buildings, fences and rails, the collector's hooks.drawn).
+function M.drawn(item, meshes)
+  if item and item.cards then return true end
+  if not meshes or #meshes == 0 then return false end
+  for _, mesh in ipairs(meshes) do
+    if not mesh.quiet then return false end
+  end
+  return true
+end
+
 -- is a proxy cell {ix, iy, size} within `ring` cells of a focus point (1, its 3x3, when not given)
 function M.nearCell(cell, points, ring)
   if not cell then return false end
