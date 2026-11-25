@@ -7,6 +7,8 @@ serves, listens to /events, asks the service for its status through POST /ipc, t
 place end to end (sources, cut, elevation, index, export, install) into the BeamNG user folder the
 service found, and checks the installed pack. --fake-planet puts a planet manifest of the expected
 version into the mods folder first, so a package without a bundled planet does not fetch one.
+--addons names the add-on packs (earthng/addons.json) chosen before the build: they are downloaded
+from the release with the planet stage, and the ones not named must stay out of the mods folder.
 Exit code 0 only when every step passed.
 """
 from __future__ import annotations
@@ -112,6 +114,8 @@ def main():
     p.add_argument('--port', type=int, default=47123)
     p.add_argument('--fake-planet', action='store_true')
     p.add_argument('--build-timeout', type=int, default=1800)
+    p.add_argument('--addons', nargs='*', default=['polygon'],
+                   help='add-on packs to choose before the build (default: the small proving ground)')
     a = p.parse_args()
     package = a.package.resolve()
     for name in ('EarthNG', 'python/bin/python3', 'bin/earthng-mapbuilder', 'bin/libearthng_native.so',
@@ -161,18 +165,29 @@ def main():
         if not a.place:
             print('PASS (no build)', flush=True)
             return
+        chosen = page.call('set_addons', chosen=a.addons)['addons']
+        print('add-ons chosen:', [(x['id'], x['chosen'], x['state']) for x in chosen], flush=True)
         started = time.monotonic()
         page.call('build', place=a.place, allow_pbf=True)
         done = page.wait_done(a.build_timeout)
         print('done:', done, f'{time.monotonic() - started:.0f} s', flush=True)
         if done.get('result') != 'complete':
             fail(f"build {done.get('result')}: {done.get('error')}")
+        if done.get('warnings'):
+            fail(f"build warnings: {done.get('warnings')}")
         installed = Path(status['mods']) / 'mods'
         packs = sorted(installed.glob('earthng_*.zip'))
         print('mods:', [(x.name, x.stat().st_size) for x in packs], flush=True)
-        pack = next((x for x in packs if x.name != 'earthng_planet.zip'), None)
-        if pack is None:
-            fail('no pack was installed')
+        after = page.call('status').get('addons') or []
+        print('add-ons after:', [(x['id'], x['chosen'], x['state']) for x in after], flush=True)
+        for entry in after:
+            want = 'installed' if entry['id'] in a.addons else 'missing'
+            if entry['state'] != want:
+                fail(f"add-on {entry['id']}: {entry['state']}, expected {want}")
+        pack = Path(done.get('path') or '')
+        if pack.name in ('', 'earthng_planet.zip') or pack.parent.resolve() != installed.resolve() \
+                or not pack.is_file():
+            fail(f"the build installed no pack in {installed}: {done.get('path')!r}")
         with zipfile.ZipFile(pack) as z:
             bad = z.testzip()
             manifests = [n for n in z.namelist() if n.endswith('/manifest.json') and n.count('/') == 3]

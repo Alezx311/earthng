@@ -18,10 +18,14 @@ same builder ships as **EarthNG-linux-x86_64.tar.gz** and opens in your web brow
 2. The Map Builder opens in your browser at `http://127.0.0.1:<port>/`. The terminal shows the
    address if no browser opens.
 3. Search for a town, draw an area or choose a route, and press **Create the map**. The planet
-   (bundled in the package) and your map are installed into the game's `mods` folder.
+   (bundled in the package), the proving ground and the flora pack (downloaded from the release)
+   and your map are installed into the game's `mods` folder.
 4. In BeamNG.drive open **Freeroam → EarthNG - Planet** and land inside your map.
 
-The proving ground (`earthng_polygon.zip`) and other packs are copied into the same `mods` folder.
+The proving ground (`earthng_polygon.zip`) and the flora pack (`earthng_flora.zip`, about 270 MB)
+are ticked under the mod's row: they come with the planet, each checked against its SHA-256.
+Untick what you don't want; **install now** adds the ticked ones to a planet you already have.
+Other packs are copied into the same `mods` folder.
 
 ## Where things are
 
@@ -88,7 +92,9 @@ Download the new package and unpack it over the old folder (or next to it). Your
   `sitecustomize`) loads it where the system has none.
 - `.github/workflows/linux.yml` builds and tests the package on Linux (without the planet, whose
   art is not in Git), then unpacks it on a bare Ubuntu 20.04 and builds Monaco end to end through
-  the HTTP page (`earthng/linux_smoke.py`). The release takes that artifact and adds the planet
-  with `--repack`.
+  the HTTP page (`earthng/linux_smoke.py`). The smoke chooses only the proving ground as an add-on
+  (`--addons polygon`, the default): it must be downloaded from the release with the planet stage,
+  and the flora pack must stay out. The release takes that artifact and adds the planet with
+  `--repack`.
 - Tests: `earthng/test_linux.py` (user folders on Linux and Proton, the server's guards, the
   tarball's modes and symlinks).

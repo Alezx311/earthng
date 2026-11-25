@@ -1,6 +1,6 @@
 # Вуличні меблі, які машина збиває (11.11.2026)
 
-Гілка `exp/rust-in-mod`. BeamNG.drive 0.40.5, ізольований профіль `test_world.py`, пак Київської
+Робилося в гілці `exp/rust-in-mod`; код у `master` з 12.11 (реліз 0.9.0). BeamNG.drive 0.40.5, ізольований профіль `test_world.py`, пак Київської
 області (`out/kyiv-oblast-polygon/earthng_kyiv-oblast.zip`), висадка в центрі Києва (50.4477, 30.5233),
 якість 50, Normal 1280×720. Код: [`knock.lua`](../mod/lua/ge/extensions/e2r/knock.lua) і склейка в
 `world.lua` (`M.knock*`). Проби: [`p24_knock_forest.lua`](../research/rust-in-mod/p24_knock_forest.lua),

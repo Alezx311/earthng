@@ -4,6 +4,32 @@ Newest first. Each entry records what was checked before a release and what was 
 in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
 `MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
 
+## 1.1.0, EarthNG.exe replaced (2026-11-25): the proving ground and flora with the planet, from ff73391
+
+The first 1.1.0 exe installed only the planet. The one built from ff73391 also downloads the
+ticked proving ground and flora pack from this release (`earthng/addons.json`, size and sha256
+checked, [MAPBUILDER_APP.md](MAPBUILDER_APP.md)). It replaced `EarthNG.exe` in `v1.1.0` under the
+same name; the tag stays on 0b9c9a8 and the version stays 1.1.0.
+
+- EarthNG.exe 1.1.0 (`prepare_app.py --planet …`, the planet built from 0b9c9a8 above, byte-equal
+  to the one the first exe carried): 647 462 166 bytes, sha256 4581a626…; BUILD_INFO version 1.1.0,
+  planet 1.1.0, source ff73391; runtime 614.0 MB.
+- The runtime unpacked into a scratch folder with its own `EARTHNG_HOME` and a stand-in BeamNG
+  user folder: the service reported both packs as missing, then installed `earthng_polygon.zip`
+  from the release URL in `addons.json` (699 962 bytes, sha256 equal to the catalog). The flora
+  pack (274 MB) was not downloaded by this exe; its release URL answers with the catalog's size.
+- Before the commit: Python discover 1668 OK (1 skipped), 12 of them in `test_addons.py`; the
+  page's add-on rows, install now and the done card's warnings checked in the browser against the
+  mock service; the owner checked the feature in the window. `Tests` (Windows) is green at ff73391.
+- Published: uploaded as `EarthNG.new.exe`, its GitHub digest compared, the old asset deleted and
+  the new one renamed (`out/release-1.1/publish_1_1_0_update.py`; the release as it was is saved in
+  `release-before-20261125-235321.json`). The public download link answers with 647 462 166 bytes.
+  The description says the exe was updated and gives the new sum.
+- Not run: this exe in a clean Windows profile, a pack build by it, the flora pack installed by
+  it, BeamNG 0.39.
+- The in-app updater still offers nothing: the rolling `EarthNG` release has no `EarthNG.json`,
+  and `parse_app_manifest` caps the exe at 500 000 000 bytes, below 1.1's size.
+
 ## 1.1.0, release v1.1.0 (2026-11-25): EarthNG.exe and the proving ground from 0b9c9a8
 
 A release of its own, `v1.1.0`, like `v1.0.0`: `EarthNG.exe` and `earthng_polygon.zip`. The same

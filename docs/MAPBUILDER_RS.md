@@ -1,6 +1,8 @@
-# MapBuilder на Rust — стан на 2026-11-08
+# MapBuilder на Rust
 
-Код у `master`, у гравця з релізом 0.8.0 (усередині EarthNG.exe). Мета — щоб місто гравця збиралося
+Код у `master`. У гравця він усередині EarthNG.exe з релізу 0.8.0 (зараз v1.1.0) і в пакеті Linux
+(`bin/earthng-mapbuilder`, `libearthng_native.so`). Опис і заміри нижче — з 2026-11-08, далечінь
+(`far`) додано 13.11. Мета — щоб місто гравця збиралося
 за хвилину-дві, а не за 20+ хвилин. Вікно, яке запускає цей конвеєр, описане в [MAPBUILDER_APP.md](MAPBUILDER_APP.md).
 
 ## Принцип
@@ -18,7 +20,7 @@
 | `kernels` | `earthng_native.dll` для ctypes: CG профілів доріг, DEM Terrarium (`terrain.rs`) |
 | `pack` | Формат клітинок EGB2 (`format.rs`) і EGB3 (`fixed.rs`, читання й транскод), графи маршрутизації EGR1 (`routing.rs`) |
 | `cells` | `compile_cell` + кодер: індекс через SQLite, сцени, GEOS із shapely (`geos.rs`, завантажується під час роботи), семантика numpy (`numeric.rs`) |
-| `mapbuilder` | `earthng-mapbuilder.exe`: підкоманди `cut`, `routing`, `map-source`, `compile`, `scene` |
+| `mapbuilder` | `earthng-mapbuilder.exe`: підкоманди `cut`, `routing`, `far`, `map-source`, `compile`, `scene`, `ways`, `encode-cells` |
 | `app` | `EarthNG.exe`: вікно WebView2, сторінка `app/ui`, тайли підкладки, розпаковка runtime ([MAPBUILDER_APP.md](MAPBUILDER_APP.md)) |
 
 `earthng/native_tool.py` знаходить exe і dll: спершу в `bin/` (реліз), потім у `rust/target/release`

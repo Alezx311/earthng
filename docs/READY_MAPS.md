@@ -4,9 +4,14 @@ Each link below downloads a country or regional snapshot. To include data introd
 by a newer release, build the area in [EarthNG.exe](../README.md#build-your-own-map-windows).
 You can also build a section along your next route and install it alongside existing coverage.
 
-1. Download **earthng_planet.zip** from the [current GitHub release](https://github.com/Alezx311/earthng/releases/tag/EarthNG).
+1. Install the EarthNG 1.1 planet: download **EarthNG.exe** from the
+   [current release](https://github.com/Alezx311/earthng/releases/tag/v1.1.0) and press
+   **Install the planet** in its window (or in Settings). The proving ground and the flora
+   pack come with it while they are ticked. On Linux the [Linux package](LINUX.md) installs
+   the same planet. The rolling `EarthNG` release still holds the older 0.9.0 planet.
 2. Download one or more country ZIPs below. Keep each country ZIP packed.
-3. Put the planet ZIP and country ZIPs in your BeamNG user folder's **mods** directory.
+3. Put the country ZIPs in your BeamNG user folder's **mods** directory, next to
+   `earthng_planet.zip`.
 4. Restart BeamNG and open **Freeroam → EarthNG - Planet**. Choose a point inside installed coverage.
 
 On 19 November 2026 all 27 direct links below served a ZIP header without a Google sign-in.

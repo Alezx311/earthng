@@ -68,8 +68,11 @@ option "Model detail by speed" turns it off.
 ## The flora pack (FoliMesh)
 
 The ready pack is **earthng_flora.zip** in [release v1.1.0](https://github.com/Alezx311/earthng/releases/tag/v1.1.0):
-106 models of 90 species and forms. Copy it into `mods/` beside the 1.1 planet and restart the
-game. The rest of this section is for building a pack of your own.
+106 models of 90 species and forms. EarthNG.exe (and the Linux package) installs it with the
+planet while **Flora** is ticked under the mod's row, after checking its size and SHA-256;
+**install now** adds it to a planet you already have. Or copy it into `mods/` beside the 1.1
+planet yourself. Restart the game if it is open. The rest of this section is for building a
+pack of your own.
 
 FoliMesh is a procedural vegetation generator: a species, a seed and an age make one model with
 its levels of detail, always the same file. Its MCP endpoint needs a paid plan and an API key

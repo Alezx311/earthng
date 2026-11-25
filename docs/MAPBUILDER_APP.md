@@ -1,6 +1,7 @@
 # EarthNG.exe — один файл для встановлення моду і збірки карт
 
-Стан на 2026-11-08: вийшов у релізі 0.8.0, код у `master`. Рішення користувача (8.11):
+Стан на 2026-11-26: у релізі v1.1.0 exe, зібраний з ff73391, код у `master`. Перший exe вийшов у
+релізі 0.8.0. Рішення користувача (8.11):
 
 - **Один exe на Rust із вшитим Python.** Гравець нічого не встановлює: ні Python, ні Tk, ні pip.
 - **Інтерфейс — веб-сторінка у вікні WebView2** (є у Windows 10/11). Карта для вибору області,
@@ -52,9 +53,12 @@ runtime exe є `earthng/ready_packs.json` з готовими паками ре�
 
 ## Окремий реліз на версію
 
-Реліз `v1.0.0` містить лише `EarthNG.exe`; `v1.1.0` — `EarthNG.exe` і пак полігона
-`earthng_polygon.zip` (скрипт публікації: `out/release-1.1/publish_1_1_0.py`, чернетка →
-перевірка `digest` → публікація). Збірка через
+Реліз `v1.0.0` містить лише `EarthNG.exe`. У `v1.1.0` лежать `EarthNG.exe`, пак полігона
+`earthng_polygon.zip`, пак флори `earthng_flora.zip` і `EarthNG-linux-x86_64.tar.gz`. Скрипт
+публікації — `out/release-1.1/publish_1_1_0.py`: чернетка → перевірка `digest` → публікація.
+25.11 exe в `v1.1.0` замінено збіркою з ff73391, яка ставить полігон і флору
+(`publish_1_1_0_update.py`). Файл вантажиться під тимчасовою назвою, після перевірки `digest`
+старий видаляється, а новий перейменовується. Тег лишився на 0b9c9a8. Збірка через
 `prepare_app.py --out out/release/1.0.0 --planet <earthng_planet.zip>` додає готову
 планету в runtime без повторного стиснення й перевіряє збіг версій. Під час
 встановлення програма спершу бере планету зі свого runtime, потім сусідній ZIP,
@@ -91,8 +95,8 @@ runtime exe є `earthng/ready_packs.json` з готовими паками ре�
 ```
 
 Каталог посилається на файли того релізу, який названо в `--release`. Exe нової версії може
-брати паки з релізу попередньої версії, якщо ті не змінилися. Exe 1.1.0, опублікований 25.11, цієї
-можливості ще не має. Тести — `earthng/test_addons.py`.
+брати паки з релізу попередньої версії, якщо ті не змінилися. Перша збірка exe 1.1.0 (з тега
+0b9c9a8, sha256 06dc3406…) паків не ставила. Тести — `earthng/test_addons.py`.
 
 ## Браузер замість вікна (Linux)
 
@@ -130,16 +134,24 @@ Checkout (`rust/target`) маніфест не читає і себе не за�
 `EarthNG.json`, вікно нічого не пропонує: без хеша файл не підміняється. На реліз треба викласти
 і exe, і цей json.
 
+Стан на 26.11: канал зараз не працює для 1.x. Rolling-реліз `EarthNG` досі тримає 0.9.0
+(`EarthNG.exe`, `earthng_planet.zip`, `earthng_albania.zip`) і не має `EarthNG.json`. Окремі
+релізи `v1.0.0` і `v1.1.0` цей файл не публікують. Тому exe 1.x бачить `reason: 'no-manifest'`
+і оновлення не пропонує. Крім того, `parse_app_manifest` приймає розмір лише до 500 000 000
+байтів, а exe 1.1 важить 647 462 166. Маніфест із таким розміром відкидається як `bad update
+size`. Поки канал не полагоджено, новий exe завантажують із релізу вручну.
+
 ## Як влаштований exe
 
 ```
 EarthNG.exe  (rust/crates/app)
-├─ вікно tao + wry (WebView2), сторінка з app/ui/ вшита в exe (протокол earthng://)
+├─ вікно tao + wry (WebView2), сторінка з app/ui/ розпакованого runtime (протокол earthng://)
 ├─ earthng://tile/z/x/y — тайли OSM для підкладки через Rust: свій User-Agent, кеш на диску
 ├─ runtime: ZIP, дописаний у кінець exe; при першому запуску розпаковується в
 │  %LOCALAPPDATA%\EarthNG\runtime\<sha256 ZIP>\ (наступні запуски — без розпаковки)
 │    python\        вбудований CPython 3.13 (python-3.13.x-embed-amd64) + site-packages
 │    earthng\       Python-конвеєр (prepare_release.builder_files)
+│    app\ui\        сторінка вікна (index.html, app.js, i18n.js, app.css)
 │    mod\           Lua планети (для «оновити код планети»)
 │    bin\           earthng-mapbuilder.exe, earthng_native.dll
 └─ сервіс: python\python.exe earthng\app_service.py — JSON-рядки через stdin/stdout
@@ -170,7 +182,7 @@ EarthNG.exe  (rust/crates/app)
 | `set_addons` | Зберегти, які паки (`chosen`: `["polygon", "flora"]`) ставити разом із планетою |
 | `install_addons` | Поставити вибрані паки, яких ще немає (спершу планету, якщо її бракує); етап `Add-ons` |
 | `set_game_folder` | Обрати іншу теку користувача BeamNG |
-| `install_planet` | Завантажити `earthng_planet.zip` з GitHub Release у `mods` (з продовженням обриву). Окремо потрібна рідко: `build` ставить планету сам |
+| `install_planet` | Поставити `earthng_planet.zip` у `mods`: з runtime exe, із сусіднього ZIP або з GitHub Release (з продовженням обриву). Потім вибрані паки (етап `Add-ons`). Окремо потрібна рідко: `build` ставить планету сам |
 | `places` | Пошук країн і регіонів Geofabrik (локально, на кожне введення) |
 | `geocode` | Міста й адреси з Nominatim OSM — лише по Enter, не частіше разу на секунду, свій User-Agent; окремий потік, щоб не тримати `status`/`stop` |
 | `covering` | Найменший регіон Geofabrik, що покриває бокс |

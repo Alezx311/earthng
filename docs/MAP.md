@@ -86,8 +86,8 @@ frame is about 13.5 ms still and 18 ms while the map moves.
 ## Map imagery
 
 **Map imagery** in the atlas's Layers switches the background for the picker and the
-atlas. The planet includes a global NASA Blue Marble overview and local imagery around
-Kyiv and San Francisco. A pack carries Sentinel-2 imagery of its own area (ESA
+atlas. The planet includes only a global NASA Blue Marble overview (17 sheets, down to
+zoom 6). A pack carries Sentinel-2 imagery of its own area (ESA
 WorldCover 2021 composite, CC BY 4.0) as a pyramid: the finest level the sheet budget
 allows (a town at 10 m a pixel, Kyiv oblast at 24 m, Ukraine at about 100 m) over
 coarser levels for wide views. The coarser levels are composed from the finest, and the
@@ -187,8 +187,8 @@ navigator hands to the game.
 
 ## Data compatibility
 
-The planet carries detailed OSM sidecars for selected countries.
-Other older packs retain Natural Earth city/country labels and their existing local
+The planet carries no regional OSM sidecars: map detail comes from the installed packs.
+Older packs retain Natural Earth city/country labels and their existing local
 streets until a sidecar is built. Packs built by EarthNG.exe or `country_fetch.py`,
 and spot exports, include a sidecar when their original PBF is available (an
 Overpass-only area has its own small PBF, which `build_map.py` reads too). With the

@@ -19,7 +19,9 @@ route you to a marker.
 
 1. Download and open **EarthNG.exe** from the [player release](https://github.com/Alezx311/earthng/releases/tag/v1.1.0).
 2. Search for a city such as Miami and press Enter, draw a rectangle, or choose a route.
-   Press **Create the map**. The builder installs the planet and the selected area.
+   Press **Create the map**. The builder installs the planet, then the proving ground and
+   the flora pack (both ticked under the mod's row; untick what you don't want), then the
+   selected area.
 3. Open **Freeroam → EarthNG - Planet** in BeamNG.drive. Pick a point inside the
    installed coverage and land there.
 
@@ -30,13 +32,16 @@ to drive. Existing country packs can also be used alongside the installed planet
 **Proving ground.** The release also has **earthng_polygon.zip**: a made-up island at
 Point Nemo where every 500 m tile shows one theme (road classes, ground covers,
 buildings, relief), ringed by mountains, desert, snow, mud and jungle, a block of
-bridges and tunnels, and Supporters' Alley. Copy it into your `mods` folder next to the
-1.1 planet, restart the game and land on the island (48.89° S, 123.36° W). The pause
+bridges and tunnels, and Supporters' Alley. EarthNG.exe installs it with the planet while
+**Proving ground** is ticked under the mod's row, and **install now** in that row adds it to
+a planet you already have; or copy it into your `mods` folder next to the 1.1 planet
+yourself. Restart the game and land on the island (48.89° S, 123.36° W). The pause
 menu's EarthNG tab has a generator lab for the whole world or a single tile.
 
 **Flora pack.** **earthng_flora.zip** in the same release puts real species in place of the
-stock trees: 106 models made with [FoliMesh](https://folimesh.com), by natural zone. Copy it into
-`mods` next to the 1.1 planet. See [flora](docs/FLORA.md).
+stock trees: 106 models made with [FoliMesh](https://folimesh.com), by natural zone. EarthNG.exe
+installs it with the planet while **Flora** is ticked (about 270 MB), or copy it into `mods`
+next to the 1.1 planet. See [flora](docs/FLORA.md).
 
 The atlas on **M** and the landing picker search cities, villages, countries and points
 of interest in local, Ukrainian and English names. Use Enter or click a result, scroll to
@@ -87,14 +92,18 @@ once to `%LOCALAPPDATA%\EarthNG\runtime`. Downloaded data and built packs live i
 Windows 10 and 11 already have.
 
 1. The top of the window shows whether BeamNG's user folder was found (choose it in
-   Settings if not) and whether the EarthNG mod is installed.
+   Settings if not) and whether the EarthNG mod is installed. Under the mod's row,
+   **Proving ground** and **Flora** are ticked: they come with the planet from the
+   release, each checked against its SHA-256. Untick what you don't want; **install now**
+   adds the ticked ones to a planet you already have.
 2. **Choose an area.** Search for a town or address and press Enter, select a whole
    region, or draw a rectangle. For a road trip, mark the waypoints in order or
    import a GPX track or GeoJSON LineString. Choose **1, 10 or 100 km on each side**.
    Follow the bends of your intended drive when placing waypoints.
 3. Press **Create the map**. If `earthng_planet.zip` is missing or older than the
-   packs need, it is installed from the bundled planet first. Look, layers and
-   project options are folded under the button.
+   packs need, it is installed from the bundled planet first, then the ticked add-ons
+   are downloaded. A failed add-on does not stop the map: the last card says which one
+   to retry. Look, layers and project options are folded under the button.
 4. Watch the stages. When it says **The map is installed**, start BeamNG.drive and
    open **Freeroam → EarthNG - Planet**.
 
@@ -108,13 +117,13 @@ Save a frequently driven area as a project. When a major release adds map data,
 reopen the project and build it again. To extend your coverage, build an adjacent
 area or another route. EarthNG loads the installed sections together.
 
-**Updating.** EarthNG.exe checks the player release when it opens. If a newer build is
-published, choose **Update** in the window. That replaces `EarthNG.exe` and opens the
-window again. Maps you already built, downloaded country files and the mods in BeamNG
-stay where they are: this is not a clean reinstall, and you do not remove the old
-program first. The game mod still updates with the next map when the installed planet
-is older than the one the new program expects. Publish `EarthNG.json` from the release
-folder next to `EarthNG.exe`; the window reads it to know the version and the file hash.
+**Updating.** Download the new **EarthNG.exe** from the release and run it in place of the
+old one. Maps you already built, downloaded country files and the mods in BeamNG stay
+where they are: this is not a clean reinstall, and you do not remove the old program
+first. The game mod updates with the next map (or **Update the planet** in Settings) when
+the installed planet is older than the one the new program expects. The window also asks
+the rolling `EarthNG` release for an update when it opens, but that release still holds
+0.9.0 with no `EarthNG.json`, so EarthNG 1.x offers no update there yet.
 
 Console equivalent (also useful for Linux/macOS with a local Python environment):
 
@@ -179,10 +188,11 @@ standalone EarthNG.exe with the embedded Python is built by
 How the exe and the native stages work: [EarthNG.exe](docs/MAPBUILDER_APP.md),
 [native builder](docs/MAPBUILDER_RS.md).
 
-To rebuild the planet, extract **earthng-developer-assets.zip** from the separate
-[developer resources](https://github.com/Alezx311/earthng/releases/tag/developer-assets-0.4.0) into
-this checkout first. It supplies the separately distributed CC0 texture sources,
-prebuilt distributable art and offline basemap. Then run `Rebuild.bat`, or:
+Rebuilding the planet needs the developer assets in this checkout: the CC0 texture
+sources, the prebuilt distributable art (`data/art-distributable/`) and the offline
+basemap. They are not in Git, and the separate developer-assets release that carried
+them (0.4.0) is no longer published; without them, use the ready planet that
+EarthNG.exe installs. With them in place, run `Rebuild.bat`, or:
 
 ```powershell
 .venv\Scripts\python.exe earthng/build_mod.py --out out/mod --lang en
