@@ -325,8 +325,7 @@ class Service:
         if folder is None:
             raise ValueError(f'unknown folder: {which}')
         folder.mkdir(parents=True, exist_ok=True)
-        if os.name == 'nt':
-            os.startfile(folder)  # noqa: S606 - the user's own folder
+        open_in_file_manager(folder)
         return {'path': str(folder)}
 
     # ------------------------------------------------------------------ planet
@@ -385,6 +384,10 @@ class Service:
         and does not call GitHub: replacing rust/target is not an install."""
         current = build_info().get('version')
         report = {'current': current, 'available': False, 'error': consume_update_error()}
+        if os.environ.get('EARTHNG_PACKAGE') == 'linux':
+            # the Linux package (app_web.py) replaces itself only by a new download from the release
+            report['reason'] = 'linux'
+            return report
         if exe_path() is None:
             report['reason'] = 'checkout'
             return report
@@ -800,19 +803,32 @@ def check_project(project):
     return project
 
 
-def game_folders():
-    """BeamNG user folders on this PC, newest layout first (0.40: BeamNG\\BeamNG.drive\\current)."""
-    base = Path(os.environ.get('LOCALAPPDATA', ''))
+def game_folders(env=None, home=None, nt=None):
+    """BeamNG user folders on this PC, newest layout first (0.40: BeamNG\\BeamNG.drive\\current);
+    on Linux the native client's, then the Proton prefix's (country_fetch.user_folder_bases)."""
     found = []
-    for parent in (base / 'BeamNG' / 'BeamNG.drive', base / 'BeamNG.drive'):
-        if not parent.is_dir():
-            continue
-        current = parent / 'current'
-        if current.is_dir():
-            found.append(current)
-        versions = [p for p in parent.iterdir() if p.is_dir() and re.fullmatch(r'\d+\.\d+', p.name)]
-        found.extend(sorted(versions, key=lambda p: [int(v) for v in p.name.split('.')], reverse=True))
+    for base in country_fetch.user_folder_bases(env, home, nt):
+        for parent in (base / 'BeamNG' / 'BeamNG.drive', base / 'BeamNG.drive'):
+            if not parent.is_dir():
+                continue
+            current = parent / 'current'
+            if current.is_dir():
+                found.append(current)
+            versions = [p for p in parent.iterdir() if p.is_dir() and re.fullmatch(r'\d+\.\d+', p.name)]
+            found.extend(sorted(versions, key=lambda p: [int(v) for v in p.name.split('.')], reverse=True))
     return found
+
+
+def open_in_file_manager(folder):
+    """Show a folder of the user's: Explorer on Windows, xdg-open on Linux, open on macOS."""
+    if os.name == 'nt':
+        os.startfile(folder)  # noqa: S606 - the user's own folder
+        return
+    import subprocess
+    opener = 'open' if sys.platform == 'darwin' else 'xdg-open'
+    if shutil.which(opener):
+        subprocess.Popen([opener, str(folder)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,  # noqa: S603
+                         stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def game_folder_ok(folder):

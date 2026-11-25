@@ -1,0 +1,67 @@
+name: Linux package
+# EarthNG-linux-x86_64.tar.gz without the planet (its art is not in Git): built and tested on Linux,
+# then unpacked on a bare Ubuntu 20.04 and driven through its HTTP page to build Monaco end to end.
+# The release adds the planet locally: prepare_linux.py --repack (docs/LINUX.md).
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'earthng/app_web.py'
+      - 'earthng/app_service.py'
+      - 'earthng/country_fetch.py'
+      - 'earthng/prepare_linux.py'
+      - 'earthng/linux_smoke.py'
+      - 'app/ui/**'
+      - 'rust/**'
+      - 'requirements-fast.txt'
+      - '.github/workflows/linux.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # glibc 2.28: the binaries and wheels run on every current distribution and SteamOS
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - name: git for the source snapshot
+        run: command -v git || dnf install -y -q git
+      - uses: actions/checkout@v4
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/earthng-linux-build
+          key: linux-build-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: linux-build-
+      - name: Build, Rust tests, Python tests with the packaged interpreter
+        run: /opt/python/cp313-cp313/bin/python earthng/prepare_linux.py --out out/linux --native --test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: earthng-linux
+          path: |
+            out/linux/EarthNG-linux-x86_64.tar.gz
+            out/linux/linux-parts/*.log
+          retention-days: 7
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    steps:
+      - name: Certificates only (no Python on purpose)
+        run: apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q ca-certificates
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: earthng-linux
+          path: art
+      - name: Unpack
+        run: mkdir -p /opt/pkg && tar -xzf art/EarthNG-linux-x86_64.tar.gz -C /opt/pkg && ls -la /opt/pkg/EarthNG
+      - name: A user folder of the native BeamNG client
+        run: mkdir -p "$HOME/.local/share/BeamNG/BeamNG.drive/current/mods" "$HOME/.local/share/BeamNG/BeamNG.drive/current/settings"
+      - name: Build Monaco through the page's HTTP API
+        run: /opt/pkg/EarthNG/python/bin/python3 earthng/linux_smoke.py --package /opt/pkg/EarthNG --place monaco --fake-planet
+      - name: Service log
+        if: always()
+        run: tail -n 80 "$HOME/.local/share/EarthNG/logs/service.log" || true

@@ -40,12 +40,62 @@ CATALOG = HERE / 'ready_packs.json'
 USER_AGENT = places.USER_AGENT
 
 
-def default_mods():
-    base = Path(os.environ.get('LOCALAPPDATA', ''))
-    for candidate in (base / 'BeamNG' / 'BeamNG.drive' / 'current', base / 'BeamNG.drive' / 'current'):
-        if candidate.exists():
-            return candidate
-    return base / 'BeamNG' / 'BeamNG.drive' / 'current'
+BEAMNG_APP_ID = '284160'
+PROTON_LOCAL = Path('pfx/drive_c/users/steamuser/AppData/Local')
+
+
+def steam_libraries(steam_root):
+    """Steam library folders: the Steam root and every "path" in its libraryfolders.vdf."""
+    root = Path(steam_root)
+    found = [root]
+    vdf = root / 'steamapps' / 'libraryfolders.vdf'
+    try:
+        text = vdf.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return found
+    for raw in re.findall(r'"path"\s+"((?:[^"\\]|\\.)*)"', text):
+        found.append(Path(raw.replace('\\\\', '\\')))
+    return found
+
+
+def user_folder_bases(env=None, home=None, nt=None):
+    """Folders that hold BeamNG/BeamNG.drive (0.40) or BeamNG.drive (older) on this machine.
+    Windows: %LOCALAPPDATA%. Linux: the native client's ~/.local/share (documentation.beamng.com
+    /support/userfolder: ~/.local/share/BeamNG/BeamNG.drive/current), then the Windows build under
+    Steam Proton, whose prefix keeps AppData\\Local in steamapps/compatdata/284160/pfx."""
+    env = os.environ if env is None else env
+    nt = (os.name == 'nt') if nt is None else nt
+    if nt:
+        return [Path(env.get('LOCALAPPDATA', ''))]
+    home = Path(home) if home is not None else Path.home()
+    bases = []
+    if env.get('XDG_DATA_HOME'):
+        bases.append(Path(env['XDG_DATA_HOME']))
+    bases.append(home / '.local' / 'share')
+    roots = [home / '.steam' / 'steam', home / '.steam' / 'root', home / '.local' / 'share' / 'Steam',
+             home / '.var' / 'app' / 'com.valvesoftware.Steam' / '.local' / 'share' / 'Steam']
+    for root in roots:
+        for library in steam_libraries(root):
+            bases.append(library / 'steamapps' / 'compatdata' / BEAMNG_APP_ID / PROTON_LOCAL)
+    unique, seen = [], set()
+    for base in bases:
+        try:
+            key = str(base.resolve()) if base.exists() else str(base)
+        except OSError:
+            key = str(base)
+        if key not in seen:
+            seen.add(key)
+            unique.append(base)
+    return unique
+
+
+def default_mods(env=None, home=None, nt=None):
+    bases = user_folder_bases(env, home, nt)
+    for base in bases:
+        for candidate in (base / 'BeamNG' / 'BeamNG.drive' / 'current', base / 'BeamNG.drive' / 'current'):
+            if candidate.exists():
+                return candidate
+    return bases[0] / 'BeamNG' / 'BeamNG.drive' / 'current'
 
 
 def catalog_entries():

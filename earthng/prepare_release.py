@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 RELEASE_URL = 'https://github.com/Alezx311/earthng/releases/download/EarthNG'
 def source_snapshot(ref):
     commit = subprocess.check_output(['git', 'rev-parse', ref], cwd=ROOT, text=True).strip()
-    data = subprocess.check_output(['git', 'archive', '--format=zip', commit], cwd=ROOT)
+    # core.autocrlf=false: the files as committed (LF), as the planet's build_mod.py packs them
+    data = subprocess.check_output(['git', '-c', 'core.autocrlf=false', 'archive', '--format=zip', commit], cwd=ROOT)
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         files = {n: archive.read(n) for n in archive.namelist() if not n.endswith('/')}
     return commit, files
@@ -27,14 +28,14 @@ def _script_name(value):
     return value.replace('\\', '/').rsplit('/', 1)[-1][:-3]
 
 
-def builder_files(files, start=('app_service', 'osm_tiles_country')):
+def builder_files(files, start=('app_service', 'app_web', 'osm_tiles_country')):
     """Follow local imports and scripts started by file name (HERE / 'build_country.py')."""
     pending = list(start)
     selected = set()
     while pending:
         module = pending.pop()
         name = f'earthng/{module}.py'
-        if name in selected:
+        if name in selected or name not in files:      # app_web.py: snapshots before 1.1 lack it
             continue
         selected.add(name)
         for node in ast.walk(ast.parse(files[name].decode('utf-8-sig'))):
@@ -68,13 +69,13 @@ def _cargo():
     return found or (str(home) if home.is_file() else None)
 
 
-def rust_notices(lock_text):
+def rust_notices(lock_text, registry=None, binaries='bin/earthng-mapbuilder.exe and bin/earthng_native.dll'):
     """Name, version and licence of every crate rust/Cargo.lock pulls from crates.io, from the
     registry sources cargo unpacked when it built them."""
     import tomllib
     lock = tomllib.loads(lock_text)
-    registry = Path.home() / '.cargo' / 'registry' / 'src'
-    lines = ['Rust crates compiled into bin/earthng-mapbuilder.exe and bin/earthng_native.dll', '']
+    registry = Path(registry) if registry else Path.home() / '.cargo' / 'registry' / 'src'
+    lines = [f'Rust crates compiled into {binaries}', '']
     for package in sorted(lock.get('package', []), key=lambda p: (p['name'], p['version'])):
         if 'source' not in package:
             continue           # the workspace's own crates: MIT, LICENSE

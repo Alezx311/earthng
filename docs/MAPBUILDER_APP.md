@@ -62,6 +62,16 @@ runtime exe є `earthng/ready_packs.json` з готовими паками ре�
 У цьому окремому релізі `EarthNG.json` не публікується; файл оновлення лишається
 частиною старого каналу `EarthNG`.
 
+## Браузер замість вікна (Linux)
+
+На Linux немає WebView2-вікна: `earthng/app_web.py` робить те саме, що `rust/crates/app`, але
+через HTTP на 127.0.0.1. Сторінка й `app/ui/index.html` ті самі; сервер вставляє перед скриптами
+сторінки ключ сесії й `web.js`, який дає сторінці `window.ipc` (POST `/ipc`) і передає рядки
+сервісу через server-sent events (`/events`). Команди `to: "app"` (`open_url`, `version`,
+`apply_update`) відповідає сам сервер; оновлення з вікна на Linux немає (`app_update` → `reason:
+'linux'`). Тайли підкладки — `/tile/z/x/y.png` з тим самим кешем на 30 днів. Чужий Host, запит без
+ключа й шлях поза `app/ui` відхиляються. Пакет, теки й перевірки — [LINUX.md](LINUX.md).
+
 ## Оновлення EarthNG.exe
 
 Якщо поруч із EarthNG.exe лежить earthng_planet.zip потрібної версії, програма встановлює

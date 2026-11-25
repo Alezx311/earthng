@@ -65,6 +65,15 @@ not in Git. See [release verification](docs/RELEASE_CHECK.md) for the tested bui
 and performance limits. OSM completeness,
 terrain detail and performance vary between places.
 
+## Linux
+
+The mod runs in BeamNG.drive's native Linux client and in the Windows build under Steam
+Proton. The map builder for Linux is
+**[EarthNG-linux-x86_64.tar.gz](https://github.com/Alezx311/earthng/releases/download/v1.1.0/EarthNG-linux-x86_64.tar.gz)**:
+unpack it and run `./EarthNG`. It opens the same Map Builder in your browser, finds the game's
+user folder (`~/.local/share/BeamNG/BeamNG.drive/current` or the Proton prefix) and needs nothing
+installed: Python, the build tools and the planet are inside. See [EarthNG on Linux](docs/LINUX.md).
+
 ## Build your own map (Windows)
 
 Download **[EarthNG.exe](https://github.com/Alezx311/earthng/releases/download/v1.1.0/EarthNG.exe)**

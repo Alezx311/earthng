@@ -799,6 +799,7 @@ function settingsUpdateNode() {
   const info = updateInfo;
   if (!info) return null;
   if (info.reason === 'checkout') return el('p', { className: 'muted small', textContent: t('update.checkout') });
+  if (info.reason === 'linux') return el('p', { className: 'muted small', textContent: t('update.linux') });
   if (info.available) return offerNodes(info, true);
   if (info.error) return el('p', { className: 'note bad', textContent: updateErrorText(info) });
   if (state.updateManual && info.reason === 'offline') return el('p', { className: 'note bad', textContent: t('update.offline') });
@@ -822,7 +823,7 @@ function renderUpdate() {
   const settings = settingsUpdateNode();
   const banner = bannerUpdateNode();
   $('settings-update').replaceChildren(...(settings ? [settings] : []));
-  $('check-update').hidden = !!(updateInfo && updateInfo.reason === 'checkout');
+  $('check-update').hidden = !!(updateInfo && (updateInfo.reason === 'checkout' || updateInfo.reason === 'linux'));
   if ($('banner').querySelector('.banner.bad') && !banner) return;   // a dead service stays on screen
   $('banner').replaceChildren(...(banner ? [banner] : []));
 }
@@ -901,7 +902,7 @@ listeners.push(message => {
     state.updating = false;
     state.updatePhase = null;
     setBuilding(false);
-    $('banner').replaceChildren(el('div', { className: 'banner bad' }, el('p', { textContent: t('service.down') })));
+    $('banner').replaceChildren(el('div', { className: 'banner bad' }, el('p', { textContent: t(window.EARTHNG_WEB ? 'service.downWeb' : 'service.down') })));
   }
 });
 

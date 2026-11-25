@@ -14,6 +14,7 @@ Start with the [player README](../README.md). Repository instructions are in [AG
 | [RELEASE_CHECK.md](RELEASE_CHECK.md) | Release verification and performance |
 | [NATIVE_MODS.md](NATIVE_MODS.md) | Planet and country packs |
 | [MAPBUILDER_APP.md](MAPBUILDER_APP.md) | EarthNG.exe and the pack builder UI |
+| [LINUX.md](LINUX.md) | EarthNG on Linux: the browser builder package, user folders, Proton |
 | [MAPBUILDER_RS.md](MAPBUILDER_RS.md) | Native pack-building stages and parity checks |
 
 Internal design notes, experiments, historical reports and the generation gaps register are maintained in the EarthNG Obsidian vault. See [AGENTS.md](../AGENTS.md) for local paths and Graphify commands. The [pre-migration index](https://github.com/Alezx311/earthng/blob/d45f2d13264ef5460a0631abd125eff0ec8b986b/docs/README.md) links to the Git snapshots.
