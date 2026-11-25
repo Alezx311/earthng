@@ -94,13 +94,20 @@ class RuleTests(unittest.TestCase):
             self.assertEqual(self.swap('mud', kind), kind)
 
     def test_every_swap_names_a_material_there_is(self):
+        import house_art
+        import kit_art
+        import own_art
+        import street_art
         kinds = set(fast_style.KINDS)
+        # a swap may start from a library's kind (sidewalk_tile is street art): those kinds are
+        # defined only where the library's paid sources are in the checkout
+        libraries = own_art.ready() and house_art.ready() and kit_art.ready() and street_art.ready()
         for name in ('mountains', 'desert', 'snow', 'mud'):
             u = to_py(self.lua.eval(f"(function() local u = U.get('{name}'); return {{swap = u.swap or {{}}, patterns = u.patterns or {{}}}} end)()"))
             targets = set(v for v in (u['swap'] or {}).values() if v) | set(rule[1] for rule in (u['patterns'] or []) if rule[1])
             self.assertEqual(targets - kinds, set(), name)
-            for source in (u['swap'] or {}):
-                self.assertIn(source, kinds, f'{name}: {source}')
+            if libraries:
+                self.assertEqual(set(u['swap'] or {}) - kinds, set(), name)
 
     def test_mountains_have_no_swap_and_a_desert_one(self):
         self.assertIsNone(self.lua.eval("U.swapper(U.get('mountains'))"))
