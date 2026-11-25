@@ -337,9 +337,10 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(marks)
         xs = [p[0] for t in marks for p in t]
         ys = [p[1] for t in marks for p in t]
-        # the mouth: 0.8 x 7 m from the node, the line 0.3 m before it, the teeth 0.6 m deep
-        self.assertAlmostEqual(max(xs), 250 - 5.6 - .3, places=3)
-        self.assertAlmostEqual(min(xs), 250 - 5.6 - .3 - .6, places=3)
+        # the mouth: half the through road (3.5 m) and the corner's kerb radius (residential, 6 m)
+        # from the node (ROADS.FILLET), the line 0.3 m before it, the teeth 0.6 m deep
+        self.assertAlmostEqual(max(xs), 250 - 9.5 - .3, places=3)
+        self.assertAlmostEqual(min(xs), 250 - 9.5 - .3 - .6, places=3)
         # traffic towards +x keeps right: the half south of the centre line
         self.assertLess(max(ys), 250)
         self.assertGreater(min(ys), 246.4)
@@ -1344,11 +1345,13 @@ class GeneratorTests(unittest.TestCase):
                   'points': line(500, 250, 500, 50, 10)}]
         manifest = self.build([{'roads': roads}], i=0, look={'asphalt': 'worn'})[0]
         near = lambda tri, r: math.hypot(sum(p[0] for p in tri) / 3 - 500, sum(p[1] for p in tri) / 3 - 250) < r
-        self.assertTrue([t for t in self.triangles(manifest, 'e2rf_road') if near(t, 3)])
+        # the node is the major road's surface (the plate grown by the kerb radii has its
+        # triangles' centroids further out than 3 m)
+        self.assertIsNotNone(self.surface_at(list(self.triangles(manifest, 'e2rf_road')), 500, 250))
         self.assertFalse([t for t in self.triangles(manifest, 'e2rf_road_worn') if near(t, 4)])
         marks = list(self.triangles(manifest, 'e2rf_mark'))
         self.assertTrue(marks)
-        # the roads are cut 0.8 x 7 = 5.6 m from the node: no paint inside the junction
+        # the roads are cut for their corners' kerb radii: no paint inside the junction
         self.assertFalse([p for t in marks for p in t if math.hypot(p[0] - 500, p[1] - 250) < 5.5])
         # the residential street has no paint at all
         self.assertFalse([p for t in marks for p in t if p[1] < 240])
@@ -2483,11 +2486,18 @@ class GeneratorTests(unittest.TestCase):
         # and on through the junction on the side without the drive
         for x in range(240, 261, 2):
             self.assertIsNotNone(self.surface_at(paving, x + .25, 255), x)
-        # south: the drive's mouth stays asphalt, the paving turns the corner up to its edge
+        # south: the drive's mouth stays asphalt, the paving turns the corner up to its edge,
+        # which now widens by the drive's kerb radius (service, 3 m): 0.5 m off the drive's own edge
+        # at 2 m from the kerb is asphalt. (Where the paving is wider than that radius its ring
+        # closes 0.8 m short of the footway's far edge for 3 m beside the drive: a notch of ground.)
         self.assertIsNone(self.surface_at(paving, 250, 244))
         self.assertIsNotNone(self.surface_at(paving, 150, 245))
-        for x in (244, 246, 247.5, 252.5, 254, 256):
+        for x in (244, 246, 247, 253, 254, 256):
             self.assertIsNotNone(self.surface_at(paving, x, 246), x)
+        asphalt = list(self.triangles(road, 'e2rf_road'))
+        for x in (247.5, 252.5):
+            self.assertIsNone(self.surface_at(paving, x, 246), x)
+            self.assertIsNotNone(self.surface_at(asphalt, x, 246), x)
 
     def test_curb_runs_along_the_top_row_of_the_trim_sheet(self):
         street = {'id': 'street', 'width': 7, 'nodes': [1, 2], 'points': line(-50, 250, 550, 250),

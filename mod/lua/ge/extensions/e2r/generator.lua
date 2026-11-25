@@ -49,6 +49,13 @@ local TUNE = {roadLift = ROAD_LIFT, groundDrop = .25, pullFull = 12, pullZero = 
   lanes = 1,
   -- 1: a way narrows to the narrower way it runs on into (ROADS.taper); 0: a step at the join
   taper = 1,
+  fillet = 1,       -- ERI: curb returns at junction corners (ROADS.FILLET), 0: the chamfer as before
+  walkFill = .4,    -- ERI: a strip side paved out to its footway along this share of its length is paved all along (ROADS.fillKerbs)
+  cluster = 1,      -- ERI: one plate for the nodes of a divided road's crossing (ROADS.CLUSTER), 0: a star each
+  densePress = 2,   -- ERI: m between ground presses across strips and over junction plates (0: the sparse rows as before)
+  navLanes = 1,     -- ERI: a nav segment's radius is half the carriageway between the shoulders, so the AI's lanes are the painted ones (0: half the whole width)
+  zebraTop = 1,     -- ERI: a zebra's stripes on the top asphalt under them, a plate or a crossing strip (0: at the road's profile)
+  zebraMouth = 1,   -- ERI: a zebra inside a junction's cut is painted at the mouth, on the strip (0: where it was mapped, on the plate)
   -- 1: a road is seated on the land (the real pack): it leans across with the slope it lies on
   -- (ROADS.FALL), the land comes up to seatDrop + roadLift under its edge and is pressed only
   -- seatMargin under it (groundDrop and margin stood it on a bank 35 cm high and more), the
@@ -1948,6 +1955,94 @@ function ROADS.oneway(tags)
   if one == 'yes' or one == '1' or one == 'true' then return true, false end
   if ROADS.noOneway[one] then return false, false end
   return tags.highway == 'motorway' or tags.junction == 'roundabout' or tags.junction == 'circular', false
+end
+-- ERI curb returns. A junction's corner between two roads is an arc tangent to both road edges
+-- (a quadratic Bezier on the edges' intersection), and the roads are cut back far enough for it:
+-- half the widest road plus the kerb radius of the node's second road by rank (the turn between
+-- the two main roads sets the corner). Kerb radii by class follow urban design practice (DBN
+-- V.2.3-5, AASHTO/CROW ranges): 3-4 m for yard drives, 5-6 m for streets, 8-12 m for main roads.
+-- Before, every road was cut at 0.8 of the widest width and the two corners joined by a chord:
+-- each junction an octagon with its corners chamfered into the blocks.
+ROADS.FILLET = {seg = 6, least = .5,
+  radius = {motorway = 14, trunk = 12, primary = 10, secondary = 8, tertiary = 7, unclassified = 6,
+    residential = 6, living_street = 4, service = 3, road = 5, track = 2.5, raceway = 6}}
+function ROADS.FILLET.radiusOf(tags)
+  local class = ((tags or NONE).highway or ''):gsub('_link$', '')
+  return ROADS.FILLET.radius[class] or 5
+end
+function ROADS.FILLET.of(list, rankOf)
+  local best, second
+  for _, m in ipairs(list) do
+    local tags = m.road.tags or NONE
+    local r = rankOf(tags)
+    if not best or r > best[1] then best, second = {r, tags}, best
+    elseif not second or r > second[1] then second = {r, tags} end
+  end
+  local tags = (second or best)[2]
+  local class = (tags.highway or ''):gsub('_link$', '')
+  return ROADS.FILLET.radius[class] or 5
+end
+-- The points strictly between a and b of the arc a -> b tangent to the edges meeting at p
+-- (quadratic Bezier, control point p), heights along the chord.
+function ROADS.FILLET.arc(a, b, p, seg)
+  local out = {}
+  for k = 1, seg - 1 do
+    local t = k / seg
+    local u = 1 - t
+    out[#out + 1] = {u * u * a[1] + 2 * u * t * p[1] + t * t * b[1], u * u * a[2] + 2 * u * t * p[2] + t * t * b[2],
+      a[3] + (b[3] - a[3]) * t, arc = true}
+  end
+  return out
+end
+-- ERI junction clusters. Where a divided road crosses another road, OSM has a node per
+-- carriageway and short one-way pieces between them; every node got a star of its own, with
+-- strips of road, wedges of grass and gaps between the stars inside one crossing. Stars joined by
+-- one-way (or link) pieces shorter than CLUSTER.length become one plate: the convex hull of their
+-- corners, a fan from its centre, and the pieces inside it are not drawn as strips.
+-- Only a crossing of two divided roads: four nodes and more, their pieces closing a ring round
+-- the middle (as many pieces as nodes). A fork of one-way branches off a street, or a divided
+-- road's crossing with a two-way street, is a chain, not a ring, and keeps its stars: one hull
+-- over a fork paved its island (Khreshchatyk at Hrushevskoho, v6).
+ROADS.CLUSTER = {length = 32, span = 90, most = 6, least = 4, fill = 2.2}
+local function polyArea(ring)
+  local a = 0
+  for k = 1, #ring do
+    local p, q = ring[k], ring[k % #ring + 1]
+    a = a + p[1] * q[2] - q[1] * p[2]
+  end
+  return math.abs(a) / 2
+end
+ROADS.CLUSTER.area = polyArea
+-- convex hull (monotone chain) of {x, y, z} points, counter-clockwise
+function ROADS.CLUSTER.hull(points)
+  local pts = {}
+  for _, p in ipairs(points) do pts[#pts + 1] = p end
+  table.sort(pts, function(a, b) return a[1] < b[1] or (a[1] == b[1] and a[2] < b[2]) end)
+  if #pts < 3 then return pts end
+  local function cross(o, a, b) return (a[1] - o[1]) * (b[2] - o[2]) - (a[2] - o[2]) * (b[1] - o[1]) end
+  local lower, upper = {}, {}
+  for _, p in ipairs(pts) do
+    while #lower >= 2 and cross(lower[#lower - 1], lower[#lower], p) <= 1e-9 do lower[#lower] = nil end
+    lower[#lower + 1] = p
+  end
+  for k = #pts, 1, -1 do
+    local p = pts[k]
+    while #upper >= 2 and cross(upper[#upper - 1], upper[#upper], p) <= 1e-9 do upper[#upper] = nil end
+    upper[#upper + 1] = p
+  end
+  lower[#lower], upper[#upper] = nil, nil
+  for _, p in ipairs(upper) do lower[#lower + 1] = p end
+  return lower
+end
+-- ERI: the offsets a strip presses the ground at, across it: the old seven rows (both outer
+-- edges, both kerbs, the half widths, the centre) plus rows at most `gap` apart. A 20 m avenue
+-- was pressed 5 m apart and the ground lattice came up through the asphalt between the rows.
+function ROADS.pressOffsets(hw, left, right, gap)
+  local out = {-right, -hw, -hw * .5, 0, hw * .5, hw, left}
+  if not gap or gap <= 0 or hw * .5 <= gap then return out end
+  local n = math.ceil(2 * hw / gap)
+  for k = 1, n - 1 do out[#out + 1] = -hw + 2 * hw * k / n end
+  return out
 end
 function ROADS.rankOf(tags)
   local highway = tags.highway or ''
@@ -4674,7 +4769,7 @@ local function navNames(road)
       d = dest, dr = tags['destination:ref'], j = tags['junction:ref']}
   end
 end
-local function navSegment(road)
+local function navSegment(road, onLanes)
   local tags, points = road.tags or {}, road.points or {}
   local highway = (tags.highway or 'residential'):gsub('_link$', '')
   if not SPEED[highway] or tags.access == 'private' or tags.access == 'no' or tags.area == 'yes' or #points < 2 then return nil end
@@ -4698,8 +4793,10 @@ local function navSegment(road)
   if speedText:find('urban', 1, true) then speed = 50 end
   if speedText:find('rural', 1, true) then speed = 90 end
   local nodes = road.nodes or {tostring(road.id) .. ':a', tostring(road.id) .. ':b'}
+  -- ERI (navLanes): the AI splits 2 x radius into the lanes, so the radius is the painted carriageway's
+  local radius = (onLanes or 0) > 0 and L.carriage / 2 or (road.width or 7) / 2
   local result = {tostring(road.id), nodes[flip and 2 or 1], nodes[flip and 1 or 2], lanes,
-    speed / 3.6, (road.width or 7) / 2, DRIVE[highway]}
+    speed / 3.6, radius, DRIVE[highway]}
   -- Knots closer than NAV_MIN are one: the game's random route walk (graphpath getRandomPathG,
   -- traffic respawns) adds edge lengths until it has enough, and on a piece of graph of only
   -- zero-length edges (repeated source points) it never had, and froze the game.
@@ -4959,8 +5056,18 @@ function DETAIL.paint(ctx)
         -- the carriageway between the shoulders, as offsets left of the node order
         local lo, hi = -width / 2 + right, width / 2 - left
         if point.kind == 'crossing' then
-          local c, tx, ty = alongLine(points, dist, s)
           local zebra = (hi - lo) < 5 and DETAIL.zebra - .5 or DETAIL.zebra
+          -- ERI: on the plate of a junction the zebra lay under its fan (painted at the road's own
+          -- height): to the mouth, as the stop line, where the strip is long enough for it
+          if (ctx.zebraMouth or 0) > 0 then
+            local cuts = ctx.cutsOf[road] or NONE
+            local c1, c2, half = cuts[1] or 0, cuts[2] or 0, zebra / 2 + .3
+            if c1 + half <= length - c2 - half then
+              if c1 > 0 and s < c1 + half then s = c1 + half
+              elseif c2 > 0 and s > length - c2 - half then s = length - c2 - half end
+            end
+          end
+          local c, tx, ty = alongLine(points, dist, s)
           local z0 = (alongLine(points, dist, s - zebra / 2)[3] or 0) + ctx.z
           local z1 = (alongLine(points, dist, s + zebra / 2)[3] or 0) + ctx.z
           local pitch = DETAIL.stripe + DETAIL.gap
@@ -4968,7 +5075,7 @@ function DETAIL.paint(ctx)
           local first = (lo + hi) / 2 - (count - 1) * pitch / 2
           for n = 0, count - 1 do
             local o = first + n * pitch
-            paintQuad(ctx.emit, {c[1] - ty * o, c[2] + tx * o}, tx, ty, zebra, DETAIL.stripe, z0, z1)
+            paintQuad(ctx.emitTop or ctx.emit, {c[1] - ty * o, c[2] + tx * o}, tx, ty, zebra, DETAIL.stripe, z0, z1)
           end
           painted = painted + 1
         else
@@ -10818,9 +10925,85 @@ function ROADS.sidewalkIndex(lines)
   end
   return any and bins or nil
 end
+-- ERI: a strip side's paving decided once for the whole side, not chord by chord. The footway
+-- search (ROADS.mappedWalk) finds a mapped sidewalk at two of three points of a chord; a footway
+-- bending to a door, broken by a crossing, or a little too far beside a widened carriageway is
+-- missed on some chords, and the side came and went: paving, kerb stone, paving (sidewalk:*=separate)
+-- or paving, a 2 m sidewalk of its own, paving (untagged), 6-11 presence changes per km of street
+-- side in central Kyiv. Where the found chords cover `share` of the side's length, every chord of
+-- the side gets paving, its width interpolated between the nearest found chords (the nearest one
+-- toward an end); a tagged side found on less than that keeps the kerb stone all along (its footway
+-- runs apart from the street, drawn on its own). An untagged side's own sidewalk stays where too
+-- little is found: paving it from a footway that is not there was the old double pavement.
+function ROADS.fillKerbsAlong(walk, dist, share)
+  local kerb, curb = walk.kerb or NONE, TUNE.curb
+  local n = #walk
+  if n == 0 or not dist then return end
+  for _, side in ipairs({1, -1}) do
+    local paved, total, own = 0, 0, false
+    for k = 1, n do
+      local v, s = (kerb[k] or NONE)[side], (walk[k] or NONE)[side]
+      local l = (dist[k + 1] or dist[k]) - dist[k]
+      if v or s then total = total + l end
+      if v and v > curb then paved = paved + l end
+      if s then own = true end
+    end
+    if total > 0 and paved > 0 then
+      if paved >= share * total then
+        -- each chord's nearest found chords back and forward, by the middle of the chord
+        local mid = {}
+        for k = 1, n do mid[k] = ((dist[k + 1] or dist[k]) + dist[k]) / 2 end
+        local back, fwd, last = {}, {}, nil
+        for k = 1, n do
+          local v = (kerb[k] or NONE)[side]
+          if v and v > curb then last = k end
+          back[k] = last
+        end
+        last = nil
+        for k = n, 1, -1 do
+          local v = (kerb[k] or NONE)[side]
+          if v and v > curb then last = k end
+          fwd[k] = last
+        end
+        for k = 1, n do
+          local v, s = (kerb[k] or NONE)[side], (walk[k] or NONE)[side]
+          if (v or s) and not (v and v > curb) then
+            local a, b = back[k], fwd[k]
+            local w
+            if a and b then
+              local wa, wb = kerb[a][side], kerb[b][side]
+              local span = mid[b] - mid[a]
+              w = span > EPS and wa + (wb - wa) * (mid[k] - mid[a]) / span or (wa + wb) / 2
+            else
+              w = kerb[a or b][side]
+            end
+            local nk, nw = {}, {}
+            for q, x in pairs(kerb[k] or NONE) do nk[q] = x end
+            for q, x in pairs(walk[k] or NONE) do nw[q] = x end
+            nk[side], nw[side] = w, nil
+            walk.kerb[k], walk[k] = nk, nw
+            kerb = walk.kerb
+          end
+        end
+      elseif not own then
+        for k = 1, n do
+          local v = (kerb[k] or NONE)[side]
+          if v and v > curb then
+            local nk = {}
+            for q, x in pairs(kerb[k]) do nk[q] = x end
+            nk[side] = curb
+            walk.kerb[k] = nk
+            kerb = walk.kerb
+          end
+        end
+      end
+    end
+  end
+end
 -- A segment the footway search missed between two that found it (the footway bends to a door,
 -- a crossing breaks it) takes their mean paving: not a 2 m strip and grass inside a paved run.
-function ROADS.fillKerbs(walk)
+function ROADS.fillKerbs(walk, dist, share)
+  if share and share > 0 then return ROADS.fillKerbsAlong(walk, dist, share) end
   local kerb = walk.kerb or NONE
   for k = 2, #walk - 1 do
     for _, side in ipairs({1, -1}) do
@@ -10882,12 +11065,31 @@ function ROADS.ringInsets(corners, endAt, sidewalk, cx, cy, seated)
     end
   end
   if not next(at) then return nil end
+  -- ERI: a curb return's own points (ROADS.FILLET.arc) take the narrower paving of the two
+  -- corners it joins, so the ring runs round the arc at its width instead of pinching to nothing
+  local fill = {}
+  for k = 1, n do
+    if corners[k].arc and not at[k] then
+      local back, fwd
+      for s = 1, n - 1 do
+        local j = (k - 1 - s) % n + 1
+        if mouth[j] then break end
+        if at[j] then back = at[j]; break end
+      end
+      for s = 1, n - 1 do
+        local j = (k - 1 + s) % n + 1
+        if mouth[(j - 2) % n + 1] then break end
+        if at[j] then fwd = at[j]; break end
+      end
+      if back or fwd then fill[k] = math.min(back or fwd, fwd or back) end
+    end
+  end
   -- out.mouth[k]: the edge k -> k+1 is a road's mouth
   -- out.straight[k]: the corner moves this way instead of away from the node: straight across
   -- its street, where the corner next to it past no mouth is the same street's (the far side of
   -- a T junction). Away from the node the two reached RING_REACH of the paving's width at
   -- most, and the paving had a notch of grass opposite every side road.
-  local out = {mouth = mouth, straight = {}}
+  local out = {mouth = mouth, straight = {}, dir = dir, at = at}
   for k = 1, n do
     local v, u = at[k], dir[k]
     if seated and v and u then
@@ -10907,6 +11109,7 @@ function ROADS.ringInsets(corners, endAt, sidewalk, cx, cy, seated)
         local p, q = at[(k - 2) % n + 1], at[k % n + 1]
         if before and not after then v, u = q or 0, dir[k % n + 1]
         elseif after and not before then v, u = p or 0, dir[(k - 2) % n + 1]
+        elseif fill[k] then v = fill[k]
         else v = p and q and math.min(p, q) or 0 end
       end
       v = math.max(base or 0, v)
@@ -15221,6 +15424,12 @@ local function build(cells, i, j, options)
   for name, value in pairs(options.tune or NONE) do if name ~= 'seat' then tune[name] = value end end
   if tune.near == 0 then tune.near = nil end
   if not visualRoads or options.realStyle == false then tune.lanes = 0 end
+  -- the road patches (curb returns, clustered crossings, dense presses, paving along a side,
+  -- zebras at the mouth and on the top asphalt, AI lanes on the painted ones) are the real pack's
+  if options.realStyle == false then
+    tune.fillet, tune.cluster, tune.densePress, tune.walkFill = 0, 0, 0, 0
+    tune.zebraMouth, tune.zebraTop, tune.navLanes = 0, 0, 0
+  end
   local lift, step = tune.roadLift, tune.terrainStep
   -- Arcs for the plan corners, before the ground, the junction mouths, the strips or the navgraph
   -- read a point: all of them follow the same line. The source cells are cached across tiles, so
@@ -15268,7 +15477,7 @@ local function build(cells, i, j, options)
       end
       if index % 32 == 0 then pause() end
     end
-    local navigation = visualRoads and navSegment(road)
+    local navigation = visualRoads and navSegment(road, tune.navLanes)
     if navigation then
       nav.segments[#nav.segments + 1] = navigation
       nav.byRoad[road] = navigation
@@ -16091,6 +16300,35 @@ local function build(cells, i, j, options)
       if (#list > 1 and not joined) or bulb then
         local radius = bulb or 0
         for _, m in ipairs(list) do radius = math.max(radius, m.width * .8) end
+        -- ERI: each road cut back far enough for its own corners (ROADS.FILLET): past the
+        -- other road's edge by the corner's radius, the lesser of the two roads' (a side street's
+        -- corner on a prospect is the street's). A road running straight on through the node makes
+        -- no corner with its continuation: a prospect stays whole past a side street's mouth (one
+        -- radius for the node, the second road's, cut a primary 13.5 m back either side of a lane).
+        local own
+        if tune.fillet ~= 0 and not bulb then
+          own = {}
+          local dirs = {}
+          for _, m in ipairs(list) do
+            local pts, d = m.road.points, m.dist
+            local len = d[#pts]
+            local s0 = m.e == 1 and 0 or len
+            local s1 = m.e == 1 and math.min(len, 5) or math.max(0, len - 5)
+            local p0, p1 = along(pts, d, s0), along(pts, d, s1)
+            local dx, dy = p1[1] - p0[1], p1[2] - p0[2]
+            local l = math.sqrt(dx * dx + dy * dy)
+            dirs[m] = l > EPS and {dx / l, dy / l} or {0, 0}
+          end
+          for _, m in ipairs(list) do
+            local need, rm = radius, ROADS.FILLET.radiusOf(m.road.tags)
+            for _, o in ipairs(list) do
+              if o ~= m and dirs[m][1] * dirs[o][1] + dirs[m][2] * dirs[o][2] > -.9 then
+                need = math.max(need, o.width / 2 + math.min(rm, ROADS.FILLET.radiusOf(o.road.tags)))
+              end
+            end
+            own[m] = need
+          end
+        end
         -- the fan's material: the one most of its mouths have (a roundabout's entry keeps the
         -- ring's), on a tie the more important road's
         local corners, raised, votes, material, top = {}, false, {}, nil, -1
@@ -16104,7 +16342,7 @@ local function build(cells, i, j, options)
           if vote.n * 100 + vote.rank > top then material, top = mat, vote.n * 100 + vote.rank end
           local points, dist = m.road.points, m.dist
           local length = dist[#points]
-          local cut = math.min(radius, length * .25)
+          local cut = math.min(own and own[m] or radius, length * .25)
           local cuts = cutsOf[m.road] or {0, 0}
           cutsOf[m.road], cuts[m.e] = cuts, cut
           local s = m.e == 1 and cut or length - cut
@@ -16130,7 +16368,86 @@ local function build(cells, i, j, options)
         for _, c in ipairs(corners) do angle[c] = math.atan2(c[2] - node[2], c[1] - node[1]) end
         table.sort(corners, function(a, b) return angle[a] < angle[b] end)
         stars[#stars + 1] = {node = {node[1], node[2]}, height = node[3] or 0, rings = {corners}, raised = raised,
-          material = material, waterTunnel = allTunnel, tags = votes.best}
+          material = material, waterTunnel = allTunnel, tags = votes.best, id = id, arms = #list}
+      end
+    end
+    if tune.cluster ~= 0 then
+      -- ROADS.CLUSTER: union the stars joined by short one-way pieces
+      local C, starOf, parent, inner = ROADS.CLUSTER, {}, {}, {}
+      for _, s in ipairs(stars) do if s.id and not s.raised then starOf[s.id] = s end end
+      local function find(x)
+        while parent[x] ~= x do parent[x] = parent[parent[x]]; x = parent[x] end
+        return x
+      end
+      for _, road in ipairs(lists.roads) do
+        local nodes, tags = road.nodes or NONE, road.tags or NONE
+        local a, b = nodes[1] ~= nil and tostring(nodes[1]), nodes[2] ~= nil and tostring(nodes[2])
+        -- a carriageway piece between two crossing nodes (three arms and more at both ends); links
+        -- are left out: a ramp's merge with its gore is not one surface
+        if a and b and a ~= b and starOf[a] and starOf[b] and not road.track and starOf[a].arms >= 3 and starOf[b].arms >= 3
+            and ROADS.oneway(tags) and not (tags.highway or ''):find('_link$') and not ROADS.ring(tags)
+            and not ROADS.bridge(tags) and not ROADS.tunnel(tags) then
+          local pts, len = road.points or NONE, 0
+          for k = 2, #pts do len = len + math.sqrt((pts[k][1] - pts[k - 1][1]) ^ 2 + (pts[k][2] - pts[k - 1][2]) ^ 2) end
+          if len < C.length then
+            parent[a], parent[b] = parent[a] or a, parent[b] or b
+            local ra, rb = find(a), find(b)
+            if ra ~= rb then parent[ra] = rb end
+            inner[#inner + 1] = {road = road, a = a, len = len, area = len * (road.width or 7)}
+          end
+        end
+      end
+      local groups, gorder = {}, {}
+      for id in pairs(parent) do
+        local r = find(id)
+        if not groups[r] then groups[r] = {}; gorder[#gorder + 1] = r end
+        table.insert(groups[r], id)
+      end
+      table.sort(gorder)
+      local merged = {}
+      for _, r in ipairs(gorder) do
+        local ids = groups[r]
+        table.sort(ids)
+        local pieces = 0
+        for _, piece in ipairs(inner) do if find(piece.a) == r then pieces = pieces + 1 end end
+        if #ids >= C.least and #ids <= C.most and pieces >= #ids then
+          local pts, x0, y0, x1, y1, zs, best = {}, math.huge, math.huge, -math.huge, -math.huge, 0, nil
+          for _, id in ipairs(ids) do
+            local s = starOf[id]
+            for _, q in ipairs(s.rings[1]) do
+              pts[#pts + 1] = q
+              x0, y0, x1, y1 = math.min(x0, q[1]), math.min(y0, q[2]), math.max(x1, q[1]), math.max(y1, q[2])
+            end
+            zs = zs + s.height
+            if not best or ROADS.rankOf(s.tags or NONE) > ROADS.rankOf(best.tags or NONE) then best = s end
+          end
+          if math.max(x1 - x0, y1 - y0) <= C.span then
+            local hull = ROADS.CLUSTER.hull(pts)
+            -- the plate may add the gaps between the stars, not a field: at most `fill` times the
+            -- surface the stars and the pieces between them already had
+            local had = 0
+            for _, id in ipairs(ids) do had = had + C.area(starOf[id].rings[1]) end
+            for _, piece in ipairs(inner) do if find(piece.a) == r then had = had + piece.area end end
+            if #hull >= 3 and C.area(hull) <= C.fill * had then
+              local cx, cy = 0, 0
+              for _, q in ipairs(hull) do cx, cy = cx + q[1], cy + q[2] end
+              cx, cy = cx / #hull, cy / #hull
+              local group = {}
+              for _, id in ipairs(ids) do group[id] = true; merged[starOf[id]] = true end
+              stars[#stars + 1] = {node = {cx, cy}, height = zs / #ids, rings = {hull}, raised = false,
+                material = best.material, waterTunnel = false, tags = best.tags, id = 'cluster:' .. r, cluster = true}
+              -- the pieces inside the plate are not drawn as strips (trimLine drops a cut-away road)
+              for _, piece in ipairs(inner) do
+                if group[piece.a] then cutsOf[piece.road] = {piece.len, piece.len} end
+              end
+            end
+          end
+        end
+      end
+      if next(merged) then
+        local kept = {}
+        for _, s in ipairs(stars) do if not merged[s] then kept[#kept + 1] = s end end
+        stars = kept
       end
     end
     lists.signMouths, lists.signOrder = mouths, order   -- SIGNS.plan, in the scene
@@ -16200,7 +16517,7 @@ local function build(cells, i, j, options)
           walk.kerb[k] = ROADS.YARD.stones(tags, walk[k], walk.kerb[k], points[k], points[k + 1], builtAt, tune.curb)
         end
       end
-      ROADS.fillKerbs(walk)
+      ROADS.fillKerbs(walk, dist, tune.walkFill)
       -- start: metres of the road cut off before points[1] (street props keep the road's lattice);
       -- joints: its ends that run on into the next way (no junction there)
       local strip = {road = road, points = points, normals = normals, hw = hw, tags = tags, dist = dist,
@@ -16647,7 +16964,7 @@ local function build(cells, i, j, options)
       local key = (floor(p[1]) + 65536) * 131072 + floor(p[2]) + 65536
       local list = stripEnds[key] or {}
       local corridor = strip.corridors and strip.corridors[e[3]]
-      stripEnds[key], list[#list + 1] = list, {p = p, dx = dx / l, dy = dy / l, corridor = corridor,
+      stripEnds[key], list[#list + 1] = list, {p = p, dx = dx / l, dy = dy / l, corridor = corridor, tags = strip.tags,
         walk = ROADS.endWalks(strip, e[3] ~= 1, tune.sidewalk, tune.seat ~= 0)}
       if corridor then
         local node = strip.nodes[e[3]]
@@ -16721,6 +17038,58 @@ local function build(cells, i, j, options)
               local node = (b[1] - a[1]) * (cy - a[2]) - (b[2] - a[2]) * (cx - a[1])
               if away * node < 0 and math.abs(t) < reach and math.abs(u) < reach then
                 out[#out + 1] = {x, y, (a[3] + b[3]) / 2}
+              elseif tune.fillet ~= 0 and away * node > 0 and math.abs(t) < reach and math.abs(u) < reach
+                  and (x - cx) * ((a[1] + b[1]) / 2 - cx) + (y - cy) * ((a[2] + b[2]) / 2 - cy) > 0
+                  and (x - cx) ^ 2 + (y - cy) ^ 2 > ROADS.FILLET.least ^ 2 then
+                -- the edges meet on the node's side of the chord: a curb return from a to b
+                -- tangent to both edges instead of the chord (ROADS.FILLET)
+                -- the corner's own radius: the lesser of its two roads' (a yard drive's corner
+                -- on a street is the drive's 3.5 m, not the street's 6 m), its tangent points
+                -- that far along each edge from where they meet (R / tan(half the angle))
+                local P = {x, y}
+                local ra, rb = ROADS.FILLET.radiusOf(ea.tags), ROADS.FILLET.radiusOf(eb.tags)
+                local la = math.sqrt((a[1] - x) ^ 2 + (a[2] - y) ^ 2)
+                local lb = math.sqrt((b[1] - x) ^ 2 + (b[2] - y) ^ 2)
+                local A, B = a, b
+                if la > EPS and lb > EPS then
+                  local cosPhi = ((a[1] - x) * (b[1] - x) + (a[2] - y) * (b[2] - y)) / (la * lb)
+                  local half = math.acos(math.max(-1, math.min(1, cosPhi))) / 2
+                  local T = math.min(ra, rb) / math.max(.05, math.tan(half))
+                  if T < la - .3 then
+                    A = {x + (a[1] - x) * T / la, y + (a[2] - y) * T / la, a[3], arc = true}
+                    out[#out + 1] = A
+                  end
+                  if T < lb - .3 then B = {x + (b[1] - x) * T / lb, y + (b[2] - y) * T / lb, b[3], arc = true} end
+                end
+                -- heights on the plane of the fan triangle the arc replaces (node, a, b): the arc
+                -- lies inside it, and heights along the chord set short steep triangles between
+                -- a curb return near the node and the mouths of a road on a slope (road_step)
+                local function plane(q)
+                  local x1, y1, x2, y2 = a[1] - cx, a[2] - cy, b[1] - cx, b[2] - cy
+                  local den = x1 * y2 - x2 * y1
+                  if math.abs(den) < 1e-9 then return end
+                  local qx, qy = q[1] - cx, q[2] - cy
+                  local wa, wb = (qx * y2 - x2 * qy) / den, (x1 * qy - qx * y1) / den
+                  q[3] = centre + wa * (a[3] - centre) + wb * (b[3] - centre)
+                end
+                local first = #out + 1
+                if A ~= a then first = #out end
+                for _, q in ipairs(ROADS.FILLET.arc(A, B, P, ROADS.FILLET.seg)) do out[#out + 1] = q end
+                if B ~= b then out[#out + 1] = B end
+                -- the corner's circle for the sidewalk ring (ringInsets, the ring's corners):
+                -- its edges' meeting point, unit edges toward a and b, and the radius drawn
+                if la > EPS and lb > EPS then
+                  local ua = {(a[1] - x) / la, (a[2] - y) / la}
+                  local ub = {(b[1] - x) / lb, (b[2] - y) / lb}
+                  local sin = math.abs(ua[1] * ub[2] - ua[2] * ub[1])
+                  local cosPhi = ua[1] * ub[1] + ua[2] * ub[2]
+                  local tanHalf = sin / math.max(EPS, 1 + cosPhi)
+                  local TA = math.sqrt((A[1] - x) ^ 2 + (A[2] - y) ^ 2)
+                  local TB = math.sqrt((B[1] - x) ^ 2 + (B[2] - y) ^ 2)
+                  local corner = {p = P, ua = ua, ub = ub, sin = sin, tanHalf = tanHalf, r = math.min(TA, TB) * tanHalf}
+                  for c = first, #out do if out[c].arc then out[c].fillet = corner end end
+                end
+                for c = first, #out do if out[c].arc then plane(out[c]) end end
               end
             end
           end
@@ -16749,11 +17118,58 @@ local function build(cells, i, j, options)
           -- (straight across its street on the far side of a T junction, ROADS.ringInsets)
           local straight = walks and walks.straight and walks.straight[k]
           if straight then dx, dy = straight[1], straight[2] end
-          local inset = walks and walks[k] or 0
+          -- ERI: round a curb return (ROADS.FILLET.arc) the ring keeps its width across the arc,
+          -- into the block: its points move along the arc's normal, and the arc's two mouth corners
+          -- straight across their street. Moved away from the node, the ring's outer edge and its
+          -- verge lay along the street's own paving beside the mouth.
+          local eriInset, eriOut
+          if tune.fillet ~= 0 and not straight then
+            local p, n = corners[(k - 2) % #corners + 1], corners[k % #corners + 1]
+            local F = q.fillet
+            if F and F.sin > .05 and walks then
+              -- on the corner's circle: toward its centre by the ring's width, or, wider than the
+              -- radius, the corner of the two paving edges (the ring's own corner, not a bow tie)
+              local d = walks[k] or 0
+              local sx, sy = F.ua[1] + F.ub[1], F.ua[2] + F.ub[2]
+              local cxr, cyr = F.p[1] + F.r / F.sin * sx, F.p[2] + F.r / F.sin * sy
+              local bl = math.max(EPS, math.sqrt(sx * sx + sy * sy))
+              if d >= F.r - .05 then
+                local qx, qy = F.p[1] + d / F.sin * sx, F.p[2] + d / F.sin * sy
+                local ox, oy = qx - q[1], qy - q[2]
+                local ol = math.sqrt(ox * ox + oy * oy)
+                if ol > EPS then dx, dy, eriInset = ox / ol, oy / ol, ol
+                else dx, dy, eriInset = sx / bl, sy / bl, 0 end
+                eriOut = {qx + sx / bl, qy + sy / bl}
+              else
+                local ox, oy = cxr - q[1], cyr - q[2]
+                local ol = math.sqrt(ox * ox + oy * oy)
+                if ol > EPS then dx, dy, eriInset = ox / ol, oy / ol, d end
+              end
+            elseif q.arc then
+              local tx, ty = n[1] - p[1], n[2] - p[2]
+              local tl = math.sqrt(tx * tx + ty * ty)
+              if tl > EPS then
+                local nx, ny = ty / tl, -tx / tl
+                if nx * dx + ny * dy < 0 then nx, ny = -nx, -ny end
+                dx, dy = nx, ny
+              end
+            elseif (p.arc or n.arc) and walks and walks.dir and walks.dir[k] then
+              local u = walks.dir[k]
+              -- straight across, the paving's own width (ringInsets' reach is for a slant)
+              if u[1] * dx + u[2] * dy > 0 then dx, dy, eriInset = u[1], u[2], walks.at and walks.at[k] end
+            end
+          end
+          local inset = walks and (eriInset or walks[k]) or 0
           mids[k] = {q[1] + dx * inset, q[2] + dy * inset, q[3]}
           -- (a seated junction's verge reaches as its roads' verges mostly do, ROADS.VERGE)
           local reach = tune.seat ~= 0 and ROADS.VERGE.least * 1.5 or tune.shoulder
           outs[k] = {q[1] + dx * (inset + reach), q[2] + dy * (inset + reach), 0}
+          if eriOut then
+            -- a ring corner collapsed onto the paving edges' corner: its verge goes on out
+            -- along the corner's bisector (eriOut: a metre that way)
+            local ox, oy = eriOut[1] - mids[k][1], eriOut[2] - mids[k][2]
+            outs[k] = {mids[k][1] + ox * reach, mids[k][2] + oy * reach, 0}
+          end
         end
         plate.mids, plate.walks, plate.verges = mids, {}, {}
         for k = 1, #corners do
@@ -16894,6 +17310,30 @@ local function build(cells, i, j, options)
       end
     end
     return false
+  end
+  -- ERI: the height of the highest asphalt drawn at (x, y) (addAsphalt's pieces at grade, by the
+  -- triangles they are drawn as), of the pieces within 1.5 m of zNear; nil off the asphalt
+  lists.asphaltTop = function(x, y, zNear)
+    local top
+    for _, entry in ipairs(asphaltBins[(floor(x / ABIN) + 32768) * 65536 + floor(y / ABIN) + 32768] or NONE) do
+      local c, box = entry.poly, entry.bounds
+      if not entry.deck and x >= box[1] and x <= box[3] and y >= box[2] and y <= box[4] then
+        local a = c[1]
+        for k = 2, #c - 1 do
+          local b, d = c[k], c[k + 1]
+          local den = (b[2] - d[2]) * (a[1] - d[1]) + (d[1] - b[1]) * (a[2] - d[2])
+          if math.abs(den) > 1e-9 then
+            local u = ((b[2] - d[2]) * (x - d[1]) + (d[1] - b[1]) * (y - d[2])) / den
+            local v = ((d[2] - a[2]) * (x - d[1]) + (a[1] - d[1]) * (y - d[2])) / den
+            if u >= -1e-6 and v >= -1e-6 and u + v <= 1 + 1e-6 then
+              local z = u * (a[3] or 0) + v * (b[3] or 0) + (1 - u - v) * (d[3] or 0)
+              if (not zNear or math.abs(z - zNear) < 1.5) and (not top or z > top) then top = z end
+            end
+          end
+        end
+      end
+    end
+    return top
   end
   -- before the verges and the drapes: a verge's land and a meadow's drape depend on it
   bio.landOff = options.land == false
@@ -17153,7 +17593,7 @@ local function build(cells, i, j, options)
             if strip.shape and strip.shape.most then z = z - strip.shape.most end
             -- the leaning surface's height an offset from its centre line (ROADS.FALL)
             local lean = slope and (slope[k] + (slope[k + 1] - slope[k]) * t) * (span[k] + (span[k + 1] - span[k]) * t) or 0
-            for _, offset in ipairs({-right, -hw, -hw * .5, 0, hw * .5, hw, left}) do
+            for _, offset in ipairs(ROADS.pressOffsets(hw, left, right, tune.densePress)) do
               press(x + nx * offset, y + ny * offset, z + lean * offset)
             end
             pressed = pressed + 1
@@ -17176,6 +17616,23 @@ local function build(cells, i, j, options)
       press(p[1], p[2], p[3] - tune.margin)
       local q = plate.ring[k % #plate.ring + 1]
       press((p[1] + q[1] + c[1]) / 3, (p[2] + q[2] + c[2]) / 3, (p[3] + q[3] + c[3]) / 3 - tune.margin)
+      if tune.densePress > 0 then
+        -- ERI: every fan triangle on a lattice of points densePress apart (a plate grown by the
+        -- kerb radius or a cluster's hull is far larger than its corners and centre could hold)
+        local l = math.max(math.sqrt((p[1] - c[1]) ^ 2 + (p[2] - c[2]) ^ 2), math.sqrt((q[1] - c[1]) ^ 2 + (q[2] - c[2]) ^ 2),
+          math.sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2))
+        local n = math.ceil(l / tune.densePress)
+        if n >= 2 then
+          for i = 0, n do
+            for j = 0, n - i do
+              local wp, wq = i / n, j / n
+              local wc = 1 - wp - wq
+              press(wc * c[1] + wp * p[1] + wq * q[1], wc * c[2] + wp * p[2] + wq * q[2],
+                wc * c[3] + wp * p[3] + wq * q[3] - tune.margin)
+            end
+          end
+        end
+      end
     end
   end
   normalCache = {} -- no more press() calls; covers repeatedly shade shared lattice corners
@@ -17525,8 +17982,40 @@ local function build(cells, i, j, options)
   end
   if visualRoads and markKind and not distant then
     DETAIL.paint({roads = lists.roads, points = lists.points, stars = stars, cutsOf = cutsOf, rect = rect,
-      kinds = DETAIL.kinds, z = lift + DECAL.markLift,
-      emit = function(poly) roadDecor.polygon(markKind, tune.lean(poly), 'flat') end, pause = pause})
+      kinds = DETAIL.kinds, z = lift + DECAL.markLift, zebraMouth = tune.zebraMouth,
+      emit = function(poly) roadDecor.polygon(markKind, tune.lean(poly), 'flat') end, pause = pause,
+      -- ERI: a zebra's stripe (paintQuad's corners) in pieces of at most .75 m along it, each
+      -- corner and each piece's centre markLift over the top asphalt there (zebraTop)
+      emitTop = (tune.zebraTop or 0) > 0 and function(poly)
+        local p1, p2, p3, p4 = poly[1], poly[2], poly[3], poly[4]
+        local n = math.max(1, math.ceil(math.sqrt((p4[1] - p1[1]) ^ 2 + (p4[2] - p1[2]) ^ 2) / .75))
+        local pts = {}
+        for i = 0, n do
+          local t = i / n
+          for _, ab in ipairs({{p1, p4}, {p2, p3}}) do
+            local a, b, q = ab[1], ab[2], {}
+            for m = 1, 5 do q[m] = (a[m] or 0) + ((b[m] or 0) - (a[m] or 0)) * t end
+            pts[#pts + 1] = q
+          end
+        end
+        pts = tune.lean(pts)
+        local lift = DECAL.markLift
+        for _, q in ipairs(pts) do
+          local top = lists.asphaltTop(q[1], q[2], q[3] - lift)
+          if top and top + lift > q[3] then q[3] = top + lift end
+        end
+        for i = 0, n - 1 do
+          local piece = {pts[2 * i + 1], pts[2 * i + 2], pts[2 * i + 4], pts[2 * i + 3]}
+          local mx, my, mz = 0, 0, 0
+          for _, q in ipairs(piece) do mx, my, mz = mx + q[1] / 4, my + q[2] / 4, mz + q[3] / 4 end
+          local top = lists.asphaltTop(mx, my, mz - lift)
+          local up = top and top + lift - mz or 0
+          if up > 0 then
+            for k, q in ipairs(piece) do piece[k] = {q[1], q[2], q[3] + up, q[4], q[5]} end
+          end
+          roadDecor.polygon(markKind, piece, 'flat')
+        end
+      end or nil})
     -- (options.hyper: the game's real pack at full detail draws the road's own furniture that
     -- a pack's experiment asked for one by one: lane arrows here, signs and lights in the scene)
     if options.experimentalDetail or options.hyper then
@@ -20680,6 +21169,8 @@ M.triangulate = triangulate
 M.clip = clip
 -- the defaults of options.tune, for the lab's sliders (lab.lua bind)
 M.TUNE = TUNE
+-- ERI: the road patches' parts, for their tests (earthng/test_roads_v2.py)
+M.ERI = {FILLET = ROADS.FILLET, CLUSTER = ROADS.CLUSTER, fillKerbs = ROADS.fillKerbs, ringInsets = ROADS.ringInsets}
 M.EDGE_MAPS = EDGE_MAPS
 M.STREET_PROPS = VEG.props
 -- an arch through a house and the wall of supporters (earthng/test_arches.py, test_supporters.py)
