@@ -32,6 +32,7 @@ sys.path.insert(0, str(HERE))
 ROOT = HERE.parent
 
 import builder_estimate as timing  # noqa: E402
+import addons  # noqa: E402
 import area_plan  # noqa: E402
 import selection_build  # noqa: E402
 import country_fetch  # noqa: E402
@@ -44,6 +45,7 @@ APP_EXE = 'EarthNG.exe'
 APP_SCHEMA = 'earthng-app-v1'
 PLANET_STAGE = 'Planet'         # first build stage when the planet is missing or older than the packs
 PLANET_SECONDS = 90             # ~270 MB from GitHub (97 s on 8.11)
+ADDONS_STAGE = 'Add-ons'        # the proving ground and flora packs the player chose (addons.py), after the planet
 PLANET = 'earthng_planet.zip'
 PROJECT_SCHEMA = 'earthng-project-v1'
 
@@ -193,6 +195,7 @@ class Service:
         self.geocoded = 0.0
         self.settings_path = self.root / 'app_settings.json'
         self.settings = self.load_settings()
+        self.addons_path = addons.CATALOG
 
     # ------------------------------------------------------------------ plumbing
     def send(self, message):
@@ -247,7 +250,7 @@ class Service:
                 outcome = target(cancel)
                 if isinstance(outcome, dict):
                     done.update(result='complete')
-                    done.update({k: v for k, v in outcome.items() if k in ('path', 'sha256', 'version')})
+                    done.update({k: v for k, v in outcome.items() if k in ('path', 'sha256', 'version', 'warnings')})
                 else:
                     done.update(result='complete', path=str(outcome) if outcome else None)
             except country_fetch.NeedsPbf as exc:
@@ -273,6 +276,8 @@ class Service:
             saved = json.loads(self.settings_path.read_text(encoding='utf-8'))
             if isinstance(saved, dict):
                 settings.update({k: v for k, v in saved.items() if isinstance(v, str)})
+                if isinstance(saved.get('addons'), list):
+                    settings['addons'] = [v for v in saved['addons'] if v in addons.KNOWN]
         except (OSError, ValueError):
             pass
         return settings
@@ -308,7 +313,7 @@ class Service:
         except OSError:
             pass
         return {'home': str(self.root), 'mods': str(mods), 'game_folder_ok': game_folder_ok(mods),
-                'planet': self.planet_state(), 'busy': bool(self.job and self.job.is_alive()),
+                'planet': self.planet_state(), 'addons': self.addons_state(), 'busy': bool(self.job and self.job.is_alive()),
                 'build': build_info(), 'free_gb': free, 'folders': [str(p) for p in game_folders()]}
 
     def cmd_set_game_folder(self, path):
@@ -376,8 +381,94 @@ class Service:
         def target(cancel):
             if not game_folder_ok(mods):
                 raise ValueError(f'{mods} is not a BeamNG user folder (it has no mods folder or settings)')
-            return self.fetch_planet(mods, cancel, url)
+            self.send({'event': 'stage', 'name': PLANET_STAGE, 'seconds': None})
+            start = time.monotonic()
+            path = self.fetch_planet(mods, cancel, url)
+            self.send({'event': 'stage', 'name': PLANET_STAGE, 'seconds': time.monotonic() - start})
+            return with_warnings(path, self.install_addons(mods, cancel))
         return self.start_job('install_planet', target)
+
+    # ------------------------------------------------------------------ add-ons (addons.py)
+    def addon_catalog(self):
+        return addons.load(self.addons_path)
+
+    def chosen_addons(self):
+        """The packs the player wants beside the planet: every one the runtime offers until they choose."""
+        chosen = self.settings.get('addons')
+        return set(chosen) if isinstance(chosen, list) else set(addons.KNOWN)
+
+    def addons_state(self, mods=None):
+        mods = Path(mods) if mods else self.mods
+        chosen = self.chosen_addons()
+        return [{'id': e['id'], 'size': e['size'], 'state': addons.state(e, mods), 'chosen': e['id'] in chosen}
+                for e in self.addon_catalog()]
+
+    def addons_pending(self, mods=None):
+        """Chosen packs that are not in mods yet, or are another build of them there."""
+        mods = Path(mods) if mods else self.mods
+        chosen = self.chosen_addons()
+        return [e for e in self.addon_catalog() if e['id'] in chosen and addons.state(e, mods) != 'installed']
+
+    def cmd_set_addons(self, chosen):
+        if not isinstance(chosen, list) or any(c not in addons.KNOWN for c in chosen):
+            raise ValueError('chosen is a list of add-on ids')
+        self.settings['addons'] = [k for k in addons.KNOWN if k in chosen]
+        self.save_settings()
+        return {'addons': self.addons_state()}
+
+    def install_addons(self, mods, cancel, strict=False):
+        """Install the chosen packs that are missing, as a stage of the job that installs the planet.
+        A pack that fails is a warning there (the map still builds); strict raises it."""
+        pending = self.addons_pending(mods)
+        warnings = []
+        if not pending:
+            return warnings
+        self.send({'event': 'stage', 'name': ADDONS_STAGE, 'seconds': None})
+        start = time.monotonic()
+        for entry in pending:
+            try:
+                addons.fetch(entry, self.root, mods, self.log, cancel)
+            except InterruptedError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - a missing add-on never costs the map
+                if strict:
+                    raise
+                reason = str(exc) or type(exc).__name__
+                warnings.append(f"{entry['file']}: {reason}")
+                self.log(f"warning: {entry['file']} was not installed: {reason}")
+        self.send({'event': 'stage', 'name': ADDONS_STAGE, 'seconds': time.monotonic() - start})
+        return warnings
+
+    def cmd_install_addons(self):
+        """Install the chosen packs now (the planet first, if it is not the one they go with)."""
+        if not self.addons_pending():
+            raise ValueError('the chosen add-ons are already installed')
+        mods = self.mods
+
+        def target(cancel):
+            if not game_folder_ok(mods):
+                raise ValueError(f'{mods} is not a BeamNG user folder (it has no mods folder or settings)')
+            if self.planet_needed():
+                self.send({'event': 'stage', 'name': PLANET_STAGE, 'seconds': None})
+                start = time.monotonic()
+                self.fetch_planet(mods, cancel)
+                self.send({'event': 'stage', 'name': PLANET_STAGE, 'seconds': time.monotonic() - start})
+            self.install_addons(mods, cancel, strict=True)
+            return mods / 'mods'
+        return self.start_job('install_addons', target)
+
+    def lead_stages(self):
+        """The stages a build runs before its own: the planet, then the chosen add-ons."""
+        stages, seconds = [], []
+        planet = self.planet_needed()
+        if planet:
+            stages.append(PLANET_STAGE)
+            seconds.append(PLANET_SECONDS)
+        pending = self.addons_pending()
+        if pending:
+            stages.append(ADDONS_STAGE)
+            seconds.append(addons.seconds(pending))
+        return stages, seconds, planet, [e['id'] for e in pending]
 
     def cmd_app_update(self):
         """Whether the published EarthNG.exe is newer than this one. A checkout reports 'checkout'
@@ -473,6 +564,7 @@ class Service:
                 self.send({'event': 'stage', 'name': 'Planet', 'seconds': None})
                 self.fetch_planet(mods, cancel)
                 self.send({'event': 'stage', 'name': 'Planet', 'seconds': 0})
+            warnings = self.install_addons(mods, cancel)
             self.send({'event': 'stage', 'name': 'Install', 'seconds': None})
             source = country_fetch.availability(pack, mods, self.root)
             if source['state'] == 'installed':
@@ -487,7 +579,7 @@ class Service:
                     raise ValueError('ready pack is no longer available')
                 target_path = country_fetch.install_zip(archive, mods, pack, cancel=cancel)
             self.send({'event': 'stage', 'name': 'Install', 'seconds': 0})
-            return target_path
+            return with_warnings(target_path, warnings)
         return self.start_job('install_ready_pack', target)
 
     # ------------------------------------------------------------------ places and options
@@ -605,13 +697,10 @@ class Service:
         source = self.source_of(box, cached_pbf, cached_tiles, size)
         times, reason = timing.estimate(size, box, include, cached_pbf, cached_tiles,
                                         overpass=country_fetch.overpass_km2(box) if source == 'overpass' else None)
-        stages, seconds = list(timing.STAGES), [round(t) for t in times] if times else None
-        planet = self.planet_needed()
-        if planet:                                   # the build installs it first
-            stages.insert(0, PLANET_STAGE)
-            if seconds:
-                seconds.insert(0, PLANET_SECONDS)
-        return {'seconds': seconds, 'stages': stages, 'planet': planet,
+        lead, lead_seconds, planet, pending = self.lead_stages()     # the build installs these first
+        stages = lead + list(timing.STAGES)
+        seconds = lead_seconds + [round(t) for t in times] if times else None
+        return {'seconds': seconds, 'stages': stages, 'planet': planet, 'addons': pending,
                 'reason': reason, 'pbf_bytes': size, 'cached_pbf': cached_pbf, 'cached_tiles': cached_tiles,
                 'source': source, 'pbf_seconds': self.pbf_seconds(size, box, include),
                 # the page asks before a large country file is downloaded; a small one just comes
@@ -649,13 +738,12 @@ class Service:
                 totals = [a + b for a, b in zip(totals, times)]
             else:
                 known = False
-        stages = list(timing.STAGES)
-        planet = self.planet_needed()
-        if planet:
-            stages.insert(0, PLANET_STAGE)
-            totals.insert(0, PLANET_SECONDS)
+        lead, lead_seconds, planet, pending = self.lead_stages()
+        stages = lead + list(timing.STAGES)
+        totals = lead_seconds + totals
         size = sum(sizes[k] for k in downloads) if all(sizes[k] for k in downloads) else None
         return {'seconds': [round(v) for v in totals] if known else None, 'stages': stages, 'planet': planet,
+                'addons': pending,
                 'reason': '—', 'pbf_bytes': size, 'cached_pbf': all(local.values()), 'cached_tiles': modes == {'tiles'},
                 'source': 'pbf' if 'pbf' in modes else next(iter(modes)), 'pbf_seconds': None,
                 'ask_pbf': any(not country_fetch.small_pbf(sizes[k]) for k in downloads)}
@@ -712,6 +800,10 @@ class Service:
                 start = time.monotonic()
                 self.fetch_planet(Path(mods), cancel)
                 progress(PLANET_STAGE, time.monotonic() - start)
+            warnings = self.install_addons(Path(mods), cancel)
+            return with_warnings(build_area(cancel), warnings)
+
+        def build_area(cancel):
             if plan:
                 def part(i, total, name):
                     self.send({'event': 'part', 'index': i, 'total': total, 'name': name})
@@ -801,6 +893,13 @@ def check_project(project):
     project.setdefault('edits', [])
     project.setdefault('options', {})
     return project
+
+
+def with_warnings(outcome, warnings):
+    """A job's result with the add-ons it could not install, for the done event."""
+    if not warnings:
+        return outcome
+    return {'path': str(outcome) if outcome else None, 'warnings': warnings}
 
 
 def game_folders(env=None, home=None, nt=None):

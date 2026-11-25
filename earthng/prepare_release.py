@@ -56,6 +56,8 @@ def builder_files(files, start=('app_service', 'app_web', 'osm_tiles_country')):
     selected.update(n for n in files if n.startswith('mod/'))
     if 'earthng/area_plan.py' in files:
         selected.add('earthng/area_land.wkb.gz')
+    if 'earthng/addons.py' in selected and 'earthng/addons.json' in files:
+        selected.add('earthng/addons.json')     # the proving ground and flora packs the exe can install
     selected.update(('requirements-fast.txt', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'earthng/fast_tree_materials.json'))
     return {name: files[name] for name in sorted(selected)}
 

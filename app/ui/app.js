@@ -38,6 +38,8 @@ function call(cmd, args = {}, to = 'service') {
 }
 
 // Opened as a plain file (design work in a browser): a small fake service.
+const mockAddons = [{ id: 'polygon', size: 699962, state: 'missing', chosen: true },
+  { id: 'flora', size: 273937290, state: 'missing', chosen: true }];
 function mockService(m) {
   const answer = extra => setTimeout(() => window.earthng.receive({ id: m.id, ok: true, ...extra }), 50);
   const slots = { asphalt: ['smooth', 'worn', 'fresh'], markings: ['white', 'yellow', 'none'], verge: ['grass', 'dirt'],
@@ -46,6 +48,7 @@ function mockService(m) {
   switch (m.cmd) {
     case 'status': return answer({ home: 'C:\\Users\\you\\AppData\\Local\\EarthNG\\data', mods: 'C:\\Users\\you\\AppData\\Local\\BeamNG\\BeamNG.drive\\current',
       game_folder_ok: true, planet: { installed: false, version: null, expected: '0.7.0' }, busy: false, build: { version: 'dev' },
+      addons: mockAddons,
       free_gb: 412.3, folders: ['C:\\Users\\you\\AppData\\Local\\BeamNG\\BeamNG.drive\\current'] });
     case 'options': return answer({ slots: Object.fromEntries(Object.entries(slots).map(([k, v]) => [k, v.map(id => ({ id, label: id }))])),
       slot_labels: Object.fromEntries(Object.keys(slots).map(k => [k, k])),
@@ -57,8 +60,8 @@ function mockService(m) {
       const place = { id: 'us/florida', name: 'Florida', parent: 'United States' };
       return answer({ place, sources: [place], km2: 120.4, uncovered_km2: 0, part_count: 1 });
     }
-    case 'estimate': return answer({ seconds: [30, 110, 12, 3, 20, 13, 1], stages: ['Planet', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'],
-      reason: 'rough estimate', cached_tiles: false, cached_pbf: false, pbf_bytes: 54466814, planet: 'missing',
+    case 'estimate': return answer({ seconds: [30, 91, 110, 12, 3, 20, 13, 1], stages: ['Planet', 'Add-ons', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'],
+      reason: 'rough estimate', cached_tiles: false, cached_pbf: false, pbf_bytes: 54466814, planet: 'missing', addons: ['polygon', 'flora'],
       source: m.selection ? 'overpass' : 'pbf', pbf_seconds: 40, ask_pbf: !m.selection });
     case 'projects': return answer({ projects: [] });
     case 'ready_packs': return answer({ packs: [] });
@@ -67,6 +70,7 @@ function mockService(m) {
       setTimeout(() => window.earthng.receive({ event: 'done', job: m.cmd, result: 'complete', path: `earthng_${m.pack}.zip` }), 800);
       return undefined;
     }
+    case 'set_addons': mockAddons.forEach(a => { a.chosen = m.chosen.includes(a.id); }); return answer({ addons: mockAddons });
     case 'app_update': return answer({ available: true, reason: 'newer', version: '0.10.0', current: '0.9.0', size: 52_000_000 });
     case 'download_app': {
       answer({ job: 'download_app' });
@@ -76,9 +80,11 @@ function mockService(m) {
       return undefined;
     }
     case 'apply_update': return answer({ restarting: true });
-    case 'build': case 'install_planet': {   // a pretend job: stages one by one, then done
+    case 'build': case 'install_planet': case 'install_addons': {   // a pretend job: stages one by one, then done
       answer({ job: m.cmd });
-      const stages = m.cmd === 'build' ? ['Planet', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install'] : ['Planet'];
+      const stages = m.cmd === 'build' ? ['Planet', 'Add-ons', 'Sources', 'Cut tiles', 'Elevation', 'Region index', 'Export', 'Install']
+        : m.cmd === 'install_addons' ? ['Add-ons'] : ['Planet', 'Add-ons'];
+      if (stages.includes('Add-ons')) mockAddons.forEach(a => { if (a.chosen) a.state = 'installed'; });
       const send = (msg, ms) => setTimeout(() => window.earthng.receive(msg), ms);
       if (m.cmd === 'build' && m.selection && !m.allow_pbf) {      // Overpass busy: the page asks for the PBF
         send({ event: 'stage', name: 'Sources', seconds: null }, 300);
@@ -297,6 +303,9 @@ function renderNotes() {
   const planet = (state.estimate && state.estimate.planet) || planetNeeded();
   if (planet === 'old') notes.push(['info', t('area.planetOld', s ? s.planet.version : '')]);
   else if (planet) notes.push(['info', t('area.planet')]);
+  const addons = pendingAddons();
+  if (addons.length) notes.push(['info', t('area.addons', addons.map(a => t(`addon.${a.id}`)).join(', '),
+    addonSize(addons.reduce((sum, a) => sum + a.size, 0)))]);
   if (state.km2 > BIG_KM2) notes.push(['warn', t('area.big')]);
   if (state.plan?.part_count > 1) notes.push(['info', t('area.parts', state.plan.part_count.toLocaleString())]);
   if (state.plan?.uncovered_km2 >= 0.1) notes.push(['warn', t('area.uncovered',
@@ -312,6 +321,21 @@ function planetNeeded() {
   if (planet.error) return 'unreadable';
   if (planet.expected && planet.version !== planet.expected) return 'old';
   return null;
+}
+
+// The proving ground and flora packs (earthng/addons.py): chosen ones that are not in mods yet.
+function pendingAddons() {
+  const s = state.status;
+  return s && s.addons ? s.addons.filter(a => a.chosen && a.state !== 'installed') : [];
+}
+
+function addonSize(bytes) {
+  const mb = bytes / 2 ** 20;
+  return t('addon.size', mb.toLocaleString(undefined, { maximumFractionDigits: mb < 10 ? 1 : 0 }));
+}
+
+function addonStage() {
+  return pendingAddons().length ? ['Add-ons'] : [];
 }
 
 function duration(s) {
@@ -380,9 +404,11 @@ let job = null;            // {kind: 'build' | 'install_planet', name, stages, w
 
 function startProgress(kind, stages, weights) {
   // a drawn box has no name of its own: the region's name would mislead ("a point in Ukraine")
-  job = { kind, name: state.areaName || (state.selection ? areaName() : state.place && state.place.name), stages, weights: weights || stages.map(() => 1), done: new Set(), active: null };
+  job = { kind, name: state.areaName || (state.selection ? areaName() : state.place && state.place.name), stages, weights: weights || stages.map(() => 1), done: new Set(), active: null,
+    addons: stages.includes('Add-ons') ? pendingAddons().map(a => a.id) : [] };
   showCard('build');
-  $('build-title').textContent = t(kind === 'build' ? 'build.title' : kind === 'install_ready_pack' ? 'ready.installing' : 'build.planetTitle') + (kind === 'build' && job.name ? ` — ${job.name}` : '');
+  $('build-title').textContent = t({ build: 'build.title', install_ready_pack: 'ready.installing', install_addons: 'build.addonsTitle' }[kind] || 'build.planetTitle')
+    + (kind === 'build' && job.name ? ` — ${job.name}` : '');
   $('stages').replaceChildren(...stages.map(name => el('li', { dataset: { stage: name } },
     el('span', { className: 'dot' }), el('span', { textContent: t(`stage.${name}`) }), el('span', { className: 't' }))));
   $('build-part').hidden = true;
@@ -437,6 +463,7 @@ function jobStarted() {
 
 function setBuilding(on) {
   state.building = on;
+  renderAddons();
   $('st-task').textContent = on ? t('busy') : '';
   for (const id of ['tool-box', 'tool-route', 'tool-edit']) $(id).disabled = on;
   updateBuildButton();
@@ -465,7 +492,7 @@ function onStage(name, seconds) {
   drawProgress();
 }
 
-function finishBuild(result, error, path) {
+function finishBuild(result, error, path, warnings) {
   setBuilding(false);
   clearInterval(elapsedTimer);
   document.querySelectorAll('#stages li.active').forEach(li => li.classList.remove('active'));
@@ -473,7 +500,7 @@ function finishBuild(result, error, path) {
   if (result === 'complete') {
     appendLog(t('build.complete'));
     if (job) { job.stages.forEach(n => job.done.add(n)); drawProgress(); }
-    showDone(kind, path);
+    showDone(kind, path, warnings);
     refreshStatus().catch(() => {});
     return;
   }
@@ -508,14 +535,19 @@ function needsPbf(message) {
     name: message.name, pbf_bytes: message.pbf_bytes, pbf_seconds: message.pbf_seconds });
 }
 
-function showDone(kind, path) {
+function showDone(kind, path, warnings) {
   showCard('done');
-  const planet = kind === 'install_planet';
-  $('done-title').textContent = t(planet ? 'done.planetTitle' : 'done.title');
-  $('done-body').textContent = planet ? t('done.planetBody') : t('done.body', job && job.name);
+  const planet = kind === 'install_planet', addons = kind === 'install_addons';
+  $('done-title').textContent = t(planet ? 'done.planetTitle' : addons ? 'done.addonsTitle' : 'done.title');
+  $('done-body').textContent = planet ? t('done.planetBody') : addons ? t('done.addonsBody') : t('done.body', job && job.name);
   $('done-path').textContent = path || '';
   $('launch-game').hidden = planet;
-  $('done-another').textContent = t(planet ? 'build.back' : kind === 'install_ready_pack' ? 'ready.again' : 'done.another');
+  $('done-another').textContent = t(planet || addons ? 'build.back' : kind === 'install_ready_pack' ? 'ready.again' : 'done.another');
+  const failed = warnings || [];
+  const notes = failed.map(text => ['warn', t('done.addonsFailed', text)]);
+  if (job && job.addons.includes('polygon') && !failed.some(text => text.startsWith('earthng_polygon')))
+    notes.unshift(['info', t('done.polygonWhere')]);
+  $('done-notes').replaceChildren(...notes.map(([cls, text]) => el('p', { className: `note ${cls}`, textContent: text })));
 }
 
 async function listReadyPacks() {
@@ -532,7 +564,7 @@ async function listReadyPacks() {
 async function installReadyPack(pack) {
   if (state.building) return;
   showSection('map');
-  startProgress('install_ready_pack', ['Planet', 'Install']);
+  startProgress('install_ready_pack', ['Planet', ...addonStage(), 'Install']);
   job.pack = pack;
   job.name = pack.title;
   job.back = state.place ? 'area' : 'empty';
@@ -620,6 +652,7 @@ async function refreshStatus() {
   $('setup-planet').replaceChildren(...setupRow(need ? null : true,
     need === 'old' ? t('setup.planetOld', planet.version) : need ? t('setup.planetMissing') : t('setup.planetOk', planet.version || '?'),
     need && s.game_folder_ok && !state.building ? t('setup.planetNow') : null, installPlanet));
+  renderAddons();
   $('setup').classList.toggle('attention', !s.game_folder_ok);
 
   $('game-folders').replaceChildren(...[...new Set([s.mods, ...s.folders])].map(f => el('option', { value: f, textContent: f, selected: f === s.mods })));
@@ -633,10 +666,57 @@ async function refreshStatus() {
   updateBuildButton();
 }
 
+// One row per pack under the mod's: installed, or a checkbox for whether it comes with the planet
+// (the choice is kept by the service). "install now" once the planet is in.
+function renderAddons() {
+  const s = state.status;
+  const pending = pendingAddons();
+  const last = pending[pending.length - 1];
+  $('setup-addons').replaceChildren(...((s && s.addons) || []).map(addon => {
+    const name = t(`addon.${addon.id}`);
+    const row = el('div', { className: 'setup-row', title: t(`addon.${addon.id}Hint`) });
+    if (addon.state === 'installed') {
+      row.append(...setupRow(true, t('addon.installed', name)));
+      return row;
+    }
+    const box = el('input', { type: 'checkbox', checked: addon.chosen, disabled: state.building });
+    box.onchange = () => setAddon(addon.id, box.checked);
+    row.append(el('label', { className: 'grow' }, box, el('span', { textContent: `${name} · ${addonSize(addon.size)}`
+      + (addon.state === 'other' ? ` — ${t('addon.other')}` : '') })));
+    if (addon === last && !planetNeeded() && s.game_folder_ok && !state.building)
+      row.append(Object.assign(el('button', { className: 'link', textContent: t('addons.now') }), { onclick: installAddons }));
+    return row;
+  }));
+}
+
+async function setAddon(id, on) {
+  const chosen = state.status.addons.filter(a => (a.id === id ? on : a.chosen)).map(a => a.id);
+  try {
+    state.status.addons = (await call('set_addons', { chosen })).addons;
+  } catch (err) { /* the old choice stays on screen */ }
+  renderAddons();
+  renderNotes();
+  refreshEstimate();          // the stages and the time change with the packs
+}
+
+async function installAddons() {
+  if (state.building) return;
+  showSection('map');
+  const back = state.place ? 'area' : 'empty';
+  startProgress('install_addons', [...(planetNeeded() ? ['Planet'] : []), 'Add-ons']);
+  job.back = back;
+  jobStarted();
+  try {
+    await call('install_addons');
+  } catch (err) {
+    finishBuild('failed', err.message);
+  }
+}
+
 async function installPlanet() {
   showSection('map');
   const back = state.place ? 'area' : 'empty';
-  startProgress('install_planet', ['Planet']);
+  startProgress('install_planet', ['Planet', ...addonStage()]);
   job.back = back;
   onStage('Planet', null);
   jobStarted();
@@ -896,7 +976,7 @@ listeners.push(message => {
   }
   else if (message.event === 'stage') onStage(message.name, message.seconds);
   else if (message.event === 'done' && message.result === 'needs_pbf') needsPbf(message);
-  else if (message.event === 'done') finishBuild(message.result, message.error, message.path);
+  else if (message.event === 'done') finishBuild(message.result, message.error, message.path, message.warnings);
   else if (message.event === 'ready') refreshStatus().catch(() => {});
   else if (message.event === 'service_exit') {
     state.updating = false;
@@ -925,10 +1005,11 @@ $('pbf-back').onclick = () => showCard(state.place ? 'area' : 'empty');
 $('save-project').onclick = () => saveProject(false);
 $('stop').onclick = () => call('stop').catch(() => {});
 $('build-back').onclick = backFromJob;
-$('build-retry').onclick = () => (job && job.kind === 'install_planet' ? installPlanet() : job && job.kind === 'install_ready_pack' ? installReadyPack(job.pack) : build(!!(job && job.allowPbf)));
+$('build-retry').onclick = () => (job && job.kind === 'install_planet' ? installPlanet() : job && job.kind === 'install_addons' ? installAddons()
+  : job && job.kind === 'install_ready_pack' ? installReadyPack(job.pack) : build(!!(job && job.allowPbf)));
 $('open-mods').onclick = () => call('open_folder', { which: 'mods' }).catch(() => {});
 $('launch-game').onclick = () => call('open_url', { url: 'steam://rungameid/284160' }, 'app').catch(() => {});
-$('done-another').onclick = () => { if (job && job.kind === 'install_ready_pack') showSection('ready'); else if (job && job.kind === 'install_planet') backFromJob(); else clearArea(); };
+$('done-another').onclick = () => { if (job && job.kind === 'install_ready_pack') showSection('ready'); else if (job && (job.kind === 'install_planet' || job.kind === 'install_addons')) backFromJob(); else clearArea(); };
 $('open-home').onclick = () => call('open_folder', { which: 'home' }).catch(() => {});
 $('planet-install').onclick = installPlanet;
 $('check-update').onclick = () => checkAppUpdate(true);

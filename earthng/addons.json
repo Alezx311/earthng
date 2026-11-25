@@ -1,0 +1,20 @@
+{
+  "schema": "earthng-addons-v1",
+  "release": "v1.1.0",
+  "addons": [
+    {
+      "id": "polygon",
+      "file": "earthng_polygon.zip",
+      "url": "https://github.com/Alezx311/earthng/releases/download/v1.1.0/earthng_polygon.zip",
+      "size": 699962,
+      "sha256": "2e21f97719cc31221584ab3af3b24b06feb440a1a1650b1d78d1838735fbb94d"
+    },
+    {
+      "id": "flora",
+      "file": "earthng_flora.zip",
+      "url": "https://github.com/Alezx311/earthng/releases/download/v1.1.0/earthng_flora.zip",
+      "size": 273937290,
+      "sha256": "338c45186e7c81757195ac9353d78e4a510a1b63e710d167b2e1ff35a2b0c566"
+    }
+  ]
+}

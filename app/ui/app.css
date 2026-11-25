@@ -116,6 +116,8 @@ p { margin: 6px 0; }
 .mark.ok { background: var(--accent); color: var(--accent-text); }
 .mark.bad { background: var(--danger); color: #fff; }
 .mark.info { background: var(--line); color: var(--text); }
+.setup-row label { display: flex; gap: 8px; align-items: center; cursor: pointer; min-width: 0; }
+.setup-row input[type="checkbox"] { width: 18px; height: 14px; margin: 0; flex: none; }
 .step { display: flex; gap: 10px; align-items: center; min-width: 0; }
 .step h2 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .step .num { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-text);

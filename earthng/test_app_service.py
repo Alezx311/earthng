@@ -38,6 +38,7 @@ class ServiceTests(unittest.TestCase):
         self.out = Recorder()
         with patch.object(app_service.country_fetch, 'default_mods', return_value=self.game):
             self.service = app_service.Service(out=self.out, root=self.root / 'home')
+        self.service.addons_path = self.root / 'no-addons.json'     # add-ons: test_addons.py
 
     def tearDown(self):
         self.tmp.cleanup()
