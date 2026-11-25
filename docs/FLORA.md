@@ -67,6 +67,10 @@ option "Model detail by speed" turns it off.
 
 ## The flora pack (FoliMesh)
 
+The ready pack is **earthng_flora.zip** in [release v1.1.0](https://github.com/Alezx311/earthng/releases/tag/v1.1.0):
+106 models of 90 species and forms. Copy it into `mods/` beside the 1.1 planet and restart the
+game. The rest of this section is for building a pack of your own.
+
 FoliMesh is a procedural vegetation generator: a species, a seed and an age make one model with
 its levels of detail, always the same file. Its MCP endpoint needs a paid plan and an API key
 of your own account.
@@ -151,9 +155,11 @@ game's shading.
 
 The FoliMesh licence forbids redistributing the models as files or putting them in an open
 repository (section 4). The models therefore live only in `data/` (not in Git) and in the
-built mod archive. Read [the licence](https://folimesh.com/license) before you publish a pack
-you built: whether a BeamNG mod ZIP counts as the "engine archive" the licence allows is the
-licensor's call, not ours.
+built mod archive, which carries a `NOTICE.txt`: the models are licensed for use inside EarthNG
+and are not to be extracted or redistributed apart from it. The pack in release v1.1.0 is
+published on the reading that a BeamNG mod ZIP is the game build or engine archive the licence
+allows; FoliMesh has not been asked to confirm it. Read [the licence](https://folimesh.com/license)
+before you publish a pack you built.
 
 ## Checks
 

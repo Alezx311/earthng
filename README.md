@@ -34,6 +34,10 @@ bridges and tunnels, and Supporters' Alley. Copy it into your `mods` folder next
 1.1 planet, restart the game and land on the island (48.89° S, 123.36° W). The pause
 menu's EarthNG tab has a generator lab for the whole world or a single tile.
 
+**Flora pack.** **earthng_flora.zip** in the same release puts real species in place of the
+stock trees: 106 models made with [FoliMesh](https://folimesh.com), by natural zone. Copy it into
+`mods` next to the 1.1 planet. See [flora](docs/FLORA.md).
+
 The atlas on **M** and the landing picker search cities, villages, countries and points
 of interest in local, Ukrainian and English names. Use Enter or click a result, scroll to
 zoom smoothly and drag to pan. Roads show at every zoom, points of interest are round
