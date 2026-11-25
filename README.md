@@ -17,15 +17,22 @@ route you to a marker.
 
 ## Install and play
 
-1. Download and open **EarthNG.exe** from the [player release](https://github.com/Alezx311/earthng/releases/tag/v1.0.0).
+1. Download and open **EarthNG.exe** from the [player release](https://github.com/Alezx311/earthng/releases/tag/v1.1.0).
 2. Search for a city such as Miami and press Enter, draw a rectangle, or choose a route.
    Press **Create the map**. The builder installs the planet and the selected area.
 3. Open **Freeroam → EarthNG - Planet** in BeamNG.drive. Pick a point inside the
    installed coverage and land there.
 
-EarthNG 1.0 includes the planet inside **EarthNG.exe**. Try generating a map of any
+EarthNG 1.1 includes the planet inside **EarthNG.exe**. Try generating a map of any
 place on Earth: your hometown, a favourite road, or somewhere you have always wanted
 to drive. Existing country packs can also be used alongside the installed planet.
+
+**Proving ground.** The release also has **earthng_polygon.zip**: a made-up island at
+Point Nemo where every 500 m tile shows one theme (road classes, ground covers,
+buildings, relief), ringed by mountains, desert, snow, mud and jungle, a block of
+bridges and tunnels, and Supporters' Alley. Copy it into your `mods` folder next to the
+1.1 planet, restart the game and land on the island (48.89° S, 123.36° W). The pause
+menu's EarthNG tab has a generator lab for the whole world or a single tile.
 
 The atlas on **M** and the landing picker search cities, villages, countries and points
 of interest in local, Ukrainian and English names. Use Enter or click a result, scroll to
@@ -60,7 +67,7 @@ terrain detail and performance vary between places.
 
 ## Build your own map (Windows)
 
-Download **[EarthNG.exe](https://github.com/Alezx311/earthng/releases/download/v1.0.0/EarthNG.exe)**
+Download **[EarthNG.exe](https://github.com/Alezx311/earthng/releases/download/v1.1.0/EarthNG.exe)**
 and run it. It needs nothing else: Python and the build tools are inside, unpacked
 once to `%LOCALAPPDATA%\EarthNG\runtime`. Downloaded data and built packs live in
 `%LOCALAPPDATA%\EarthNG\data`. The window uses Microsoft Edge WebView2, which

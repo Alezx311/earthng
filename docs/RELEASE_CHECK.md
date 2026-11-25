@@ -4,6 +4,31 @@ Newest first. Each entry records what was checked before a release and what was 
 in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
 `MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
 
+## 1.1.0, release v1.1.0 (2026-11-25): EarthNG.exe and the proving ground from 0b9c9a8
+
+A release of its own, `v1.1.0`, like `v1.0.0`: `EarthNG.exe` and `earthng_polygon.zip`.
+
+- Planet 1.1.0 built with `build_mod.py --lang en` from a clean checkout of 0b9c9a8: 504 330 689
+  bytes, CRC check clean, `prepare_release.check_planet` passed. It is not a release asset: the exe
+  carries it.
+- EarthNG.exe 1.1.0 (`prepare_app.py --planet …`): 647 454 584 bytes, sha256 06dc3406…; BUILD_INFO
+  version 1.1.0, planet 1.1.0, source 0b9c9a8. The bundled planet is byte-equal to the one above;
+  `bin/` has `earthng-mapbuilder.exe` and `earthng_native.dll`. Its 68 Lua files equal the
+  planet's except the language line of `world.lua` (and CRLF line ends from `git archive`).
+- The runtime unpacked into a scratch folder with its own `EARTHNG_HOME`: the embedded Python
+  3.13.2 imports the pipeline, the service answers `status`, `ready_packs` and `projects`, and the
+  native Map Builder starts. Nothing was installed.
+- `earthng_polygon.zip` 0.2.0 (`proving_ground.py`): 699 962 bytes, sha256 2e21f977…; equal to the
+  pack installed for game checks on 25.11 except the source stamp in `map/index.json`. The flora
+  pack (`earthng_flora.zip`) is not published: the FoliMesh licence question is open
+  ([FLORA.md](FLORA.md)); the planet draws stock trees without it.
+- Unit tests at 0b9c9a8: Python discover 1642 OK (1 skipped), Rust release 42 OK.
+- Not run: EarthNG.exe in a clean Windows profile, a pack build by this exe, a drive of this
+  planet in game (a planet of the same commit is in the live mods but was not driven after the
+  last commit), BeamNG 0.39.
+- The in-app updater still reads the rolling release `EarthNG` (0.9.0 assets, no `EarthNG.json`),
+  so 1.0 does not offer this update by itself.
+
 ## 1.0.0 candidate for the full installation cycle (2026-11-19)
 
 The candidate includes large-area and route-corridor builds, project route persistence,
