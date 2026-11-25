@@ -127,6 +127,15 @@ def main():
     if tool.returncode != 0:
         fail(f'earthng-mapbuilder --help: {tool.returncode} {tool.stderr[-400:]}')
     print('native tool ok:', tool.stdout.splitlines()[0], flush=True)
+    # every compiled package imports in the packaged interpreter (on a bare system libexpat
+    # comes from earthng.libs through sitecustomize)
+    probe = subprocess.run([str(package / 'python' / 'bin' / 'python3'), '-c',
+                            'import numpy, shapely, pyproj, osmium, PIL, ctypes.util; '
+                            'import osmium.io; print("packages ok, system expat:", ctypes.util.find_library("expat"))'],
+                           capture_output=True, text=True)
+    if probe.returncode != 0:
+        fail(f'packaged python imports: {probe.stderr[-600:]}')
+    print(probe.stdout.strip(), flush=True)
 
     server = subprocess.Popen([str(package / 'EarthNG'), '--no-browser', '--port', str(a.port), '--stay'],
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

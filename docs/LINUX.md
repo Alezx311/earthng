@@ -82,6 +82,10 @@ Download the new package and unpack it over the old folder (or next to it). Your
   on Windows, or with `--native` on a Linux host. `--test` also runs `cargo test` and the Python
   unit tests on Linux with the packaged interpreter. `--repack PACKAGE --planet ZIP` adds the
   planet to a package built without one.
+- The wheels leave a few libraries to the system (glibc, libstdc++, zlib and, for pyosmium,
+  libexpat). A minimal system has no libexpat, so the package carries the build image's copy in
+  `site-packages/earthng.libs` and `earthng/linux_sitecustomize.py` (the interpreter's
+  `sitecustomize`) loads it where the system has none.
 - `.github/workflows/linux.yml` builds and tests the package on Linux (without the planet, whose
   art is not in Git), then unpacks it on a bare Ubuntu 20.04 and builds Monaco end to end through
   the HTTP page (`earthng/linux_smoke.py`). The release takes that artifact and adds the planet

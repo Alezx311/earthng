@@ -114,6 +114,16 @@ tar -xzf "$PY" -C $WORK
 $WORK/python/bin/python3 -m pip install --quiet --no-cache-dir --disable-pip-version-check \
   --only-binary=:all: --no-compile -r $SRC/requirements-fast.txt
 find $WORK/python -name __pycache__ -type d -prune -exec rm -rf {} +
+# pyosmium's wheel links the system's libexpat.so.1 (the manylinux rules allow it) and a minimal
+# system has none (a bare Ubuntu 20.04): ship this image's copy (glibc 2.28) and have
+# sitecustomize load it, before anything imports osmium, where the system has no copy of its own
+expat() { ldconfig -p | awk '/libexpat\.so\.1 .*x86-64/ && !p {p = $NF} END {print p}'; }   # reads it all: no SIGPIPE under pipefail
+EXPAT=$(expat)
+if [ -z "$EXPAT" ]; then dnf install -y -q expat >/dev/null; EXPAT=$(expat); fi
+SITE=$($WORK/python/bin/python3 -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+mkdir -p $SITE/earthng.libs
+cp -L "$EXPAT" $SITE/earthng.libs/libexpat.so.1
+cp $SRC/earthng/linux_sitecustomize.py $SITE/sitecustomize.py
 $WORK/python/bin/python3 -c "import numpy, shapely, pyproj, osmium, PIL, sys; print('python', sys.version.split()[0], 'packages ok')"
 tar -cf $OUT/python.tar -C $WORK python
 if [ "$EARTHNG_TEST" = 1 ]; then
