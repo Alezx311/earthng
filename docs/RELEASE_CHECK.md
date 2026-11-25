@@ -4,12 +4,24 @@ Newest first. Each entry records what was checked before a release and what was 
 in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
 `MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
 
-## 1.1.0, EarthNG.exe replaced (2026-11-25): the proving ground and flora with the planet, from ff73391
+## 1.1.0, EarthNG.exe and the Linux package replaced (2026-11-25): the proving ground and flora with the planet
 
-The first 1.1.0 exe installed only the planet. The one built from ff73391 also downloads the
-ticked proving ground and flora pack from this release (`earthng/addons.json`, size and sha256
-checked, [MAPBUILDER_APP.md](MAPBUILDER_APP.md)). It replaced `EarthNG.exe` in `v1.1.0` under the
-same name; the tag stays on 0b9c9a8 and the version stays 1.1.0.
+The first 1.1.0 exe and Linux package installed only the planet. The exe built from ff73391 and
+the Linux package built from 3207870 (the same code, with these documents and the CI smoke's
+add-on check) also download the ticked proving ground and flora pack from this release
+(`earthng/addons.json`, size and sha256 checked, [MAPBUILDER_APP.md](MAPBUILDER_APP.md)). They
+replaced `EarthNG.exe` and `EarthNG-linux-x86_64.tar.gz` in `v1.1.0` under the same names; the
+tag stays on 0b9c9a8 and the version stays 1.1.0.
+
+- `EarthNG-linux-x86_64.tar.gz`: the `Linux package` workflow at 3207870 (on Linux: Python
+  discover 1668 OK, 6 skipped), repacked locally with the same 1.1 planet (byte-equal): 711 831 737
+  bytes, sha256 74a19abc…, BUILD_INFO 1.1.0 / planet 1.1.0 / source 3207870. The smoke job on a
+  bare Ubuntu 20.04 chose the proving ground only, built Monaco through the page's HTTP API in
+  101 s, and found `earthng_polygon.zip` downloaded from the release in the Add-ons stage
+  (699 962 bytes) and no flora pack. The run before it, at ff73391, failed only because the smoke
+  took the flora pack the build had just installed for the built map; its Linux tests had failed
+  once on the knock timing bound (0.506 ms against 0.5 ms on the runner) and passed on the rerun.
+  Replaced in the release the same way as the exe; the public link answers with 711 831 737 bytes.
 
 - EarthNG.exe 1.1.0 (`prepare_app.py --planet …`, the planet built from 0b9c9a8 above, byte-equal
   to the one the first exe carried): 647 462 166 bytes, sha256 4581a626…; BUILD_INFO version 1.1.0,
