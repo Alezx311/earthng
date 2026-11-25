@@ -4,6 +4,33 @@ Newest first. Each entry records what was checked before a release and what was 
 in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`,
 `MapBuilder.bat` and `EarthNG-MapBuilder.zip` were replaced by EarthNG.exe in 0.8.0.
 
+## 1.1.0, EarthNG.exe replaced again (2026-11-26): updates from the newest release, from 2efa6be
+
+No 1.x exe had ever been offered an update: they read `EarthNG.json` from the rolling `EarthNG`
+release (0.9.0, no manifest) and refused a manifest over 500 MB. The exe built from 2efa6be reads
+it from `releases/latest/download` and takes the exe from `v<version>`
+([MAPBUILDER_APP.md](MAPBUILDER_APP.md)). It replaced `EarthNG.exe` in `v1.1.0`, and its
+`EarthNG.json` went up beside it; the tag stays on 0b9c9a8 and the version stays 1.1.0.
+
+- EarthNG.exe 1.1.0 (`prepare_app.py --ref 2efa6be --planet …`, the planet of 0b9c9a8,
+  byte-equal): 647 462 498 bytes, sha256 f8093346…; BUILD_INFO 1.1.0 / planet 1.1.0 / source
+  2efa6be. `EarthNG.json` 191 bytes, sha256 a3cae83a…, naming that size and sha256.
+- The runtime unpacked into a scratch folder: the bundled planet equals the release one, both
+  add-ons listed, `earthng_polygon.zip` installed from the release (sha256 as in the catalog).
+  Before the manifest was published `app_update` answered `no-manifest`.
+- Published with `publish_1_1_0_update.py replace --exe --manifest --body`: the exe first (temp
+  name, digest check, rename), then `EarthNG.json` only once the release carried that exe. The
+  release as it was is in `release-before-20261126-011640.json`. `releases/latest/download/EarthNG.json`
+  serves the new manifest; the exe link answers with 647 462 498 bytes.
+- Through the live release, the runtime's own service: `current` with this exe installed;
+  `rebuilt` with the ff73391 exe installed (same version, other sha256), and `download_app` then
+  fetched 647 462 498 bytes from `v1.1.0` in 65 s with a matching sha256.
+- Before the commit: Python discover 1669 OK (1 skipped); the Python side alone downloaded the
+  ff73391 exe from `v1.1.0` against its manifest (647 MB accepted).
+- Not run: the window's swap of the exe (`update.rs`, unchanged since 1.0.0), a clean Windows
+  profile, BeamNG 0.39. Builds before 2efa6be stay unreachable: the README and the release
+  description tell their players to download this exe once.
+
 ## 1.1.0, EarthNG.exe and the Linux package replaced (2026-11-25): the proving ground and flora with the planet
 
 The first 1.1.0 exe and Linux package installed only the planet. The exe built from ff73391 and
