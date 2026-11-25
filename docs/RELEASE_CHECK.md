@@ -6,7 +6,8 @@ in older entries are gone: the Tk Map Builder window, `Setup.bat`, `Country.bat`
 
 ## 1.1.0, release v1.1.0 (2026-11-25): EarthNG.exe and the proving ground from 0b9c9a8
 
-A release of its own, `v1.1.0`, like `v1.0.0`: `EarthNG.exe` and `earthng_polygon.zip`.
+A release of its own, `v1.1.0`, like `v1.0.0`: `EarthNG.exe` and `earthng_polygon.zip`. The same
+day the flora pack and the Linux package were added to it (below); the tag stays on 0b9c9a8.
 
 - Planet 1.1.0 built with `build_mod.py --lang en` from a clean checkout of 0b9c9a8: 504 330 689
   bytes, CRC check clean, `prepare_release.check_planet` passed. It is not a release asset: the exe
@@ -19,9 +20,29 @@ A release of its own, `v1.1.0`, like `v1.0.0`: `EarthNG.exe` and `earthng_polygo
   3.13.2 imports the pipeline, the service answers `status`, `ready_packs` and `projects`, and the
   native Map Builder starts. Nothing was installed.
 - `earthng_polygon.zip` 0.2.0 (`proving_ground.py`): 699 962 bytes, sha256 2e21f977…; equal to the
-  pack installed for game checks on 25.11 except the source stamp in `map/index.json`. The flora
-  pack (`earthng_flora.zip`) is not published: the FoliMesh licence question is open
-  ([FLORA.md](FLORA.md)); the planet draws stock trees without it.
+  pack installed for game checks on 25.11 except the source stamp in `map/index.json`.
+- `earthng_flora.zip`, published on the owner's decision after the FoliMesh licence's section 4
+  was laid out ([FLORA.md](FLORA.md); FoliMesh was not asked): the pack built on 21.11, 273 937 290
+  bytes, sha256 338c4518…, byte-equal to the copy in the live mods. 106 models of 90 species and
+  forms, 97 shapes cooked and 9 raw, `NOTICE.txt` inside. Not looked at again in game for this
+  release.
+- `EarthNG-linux-x86_64.tar.gz` ([LINUX.md](LINUX.md)), built by the `Linux package` workflow from
+  ac24a39 in `manylinux_2_28` (Docker cannot run on the release PC: no virtualization) and
+  repacked locally with the planet above (byte-equal): 678.9 MB, sha256 aa75b43d…, Python
+  3.13.18, BUILD_INFO 1.1.0 / planet 1.1.0. On Linux: `cargo test` 36 OK (the Windows-only `app`
+  crate left out), Python discover 1656 OK (6 skipped) with the packaged interpreter. The smoke job
+  unpacked it on a bare Ubuntu 20.04 (no Python, no libexpat), found the native client's user
+  folder, served a map tile, built Monaco through the page's HTTP API in 159 s and installed
+  `earthng_monaco.zip` (a stand-in planet file of the right version; the real planet was not
+  installed there).
+- What the Linux runs found and fixed on the way: four tests needed the paid art libraries (the
+  `Tests` workflow had been red since they landed); the crossings reference's numpy dots went
+  through an FMA BLAS kernel on the runner's CPU; pyosmium's wheel needs the system's libexpat
+  (now carried in `earthng.libs`); a flow test's bound was flaky across Lua states. One run failed
+  on a network test (`test_tls`: network unreachable on the runner) and passed on the next commit.
+  `Tests` (Windows) is green at ac24a39.
+- Not run for Linux: a real desktop distribution, SteamOS, Proton, BeamNG's native Linux client,
+  the planet installed by the Linux package and driven.
 - Unit tests at 0b9c9a8: Python discover 1642 OK (1 skipped), Rust release 42 OK.
 - Not run: EarthNG.exe in a clean Windows profile, a pack build by this exe, a drive of this
   planet in game (a planet of the same commit is in the live mods but was not driven after the

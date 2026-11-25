@@ -146,8 +146,8 @@ country, and where a section overlaps the whole-country pack the section answers
 rebuilt county replaces just that area.
 
 Data downloads/cache live under `data`, intermediates under `out`; neither is
-committed. The default build uses at most four worker processes. Linux/macOS
-country building has not been validated for this release.
+committed. The default build uses at most four worker processes. The Linux package
+builds a country end to end on a bare Ubuntu 20.04 in CI; macOS is not supported.
 
 ## Development
 
