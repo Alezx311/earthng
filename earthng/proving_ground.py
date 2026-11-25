@@ -36,7 +36,8 @@ sys.path.insert(0, str(HERE))
 from osm_tiles import BUFFER, CELL  # noqa: E402
 
 ID = 'polygon'
-TITLE = 'Полігон · точка Немо'
+# the pack's title in English, as every pack's (planetMap.countryName gives the Ukrainian)
+TITLE = 'Proving ground · Point Nemo'
 VERSION = '0.2.0'
 POINT_NEMO = (-48.8767, -123.3933)      # lat, lon of the oceanic pole of inaccessibility
 # OSM cells (0.05 degrees) of the package, half-open: 6 x 5 cells, 22 x 28 km of ocean. The
@@ -363,6 +364,8 @@ def make_plan():
     plan = Plan()
     proving_zones.build(plan)
     plan.weld()
+    import proving_names
+    proving_names.add_english(plan)
     return plan
 
 

@@ -233,7 +233,9 @@ WORLD_IM = '''
 
 
 class WidgetSyncTests(unittest.TestCase):
-    """world.lua's options: the widget and the registry show the same value whichever changed it."""
+    """world.lua's options: the registry reads and writes the state the game runs on, whoever
+    changed it (the page of the pause menu, the game's own code). The driving widget that showed
+    the same values is gone (24.11); the class keeps its name for the tests that import it."""
 
     def world(self, disk=None):
         """world.lua (NATIVE off) with the registry bound; disk: Lua table source of settings/earthng.json.
@@ -257,7 +259,6 @@ class WidgetSyncTests(unittest.TestCase):
           end
           mod.walkersGet = function() return fake.asked, fake.walking, fake.room end
           draw = up(mod.onUpdate, 'drawWindow')
-          drawTune = up(draw, 'drawTune')
           o = mod.options
           assert(o and o.REGISTRY, 'world.lua has no registry')
           mod.optionsBind()
@@ -276,11 +277,13 @@ class WidgetSyncTests(unittest.TestCase):
         payload = to_py(lua.eval('o.payload()'))
         json.dumps(payload)
         self.assertEqual([g['key'] for g in payload['groups']], ['quality', 'traffic', 'view', 'advanced'])
-        # the widget's tune sliders and the registry's ranges agree
-        src = (E2R / 'world.lua').read_text(encoding='utf8')
         listed = {d['key']: d for d in to_py(lua.eval('o.list()'))}
-        for key, lo, hi in re.findall(r"tuneSlider\('(\w+)', (\d+), (\d+),", src):
-            self.assertEqual((listed[key]['min'], listed[key]['max']), (int(lo), int(hi)), key)
+        # the ranges the widget's sliders had (it is gone; saved tunes were made within them)
+        for key, lo, hi in (('grassM', 0, 220), ('rockM', 0, 900), ('nearM', 400, 4000), ('farM', 800, 8000),
+                            ('maxTrees', 0, 2400), ('maxFarTrees', 0, 1200), ('maxGrass', 0, 4800), ('maxRocks', 0, 200),
+                            ('grassBudget', 0, 14000), ('rockBudget', 0, 1600), ('forestSpacing', 4, 24),
+                            ('groundSpacing', 4, 30)):
+            self.assertEqual((listed[key]['min'], listed[key]['max']), (lo, hi), key)
         # pedestrians: a live 0..1000 slider and a switch, usable before the drive (the count is kept)
         w = listed['walkers']
         self.assertEqual((w['kind'], w['min'], w['max'], w['step'], w.get('live')), ('int', 0, 1000, 10, True))
@@ -320,63 +323,63 @@ class WidgetSyncTests(unittest.TestCase):
         self.assertEqual(lua.eval('S.tune.quality'), 30)
         self.assertIsNone(lua.eval("(o.set('mode', 'turbo', 'ui'))"))
 
-    def test_registry_change_reaches_the_widget(self):
+    def test_registry_change_reaches_the_game_and_the_page(self):
         lua = self.world()
-        lua.execute('''
-          tunePtr = up(drawTune, 'tunePtr')
-          tunePtr.maxTrees = {[0] = 1}; tunePtr.quality = {[0] = 1}; tunePtr.groundTrees = {[0] = true}
-          assert(o.set('quality', 100, 'ui') == 100)
-        ''')
+        lua.execute("assert(o.set('quality', 100, 'ui') == 100)")
         self.assertEqual(lua.eval('S.tune.quality'), 100)
-        self.assertEqual(lua.eval('S.tune.maxTrees'), 800)            # the OASIS preset, as the widget's slider
-        self.assertEqual(lua.eval('tunePtr.maxTrees[0]'), 800)         # the widget's slider copy follows
-        self.assertEqual(lua.eval('tunePtr.quality[0]'), 100)
+        self.assertEqual(lua.eval('S.tune.maxTrees'), 800)            # the OASIS preset
         lua.execute("o.set('groundTrees', false)")
-        self.assertFalse(lua.eval('tunePtr.groundTrees[0]'))
+        self.assertFalse(lua.eval('S.tune.groundTrees'))
         self.assertEqual(lua.eval("(o.set('maxTrees', 1234))"), 1250)    # step 50
-        self.assertEqual(lua.eval('tunePtr.maxTrees[0]'), 1250)
+        self.assertEqual(lua.eval('S.tune.maxTrees'), 1250)
         # every change is pushed to the page
         last = to_py(lua.eval('pushed[#pushed]'))
         self.assertEqual(last['name'], 'EarthNGOptions')
         advanced = next(g for g in last['data']['groups'] if g['key'] == 'advanced')
         self.assertEqual(next(x['value'] for x in advanced['options'] if x['key'] == 'maxTrees'), 1250)
 
-    def test_widget_change_reaches_the_registry_and_page(self):
+    def test_a_change_made_elsewhere_reaches_the_registry_and_page(self):
         lua = self.world()
-        lua.execute('''
-          S.state = 'driving'; S.now = 10; S.stream = {}
-          up(draw, 'focus', function() return nil end)
-        ''')
-        # the street line was off on disk: restored at load, both views agree
+        lua.execute("S.state = 'driving'; S.now = 10; S.stream = {}")
+        # the street line was off on disk: restored at load
         self.assertFalse(lua.eval("o.get('streetLine')"))
         self.assertTrue(lua.eval('S.locationOff'))
         before = lua.eval('#pushed')
-        # the widget's own checkbox
-        lua.execute('''
-          openHeader = 'Вигляд і трафік'
-          clicked = 'Рядок з назвою вулиці'
-          draw()
-        ''')
-        self.assertTrue(lua.eval("o.get('streetLine')"))
+        lua.execute("mod.optionsSet('streetLine', true)")
         self.assertFalse(lua.eval('S.locationOff'))
         self.assertIs(lua.eval('disk.locationOff'), False)             # saved under the old key
         self.assertGreater(lua.eval('#pushed'), before)
-        # and back from the page: the widget's checkbox shows it
-        lua.execute("mod.optionsSet('streetLine', false)")
-        self.assertFalse(lua.eval('S.locationShown[0]'))
-        self.assertTrue(lua.eval('S.locationOff'))
-        # the widget's tune slider writes S.tune itself; poll carries it to the page
+        # the game's own code writes S.tune itself; poll carries it to the page
         lua.execute("S.tune = S.tune or {}; S.tune.maxRocks = 77; n = #pushed; o.poll(100)")
         self.assertEqual(lua.eval("o.get('maxRocks')"), 77)
         self.assertEqual(lua.eval('#pushed'), lua.eval('n') + 1)
-        # the widget's UA/EN button
-        lua.execute("clicked = 'EN##lang'; openHeader = nil; draw(); o.poll(200)")
+        lua.execute("mod.optionsSet('lang', 'en'); o.poll(200)")
         self.assertEqual(lua.eval("o.get('lang')"), 'en')
         self.assertEqual(to_py(lua.eval('pushed[#pushed]'))['data']['lang'], 'en')
         # a refused value from the page: the page gets the value in force back
         lua.execute("n = #pushed; mod.optionsSet('lang', 'de')")
         self.assertEqual(lua.eval('#pushed'), lua.eval('n') + 1)
         self.assertEqual(lua.eval("o.get('lang')"), 'en')
+
+    def test_driving_shows_no_window_of_ours(self):
+        """The widget is gone: while driving the screen has the game's minimap and the lines at the
+        top only; a notice stands low on the screen while the world under the car is not built."""
+        lua = self.world()
+        lua.execute('''
+          S.state = 'driving'; S.now = 10; S.stream = {}; S.pickerOpen = false
+          LIMIT = up(draw, 'LIMIT')
+          begun, said = {}, {}
+          up(draw, 'M').winguard = {begin = function(_, name) begun[#begun + 1] = name end}
+          ui_imgui.TextColored = function(_, text) said[#said + 1] = text end
+          up(LIMIT.notices, 'focus', function() return nil end)
+          draw()
+          assert(#begun == 0, 'no window while there is nothing to say')
+          up(LIMIT.notices, 'focus', function() return {x = 0, y = 0, z = 0} end)
+          up(LIMIT.notices, 'tileLoadedAt', function() return false end)
+          draw()
+        ''')
+        self.assertEqual(list(lua.eval('begun').values()), ['EarthNG##notice'])
+        self.assertEqual(list(lua.eval('said').values()), ['Генерую світ попереду, зачекайте...'])
 
     def test_traffic_rows_share_state(self):
         lua = self.world()
@@ -505,7 +508,7 @@ class WidgetSyncTests(unittest.TestCase):
         plain.execute(fakes + "S.state = 'driving'; mod.trafficResume()")
         self.assertEqual((plain.eval('#flowCalls'), plain.eval('#trafficCalls')), (0, 0))
 
-    def test_the_widgets_traffic_buttons_are_saved_too(self):
+    def test_a_wish_set_outside_the_registry_is_saved_too(self):
         lua = self.world()
         lua.execute('''
           S.state = 'driving'
@@ -513,9 +516,6 @@ class WidgetSyncTests(unittest.TestCase):
           S.flowSaved = 400; mod.wishKeep()
         ''')
         self.assertEqual(to_py(lua.eval('disk'))['flow'], 400)
-        src = (E2R / 'world.lua').read_text(encoding='utf8')
-        self.assertIn("S.flowSaved = a[1]; M.flowSet(a[1]); M.wishKeep()", src)
-        self.assertIn("S.trafficSaved = a[1]; setTraffic(a[1], kind); M.wishKeep()", src)
 
     def test_the_style_is_saved(self):
         lua = self.world()
@@ -553,29 +553,6 @@ class WidgetSyncTests(unittest.TestCase):
         self.assertFalse(lua.eval('mod.knockGet()'))
         lua.execute("mod.knockSet(true)")                                     # switched elsewhere
         self.assertTrue(lua.eval("o.get('knock')"))
-
-    def test_widget_rows_go_through_the_registry(self):
-        lua = self.world()
-        lua.execute("S.state = 'driving'")
-        # the switch, then the slider while it is on (live, each frame of the drag)
-        lua.execute("clicked = 'Пішоходи##walkOn'; mod.drawPeopleRows()")
-        self.assertTrue(lua.eval("o.get('walkersOn')"))
-        self.assertEqual(lua.eval('fake.asked'), 200)
-        lua.execute("clicked = nil; slid = '##walkN'; slideTo = 640; mod.drawPeopleRows()")
-        self.assertEqual(lua.eval('fake.asked'), 640)
-        self.assertEqual(lua.eval('S.peoplePtrs.n[0]'), 640)
-        # from the page: the widget's controls show it on the next frame
-        lua.execute("slid = nil; mod.optionsSet('walkers', 120); mod.optionsSet('knock', false); mod.drawPeopleRows()")
-        self.assertEqual(lua.eval('S.peoplePtrs.n[0]'), 120)
-        self.assertFalse(lua.eval('S.peoplePtrs.knock[0]'))
-        lua.execute("mod.optionsSet('walkersOn', false); mod.drawPeopleRows()")
-        self.assertFalse(lua.eval('S.peoplePtrs.on[0]'))
-        self.assertEqual(lua.eval('S.peoplePtrs.n[0]'), 120)                 # the count stays on the slider
-        # the knock checkbox
-        lua.globals().clicked = "Збивані об'єкти##knock"
-        lua.execute("mod.drawPeopleRows()")
-        self.assertTrue(lua.eval('mod.knockGet()'))
-        self.assertIs(lua.eval('disk.knock'), True)
 
 
 class AppFilesTests(unittest.TestCase):

@@ -5,10 +5,20 @@
 -- network's point {kind = 'fuel' ...} or a pin {kind = 'pin', cat = ...}. A category not in STYLE
 -- is skipped, so a pack from a newer builder never breaks the map.
 --
+-- A marker is a round badge of its group's colour with a white rim, a soft shadow and its mark
+-- from the atlas of pictograms (earthng/map_icons.py: the same drawings as on the plaques in the
+-- world, map_icons.lua names the mark of each category); a point too minor for a badge at the
+-- zoom is a ringed dot. Without the atlas (a dev build, a test) the letters and line drawings
+-- below stand in.
+--
 -- Every frame: no tables are made. The candidates go into reused buckets by priority, a record
 -- keeps its geographic position after its first frame, and glyph widths are measured once.
 
 local M = {}
+local okIcons, icons = pcall(require, 'ge/extensions/e2r/map_icons')
+if not okIcons or type(icons) ~= 'table' or type(icons.cells) ~= 'table' then icons = nil end
+M.icons = icons
+M.texture = nil   -- function(path) -> a texture with texId (world.lua: imguiUtils.texObj)
 
 -- colours of the groups (r, g, b): blue for the driver's services as on road signs, brown for
 -- sights as on tourist signs
@@ -57,7 +67,7 @@ local STYLE = {
   clinic = {group = 'health', shape = 'plus', zoom = 16, priority = 6},
   parcel_locker = {group = 'shop', shape = 'locker', zoom = 17, priority = 8},
   -- sights (wave 4)
-  monument = {group = 'sight', shape = 'obelisk', zoom = 15, priority = 4, labelZoom = 16},
+  monument = {group = 'sight', shape = 'obelisk', zoom = 15, priority = 4, labelZoom = 17},
   castle = {group = 'sight', shape = 'castle', zoom = 11, priority = 2, labelZoom = 13},
   windmill = {group = 'sight', shape = 'windmill', zoom = 13, priority = 3, labelZoom = 15},
   cave = {group = 'nature', shape = 'cave', zoom = 14, priority = 4, labelZoom = 15},
@@ -99,8 +109,8 @@ M.NAMES = {
 M.FAR = {peak = true, pass = true, viewpoint = true, castle = true, airfield = true, lighthouse = true}
 
 local LEVELS = 8
-local MAX = 240          -- markers drawn at most
-local CELL = 48          -- world-anchored pixels, including breathing room around an icon
+local MAX = 160          -- markers drawn at most (a town centre at z16 had 200 badges: a carpet)
+local CELL = 60          -- world-anchored pixels, including breathing room around a badge
 local buckets, counts = {}, {}
 for k = 1, LEVELS do buckets[k], counts[k] = {}, 0 end
 local occupied = {}
@@ -112,9 +122,13 @@ function M.style(poi)
   return nil
 end
 
--- draw the shape `name` centred at x, y, r px across, in ink
-local function shape(im, dl, name, x, y, ink, fill)
-  local V = im.ImVec2
+-- draw the shape `name` centred at x, y, about 12 px across times k, in ink
+local shapeIm, shapeX, shapeY, shapeK
+local function V(ax, ay)
+  return shapeIm.ImVec2(shapeX + (ax - shapeX) * shapeK, shapeY + (ay - shapeY) * shapeK)
+end
+local function shape(im, dl, name, x, y, ink, fill, k)
+  shapeIm, shapeX, shapeY, shapeK = im, x, y, k or 1
   if name == 'cross' or name == 'shrine' then
     im.ImDrawList_AddLine(dl, V(x, y - 5), V(x, y + 5), ink, 2)
     im.ImDrawList_AddLine(dl, V(x - 3.5, y - 2), V(x + 3.5, y - 2), ink, 2)
@@ -231,28 +245,75 @@ local function shape(im, dl, name, x, y, ink, fill)
   end
 end
 
-local function textWidth(im, text)
-  local w = widths[text]
-  if not w then
-    w = im.CalcTextSize(text).x
-    widths[text] = w
+-- the atlas of marks, loaded on its first use; false when it cannot be
+local atlasTex
+local function atlas()
+  if atlasTex == nil then
+    atlasTex = false
+    if icons and M.texture then
+      local ok, obj = pcall(M.texture, icons.file)
+      if ok and obj and obj.texId then atlasTex = obj end
+    end
   end
-  return w
+  return atlasTex or nil
+end
+M.atlas = atlas
+
+local C, A, B, U0, U1
+local function vectors(im)
+  if not C then
+    C, A, B = im.ImVec2(0, 0), im.ImVec2(0, 0), im.ImVec2(0, 0)
+    U0, U1 = im.ImVec2(0, 0), im.ImVec2(1, 1)
+  end
 end
 
--- One pin's marker at x, y (the minimap and the world map, worldmap.lua): a rounded square in
--- `fill` with a white rim and its letters or shape in white. s: a STYLE entry (text or shape).
--- Returns its half width.
-function M.icon(im, dl, s, x, y, fill, white)
-  local half = s.text and math.max(7, textWidth(im, s.text) / 2 + 3) or 7
-  im.ImDrawList_AddRectFilled(dl, im.ImVec2(x - half - 1.5, y - 8.5), im.ImVec2(x + half + 1.5, y + 8.5), white, 5)
-  im.ImDrawList_AddRectFilled(dl, im.ImVec2(x - half, y - 7), im.ImVec2(x + half, y + 7), fill, 4)
-  if s.text then
-    im.ImDrawList_AddText1(dl, im.ImVec2(x - textWidth(im, s.text) / 2, y - 7), white, s.text)
-  else
-    shape(im, dl, s.shape, x, y, white, fill)
+-- The badge of a point at x, y: a circle of radius r in `fill`, white-rimmed over a shadow, with
+-- the mark of its category `cat` ('fuel', 'service_map/pharmacy' ...), else of its style s
+-- (a STYLE entry: letters or a line drawing). Returns r.
+function M.badge(im, dl, cat, s, x, y, r, fill, white, shade)
+  vectors(im)
+  local circle = im.ImDrawList_AddCircleFilled
+  local sides = r > 9 and 24 or 16
+  C.x, C.y = x, y + 1.6
+  circle(dl, C, r + 2.6, shade, sides)
+  C.y = y
+  circle(dl, C, r + 1.8, white, sides)
+  circle(dl, C, r, fill, sides)
+  local mark = icons and cat and icons.category[cat]
+  local cell = mark and icons.cells[mark]
+  local tex = cell and atlas()
+  if tex then
+    local h = r * .8
+    local per, rows = icons.per, icons.rows
+    local cx, cy = cell % per, math.floor(cell / per)
+    A.x, A.y, B.x, B.y = x - h, y - h, x + h, y + h
+    U0.x, U0.y, U1.x, U1.y = cx / per, cy / rows, (cx + 1) / per, (cy + 1) / rows
+    im.ImDrawList_AddImage(dl, tex.texId, A, B, U0, U1, white)
+  elseif s and s.text and #s.text <= 2 then
+    local w = widths[s.text]
+    if not w then w = im.CalcTextSize(s.text).x; widths[s.text] = w end
+    im.ImDrawList_AddText1(dl, im.ImVec2(x - w / 2, y - 7), white, s.text)
+  elseif s and s.text then
+    -- letters wider than the badge: the first one
+    local t = s.text:sub(1, 1)
+    local w = widths[t]
+    if not w then w = im.CalcTextSize(t).x; widths[t] = w end
+    im.ImDrawList_AddText1(dl, im.ImVec2(x - w / 2, y - 7), white, t)
+  elseif s and s.shape then
+    shape(im, dl, s.shape, x, y, white, fill, r / 10)
   end
-  return half
+  return r
+end
+
+-- a point too minor for a badge: a dot of radius r in `fill`, ringed white over a shadow
+function M.dot(im, dl, x, y, r, fill, white, shade)
+  vectors(im)
+  local circle = im.ImDrawList_AddCircleFilled
+  C.x, C.y = x, y + 1
+  circle(dl, C, r + 2, shade, 12)
+  C.y = y
+  circle(dl, C, r + 1.4, white, 12)
+  circle(dl, C, r, fill, 12)
 end
 
 -- tiles: the streamed tiles (each with .brandPOIs); toGeo(x, y) -> lat, lon; screen(lat, lon) -> px;
@@ -297,10 +358,11 @@ function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands, layout, accep
     end
   end
   for key in pairs(occupied) do occupied[key] = nil end
-  local drawn, white, dark = 0, col(1, 1, 1), col(0.12, 0.12, 0.12)
+  local drawn, white, dark, shade = 0, col(1, 1, 1), col(0.12, 0.12, 0.12), col(0, 0, 0, .30)
   local ox, oy = screen(0, 0)
   local function labelAt(x, y, text)
-    local w = im.CalcTextSize(text).x
+    local w = widths[text]
+    if not w then w = im.CalcTextSize(text).x; widths[text] = w end
     if not layout or layout.place(x - 2, y - 9, x + w + 3, y + 9) then
       im.ImDrawList_AddRectFilled(dl, im.ImVec2(x - 2, y - 8), im.ImVec2(x + w + 2, y + 8), col(1, 1, 1, .9), 3)
       im.ImDrawList_AddText1(dl, im.ImVec2(x, y - 7), dark, text)
@@ -316,15 +378,15 @@ function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands, layout, accep
       local x, y = screen(poi.lat, poi.lon)
       local key = math.floor((x - ox) / CELL) * 4194304 + math.floor((y - oy) / CELL)
       local s = poi.kind == 'pin' and STYLE[poi.cat]
-      local half = s and s.text and math.max(8, textWidth(im, s.text) / 2 + 5) or 10
-      if not occupied[key] and (not layout or layout.place(x - half, y - 10, x + half, y + 10)) then
+      local half = 12
+      if not occupied[key] and (not layout or layout.place(x - half, y - half, x + half, y + half)) then
         occupied[key], drawn = true, drawn + 1
         local brand = poi.brand and brands[poi.brand]
         if s then
           local g = GROUP[s.group]
           local rgb = brand and brand[3]
           local fill = rgb and col(rgb[1] / 255, rgb[2] / 255, rgb[3] / 255) or col(g[1], g[2], g[3])
-          local half = M.icon(im, dl, s, x, y, fill, white)
+          M.badge(im, dl, poi.mapCategory or poi.cat, s, x, y, 10, fill, white, shade)
           local label = poi.label
           if s.group == 'nature' and poi.ele then label = label and (label .. ' ' .. poi.ele) or poi.ele end
           if label and z >= (s.labelZoom or 17) then
@@ -334,8 +396,7 @@ function M.draw(im, dl, tiles, z, box, toGeo, screen, col, brands, layout, accep
           local rgb = poi.rgb or (brand and brand[3])
           local c = rgb and col(rgb[1] / 255, rgb[2] / 255, rgb[3] / 255)
             or (poi.kind == 'fuel' and col(0.10, 0.43, 0.70) or col(0.16, 0.55, 0.27))
-          im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), 7, white)
-          im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y), 5.5, c)
+          M.badge(im, dl, poi.kind == 'fuel' and 'fuel' or 'shop', nil, x, y, 9, c, white, shade)
           if z >= 17 and (poi.brand or poi.label) then
             labelAt(x + 13, y, poi.label or (brand and brand[2] or poi.brand))
           end

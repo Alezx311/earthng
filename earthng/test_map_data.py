@@ -123,22 +123,6 @@ class MapDataTests(unittest.TestCase):
         lua.execute('planet.update({})')
         self.assertEqual(len(lua.eval("planet.search('Долинка', 'uk', 9)")), 0)
 
-    def test_overview_levels_and_cache_invalidation(self):
-        root = '/earthng/countries/demo/map/'
-        tiles, files = {}, {}
-        for key, box, z, line in build_map.road_tiles([(30, 50), (30.3, 50.1)], 1):
-            tiles[key] = {'zoom': z, 'box': box, 'file': key + '.json'}
-            files[root + key + '.json'] = [line]
-        files[root + 'index.json'] = {'version': 1, 'tiles': tiles}
-        files[root + 'places.json'] = []
-        lua = self.runtime(files)
-        lua.execute("catalog.step({{id='demo', title='Demo', available=true}})")
-        for zoom in (6, 8, 9, 10, 11, 14):
-            self.assertGreater(len(lua.eval(f'catalog.roads({{w=30,s=50,e=30.3,n=50.1}}, {zoom})')), 0)
-        self.assertEqual(len(lua.eval('catalog.roads({w=-80,s=-20,e=-79,n=-19}, 6)')), 0)
-        lua.execute('catalog.step({})')
-        self.assertEqual(len(lua.eval('catalog.roads({w=30,s=50,e=30.3,n=50.1}, 6)')), 0)
-
     def test_pbf_export_keeps_named_nodes_not_connected_to_roads(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -325,24 +309,6 @@ class MapDataTests(unittest.TestCase):
             for name in names:
                 self.assertEqual((outputs[0] / name).read_bytes(), (outputs[1] / name).read_bytes(), name)
             self.assertEqual(json.loads((outputs[1] / 'index.json').read_text())['roads'], 2)
-
-    def test_overview_reuses_engine_points_and_pans_without_distortion(self):
-        root = '/earthng/countries/demo/map/'
-        lua = self.runtime({root + 'index.json': {'version': 1, 'tiles': {
-            '6_7_12': {'zoom': 6, 'box': [28, 48, 32, 52], 'file': '6_7_12.json'}}},
-            root + 'places.json': [], root + '6_7_12.json': [{'rank': 1, 'box': [50, 30, 50.1, 30.1], 'geo': [50, 30, 50.1, 30.1]}]})
-        lua.execute('''
-          catalog.step({{id='demo',title='Demo',available=true}})
-          allocations=0; strokes={}; offset=0
-          im={ImVec2=function(x,y) allocations=allocations+1; return {x=x,y=y} end,
-            ImDrawList_AddLine=function(_,a,b) strokes[#strokes+1]={a.x,a.y,b.x,b.y} end}
-          bounds={w=30,s=50,e=30.2,n=50.2}
-          project=function(lat,lon) return lon*100+offset, lat*100+offset end
-          function draw() planet.drawRoads(im,{},bounds,8,project,function() return 1 end) end
-          draw(); first=allocations; draw(); assert(allocations==first)
-          offset=10; draw(); assert(allocations==first)
-          assert(strokes[3][1]-strokes[1][1]==10 and strokes[3][4]-strokes[1][4]==10)
-        ''')
 
 
 if __name__ == '__main__':

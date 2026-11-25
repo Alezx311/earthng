@@ -578,7 +578,7 @@ class DetailTests(unittest.TestCase):
     def test_quality_change_preserves_roads_and_unrelated_settings(self):
         lua = self.world()
         lua.execute('''
-          local apply=up(up(up(world.onUpdate,'drawWindow'),'drawTune'),'applyTune')
+          local apply=up(world.optionsBind,'applyTune')
           local roadGroup={sentinel=true}
           local tile={group=roadGroup,roadComplete=true,roadLeft=0,left=42,collided=true,sceneStarted=true}
           state.tiles={['0_0']=tile}; state.tune=quality.preset(100)
@@ -600,8 +600,17 @@ class DetailTests(unittest.TestCase):
             setHidden=function(self, value) self.hidden=value end}
           local group={getCount=function() return 2 end,
             getObject=function(_, i) return i==0 and ground or other end}
-          L.hideFarGround(group)
+          L.hideFarGround({group=group})
           assert(ground.hidden==true and other.hidden==nil)
+          -- a far tile from the workers: hidden by the ids it spawned, whatever their class
+          local shape={setHidden=function(self, value) self.hidden=value end}
+          local find=scenetree.findObjectById
+          scenetree.findObjectById=function(id) return id==7 and shape or nil end
+          local tile={group=group}
+          L.ownMesh(tile, 'ground', 7)
+          L.hideFarGround(tile)
+          scenetree.findObjectById=find
+          assert(shape.hidden==true)
         ''')
 
     def test_throttled_spawn_can_offer_its_open_gate_to_detail(self):

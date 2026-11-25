@@ -155,6 +155,24 @@ class PlanTests(unittest.TestCase):
                 self.assertTrue(theme[field].strip(), (zone, field))
             self.assertLess(len(theme['about']), 200, zone)      # a sentence on a card, not a page
 
+    def test_every_name_a_player_reads_has_its_english(self):
+        """The map's points, the cards and the tile titles in English (proving_names.py)."""
+        import re
+        import proving_names
+        cyrillic = re.compile('[Ѐ-ӿ]')
+        for tags in [p[2] for p in self.plan.points] + [w[1] for w in self.plan.ways] + [r[1] for r in self.plan.relations]:
+            self.assertEqual(proving_names.missing(tags), [])
+            for key in proving_names.KEYS:
+                if cyrillic.search(tags.get(key, '')):
+                    self.assertFalse(cyrillic.search(tags[key + ':en']), (key, tags[key]))
+        for tile in self.plan.catalogue()['tiles']:
+            self.assertFalse(cyrillic.search(tile['titleEn']), tile['code'])
+        self.assertFalse(cyrillic.search(ground.TITLE))
+        self.assertEqual(proving_names.english('MT-C2 Ряд 3'), 'MT-C2 Row 3')
+        self.assertEqual(proving_names.english('Двір concrete:plates'), 'Yard concrete:plates')
+        self.assertEqual(proving_names.english('Latin only'), 'Latin only')
+        self.assertIsNone(proving_names.english('Невідома назва'))
+
     def test_pbf_round_trip(self):
         from osmium_compat import osmium
         with tempfile.TemporaryDirectory() as folder:

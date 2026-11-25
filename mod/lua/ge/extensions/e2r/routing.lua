@@ -6,6 +6,9 @@
 local M = {}
 local ffi = require('ffi')
 local bit = require('bit')
+-- names in Latin letters for the English UI (translit.lua); as they are where it cannot load
+local okTranslit, translit = pcall(require, 'ge/extensions/e2r/translit')
+if not okTranslit or type(translit) ~= 'table' then translit = {latin = function(s) return s end} end
 local byte, sub, floor, sqrt, atan2, huge = string.byte, string.sub, math.floor, math.sqrt, math.atan2, math.huge
 
 local MAGIC, VERSION, SCALE = 'EGR1', 1, 10
@@ -266,7 +269,10 @@ end
 local function nameOf(r, k, lang)
   local base = 4 * k
   local local_ = lang == 'uk' and r.names[base + 1] or lang == 'en' and r.names[base + 2] or 0
-  return text(r, local_ > 0 and local_ or r.names[base]), text(r, r.names[base + 3])
+  local name = text(r, local_ > 0 and local_ or r.names[base])
+  -- (no English name: the local one in Latin letters for English)
+  if lang == 'en' then name = translit.latin(name) end
+  return name, text(r, r.names[base + 3])
 end
 
 -- the inner points of an edge in the world, in the direction it is driven

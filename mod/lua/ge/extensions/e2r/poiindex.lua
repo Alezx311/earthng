@@ -8,6 +8,9 @@
 local M = {}
 local okFfi, ffi = pcall(require, 'ffi')
 local floor, find, sub, byte = math.floor, string.find, string.sub, string.byte
+-- names in Latin letters for the English UI (translit.lua); as they are where it cannot load
+local okTranslit, translit = pcall(require, 'ge/extensions/e2r/translit')
+if not okTranslit or type(translit) ~= 'table' then translit = {latin = function(s) return s end} end
 
 M.GRID = 0.05         -- degrees: a cell of the index
 M.COARSE = 20         -- cells along a side of a coarse cell (1 degree), the walk's first step
@@ -339,7 +342,8 @@ local function fields(text, at)
   return t, nl - 1, nl, nl - 1
 end
 
--- point i's name: English when lang is 'en' and it has one; kept for the next frames
+-- point i's name: English when lang is 'en' and it has one, else in Latin letters for English
+-- (translit.lua); kept for the next frames
 function M.name(e, i, lang)
   local names = e.names
   local hit = names[i]
@@ -347,7 +351,7 @@ function M.name(e, i, lang)
   local a, b, c, d = fields(e.text, e.off[i])
   if not a then return '' end
   local name = sub(e.text, a, b)
-  local en = d >= c and sub(e.text, c, d) or name
+  local en = translit.latin(d >= c and sub(e.text, c, d) or name)
   e.nameCount = (e.nameCount or 0) + 1
   if e.nameCount > 4000 then e.names, e.nameCount = {}, 1; names = e.names end
   names[i] = {name, en}

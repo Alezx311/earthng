@@ -37,6 +37,13 @@ M.compass = NATIVE and require('ge/extensions/e2r/compass') or nil
 -- the world map on M: points of interest, filters, OSM facts on hover (worldmap.lua)
 M.worldmap = NATIVE and select(2, pcall(require, 'ge/extensions/e2r/worldmap')) or nil
 if type(M.worldmap) ~= 'table' then M.worldmap = nil end
+-- how a map view moves (a real zoom, a thrown map, flights) and the roads on it at every zoom
+M.mapmotion = require('ge/extensions/e2r/mapmotion')
+M.maproads = NATIVE and select(2, pcall(require, 'ge/extensions/e2r/maproads')) or nil
+if type(M.maproads) ~= 'table' then M.maproads = nil end
+-- the game's own minimap on our level: a wider scale and the points of interest (minimap.lua)
+M.minimap = NATIVE and select(2, pcall(require, 'ge/extensions/e2r/minimap')) or nil
+if type(M.minimap) ~= 'table' or not M.minimap.install then M.minimap = nil end
 M.signals = NATIVE and require('ge/extensions/e2r/signals') or nil
 if M.signals and not M.signals.step then M.signals = nil end
 if M.navigator then M.navigator.source = native end
@@ -1119,6 +1126,7 @@ local function spawnItem(it, group, pause, tile, layer)
       S.coll = S.coll or collision.new()
       S.coll:track(tile, obj:getID(), false, it.triangles, layer)
     end
+    LIMIT.ownMesh(tile, it.cards and 'cards' or layer, obj:getID())
     result.shapes = (result.shapes or 0) + 1
     local ms = t:stop()
     result.shapesMs = (result.shapesMs or 0) + ms
@@ -1147,6 +1155,7 @@ local function spawnItem(it, group, pause, tile, layer)
       S.coll:track(tile, obj:getID(), quiet, it.triangles, layer, it.proxy and it.cell)
     end
     if it.lens and M.signals then M.signals.addMesh(obj:getID(), it.lens, it.colour) end
+    LIMIT.ownMesh(tile, it.cards and 'cards' or layer, obj:getID())
     local ms = t:stop()
     LIMIT.did('proc')
     if ms > (result.createMeshMs or 0) then result.createMeshMs, result.createMeshItem = ms, it.name end
@@ -1916,7 +1925,7 @@ local TRAFFIC_KINDS = {
   flow = {{0, 'Вимк', 'Off'}, {100, '100', '100'}, {200, '200', '200'}, {400, '400', '400'}},
   -- how many of them round the player are real cars one can hit (handoff.lua), ~1.5 ms each
   real = {{0, 'Вимк', 'Off'}, {4, '4', '4'}, {8, '8', '8'}, {12, '12', '12'}, {16, '16', '16'}}}
--- (pedestrians: a 0..1000 slider and a switch, options 'walkers' and 'walkersOn', drawPeopleRows)
+-- (pedestrians: a 0..1000 count and a switch, options 'walkers' and 'walkersOn')
 
 local function navRead()
   local job = table.remove(S.navPending, 1)
@@ -1991,6 +2000,54 @@ function M.locationStep()
   env.leftHand = native.keepsLeft and native.keepsLeft() or nil
   env.exitBlue = native.signFamily and native.signFamily().exitBlue or nil
   M.location.step(S.location, S.now, p.x, p.y, v and v.x or 0, v and v.y or 0, env)
+end
+
+-- The game's own minimap while driving (minimap.lua): its scale and road width are kept ours,
+-- the index of the packs' points is built a short slice a frame (the open atlas takes a longer
+-- one) and the points round the car are taken from it twice a second. Off the road, on the
+-- picker or on another level the game's functions are back in their places.
+function M.minimapStep()
+  local mm = M.minimap
+  if not mm then return end
+  if S.state ~= 'driving' or not S.stream then
+    if mm.active() then mm.restore(); mm.clear() end
+    return
+  end
+  if S.now >= (S.minimapAt or 0) then
+    S.minimapAt = S.now + 1   -- the game may have reloaded its modules
+    mm.install()
+  end
+  local index = M.worldmap and M.worldmap.index
+  local colour = rawget(_G, 'color')
+  if not index or not M.pins or type(colour) ~= 'function' then return end
+  local stats = index.stats()
+  if stats.total == 0 or stats.done < stats.total then
+    local slice = index.SLICE
+    index.SLICE = .0012
+    index.step()
+    index.SLICE = slice
+  end
+  local p = focus()
+  if not p then return end
+  local env = S.minimapEnv
+  if not env then
+    env = {index = index, pins = M.pins, toGeo = native.toGeo, toLocal = native.localPoint,
+      colour = function(r, g, b) return colour(r, g, b, 255) end}
+    S.minimapEnv = env
+  end
+  local atlas = M.worldmap.state
+  env.off, env.filterRev, env.tiles = atlas.off, atlas.filterRev, S.tiles
+  mm.refresh(S.now, p.x, p.y, env)
+end
+
+-- the minimap's hook (ui/apps/minimap/minimap.lua): its texture is being drawn
+function M.onDrawOnMinimap(td)
+  local mm = M.minimap
+  if not (mm and mm.active()) then return end
+  local colour = rawget(_G, 'color')
+  S.minimapDest = S.minimapDest or (type(colour) == 'function' and colour(51, 115, 242, 255)) or nil
+  local dest = M.navigator and M.navigator.destination and M.navigator.destination() or nil
+  mm.draw(td, rawget(_G, 'ui_apps_minimap_utils'), dest, S.minimapDest)
 end
 
 -- The card of the point of interest by the car (poicard.lua): looked up four times a second over
@@ -3258,126 +3315,6 @@ function M.walkersStep()
   r.blood = wk.blood and wk.blood.n + wk.blood.nd or 0
 end
 
--- The widget's pedestrians and knockable-props rows, through the registry (options.lua) like the
--- game's UI app, so both show the same. The ImGui pointers are made once and refilled from the
--- registry each frame; the note's string is rebuilt only when its counts change (noteText).
-function M.drawPeopleRows()
-  local o = M.options
-  if not (o and o.has('walkers')) then return end   -- a test stubs require
-  local P = S.peoplePtrs
-  if not P then
-    P = {on = im.BoolPtr(false), n = im.IntPtr(0), knock = im.BoolPtr(true), muted = im.ImVec4(.65, .68, .72, 1)}
-    S.peoplePtrs = P
-  end
-  P.on[0] = o.get('walkersOn') and true or false
-  if im.Checkbox(L('Пішоходи', 'Pedestrians') .. '##walkOn', P.on) then o.set('walkersOn', P.on[0] and true or false, 'widget') end
-  im.SameLine()
-  P.n[0] = o.get('walkers') or 0
-  if im.SetNextItemWidth then im.SetNextItemWidth(-1) end
-  local ok, changed = pcall(im.SliderInt, '##walkN', P.n, 0, 1000, '%d')
-  if ok then
-    if changed then o.set('walkers', P.n[0], 'widget') end   -- live: walkersSet is cheap
-  else
-    if im.Button('-##walkN') then o.set('walkers', (o.get('walkers') or 0) - 50, 'widget') end
-    im.SameLine()
-    if im.Button('+##walkN') then o.set('walkers', (o.get('walkers') or 0) + 50, 'widget') end
-    im.SameLine()
-    im.Text(tostring(o.get('walkers') or 0))
-  end
-  local note = o.noteText('walkers', lang)
-  if note then im.TextColored(P.muted, note) end
-  if o.has('knock') then
-    P.knock[0] = o.get('knock') and true or false
-    if im.Checkbox(L('Збивані об\'єкти', 'Knockable props') .. '##knock', P.knock) then
-      o.set('knock', P.knock[0] and true or false, 'widget')
-    end
-    if im.IsItemHovered() then
-      im.SetTooltip(L('Для щойно завантажених околиць', 'For newly loaded surroundings'))
-    end
-  end
-end
-
-local function drawTraffic()
-  local amount = trafficRunning() and (S.trafficAmount or -1) or 0
-  local kind = S.trafficKind or 'simple'
-  im.Text(L('Трафік:', 'Traffic:'))
-  local spacing = im.GetStyle().ItemSpacing.x
-  local width = math.floor((im.GetContentRegionAvailWidth() - (#TRAFFIC_KINDS - 1) * spacing) / #TRAFFIC_KINDS)
-  for k, a in ipairs(TRAFFIC_KINDS) do
-    if k > 1 then im.SameLine() end
-    local active = kind == a[1]
-    if active then
-      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
-      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
-    end
-    -- a new kind respawns the running traffic with it
-    if im.Button(L(a[2], a[3]) .. '##trafficKind_' .. a[1], im.ImVec2(width, 0)) and not active then
-      S.trafficKind = a[1]
-      if amount > 0 then setTraffic(amount, a[1]) end
-    end
-    if active then im.PopStyleColor(2) end
-  end
-  width = math.floor((im.GetContentRegionAvailWidth() - (#TRAFFIC_KINDS.amounts - 1) * spacing) / #TRAFFIC_KINDS.amounts)
-  for k, a in ipairs(TRAFFIC_KINDS.amounts) do
-    if k > 1 then im.SameLine() end
-    local active = amount == a[1]
-    if active then
-      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
-      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
-    end
-    if im.Button(L(a[2], a[3]) .. '##traffic_' .. a[1], im.ImVec2(width, 0)) and not active then
-      S.trafficSaved = a[1]; setTraffic(a[1], kind); M.wishKeep()
-    end
-    if active then im.PopStyleColor(2) end
-  end
-  im.Text(L('Потік (без фізики):', 'Flow (no physics):'))
-  local flowN = S.flow and S.flow.F.target or 0
-  width = math.floor((im.GetContentRegionAvailWidth() - (#TRAFFIC_KINDS.flow - 1) * spacing) / #TRAFFIC_KINDS.flow)
-  for k, a in ipairs(TRAFFIC_KINDS.flow) do
-    if k > 1 then im.SameLine() end
-    local active = flowN == a[1]
-    if active then
-      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
-      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
-    end
-    if im.Button(L(a[2], a[3]) .. '##flow_' .. a[1], im.ImVec2(width, 0)) and not active then
-      S.flowSaved = a[1]; M.flowSet(a[1]); M.wishKeep()
-    end
-    if active then im.PopStyleColor(2) end
-  end
-  im.Text(L('Справжні машини біля гравця:', 'Real cars round the player:'))
-  local realN = S.flowReal or M.handoffSim.SIZE
-  width = math.floor((im.GetContentRegionAvailWidth() - (#TRAFFIC_KINDS.real - 1) * spacing) / #TRAFFIC_KINDS.real)
-  for k, a in ipairs(TRAFFIC_KINDS.real) do
-    if k > 1 then im.SameLine() end
-    local active = realN == a[1]
-    if active then
-      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
-      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
-    end
-    if im.Button(L(a[2], a[3]) .. '##flowReal_' .. a[1], im.ImVec2(width, 0)) and not active then M.flowReal(a[1]) end
-    if active then im.PopStyleColor(2) end
-  end
-  M.drawPeopleRows()   -- pedestrians (on/off and a 0..1000 slider) and knockable props
-  im.Text(L('Припарковані машини:', 'Parked cars:'))
-  local parked = S.parkedPick or (S.tune and S.tune.parkedCars) or 0
-  width = math.floor((im.GetContentRegionAvailWidth() - 2 * spacing) / 3)
-  for k, a in ipairs(parking.AMOUNTS) do
-    if k > 1 then im.SameLine() end
-    local active = parked == a[1]
-    if active then
-      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
-      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
-    end
-    if im.Button(L(a[2], a[3]) .. '##parked_' .. a[1], im.ImVec2(width, 0)) and not active then S.parkedPick = a[1] end
-    if active then im.PopStyleColor(2) end
-  end
-  if S.park and (S.park.spawned or 0) > 0 then
-    im.Text(string.format(L('На стоянках: %d машин, місць %d', 'In the lots: %d cars, %d spots'),
-      gameplay_parking and gameplay_parking.getParkedCarsAmount() or 0, S.park.count))
-  end
-end
-
 local function updateTiles()
   local st = S.status and S.status.stream
   if not (S.stream and st and st.region == S.stream.region) then return end
@@ -3436,7 +3373,7 @@ local function updateTiles()
       retireForest(tile)
       -- bury roads too: dropGroup on a dense tile hitching the frame; digGraves drains them.
       -- The ground waits while the far view in sight still has its hole over it.
-      LIMIT.bury('E2RT_' .. key, tile.i * tileSize, tile.j * tileSize, tileSize)
+      LIMIT.bury('E2RT_' .. key, tile.i * tileSize, tile.j * tileSize, tileSize, LIMIT.meshesOf(tile, 'road'))
       buryGroup('E2RD_' .. key); buryGroup('E2RS_' .. key)
       if tile.cardsName then buryGroup(tile.cardsName); tile.cardsName = nil end
       if M.signals then M.signals.dropTile(key) end
@@ -3542,9 +3479,9 @@ local function updateTiles()
           far.cardsName = nil
         end
         if groundReady then
-          LIMIT.hideFarGround(far.group)
+          LIMIT.hideFarGround(far)
           buryGroup('E2RF_' .. key)
-        else LIMIT.bury('E2RF_' .. key, far.i * tileSize, far.j * tileSize, tileSize) end
+        else LIMIT.bury('E2RF_' .. key, far.i * tileSize, far.j * tileSize, tileSize, LIMIT.meshesOf(far, 'ground')) end
         far.dropped = true
         S.far[key] = nil
         if NATIVE then native.unload(key, 'far') end
@@ -3645,10 +3582,19 @@ local function updateTiles()
         local info = st.horizon and st.horizon[key]
         local cx = info and info.x or spawned.x or p.x
         local cy = info and info.y or spawned.y or p.y
-        -- DEM horizon stays a full ring (native wants it all round); behind culling is near/far
-        if not info or math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) > horizonR + 800 then
-          local size = spawned.size or (info and info.size) or 1000
-          LIMIT.bury(spawned.groupName or ('E2RH_' .. key:gsub('[^%w_]', '_')), cx - size / 2, cy - size / 2, size)
+        -- DEM horizon stays a full ring (native wants it all round); behind culling is near/far.
+        -- A block stays in native's cache (and so in st.horizon) after the car has driven into it:
+        -- it goes once ground of the car's own stands in its square (LIMIT.groundUnder), hidden
+        -- at once, and is not taken again while that ground is there.
+        local size = spawned.size or (info and info.size) or 1000
+        local covered = LIMIT.groundUnder(cx - size / 2, cy - size / 2, size, p, farR)
+        if not info or covered or math.sqrt((cx - p.x) ^ 2 + (cy - p.y) ^ 2) > horizonR + 800 then
+          local name = spawned.groupName or ('E2RH_' .. key:gsub('[^%w_]', '_'))
+          if covered then
+            LIMIT.hideIds(LIMIT.meshesOf(spawned, 'ground'))
+            buryGroup(name)
+            result.horizonCovered = (result.horizonCovered or 0) + 1
+          else LIMIT.bury(name, cx - size / 2, cy - size / 2, size, LIMIT.meshesOf(spawned, 'ground')) end
           spawned.dropped = true
           S.horizon[key] = nil
           if NATIVE then native.unload(key, 'horizon') end
@@ -3659,7 +3605,11 @@ local function updateTiles()
         for key, info in pairs(st.horizon or {}) do
           if not S.horizon[key] and type(info) == 'table' and info.x and info.y then
             local d = math.sqrt((info.x - p.x) ^ 2 + (info.y - p.y) ^ 2)
-            if d <= horizonR + 250 and (not bestHD or d < bestHD) then bestH, bestHD = key, d end
+            local size = info.size or 1000
+            if d <= horizonR + 250 and (not bestHD or d < bestHD)
+                and not LIMIT.groundUnder(info.x - size / 2, info.y - size / 2, size, p, farR) then
+              bestH, bestHD = key, d
+            end
           end
         end
         if bestH then
@@ -3959,12 +3909,59 @@ local COLLISION_R = 450
 -- car can reach soon lacks collision; the radius grows with speed.
 -- The grave queue deletes a few objects per frame; hide the old terrain immediately when the
 -- replacement ground is ready so it cannot remain visible above a mountain slope meanwhile.
-function LIMIT.hideFarGround(group)
+-- A far tile from the workers is shapes (TSStatic), not ProceduralMesh: hidden by the ids it
+-- spawned (LIMIT.ownMesh). Hidden only by class, they stood over the near tile until the graves
+-- reached them, and the graves delete a group from its last object, the ground first spawned
+-- last (25.11).
+function LIMIT.hideFarGround(far)
+  if not far then return end
+  local ids = LIMIT.meshesOf(far, 'ground')
+  if ids then return LIMIT.hideIds(ids) end
+  local group = far.group
   if not group then return end
   for i = 0, group:getCount() - 1 do
     local obj = group:getObject(i)
     if obj then pcall(function() if obj:getClassName() == 'ProceduralMesh' then obj:setHidden(true) end end) end
   end
+end
+
+-- A tile's meshes and shapes by what they are (spawnItem): a near tile's 'road' and 'scene', a far
+-- tile's or a horizon block's 'ground' (all that is not its trees' 'cards').
+function LIMIT.ownMesh(tile, key, id)
+  if not tile then return end
+  local own = tile.meshIds
+  if not own then own = {}; tile.meshIds = own end
+  key = key or 'ground'
+  local list = own[key]
+  if not list then list = {}; own[key] = list end
+  list[#list + 1] = id
+end
+function LIMIT.meshesOf(tile, key) return tile and tile.meshIds and tile.meshIds[key] or nil end
+function LIMIT.hideIds(ids)
+  if not ids then return end
+  for k = 1, #ids do
+    local obj = scenetree.findObjectById(ids[k])
+    if obj then obj:setHidden(true) end
+  end
+end
+
+-- Ground of the car's own stands in the square: a near tile's road layer, or a far tile of the
+-- ring (its centre within farR of p) whose ground is in. A horizon block (a 100 m lattice of the
+-- DEM, no collision) over such ground lay up to a metre over a hollow's own ground: the car sank
+-- in a flat grey-green plane among the near tile's houses (25.11).
+function LIMIT.groundUnder(x0, y0, size, p, farR)
+  local t = S.stream and S.stream.tile or 500
+  for i = math.floor(x0 / t + 1e-6), math.floor((x0 + size) / t - 1e-6) do
+    for j = math.floor(y0 / t + 1e-6), math.floor((y0 + size) / t - 1e-6) do
+      local key = i .. '_' .. j
+      local near = S.tiles[key]
+      if near and near.roadComplete and not near.dropped and not near.failed then return true end
+      local far = S.far and S.far[key]
+      if far and p and farR and not far.dropped and LIMIT.groundIn(far)
+          and ((i + .5) * t - p.x) ^ 2 + ((j + .5) * t - p.y) ^ 2 <= farR * farR then return true end
+    end
+  end
+  return false
 end
 
 function LIMIT.ingestGrassChunks(tiles, p)
@@ -4102,13 +4099,13 @@ end
 -- batch without that hole is in. far-hole-01: the camera jumped 5 km, the city tiles unloaded, and
 -- the old batch, built round them, showed the sky for the seconds its rebuild takes (2.2 ms a
 -- frame). x0, y0, size: the group's square. Held groups do not count as built ground.
-function LIMIT.bury(name, x0, y0, size)
+function LIMIT.bury(name, x0, y0, size, ids)
   S.groundHole = nil   -- the reach changed: a build starting now must not take the old one
   local g = LIMIT.underFar(x0, y0, size) and scenetree.findObject(name)
   if not g then return buryGroup(name) end
   g:setName('')
   S.held = S.held or {}
-  table.insert(S.held, {g = g, x0 = x0, y0 = y0, size = size, at = S.now})
+  table.insert(S.held, {g = g, x0 = x0, y0 = y0, size = size, at = S.now, ids = ids})
   result.heldGround = (result.heldGround or 0) + 1
 end
 
@@ -4154,7 +4151,10 @@ function LIMIT.releaseHeld(force)
     local h = held[k]
     local x, y = h.x0 + h.size / 2 - 1, h.y0 + h.size / 2 - 1
     if force or S.now - h.at > 30 or not LIMIT.underFar(h.x0, h.y0, h.size)
-        or LIMIT.groundBuilt(math.floor(x / t), math.floor(y / t), x, y) then
+        or LIMIT.groundBuilt(math.floor(x / t), math.floor(y / t), x, y)
+        or LIMIT.groundUnder(h.x0, h.y0, h.size) then
+      -- a near tile in any part of the square: a held horizon block stood over its houses
+      LIMIT.hideIds(h.ids)
       S.graves = S.graves or {}
       table.insert(S.graves, h.g)
       table.remove(held, k)
@@ -4246,10 +4246,16 @@ local function updateCollision()
   local size = S.stream and S.stream.tile or 500
   local points = NATIVE and collisionPoints(p, v) or {}
   local missing = NATIVE and S.coll and S.coll:missingProxies(points)
-  if not S.collisionDirty and not missing then return end
+  if not S.collisionDirty and not missing and not S.turfSync then return end
   -- the proxy stays hidden until a rebuild. Waiting the full gap left the car on a tile
   -- whose texture was already there and whose collision was not (a fall at 250 km/h).
-  local wait = COLLISION_EVERY
+  -- The grass's hidden block (turf.lua) moved or went: the physics keeps the block it had at the
+  -- last rebuild, its heights and its place, until the next (turf_sync probe 25.11: the floor of
+  -- the physics' block 3 m under the block's own, 278 points of 278, and right after a rebuild).
+  -- Moved onto the road beside it, the old lawn was a row of invisible steps along the kerb,
+  -- 0.3-1.5 m high on the lawn's 2 m squares, that stayed while nothing else asked for a rebuild
+  -- (collide-01: 48 s with the car stuck against one). It is rebuilt in the frame it moved.
+  local wait = S.turfSync and 0 or COLLISION_EVERY
   if S.state == 'driving' and p then
     local i, j = tileOf(p.x, p.y)
     local under = S.tiles[i .. '_' .. j]
@@ -4265,7 +4271,7 @@ local function updateCollision()
   -- tile's centre is up to ~1060 m away, and when such a tile came in last nothing else asked for
   -- a rebuild and the landing waited forever (native-perf-10)
   if S.state ~= 'driving' then radius = math.max(radius, 500 * math.sqrt(2) + S.stream.tile * 0.71) end
-  local near = missing or S.removedCollision or false
+  local near = missing or S.removedCollision or S.turfSync or false
   for _, tile in pairs(S.tiles) do
     local empty = tile.manifest.empty or itemCount(tile.manifest) == 0
     if NATIVE then
@@ -4327,7 +4333,7 @@ local function updateCollision()
   end
   -- natively the tiles left out keep the check running as the car moves
   S.collisionDirty, S.collisionAt = NATIVE and left, S.now
-  S.removedCollision = false
+  S.removedCollision, S.turfSync = false, false
   return true
 end
 
@@ -4349,15 +4355,11 @@ local PACK_LABELS_EN =
 local PACK_LABELS_UK =
   {real = 'Реальний', toon = 'Мультяшний', model = 'Макет', synth = 'Синтвейв', pixel = 'Ретро-місто',
    night = 'Ніч', rain = 'Дощ', cyber = 'Кіберпанк', winter = 'Зима', autumn = 'Осінь'}
--- {id, packs.json label or nil}; the shown name is packLabel(), in the current language
+-- {id, packs.json label or nil}
 local PACK_NAMES = {}
 for _, name in ipairs({'real', 'toon', 'model', 'synth', 'pixel', 'night', 'rain', 'cyber', 'winter', 'autumn'}) do
   table.insert(PACK_NAMES, {name})
 end
-local function packLabel(p)
-  return (lang == 'en' and PACK_LABELS_EN or PACK_LABELS_UK)[p[1]] or p[2] or p[1]
-end
-
 -- Street lights of a night pack: a pool of lights moved onto the lamps nearest the camera
 -- (env.lights: colors, radius, brightness, height, count). Lamps are noted as tiles spawn them.
 -- A lamp is a SpotLight aimed down, as the game's own Italy level lights its road lamps
@@ -4637,7 +4639,7 @@ local function applyPack(name)
   S.vistaApplied, S.vistaBase = nil, nil
   S.pack = name
   -- (the engine's grass is the real pack's: turf.lua)
-  if detail.turf then detail.turf.setReal(name == 'real') end
+  if detail.turf then detail.turf.setReal(name == 'real'); S.turfSync = true end
   if native and native.setRealStyle and native.setRealStyle(name == 'real') and applyTune then applyTune(true) end
   S.envAgain, S.exposurePending = nil, nil
   local timer = hptimer()
@@ -4766,6 +4768,11 @@ local function beginArrival(job, early)
   map.reset({})
   if ui_apps_minimap_roads and ui_apps_minimap_roads.reset then ui_apps_minimap_roads.reset() end
   S.stream = {region = job.region, country = job.country, tile = job.tileSize, generator = job.generator}
+  -- names in Latin letters for the English UI by the rule of the country landed in (translit.lua)
+  do
+    local c = tostring(job.country or '')
+    require('ge/extensions/e2r/translit').rule = (c:find('russia') or c:find('moscow') or c:find('fed%-district')) and 'ru' or nil
+  end
   -- the level's TimeOfDay at the landing: the sun of the place (Kyiv's at Los Angeles was hours off)
   if job.lat and job.lon then
     local lat, lon = job.lat, job.lon
@@ -5346,6 +5353,18 @@ local function drawMap(width, height, view, pick)
   mapFrame, mapLoads = mapFrame + 1, 0
   local car = carOnMap()
   if view.follow and car then view.center = {lat = car.lat, lon = car.lon} end
+  -- the zoom is a real number on its way to its target, a thrown map still glides (mapmotion.lua)
+  local motion = M.mapmotion
+  view.minZoom = NATIVE and 2 or 3
+  do
+    local io = im.GetIO()
+    motion.step(view, io and io.DeltaTime or 0, width, height)
+  end
+  if not NATIVE and view.zoom ~= math.floor(view.zoom) then
+    -- the companion's map tiles are whole levels: no easing between them
+    view.zoom = motion.level(view.zoomTo or view.zoom)
+    view.zoomTo, view.zoomSeen = view.zoom, view.zoom
+  end
   im.InvisibleButton('##map', im.ImVec2(width, height))
   local hovered = im.IsItemHovered()
   local r0 = im.GetItemRectMin()
@@ -5356,7 +5375,11 @@ local function drawMap(width, height, view, pick)
   local onControl = false   -- the mouse is over something of the map's own (no pan, no marker)
   im.ImDrawList_PushClipRect(dl, r0, r1, true)
   im.ImDrawList_AddRectFilled(dl, r0, r1, col(0.67, 0.75, 0.8))
+  -- z: the zoom; zl: the whole level nearest to it, where the caches by zoom are kept, and zf
+  -- the stretch of that level's pixels to the zoom's
   local z = view.zoom
+  local zl = motion.level(z)
+  local zf = 2 ^ (z - zl)
   local n = 2 ^ z
   local cx, cy = merc(view.center.lat, view.center.lon, z)
   local x0, y0 = cx - width / 2, cy - height / 2
@@ -5419,42 +5442,13 @@ local function drawMap(width, height, view, pick)
       end
     end
   end
-  if NATIVE and (pick or view.world or z < 12) then
-    planetMap.drawRoads(im, dl, {w = west, s = south, e = east, n = north}, z, screen, col)
-  end
-  -- streets of the installed country packs on the landing picker (no map download), OSM-like:
-  -- main roads from z11 (wider views take more than MAP_BLOCKS 8 km blocks), the rest closer;
-  -- while driving the minimap keeps to the loaded tiles' lanes below, every line costs a draw call
-  if NATIVE and (pick or view.world) and z >= 11 then
-    local maxRank = z >= 15 and 3 or z >= 13 and 2 or 1
-    local casing, major, minor = col(0.75, 0.6, 0.35), col(0.99, 0.84, 0.55), col(1, 1, 1)
-    local widthMajor = z >= 13 and 4 or 3
-    if photoSource then
-      casing, major, minor = col(.18, .15, .11, .65), col(1, .84, .54, .88), col(1, .98, .90, .52)
-      widthMajor = 2.5
-    end
-    for _, lines in ipairs(native.mapRoads({w = west, s = south, e = east, n = north}, 3, z)) do
-      for pass = 1, 2 do
-        for _, line in ipairs(lines) do
-          local b = line.box
-          if line.rank <= maxRank and (pass == 2 or line.rank == 1) and b[1] <= north and b[3] >= south and b[2] <= east and b[4] >= west then
-            local g, px, py = line.geo, nil, nil
-            local c, w = line.rank == 1 and major or minor, line.rank == 1 and widthMajor or (z >= 14 and 2.5 or 1.5)
-            if photoSource and line.rank ~= 1 then w = 1.25 end
-            if pass == 1 then c, w = casing, widthMajor + 1.5 end
-            for k = 1, #g - 1, 2 do
-              local x, y = screen(g[k], g[k + 1])
-              if px then im.ImDrawList_AddLine(dl, im.ImVec2(px, py), im.ImVec2(x, y), c, w) end
-              px, py = x, y
-            end
-          end
-        end
-      end
-    end
-  end
-  if NATIVE and S.stream and z >= 12 then
-    -- the loaded tiles' lanes: projected once per manifest, drawn only where the view is (all of
-    -- them every frame, unculled, took 11 ms and 1 MB of garbage a frame in Stone Town)
+  -- the roads of the installed packs at every zoom: overview tiles when far, strokes by class
+  -- closer, the blocks' streets closest (maproads.lua, LIMIT.mapRoads)
+  if NATIVE then LIMIT.mapRoads(dl, z, zl, r0, x0, y0, width, height, north, west, south, east, photoSource) end
+  if NATIVE and S.stream and z >= 11.5 and not pick and not view.world then
+    -- the loaded tiles' lanes on a map without the packs' streets: projected once per manifest,
+    -- drawn only where the view is (all of them every frame, unculled, took 11 ms and 1 MB of
+    -- garbage a frame in Stone Town)
     local seen, lane = {}, photoSource and col(.99, .94, .77, .72) or col(0.4, 0.43, 0.45)
     for _, tile in pairs(S.tiles) do
       for _, line in ipairs(navLines(tile.manifest)) do
@@ -5464,20 +5458,20 @@ local function drawMap(width, height, view, pick)
           -- Mercator pixels at this zoom, once per line and zoom; points under 4 px from the last
           -- drawn one are skipped (every ImVec2 is an engine object, i.e. garbage)
           local m = line.merc
-          if line.zoom ~= z then
+          if line.zoom ~= zl then
             m = {}
             local g = line.geo
-            for k = 1, #g - 1, 2 do m[k], m[k + 1] = merc(g[k], g[k + 1], z) end
-            line.merc, line.zoom = m, z
+            for k = 1, #g - 1, 2 do m[k], m[k + 1] = merc(g[k], g[k + 1], zl) end
+            line.merc, line.zoom = m, zl
           end
           local ox, oy = r0.x - x0, r0.y - y0
-          local px, py = m[1] + ox, m[2] + oy
+          local px, py = m[1] * zf + ox, m[2] * zf + oy
           local last = #m - 1
           -- a segment's end is the next one's start: one ImVec2 per drawn point, not two
           -- (the minimap was ~1000 ImVec2 a frame in central Kyiv, most of the widget's 1.2 ms)
           local from = im.ImVec2(px, py)
           for k = 3, last, 2 do
-            local x, y = m[k] + ox, m[k + 1] + oy
+            local x, y = m[k] * zf + ox, m[k + 1] * zf + oy
             if k == last or (x - px) ^ 2 + (y - py) ^ 2 >= 36 then
               local to = im.ImVec2(x, y)
               im.ImDrawList_AddLine(dl, from, to, lane, 2)
@@ -5490,7 +5484,7 @@ local function drawMap(width, height, view, pick)
   end
   -- the route and its flag, over the streets and under the labels
   if M.navigator and S.state == 'driving' then
-    M.navigator.draw(im, dl, z, r0.x - x0, r0.y - y0, merc, col, north, west, south, east)
+    M.navigator.draw(im, dl, zl, r0.x - x0, r0.y - y0, merc, col, north, west, south, east, zf)
   end
   -- the controls' corners and the pins keep the labels off
   local creditWidth = im.CalcTextSize(credit).x + 10
@@ -5548,6 +5542,7 @@ local function drawMap(width, height, view, pick)
     placeHit = planetMap.drawLabels(im, dl, r0, width, height, view, merc, unmerc, col, lang, hovered and mouse or nil)
   end
   -- World points and streamed pins share the space left by geographic names.
+  if M.pins and M.pins.texture == nil then M.pins.texture = LIMIT.mapTexture() end
   if view.overlay then view.overlay(dl, screen, z, north, west, south, east, mouse, hovered, r0, r1) end
   -- Mark only loaded scenes, so the map and the generated world use the same OSM facts.
   -- Bound both the draw count and crowding in dense streets; no per-frame world scan (pins.lua).
@@ -5583,7 +5578,7 @@ local function drawMap(width, height, view, pick)
     arrow(1, col(0.1, 0.45, 0.95))
   end
   -- zoom buttons and the scale
-  local zoomTo
+  local zoomStep
   if hovered or not view.follow then
     local bx, size = r1.x - 38, 28
     local hIn, cIn = mapButton(dl, bx, r0.y + 10, size, '+', mouse, clicked)
@@ -5598,7 +5593,7 @@ local function drawMap(width, height, view, pick)
       if hCar and hovered then im.SetTooltip(L('До авто', 'Center on car')) end
     end
     onControl = hIn or hOut or hCar
-    if cIn then zoomTo = z + 1 elseif cOut then zoomTo = z - 1 end
+    if cIn then zoomStep = 1 elseif cOut then zoomStep = -1 end
   end
   drawScale(dl, r0.x + 10, r1.y - 8, view.center.lat, z)
   im.ImDrawList_AddRectFilled(dl, im.ImVec2(r1.x - creditWidth, creditBottom - 18), im.ImVec2(r1.x, creditBottom), col(.06, .12, .15, .84), 3)
@@ -5625,33 +5620,26 @@ local function drawMap(width, height, view, pick)
       end
     end
   end
-  -- wheel: zoom round the cursor (round the car while following); drag: pan, stops following;
+  -- wheel: zoom round the cursor (round the car while following), a level a notch, eased;
+  -- drag: pan, stops following, and the map glides on when it is let go;
   -- click: the landing point (a pin: its pack; a city: the city)
   local io = im.GetIO()
   local px, py = mouse.x - r0.x, mouse.y - r0.y
-  local minZoom = NATIVE and 2 or 3
-  if hovered and io.MouseWheel ~= 0 and not zoomTo then zoomTo = z + (io.MouseWheel > 0 and 1 or -1) end
-  if zoomTo then
-    local nz = math.max(minZoom, math.min(18, zoomTo))
-    -- the buttons zoom round the centre, the wheel round the cursor
-    local ax, ay = px, py
-    if onControl then ax, ay = width / 2, height / 2 end
-    if not (view.follow and car) then
-      local lat, lon = unmerc(x0 + ax, y0 + ay, z)
-      local wx, wy = merc(lat, lon, nz)
-      view.center = {}
-      view.center.lat, view.center.lon = unmerc(wx - ax + width / 2, wy - ay + height / 2, nz)
-    end
-    view.zoom = nz
+  if zoomStep then
+    -- the buttons zoom round the centre
+    motion.zoomBy(view, zoomStep, nil, nil, width, height)
+  elseif hovered and io.MouseWheel ~= 0 then
+    motion.zoomBy(view, io.MouseWheel > 0 and 1 or -1, px, py, width, height)
   end
-  if clicked and not onControl then view.dragging, view.dragMoved = true, 0 end
+  if clicked and not onControl then
+    view.dragging, view.dragMoved = true, 0
+    motion.stop(view)
+  end
   if view.dragging then
     if im.IsMouseDown(0) then
       local d = im.GetMouseDragDelta(0, 0)
+      motion.drag(view, d.x, d.y, io.DeltaTime or 0)
       if d.x ~= 0 or d.y ~= 0 then
-        local ccx, ccy = merc(view.center.lat, view.center.lon, z)
-        view.center = {}
-        view.center.lat, view.center.lon = unmerc(ccx - d.x, ccy - d.y, z)
         view.dragMoved = view.dragMoved + math.abs(d.x) + math.abs(d.y)
         if view.dragMoved > 4 then view.follow = false end
         im.ResetMouseDragDelta(0)
@@ -5665,6 +5653,8 @@ local function drawMap(width, height, view, pick)
         if view.world and placeHit then view.onClick(placeHit.lat, placeHit.lon, placeHit)
         else view.onClick(unmerc(x0 + px, y0 + py, z)) end
       end
+      if view.dragMoved < 4 then motion.stop(view) end
+      motion.release(view)
       view.dragging = false
     end
   end
@@ -5676,100 +5666,6 @@ local function countTiles()
     if t.state == 'loaded' then loaded = loaded + 1 else loading = loading + 1 end
   end
   return loaded, loading
-end
-
--- texture packs: three equal buttons a row across the window, the active one lit
-local function drawPacks()
-  local current = S.pack or 'real'
-  local label = current
-  for _, p in ipairs(PACK_NAMES) do if p[1] == current then label = packLabel(p) end end
-  im.Text(L('Стиль: ', 'Style: ') .. label)
-  local spacing = im.GetStyle().ItemSpacing.x
-  local width = math.floor((im.GetContentRegionAvailWidth() - 2 * spacing) / 3)
-  for k, p in ipairs(PACK_NAMES) do
-    if (k - 1) % 3 ~= 0 then im.SameLine() end
-    local active = current == p[1]
-    if active then
-      im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
-      im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
-    end
-    if im.Button(packLabel(p) .. '##pack_' .. p[1], im.ImVec2(width, 0)) and not active then applyPack(p[1]) end
-    if active then im.PopStyleColor(2) end
-  end
-end
-
-local function recentFrames()
-  local list, total, worst = {}, 0, 0
-  for _, ms in pairs(S.recent or {}) do
-    table.insert(list, ms); total = total + ms; worst = math.max(worst, ms)
-  end
-  if #list == 0 then return nil end
-  table.sort(list)
-  return 1000 * #list / math.max(total, 1e-3), list[math.ceil(#list * 0.99)], worst
-end
-
-local function drawStats(st, p, v)
-  local fps, p99, worst = recentFrames()
-  if fps then
-    im.Text(string.format(L('FPS %.0f   кадр p99 %.0f мс, найгірший %.0f мс', 'FPS %.0f   frame p99 %.0f ms, worst %.0f ms'), fps, p99, worst))
-  end
-  if p then
-    im.Text(string.format(L('Швидкість %.0f км/год   висота %.0f м', 'Speed %.0f km/h   altitude %.0f m'), (v and v:length() or 0) * 3.6, p.z))
-  end
-  if st and st.car then im.Text(string.format(L('Авто: %.5f, %.5f', 'Car: %.5f, %.5f'), st.car[2], st.car[1])) end
-  -- tiles in the game
-  local roads, collided, scenes, loading, failed, far = 0, 0, 0, 0, 0, 0
-  for _, t in pairs(S.tiles) do
-    if t.failed then failed = failed + 1
-    elseif t.roadComplete then
-      roads = roads + 1
-      if t.collided then collided = collided + 1 end
-      if t.sceneComplete then scenes = scenes + 1 end
-    else loading = loading + 1 end
-  end
-  for _ in pairs(S.far) do far = far + 1 end
-  local bands = 0
-  for _ in pairs(S.horizon or {}) do bands = bands + 1 end
-  result.horizonResident = bands
-  im.Text(string.format(L('У грі: доріг %d (з колізією %d), сцен %d, далеких %d, горизонт %d',
-    'In game: roads %d (with collision %d), scenes %d, far %d, horizon %d'), roads, collided, scenes, far, bands))
-  im.Text(string.format(L('Вантажаться %d, збої %d, доставка p99 %.1f с', 'Loading %d, failed %d, delivery p99 %.1f s'), loading, failed, S.deliveryP99 or 0))
-  if trafficRunning() and gameplay_traffic.getTrafficAmount then
-    local nav = S.navStats or {}
-    im.Text(string.format(L('Трафік (%s): авто %d, граф %d вузлів, збірка %.0f мс',
-      'Traffic (%s): cars %d, graph %d nodes, build %.0f ms'), S.trafficSource == 'game cars' and L('машини гри', 'game cars') or S.trafficSource == 'simple' and L('прості', 'simple') or S.trafficSource == 'full' and L('повні', 'full') or S.trafficSource or L('гра', 'game'),
-      gameplay_traffic.getTrafficAmount(), nav.nodes or 0, nav.ms or 0))
-  end
-  if S.flow then
-    im.Text(string.format(L('Потік: авто %d (справжніх %d), рух %.2f мс, показ %.2f мс',
-      'Flow: cars %d (real %d), sim %.2f ms, draw %.2f ms'),
-      S.flow.F.count or 0, M.handoffSim.activeCount(S.flow.H), S.flow.simMs or 0, S.flow.drawMs or 0))
-    im.Text(string.format(L('Світлофорні перехрестя: %d, стоять на червоному: %d', 'Lit crossings: %d, waiting at red: %d'),
-      S.flow.F.crossings or 0, S.flow.F.atRed or 0))
-  end
-  if S.walk and S.walk.P then   -- (no pool yet: the count was asked before the drive)
-    local h = S.walk.P.stats
-    im.Text(string.format(L('Пішоходи: %d, тіл %d/%d, зіткнень %d, рух %.2f мс, показ %.2f мс',
-      'Pedestrians: %d, bodies %d/%d, hits %d, sim %.2f ms, draw %.2f ms'),
-      S.walk.W.count or 0, M.pedHit.activeCount(S.walk.P), #S.walk.P.pool, h.hit, S.walk.simMs or 0, S.walk.drawMs or 0))
-  end
-  if st and not NATIVE then
-    local nFailed = 0
-    for _ in pairs(st.failed or {}) do nFailed = nFailed + 1 end
-    im.Text(string.format(L('Компаньйон: готові %d, будуються %d, черга %d, збої %d',
-      'Companion: ready %d, building %d, queued %d, failed %d'),
-      st.readyCount or 0, st.building or 0, st.queued or 0, nFailed))
-    im.Text(string.format(L('Збірка тайла: середня %.1f с, p99 %.1f с, зібрано %d',
-      'Tile build: mean %.1f s, p99 %.1f s, built %d'),
-      st.meanBuildSeconds or 0, st.buildP99 or 0, st.built or 0))
-    im.Text(string.format(L('Запас: %.0f с наперед, радіус %.1f км', 'Ahead: %.0f s, radius %.1f km'), st.horizonSeconds or 0, (st.loadRadius or 0) / 1000))
-    if st.edgeKm then im.Text(string.format(L('До краю вікна індексу: %.1f км', 'To the index window edge: %.1f km'), st.edgeKm)) end
-    if st.origin and p then
-      local grey = im.ImVec4(0.65, 0.65, 0.65, 1)
-      im.TextColored(grey, string.format(L('Початок координат: %.3f, %.3f, %s', 'Origin: %.3f, %.3f, %s'), st.origin[2], st.origin[1], st.crs or '?'))
-      im.TextColored(grey, string.format(L('Авто від початку: %.1f км', 'Car from origin: %.1f km'), math.sqrt(p.x * p.x + p.y * p.y) / 1000))
-    end
-  end
 end
 
 -- --- the look: our windows only (pushed round Begin/End, the game's own UI keeps its style) ------
@@ -6000,7 +5896,6 @@ end
 -- Live density and draw distance. Density rebuilds scenes while roads stay in
 -- place; changing only distances or global small-decor caps needs no rebuild.
 local TUNE_DEFAULT = quality.preset(50)
-local tunePtr = {}
 
 local function ensureTune()
   if S.tune then return end
@@ -6018,10 +5913,6 @@ applyTune = function(force)
   if type(now) ~= 'table' then now = S.tune end
   if own then
     S.tune = now
-    for key, ptr in pairs(tunePtr) do
-      if key == 'groundTrees' then ptr[0] = now.groundTrees and true or false
-      elseif now[key] then ptr[0] = now[key] end
-    end
   end
   local base = S.appliedTune or TUNE_DEFAULT
   local rebuild = force and true or false
@@ -6051,7 +5942,8 @@ applyTune = function(force)
       far.dropped = true; native.unload(key, 'far')
     end
     S.far = {}
-    S.collisionDirty = true
+    -- the scenes that went keep their collision until a rebuild: the new ones stand elsewhere
+    S.collisionDirty, S.removedCollision = true, true
   end
   local ok, cfg = pcall(jsonReadFile, LANG_FILE)
   cfg = ok and type(cfg) == 'table' and cfg or {}
@@ -6126,128 +6018,66 @@ local function updateParking()
   result.parkingSpots, result.parkingSpotsAll, result.parkedCars = S.park.count, S.park.total, S.park.spawned
 end
 
-local function tuneSlider(key, lo, hi, uk, en)
-  local tune = S.tune
-  if not tunePtr[key] then tunePtr[key] = im.FloatPtr(tune[key]) end
-  if uk ~= '' then im.Text(L(uk, en)) end
-  if im.SetNextItemWidth then im.SetNextItemWidth(-1) end
-  local ok, changed = pcall(im.SliderFloat, '##' .. key, tunePtr[key], lo, hi, '%.0f')
-  if ok then
-    -- Copy even when the binding does not return true. Rebuild only on release,
-    -- otherwise a drag would drop every tile on every frame.
-    local value = tonumber(tunePtr[key][0])
-    if value then tune[key] = math.floor(value + 0.5) end
-    if im.IsItemDeactivatedAfterEdit and im.IsItemDeactivatedAfterEdit() then S.tuneApplyNow = true end
-  else
-    im.SameLine()
-    if im.Button('-##' .. key) then tune[key] = math.max(lo, tune[key] - math.max(1, (hi - lo) / 20)); S.tuneApplyNow = true end
-    im.SameLine()
-    if im.Button('+##' .. key) then tune[key] = math.min(hi, tune[key] + math.max(1, (hi - lo) / 20)); S.tuneApplyNow = true end
-    im.SameLine()
-    im.Text(string.format('%.0f', tune[key]))
-    tunePtr[key][0] = tune[key]
-  end
-end
-
-local function tuneDiffers()
-  -- (the player's own tune as last applied: in extreme and screenshot another is in force)
-  local base = S.ownApplied or S.appliedTune or TUNE_DEFAULT
-  for key, value in pairs(S.tune) do
-    if value ~= base[key] then return true end
-  end
-  return false
-end
-
 -- the generator's modes, for the widget and the option (quality.lua M.MODES)
 LIMIT.MODES = {{'auto', 'Авто', 'Auto'}, {'extreme', 'Екстрим', 'Extreme'}, {'screenshot', 'Скриншот', 'Screenshot'}}
 
-local function drawTune()
-  ensureTune()
-  im.Text(L('Режим генератора:', 'Generator mode:'))
-  do
-    local width = math.floor((im.GetContentRegionAvailWidth() - 2 * im.GetStyle().ItemSpacing.x) / 3)
-    for k, m in ipairs(LIMIT.MODES) do
-      if k > 1 then im.SameLine() end
-      local active = (S.mode or 'auto') == m[1]
-      if active then
-        im.PushStyleColor2(im.Col_Button, im.ImVec4(0.15, 0.55, 0.3, 1))
-        im.PushStyleColor2(im.Col_ButtonHovered, im.ImVec4(0.2, 0.65, 0.35, 1))
-      end
-      if im.Button(L(m[2], m[3]) .. '##mode_' .. m[1], im.ImVec2(width, 0)) and not active then
-        if M.options and M.options.has('mode') then M.options.set('mode', m[1], 'widget') else M.setMode(m[1]) end
-      end
-      if active then im.PopStyleColor(2) end
-    end
-  end
-  local function quick(key, uk, en)
-    local before = S.tune[key]
-    tuneSlider(key, 0, 100, uk, en)
-    if S.tune[key] ~= before then
-      local parked = S.tune.parkedCars
-      if key == 'quality' then S.tune = quality.preset(S.tune.quality)
-      else S.tune = quality.preset(S.tune.detail, S.tune.distance) end
-      S.tune.parkedCars = parked
-      for k, ptr in pairs(tunePtr) do if S.tune[k] ~= nil then ptr[0] = S.tune[k] end end
-    end
-  end
-  if not S.qualityFpsAt or S.now - S.qualityFpsAt > .5 then
-    local sum, n = 0, 0
-    for _, ms in ipairs(S.recent or {}) do sum, n = sum + ms, n + 1 end
-    S.qualityFrameMs, S.qualityFpsAt = n > 0 and sum/n or 0, S.now
-  end
-  if (S.qualityFrameMs or 0) > 0 then
-    im.Text(string.format('%.0f FPS  /  %.1f ms', 1000 / S.qualityFrameMs, S.qualityFrameMs))
-  end
-  im.Text('Potato')
-  im.SameLine(math.max(100, im.GetContentRegionAvailWidth() - 50))
-  im.Text('OASIS')
-  quick('quality', '', '')
-  local name = quality.name(S.tune.quality)
-  if S.tune.detail ~= S.tune.distance then name = L('Власні', 'Custom') end
-  im.Text(name)
-  quick('detail', 'Деталізація', 'Detail')
-  quick('distance', 'Дальність малювання', 'Draw distance')
-  im.Text(string.format(L('Трава %d м · каміння %d м · світ %.1f км',
-    'Grass %d m · rocks %d m · world %.1f km'), S.tune.grassM, S.tune.rockM, S.tune.farM / 1000))
-  for k, q in ipairs({{'Potato', 0}, {'Balanced', 50}, {'OASIS', 100}}) do
-    if k > 1 then im.SameLine() end
-    if im.Button(q[1]) then
-      local parked = S.tune.parkedCars
-      S.tune = quality.preset(q[2]); S.tune.parkedCars = parked
-      tunePtr = {}; S.tuneApplyNow = true
-    end
-  end
-  if tuneDiffers() then
-    im.TextColored(im.ImVec4(1, .7, .2, 1), L('Відпустіть повзунок, щоб застосувати.', 'Release the slider to apply.'))
-    if im.Button(L('Застосувати', 'Apply')) then S.tuneApplyNow = true end
-  end
-  if im.CollapsingHeader1(L('Точні налаштування', 'Advanced settings')) then
-    tuneSlider('grassM', 0, 220, 'Дальність трави, м', 'Grass distance, m')
-    tuneSlider('rockM', 0, 900, 'Дальність каміння, м', 'Rock distance, m')
-    tuneSlider('nearM', 400, 4000, 'Ближній світ, м', 'Near world, m')
-    tuneSlider('farM', 800, 8000, 'Далекий світ, м', 'Far world, m')
-    tuneSlider('maxTrees', 0, 2400, 'Крони на ближній тайл', 'Crowns per near tile')
-    tuneSlider('maxFarTrees', 0, 1200, 'Крони на далекий тайл', 'Crowns per far tile')
-    tuneSlider('maxGrass', 0, 4800, 'Щільність трави на тайл', 'Grass density per tile')
-    tuneSlider('maxRocks', 0, 200, 'Каміння на тайл', 'Rocks per tile')
-    tuneSlider('grassBudget', 0, 14000, 'Загальний ліміт трави', 'Total grass limit')
-    tuneSlider('rockBudget', 0, 1600, 'Загальний ліміт каміння', 'Total rock limit')
-    tuneSlider('forestSpacing', 4, 24, 'Крок лісу, м', 'Forest spacing, m')
-    tuneSlider('groundSpacing', 4, 30, 'Крок на відкритому ґрунті, м', 'Open-ground spacing, m')
-    if not tunePtr.groundTrees then tunePtr.groundTrees = im.BoolPtr(S.tune.groundTrees) end
-    if im.Checkbox(L('Дерева на відкритому ґрунті', 'Trees on open ground'), tunePtr.groundTrees) then
-      S.tune.groundTrees = tunePtr.groundTrees[0] and true or false; S.tuneApplyNow = true
-    end
-    local counts = detailStream and detailStream.count or {}
-    im.Text(string.format(L('Зараз: трава %d · каміння %d', 'Live: grass %d · rocks %d'), counts.grass or 0, counts.rock or 0))
-    im.Text(string.format(L('Черга %d · крон %d', 'Queue %d · crowns %d'), #S.queue, result.forestItems or 0))
-  end
-  if S.tuneApplyNow and tuneDiffers() then applyTune() end
-  S.tuneApplyNow = nil
-end
-
 -- The stock big map (M) shows only tiles the level has loaded. Ours is the planet page:
 -- click lands there (the stream follows), it does not teleport the car into an empty world.
+-- The roads of the installed packs on a map (maproads.lua): the sidecars' overview tiles up to
+-- zoom 10, strokes by class from there, the blocks' streets from STREETS, and from EXACT the
+-- blocks' own lines for every class once any of them is decoded (they are the true ones; the
+-- sidecar's are simplified by 11 m). z: the zoom, zl: its whole level.
+LIMIT.road = {view = {}, sets = {}, classes = {}, box = {}}
+-- path -> a texture for the map's images (the overview tiles, the markers' atlas); false where
+-- the engine's loader is not there (a test)
+function LIMIT.mapTexture()
+  local ok, utils = pcall(require, 'ui/imguiUtils')
+  if not ok or type(utils) ~= 'table' or not utils.texObj then return false end
+  return function(path) return utils.texObj(path) end
+end
+function LIMIT.mapRoads(dl, z, zl, r0, x0, y0, width, height, north, west, south, east, photo)
+  local roads, R = M.maproads, LIMIT.road
+  if not roads or z < roads.RASTER_FROM - .5 then return end
+  R.catalog = R.catalog or require('ge/extensions/e2r/mapCatalog')
+  if roads.texture == nil then roads.texture = LIMIT.mapTexture() end
+  local v = R.view
+  v.rx, v.ry, v.x0, v.y0, v.scale, v.width, v.height = r0.x, r0.y, x0, y0, 256 * 2 ^ z, width, height
+  if z < roads.VECTOR then
+    roads.raster(im, dl, col, R.catalog, v, z, photo)
+    return
+  end
+  local sets, classes, box = R.sets, R.classes, R.box
+  for k = #sets, 1, -1 do sets[k] = nil end
+  local blocks
+  if z >= roads.STREETS then
+    box.w, box.s, box.e, box.n = west, south, east, north
+    blocks = native.mapRoads(box, 3, z)
+  end
+  local exact = blocks ~= nil and z >= roads.EXACT and #blocks > 0
+  if not exact then roads.sidecar(R.catalog, 11, west, south, east, north, sets, readFile, jsonDecode) end
+  classes[1], classes[2], classes[3] = true, true, z >= roads.TERTIARY
+  classes[4], classes[5] = blocks ~= nil, blocks ~= nil and z >= roads.LANES
+  if blocks then
+    -- a block's lines become Mercator arrays a few thousand points a frame, not a block at once
+    local left = 12000
+    for _, lines in ipairs(blocks) do
+      local made = lines.made
+      if not made then made = {done = 0}; lines.made = made end
+      local i = made.done
+      while i < #lines and left > 0 do
+        i = i + 1
+        made[i] = roads.ofBlock(lines[i])
+        left = left - made[i].n
+      end
+      made.done = i
+      -- under EXACT the blocks give the streets only: the main roads are the sidecar's
+      made.from = exact and 1 or 4
+      sets[#sets + 1] = made
+    end
+  end
+  roads.draw(im, dl, col, sets, v, zl, photo, classes)
+end
+
 function LIMIT.bigMapHook()
   S.bigHook = true
   local ext = rawget(_G, 'freeroam_bigMapMode') or rawget(_G, 'freeroam_bigMap')
@@ -6283,10 +6113,10 @@ function LIMIT.worldApi()
     photo = function() return S.mapPhoto ~= false end,
     setPhoto = function(on) M.options.set('mapPhoto', on, 'map') end,
     car = carOnMap,
-    start = function()
-      local view = (S.state == 'driving' and S.mini) or S
-      return view.center, view.zoom
-    end,
+    start = function() return S.center, S.state == 'driving' and 14 or S.zoom end,
+    -- the route followed: its lines for the panel, and dropping it
+    route = function() return M.navigator and S.state == 'driving' and M.navigator.lines(L) or nil end,
+    clearRoute = function() if M.navigator then M.navigator.clear() end end,
     canLand = function(lat, lon) return NATIVE and native.at(lat, lon) or nil end,
     land = function(lat, lon)
       setMarker(lat, lon)
@@ -6349,6 +6179,40 @@ function M.compassDraw()
   return M.compass.draw(im, lat, lon, M.compassHeading or 0, S.marker, lang)
 end
 
+-- What a driver must know while no window of ours is open: the edge of a downloaded area, the
+-- world still being built under the car, the test autopilot. A line or two low on the screen,
+-- only while there is something to say.
+function LIMIT.notices()
+  local st = S.status and S.status.stream
+  local p = focus()
+  local edge, wait
+  if st and st.edgeKm and st.edgeKm < 3 then
+    edge = st.live and string.format(L('Край вікна: %.1f км. Околиця ще докачується.',
+        'Edge of the window: %.1f km. The surroundings are still downloading.'), math.max(0, st.edgeKm))
+      or string.format(L('Край завантаженої області: %.1f км. Далі доріг немає: висадіться ближче до нової точки (мапа на M).',
+        'Edge of the loaded area: %.1f km. No roads beyond it: land again nearer the new place (the map on M).'), math.max(0, st.edgeKm))
+  end
+  if p and not tileLoadedAt(p.x, p.y) then wait = L('Генерую світ попереду, зачекайте...', 'Generating the world ahead, please wait...') end
+  if AP then
+    wait = (wait and wait .. '  ' or '') .. string.format(L('Автопілот: %.1f км%s', 'Autopilot: %.1f km%s'), AP.travelled / 1000,
+      AP.waiting and L(' (чекаю тайл)', ' (waiting for a tile)') or '')
+  end
+  if not edge and not wait then return end
+  local function flag(name) return type(im[name]) == 'number' and im[name] or 0 end
+  local viewport = im.GetMainViewport and im.GetMainViewport()
+  local io = im.GetIO()
+  local x, y, w, h = 0, 0, io and io.DisplaySize and io.DisplaySize.x or 1280, io and io.DisplaySize and io.DisplaySize.y or 720
+  if viewport and viewport.Size and viewport.Size.x > 0 then x, y, w, h = viewport.Pos.x, viewport.Pos.y, viewport.Size.x, viewport.Size.y end
+  im.SetNextWindowPos(im.ImVec2(x + w / 2, y + h * .82), flag('Cond_Always'), im.ImVec2(.5, 1))
+  pushTheme()
+  M.winguard.begin(im, 'EarthNG##notice', flag('WindowFlags_NoTitleBar') + flag('WindowFlags_AlwaysAutoResize')
+    + flag('WindowFlags_NoMove') + flag('WindowFlags_NoInputs') + flag('WindowFlags_NoSavedSettings'))
+  if edge then im.TextColored(im.ImVec4(1, 0.5, 0.2, 1), edge) end
+  if wait then im.TextColored(im.ImVec4(1, 0.7, 0.2, 1), wait) end
+  im.End()
+  popTheme()
+end
+
 local function drawWindow()
   if test and test.clean then return end   -- a clean screen for recorded video
   M.compassOffset = M.compassDraw()
@@ -6359,96 +6223,17 @@ local function drawWindow()
     M.poicard.draw(im, S.poi, M.pins)
   end
   if NATIVE then planetMap.update(S.status and S.status.countries) end
+  -- While driving nothing of ours stands on the screen but the lines above: the map is the
+  -- game's own minimap (minimap.lua adds to it) and the atlas on M, the settings are the EarthNG
+  -- tab of the pause menu. What the driver must know is a line at the bottom (LIMIT.notices).
+  if S.state == 'driving' and not S.pickerOpen then
+    LIMIT.notices()
+    return
+  end
   pushTheme()
   if S.widgetHidden then
     M.winguard.begin(im, 'EarthNG##restore', im.WindowFlags_AlwaysAutoResize)
     if im.Button(L('Показати мапу', 'Show map')) then S.widgetHidden = false; S.viewDirty = true end
-    im.End()
-    popTheme()
-    return
-  end
-  if S.state == 'driving' and not S.pickerOpen then
-    im.SetNextWindowSize(im.ImVec2(392, 440), im.Cond_FirstUseEver)
-    im.SetNextWindowSizeConstraints(im.ImVec2(320, 260), im.ImVec2(8000, 8000))
-    M.winguard.begin(im, 'EarthNG##mini', im.WindowFlags_NoCollapse)
-    if im.Button(L('Приховати', 'Hide')) then S.widgetHidden = true end
-    im.SameLine()
-    if im.Button(L('Обрати інше місце', 'Pick another place')) then
-      local mini = S.mini
-      local at = mini and mini.follow and carOnMap() or mini and mini.center
-      if at then S.center, S.zoom = {lat = at.lat, lon = at.lon}, mini.zoom end
-      S.pickerOpen, S.viewDirty = true, true
-    end
-    drawLangButton()
-    -- the mini map follows the car (an arrow along the heading); a drag frees it
-    S.mini = S.mini or {center = {lat = S.center.lat, lon = S.center.lon}, zoom = 15, follow = true}
-    -- a click (no drag) on the minimap: the route there
-    if M.navigator and not S.mini.onClick then
-      S.mini.onClick = function(lat, lon)
-        local car, x, y = focus(), native.localPoint(lat, lon)
-        if car and x then M.navigator.setDestination(x, y, lat, lon, car, lang) end
-      end
-    end
-    local avail = im.GetContentRegionAvail()
-    drawMap(avail.x, math.max(120, math.min(avail.x * .5, avail.y - 80)), S.mini)
-    if M.worldmap and M.worldmap.openSearch and im.Button(L('Знайти місце', 'Find a place') .. '##miniatlas') then
-      M.worldmap.openSearch()
-      S.bigMap = true
-    end
-    if M.worldmap and M.worldmap.openSearch and im.IsItemHovered() then
-      im.SetTooltip(L('Відкрити атлас · M', 'Open the atlas · M'))
-    end
-    local routeLines = M.navigator and M.navigator.lines(L)
-    if routeLines then
-      im.TextColored(theme.green, routeLines[1])
-      if routeLines[2] then im.Text(routeLines[2]) end
-      if im.Button(L('Скасувати маршрут', 'Cancel the route')) then M.navigator.clear() end
-      im.SameLine()
-    end
-    if not S.mini.follow then
-      if im.Button(L('До авто', 'To the car')) then S.mini.follow = true end
-      im.SameLine()
-    end
-    im.TextWrapped(M.navigator and L('Колесо змінює масштаб · Клік прокладає маршрут',
-      'Scroll to zoom · Click to route') or L('Колесо змінює масштаб', 'Scroll to zoom'))
-    local st = S.status and S.status.stream
-    local p, v = focus()
-    if st and st.edgeKm and st.edgeKm < 3 then
-      if st.live then
-        im.TextColored(im.ImVec4(1, 0.5, 0.2, 1), string.format(L('Край вікна: %.1f км. Околиця ще докачується.',
-          'Edge of the window: %.1f km. The surroundings are still downloading.'), math.max(0, st.edgeKm)))
-      else
-        im.TextColored(im.ImVec4(1, 0.5, 0.2, 1), string.format(L('Край завантаженої області: %.1f км. Далі доріг немає -',
-          'Edge of the loaded area: %.1f km. No roads beyond it -'), math.max(0, st.edgeKm)))
-        im.TextColored(im.ImVec4(1, 0.5, 0.2, 1), L('висадьтеся ближче до нової точки ("Обрати інше місце").',
-          'land again near a new point ("Pick another place").'))
-      end
-    end
-    if p and not tileLoadedAt(p.x, p.y) then
-      im.TextColored(im.ImVec4(1, 0.7, 0.2, 1), L('Генерую світ попереду, зачекайте...', 'Generating the world ahead, please wait...'))
-    end
-    if AP then
-      im.Text(string.format(L('Автопілот: %.1f км%s', 'Autopilot: %.1f km%s'), AP.travelled / 1000,
-        AP.waiting and L(' (чекаю тайл)', ' (waiting for a tile)') or ''))
-    end
-    if im.CollapsingHeader1(L('Вигляд і трафік', 'Style and traffic')) then
-      if S.packs then drawPacks() end
-      drawTraffic()
-      S.locationShown = S.locationShown or im.BoolPtr(not S.locationOff)
-      if im.Checkbox(L('Рядок з назвою вулиці', 'Street name line'), S.locationShown) then
-        if M.options and M.options.has('streetLine') then
-          M.options.set('streetLine', S.locationShown[0] and true or false, 'widget')   -- saves locationOff
-        else   -- no registry (a test stubs require)
-          S.locationOff = not S.locationShown[0]
-          local ok, cfg = pcall(jsonReadFile, LANG_FILE)
-          cfg = ok and type(cfg) == 'table' and cfg or {}
-          cfg.locationOff = S.locationOff
-          pcall(jsonWriteFile, LANG_FILE, cfg, true)
-        end
-      end
-    end
-    if im.CollapsingHeader1(L('Статистика', 'Statistics')) then drawStats(st, p, v) end
-    if im.CollapsingHeader1(L('Якість світу', 'World quality'), im.TreeNodeFlags_DefaultOpen) then drawTune() end
     im.End()
     popTheme()
     return
@@ -6794,6 +6579,8 @@ function LIMIT.poolStop()
 end
 
 function M.onExtensionUnloaded()
+  if M.minimap then M.minimap.restore() end
+  if type(M.worldmap) == 'table' and M.worldmap.closed then M.worldmap.closed() end   -- the world is rendered again
   LIMIT.poolStop()
   M.gc.step(false)
   restorePackState()
@@ -6806,6 +6593,9 @@ function M.onExtensionUnloaded()
 end
 
 function M.onClientEndMission()
+  if M.minimap then M.minimap.restore(); M.minimap.clear() end
+  if type(M.worldmap) == 'table' and M.worldmap.closed then M.worldmap.closed() end
+  S.bigMap = false
   LIMIT.poolStop()
   restorePackState()
   resetForests()
@@ -6888,7 +6678,7 @@ local function runTest()
         local i,j = tileOf(p.x,p.y)
         local tile = S.tiles[i .. '_' .. j]
         local road = tile and tile.group
-        S.tune = quality.preset(q); tunePtr = {}; applyTune()
+        S.tune = quality.preset(q); applyTune()
         records[#records+1] = {quality=q,z=p.z,minZ=p.z,
           roadPreserved=tile and tile.group == road and tile.roadComplete and not tile.dropped or false}
         S.qualityCycleAt = S.now
@@ -7660,7 +7450,7 @@ function M.onUpdate(dtReal, dtSim)
   drawWindow()
   if not S.bigHook then LIMIT.bigMapHook() end
   if S.bigKey then LIMIT.bigMapKey() end
-  if S.bigMap then LIMIT.drawBigMap() elseif M.worldmap then M.worldmap.closed() end
+  if S.bigMap then LIMIT.drawBigMap() elseif type(M.worldmap) == 'table' and M.worldmap.closed then M.worldmap.closed() end
   -- a setting the widget (or anything else) changed reaches the UI app within POLL_EVERY s
   if M.options then M.options.poll(S.now) end
   if S.prof then profAdd('window', wt:stop(), collectgarbage('count') - wkb) end
@@ -7816,7 +7606,12 @@ function M.tick(dt)
       -- climate the car is in
       LIMIT.turfPlace(p)
       if S.state == 'driving' then LIMIT.lodStep(vel and vel:length() or 0) end
-      if detail.turf and detail.turf.step(p, S.now, S.appliedTune or TUNE_DEFAULT) then changed = true end
+      if detail.turf and detail.turf.step(p, S.now, S.appliedTune or TUNE_DEFAULT) then
+        changed = true
+        -- the physics has the block's old place until a rebuild: this frame (updateCollision)
+        S.turfSync = true
+        updateCollision()
+      end
       -- and a wood fills up round a car that stands in it
       M.fillStep(p, S.now)
       result.detailMs = detailTimer:stop()
@@ -7833,6 +7628,7 @@ function M.tick(dt)
       if M.navigator then M.navigator.step(focus, S.now, lang) end
       M.locationStep()
       M.poiStep()
+      M.minimapStep()
       if M.signals then M.signals.step(S.now, trafficRunning()) end
       local t0 = timer:stop()
       if S.flow then M.flowStep() end
@@ -8150,11 +7946,6 @@ function M.optionsBind()
       else
         S.tune[key] = v
       end
-      -- the widget's sliders keep their own copies and write them back every frame
-      for k, ptr in pairs(tunePtr) do
-        if k == 'groundTrees' then ptr[0] = S.tune.groundTrees and true or false
-        elseif S.tune[k] ~= nil then ptr[0] = S.tune[k] end
-      end
       applyTune()   -- rebuilds the scenery when density changed; saves tune
     end
   end
@@ -8313,11 +8104,21 @@ function M.optionsBind()
     hint = {uk = 'Трава гри на всю видимість замість купин; для щойно завантажених околиць',
       en = "The game's own grass as far as it draws, in place of tufts; for newly loaded surroundings"},
     read = function() return not detail.turf or detail.turf.enabled ~= false end,
-    apply = function(v) if detail.turf then detail.turf.setEnabled(v) end end}
+    -- (a block taken away keeps its collision until a rebuild, as one moved: updateCollision)
+    apply = function(v) if detail.turf then detail.turf.setEnabled(v); S.turfSync = true end end}
   -- interface and style
   o.define{key = 'mapPhoto', kind = 'bool', group = 'view', default = true, path = {'mapPhoto'},
     label = {uk = 'Фотопідкладка мапи', en = 'Map imagery'},
     read = function() return S.mapPhoto ~= false end, apply = function(v) S.mapPhoto = v end}
+  if M.minimap then
+    o.define{key = 'minimapZoom', kind = 'enum', group = 'view', default = '3', path = {'minimapZoom'},
+      label = {uk = 'Огляд міні-карти', en = 'Minimap range'},
+      hint = {uk = 'У скільки разів далі за стокову міні-карту видно довкола авто (стокова показує 200 м)',
+        en = "How many times farther than the game's own minimap you see round the car (the game shows 200 m)"},
+      values = {{value = '1', label = {uk = 'Як у грі', en = 'As the game'}}, {value = '2', label = {uk = '×2', en = '×2'}},
+        {value = '3', label = {uk = '×3', en = '×3'}}, {value = '5', label = {uk = '×5', en = '×5'}}},
+      read = function() return tostring(M.minimap.zoom) end, apply = function(v) M.minimap.setZoom(tonumber(v)) end}
+  end
   o.define{key = 'lang', kind = 'enum', group = 'view', label = {uk = 'Мова', en = 'Language'},
     values = {{value = 'uk', label = {uk = 'Українська', en = 'Українська'}}, {value = 'en', label = {uk = 'English', en = 'English'}}},
     read = function() return lang end, apply = function(v) setLang(v); S.viewDirty = true end}
@@ -8327,7 +8128,6 @@ function M.optionsBind()
     read = function() return not S.locationOff end,
     apply = function(v)
       S.locationOff = not v
-      if S.locationShown then S.locationShown[0] = v end
     end}
   -- the points of interest: what stands by them in the world, and the card by the car
   o.define{key = 'poiInfo', kind = 'bool', group = 'view', default = true, path = {'poiInfo'},
@@ -8478,7 +8278,8 @@ function M.tileAgain(key)
     for _, k in ipairs(keys) do dropFar(k, S.far[k]) end
   end
   native.rebuild(key)
-  S.navDirty, S.collisionDirty = true, true
+  -- (what went keeps its collision until a rebuild: the tiles built again may differ)
+  S.navDirty, S.collisionDirty, S.removedCollision = true, true, true
   result.labRebuilds = (result.labRebuilds or 0) + 1
   return n
 end

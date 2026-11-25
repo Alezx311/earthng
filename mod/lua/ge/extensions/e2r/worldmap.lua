@@ -1,20 +1,27 @@
 -- The world map on M (docs/MAP.md "Карта світу"): the whole planet on one screen with the points
 -- of interest of the installed map sidecars. A side panel holds the search, the layers, the filters
 -- by group and category with their counts, and the chosen point's card; the map (world.lua
--- drawMap, view.world) shows the enabled points (poiindex.lua): dots of their group's colour when
--- far, icons closer, names close up, and the OSM facts (poi_tags.tsv) of the point under the
+-- drawMap, view.world) shows the enabled points (poiindex.lua): the weightiest of a zoom as round
+-- badges with their marks (pins.lua badge) and the rest as ringed dots when far, every point a
+-- badge from ICON_ZOOM, names close up, and the OSM facts (poi_tags.tsv) of the point under the
 -- cursor. A click only picks a point or a place; its card offers the route there and a landing,
 -- so a stray click never moves the car. The game pauses while the map is open (a layer switch).
 --
--- Every frame: the markers are collected only when the zoom or the filters change or the view
--- leaves the box they were collected for (the view and PAD of it again on each side), thinned
--- to one a square of a grid fixed to the world (a drag never swaps the point of a square) and kept
--- best first with their screen place; a frame only shifts them by the drag and draws at most
--- MAX_DOTS or MAX_ICONS. Markers go into reused arrays, the dots share one reused ImVec2, labels
--- and cards are cached by point.
+-- Every frame: the markers are collected only when the whole zoom level or the filters change or
+-- the view leaves the box they were collected for (the view and PAD of it again on each side),
+-- thinned to one a square of a grid fixed to the world (a drag never swaps the point of a square)
+-- and kept best first; a frame projects the kept few hundred and draws at most MAX_DOTS dots and
+-- MAX_ICONS badges. Markers go into reused arrays, the circles share reused ImVec2s, labels and
+-- cards are cached by point. The view's zoom is a real number (mapmotion.lua): the keys and the
+-- buttons ask for a step or a place and the view eases there.
 local M = {}
 local okFfi, ffi = pcall(require, 'ffi')
 local index = require('ge/extensions/e2r/poiindex')
+local motion = require('ge/extensions/e2r/mapmotion')
+-- names in Latin letters for the English UI (translit.lua); as they are where it cannot load
+local okTranslit, translit = pcall(require, 'ge/extensions/e2r/translit')
+if not okTranslit or type(translit) ~= 'table' then translit = {latin = function(s) return s end} end
+local mercUnit = motion.mercUnit
 local floor, max, min = math.floor, math.max, math.min
 
 local catalog, pins
@@ -32,11 +39,12 @@ end
 M.index = index
 
 M.PANEL = 340              -- px: the side panel
-M.DOT_ZOOM = 15            -- city services become pictograms at street scale
-M.DOT_CELL, M.ICON_CELL = 52, 78
--- markers drawn a frame at most: every dot is two engine calls, an icon several (3000 dots and
+M.FROM = 6                 -- points show from this zoom
+M.ICON_ZOOM = 13           -- from this zoom every kept point is a badge with its mark
+M.DOT_CELL, M.ICON_CELL = 46, 64
+-- markers drawn a frame at most: a dot is three engine calls, a badge four (3000 dots and
 -- 27-40 thousand candidates projected a frame made the zoomed-out map slow, 18.11)
-M.MAX_DOTS, M.MAX_ICONS, M.MAX_LABELS = 360, 180, 32
+M.MAX_DOTS, M.MAX_ICONS, M.MAX_LABELS = 300, 170, 36
 M.PAD = 0.5                -- the collected box: the view and this share of it again on each side
 M.SLICE = 0.002            -- s of collecting a frame (os.clock); the last markers stay meanwhile
 M.LABEL_ZOOM = 15          -- names next to icons from this zoom (or a category's labelZoom)
@@ -67,6 +75,8 @@ local DETAIL = {
 }
 local YES = {yes = {'так', 'yes'}, no = {'ні', 'no'}, limited = {'частково', 'limited'}, only = {'лише', 'only'},
   designated = {'так', 'yes'}, wlan = {'Wi-Fi', 'Wi-Fi'}, wifi = {'Wi-Fi', 'Wi-Fi'}}
+-- the keys whose values are sentences, not names (worldmap card in English)
+local PROSE = {description = true, inscription = true, note = true}
 local FUEL = {{'fuel:diesel', 'дизель', 'diesel'}, {'fuel:octane_95', 'А-95', '95'}, {'fuel:lpg', 'газ', 'LPG'}}
 local KIND_KEYS = {'amenity', 'shop', 'tourism', 'leisure', 'historic', 'natural', 'railway', 'aeroway', 'man_made',
   'office', 'craft', 'healthcare', 'sport'}
@@ -164,9 +174,11 @@ local function add(e, i, level)
   levelCount[level] = n
   bucketE[level][n], bucketI[level][n] = e, i
 end
--- The kept markers: two sets, the one drawn and the one being made. A set holds each marker's
--- screen place when it was collected, where lat 0, lon 0 was then (refX, refY) and the zoom.
-local function newSet() return {n = 0, x = {}, y = {}, e = {}, i = {}, refX = 0, refY = 0} end
+-- The kept markers: two sets, the one drawn and the one being made. A set holds its points best
+-- first with their priority and the whole zoom level it was thinned for; where a point stands on
+-- the screen is asked every frame (a few hundred projections), so a zoom on its way or a thrown
+-- map moves them exactly with the map under them.
+local function newSet() return {n = 0, e = {}, i = {}, level = {}} end
 local shown, making = newSet(), newSet()
 M.kept = shown
 M.collects = 0
@@ -175,46 +187,46 @@ local occupied, stamp = {}, 0   -- one marker a square: square -> stamp of the c
 local LAT = 85.06
 
 -- Collect the box into a set and thin it to one marker a square of a grid fixed to the world
--- (anchored at lat 0, lon 0, so a later collect keeps the same point of a square), best first:
--- the buckets go by priority. pause() yields when the frame's slice is spent.
-local function build(set, z, w, s, e, n, screen, pause)
+-- (Mercator pixels of the level, so a later collect keeps the same point of a square), best
+-- first: the buckets go by priority. pause() yields when the frame's slice is spent.
+local function build(set, z, w, s, e, n, pause)
   for l = 1, LEVELS do levelCount[l] = 0 end
-  local cell = z < M.DOT_ZOOM and M.DOT_CELL or M.ICON_CELL
-  local px = index.GRID / 360 * 256 * 2 ^ z   -- an index cell on the screen
+  local cell = z < M.ICON_ZOOM and M.DOT_CELL or M.ICON_CELL
+  local scale = 256 * 2 ^ z
+  local px = index.GRID / 360 * scale   -- an index cell on the screen
   local per = px <= cell and 1 or min(400, math.ceil((px / cell) ^ 2))
   index.collect(w, s, e, n, per, enabled, add, pause, S.browser.pack)
-  local rx, ry = screen(0, 0)
-  local xa, ya = screen(n, w)
-  local xb, yb = screen(s, e)
-  local fx0, fy0 = floor((xa - rx) / cell), floor((ya - ry) / cell)
-  local nx, ny = floor((xb - rx) / cell) - fx0 + 1, floor((yb - ry) / cell) - fy0 + 1
+  local xa, ya = mercUnit(n, w)
+  local xb, yb = mercUnit(s, e)
+  local fx0, fy0 = floor(xa * scale / cell), floor(ya * scale / cell)
+  local nx, ny = floor(xb * scale / cell) - fx0 + 1, floor(yb * scale / cell) - fy0 + 1
   stamp = stamp + 1
-  local X, Y, E, I, k = set.x, set.y, set.e, set.i, 0
+  local E, I, LV, k = set.e, set.i, set.level, 0
   for level = 1, LEVELS do
     local bE, bI = bucketE[level], bucketI[level]
     for j = 1, levelCount[level] do
       local en, i = bE[j], bI[j]
-      local x, y = screen(en.lat[i], en.lon[i])
-      local fx, fy = floor((x - rx) / cell) - fx0, floor((y - ry) / cell) - fy0
+      local x, y = mercUnit(en.lat[i], en.lon[i])
+      local fx, fy = floor(x * scale / cell) - fx0, floor(y * scale / cell) - fy0
       -- a point of an index cell over the box's edge stays out: it is off the box
       if fx >= 0 and fx < nx and fy >= 0 and fy < ny then
         local key = fy * nx + fx + 1
         if occupied[key] ~= stamp then
           occupied[key], k = stamp, k + 1
-          X[k], Y[k], E[k], I[k] = x, y, en, i
+          E[k], I[k], LV[k] = en, i, level
         end
       end
       if j % 512 == 0 then pause() end
     end
   end
   for j = k + 1, set.n do E[j] = nil end
-  set.n, set.refX, set.refY, set.z = k, rx, ry, z
+  set.n, set.z = k, z
 end
 
--- Keep the markers over the view: a new collect when the zoom or the filters change or the view
+-- Keep the markers over the view: a new collect when the level or the filters change or the view
 -- leaves the box of the last one (the view and PAD of it on each side), a slice a frame; the
 -- markers shown stay until it is done. True when a collect is under way.
-local function collect(z, w, s, e, n, screen)
+local function collect(z, w, s, e, n)
   w, e, s, n = max(-180, w), min(180, e), max(-LAT, s), min(LAT, n)
   local t = target
   if not (t.z == z and t.key == enabledKey and w >= t.w and e <= t.e and s >= t.s and n <= t.n) then
@@ -227,7 +239,7 @@ local function collect(z, w, s, e, n, screen)
       local function pause()
         if clock() - start > M.SLICE then start = coroutine.yield() end
       end
-      build(set, z, bw, bs, be, bn, screen, pause)
+      build(set, z, bw, bs, be, bn, pause)
     end)
   end
   if not job then return false end
@@ -246,9 +258,9 @@ end
 M.collect = collect
 M.levelCount = levelCount
 
-local drawnX, drawnY, drawnE, drawnI = {}, {}, {}, {}
-M.drawn = {n = 0, x = drawnX, y = drawnY, e = drawnE, i = drawnI}
-local colours, P             -- U32 colours made once; one ImVec2 for every dot
+local drawnX, drawnY, drawnE, drawnI, drawnR = {}, {}, {}, {}, {}
+M.drawn = {n = 0, x = drawnX, y = drawnY, e = drawnE, i = drawnI, r = drawnR}
+local colours, P             -- U32 colours made once; one ImVec2 for the rings
 local widths, widthCount = {}, 0
 
 local function textWidth(im, text)
@@ -263,67 +275,84 @@ local function textWidth(im, text)
 end
 
 local function makeColours(col)
-  colours = {white = col(1, 1, 1), dark = col(.12, .12, .12), halo = col(1, 1, 1, .85), ring = col(1, .85, .1),
+  colours = {white = col(1, 1, 1), dark = col(.12, .12, .12), halo = col(1, 1, 1, .92), ring = col(1, .85, .1),
+    shade = col(0, 0, 0, .30), labelShade = col(0, 0, 0, .22),
     pick = col(.86, .15, .12), pickDark = col(.5, .05, .05), cardBg = col(.10, .11, .13, .95), cardRim = col(.45, .70, 1),
     title = col(1, 1, 1), text = col(.88, .9, .93), muted = col(.62, .65, .70), accent = col(.45, .70, 1), group = {}}
   for g, rgb in pairs(pins and pins.GROUP or {}) do colours.group[g] = col(rgb[1], rgb[2], rgb[3]) end
 end
 
--- the markers over the map (view.overlay, called by drawMap before the place names)
+-- How minor a point may be and still stand as a badge with its mark at a whole zoom level; the
+-- rest of the kept points are ringed dots. From ICON_ZOOM every point is a badge.
+local function badgeLevel(z)
+  if z >= M.ICON_ZOOM then return LEVELS end
+  return z >= 11 and 4 or z >= 9 and 3 or 2
+end
+M.badgeLevel = badgeLevel
+
+-- the markers over the map (view.overlay, called by drawMap before the streamed pins). z is the
+-- view's zoom, a real number; the markers are those of the whole level nearest to it.
 local function overlay(api, dl, screen, z, north, west, south, east, mouse, hovered, r0, r1)
   local im = api.im
   if not colours then makeColours(api.col) end
   if not P then P = im.ImVec2(0, 0) end
   refreshEnabled()
-  if z >= 6 and S.points then collect(z, west, south, east, north, screen) end
-  local dots = z < M.DOT_ZOOM
-  local most = dots and M.MAX_DOTS or M.MAX_ICONS
-  local white, n = colours.white, 0
-  local x0, y0, x1, y1 = r0.x - 8, r0.y - 8, r1.x + 8, r1.y + 8
-  -- The shown markers moved by the drag since they were collected: lat 0, lon 0 moved as much
-  -- as every point. While a new zoom is collected the last zoom's markers scale round it (the
-  -- map's pixels double a zoom step) and a category just switched off is left out.
+  local zl = floor(z + .5)
+  local on = zl >= M.FROM and S.points
+  if on then collect(zl, west, south, east, north) end
+  local icons = zl >= M.ICON_ZOOM
+  local topLevel = badgeLevel(zl)
+  local badgeR, dotR = icons and 11 or zl >= 11 and 10 or 9, zl >= 10 and 4.2 or 3.6
+  local white, shade, n, badges, dots = colours.white, colours.shade, 0, 0, 0
+  local x0, y0, x1, y1 = r0.x - 14, r0.y - 14, r1.x + 14, r1.y + 14
+  -- The shown markers where the map has them now. While a new level is collected the last
+  -- level's stay, and a category just switched off is left out.
   local set = shown
-  local rx, ry = screen(0, 0)
-  local f = set.z and 2 ^ (z - set.z) or 1
-  local X, Y, E, I, srx, sry = set.x, set.y, set.e, set.i, set.refX, set.refY
-  for k = 1, (z >= 6 and S.points) and set.n or 0 do
-    if n >= most then break end
-    local x, y = rx + (X[k] - srx) * f, ry + (Y[k] - sry) * f
+  local E, I, LV = set.e, set.i, set.level
+  local place = api.planetMap.place
+  for k = 1, on and set.n or 0 do
+    if badges >= M.MAX_ICONS and dots >= M.MAX_DOTS then break end
+    local e, i = E[k], I[k]
+    local x, y = screen(e.lat[i], e.lon[i])
     if x >= x0 and x <= x1 and y >= y0 and y <= y1 then
-      local e, i = E[k], I[k]
-      local st = enabled[e.cat[i]] and (not S.browser.pack or e.c.id == S.browser.pack) and styleOf(e.cat[i])
-      local half = dots and 4 or st and st.text and max(9, textWidth(im, st.text) / 2 + 5) or 9
-      if st and api.planetMap.place(x - half, y - (dots and 4 or 9), x + half, y + (dots and 4 or 9)) then
-        n = n + 1
-        drawnX[n], drawnY[n], drawnE[n], drawnI[n] = x, y, e, i
-        local fill = colours.group[st.group] or colours.dark
-        if dots then
-          P.x, P.y = x, y
-          im.ImDrawList_AddCircleFilled(dl, P, 3.8, white, 12)
-          im.ImDrawList_AddCircleFilled(dl, P, 2.6, fill, 12)
-        else
-          pins.icon(im, dl, st, x, y, fill, white)
+      local cat = e.cat[i]
+      local st = enabled[cat] and (not S.browser.pack or e.c.id == S.browser.pack) and styleOf(cat)
+      if st then
+        local badge = LV[k] <= topLevel
+        local r = badge and badgeR or dotR
+        if ((badge and badges < M.MAX_ICONS) or (not badge and dots < M.MAX_DOTS))
+          and place(x - r - 2, y - r - 2, x + r + 2, y + r + 2) then
+          n = n + 1
+          drawnX[n], drawnY[n], drawnE[n], drawnI[n], drawnR[n] = x, y, e, i, r
+          local fill = colours.group[st.group] or colours.dark
+          if badge then
+            badges = badges + 1
+            pins.badge(im, dl, index.CATS[cat], st, x, y, r, fill, white, shade)
+          else
+            dots = dots + 1
+            pins.dot(im, dl, x, y, r, fill, white, shade)
+          end
         end
       end
     end
   end
   M.drawn.n = n
-  -- names beside the icons where they fit (the place names keep out of them, planetMap.place)
-  if not dots and api.planetMap then
+  -- names beside the badges where they fit (the place names keep out of them, planetMap.place)
+  if zl >= 12 and api.planetMap then
     local lang, labels = api.lang(), 0
     for k = 1, n do
       if labels >= M.MAX_LABELS then break end
-      local e, i = drawnE[k], drawnI[k]
+      local e, i, r = drawnE[k], drawnI[k], drawnR[k]
       local st = styleOf(e.cat[i])
-      if z >= min(M.LABEL_ZOOM, st.labelZoom or M.LABEL_ZOOM) then
+      if r >= 9 and zl >= min(M.LABEL_ZOOM, st.labelZoom or M.LABEL_ZOOM) then
         local name = index.name(e, i, lang)
         if name ~= '' then
-          local x, y, w = drawnX[k] + (st.text and max(0, textWidth(im, st.text) / 2 - 3) or 0), drawnY[k], textWidth(im, name)
-          if api.planetMap.place(x + 10, y - 8, x + 16 + w, y + 8) then
+          local x, y, w = drawnX[k] + r + 5, drawnY[k], textWidth(im, name)
+          if place(x - 2, y - 9, x + w + 8, y + 9) then
             labels = labels + 1
-            im.ImDrawList_AddRectFilled(dl, im.ImVec2(x + 10, y - 8), im.ImVec2(x + 16 + w, y + 8), colours.halo, 4)
-            im.ImDrawList_AddText1(dl, im.ImVec2(x + 13, y - 7), colours.dark, name)
+            im.ImDrawList_AddRectFilled(dl, im.ImVec2(x - 1, y - 7), im.ImVec2(x + w + 7, y + 10), colours.labelShade, 5)
+            im.ImDrawList_AddRectFilled(dl, im.ImVec2(x - 2, y - 9), im.ImVec2(x + w + 6, y + 8), colours.halo, 5)
+            im.ImDrawList_AddText1(dl, im.ImVec2(x + 2, y - 8), colours.dark, name)
           end
         end
       end
@@ -332,25 +361,27 @@ local function overlay(api, dl, screen, z, north, west, south, east, mouse, hove
   -- the point under the cursor
   S.hoverE, S.hoverI = nil, nil
   if hovered and mouse then
-    local best, reach = nil, dots and 49 or 144
+    local best, reach = nil, nil
     for k = 1, n do
       local d = (drawnX[k] - mouse.x) ^ 2 + (drawnY[k] - mouse.y) ^ 2
-      if d < reach then best, reach = k, d end
+      local within = (drawnR[k] + 3) ^ 2
+      if d < within and (not reach or d < reach) then best, reach = k, d end
     end
     if best then
       S.hoverE, S.hoverI, S.hoverX, S.hoverY = drawnE[best], drawnI[best], drawnX[best], drawnY[best]
-      im.ImDrawList_AddCircle(dl, im.ImVec2(S.hoverX, S.hoverY), dots and 6 or 12, colours.ring, 16, 2.5)
+      im.ImDrawList_AddCircle(dl, im.ImVec2(S.hoverX, S.hoverY), drawnR[best] + 4, colours.ring, 24, 2.5)
     end
   end
   -- the picked point: a red pin
   local pick = S.pick
   if pick then
     local x, y = screen(pick.lat, pick.lon)
-    im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y - 14), 9, white)
-    im.ImDrawList_AddTriangleFilled(dl, im.ImVec2(x - 7, y - 11), im.ImVec2(x + 7, y - 11), im.ImVec2(x, y), white)
-    im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y - 14), 7.5, colours.pick)
-    im.ImDrawList_AddTriangleFilled(dl, im.ImVec2(x - 5.6, y - 11.5), im.ImVec2(x + 5.6, y - 11.5), im.ImVec2(x, y - 1.5), colours.pick)
-    im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y - 14), 3, colours.pickDark)
+    im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y + 1), 5, colours.shade, 12)
+    im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y - 18), 11.5, white, 24)
+    im.ImDrawList_AddTriangleFilled(dl, im.ImVec2(x - 9, y - 13), im.ImVec2(x + 9, y - 13), im.ImVec2(x, y), white)
+    im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y - 18), 9.6, colours.pick, 24)
+    im.ImDrawList_AddTriangleFilled(dl, im.ImVec2(x - 7.2, y - 13.5), im.ImVec2(x + 7.2, y - 13.5), im.ImVec2(x, y - 2), colours.pick)
+    im.ImDrawList_AddCircleFilled(dl, im.ImVec2(x, y - 18), 3.6, white, 12)
   end
 end
 M.overlay = overlay
@@ -378,10 +409,13 @@ function M.card(api, p)
   local e, i = p.e, p.i
   local lat, lon = p.lat, p.lon
   local title, cat = p.title, p.cat
+  local en = api.lang() == 'en'
   if e then
     lat, lon = index.position(e, i)
     title, cat = index.name(e, i, api.lang()), index.category(e, i)
   end
+  -- (in English a name with no English form in Latin letters: translit.lua)
+  if en and title then title = translit.latin(title) end
   line(title ~= '' and title or catName(cat, L), 'title')
   if p.article then
     local a = p.article
@@ -390,16 +424,17 @@ function M.card(api, p)
     line(L('Джерело · ', 'Source · ') .. a.source, 'muted')
   end
   local where = e and e.title or (not p.article and p.context or nil)
+  if en and where then where = translit.latin(where) end
   if cat or where then line((cat and catName(cat, L) or '') .. (cat and where and ' · ' or '') .. (where or ''), 'muted') end
   local details = e and index.details(e, i)
   if details then
     local tags = {}
     for _, kv in ipairs(details) do tags[kv[1]] = kv[2] end
-    local street, city = tags['addr:street'], tags['addr:city']
+    local street, city = en and tags['addr:street:en'] or tags['addr:street'], tags['addr:city']
     if street or city then
       local a = street and (street .. (tags['addr:housenumber'] and (' ' .. tags['addr:housenumber']) or '')) or ''
       if city then a = a ~= '' and (a .. ', ' .. city) or city end
-      line(L('Адреса: ', 'Address: ') .. a)
+      line(L('Адреса: ', 'Address: ') .. (en and translit.latin(a) or a))
     end
     local fuels = {}
     for _, f in ipairs(FUEL) do if tags[f[1]] == 'yes' then fuels[#fuels + 1] = L(f[2], f[3]) end end
@@ -411,7 +446,15 @@ function M.card(api, p)
         local y = YES[v]
         if y then v = L(y[1], y[2]) end
         if kv[1] == 'cuisine' then v = v:gsub(';', ', '):gsub('_', ' ') end
-        line(L(d[1], d[2]) .. ': ' .. v)
+        if en and v then
+          -- OSM's own words in English: the key's English form, a name in Latin letters, and no
+          -- sentence in a script an English reader cannot read (an original name stays as itself)
+          local own = tags[kv[1] .. ':en']
+          if own then v = own
+          elseif PROSE[kv[1]] then v = not v:find('[\208\209\210]') and v or nil
+          elseif kv[1] ~= 'name:uk' then v = translit.latin(v) end
+        end
+        if v then line(L(d[1], d[2]) .. ': ' .. v) end
       end
     end
     local kinds = {}
@@ -485,9 +528,8 @@ end
 
 local function pickPoint(view, p, zoom)
   S.pick = p
-  view.center = {lat = p.lat, lon = p.lon}
-  if zoom then view.zoom = zoom end
   view.follow = false
+  motion.flyTo(view, p.lat, p.lon, zoom or view.zoom, S.mapW, S.mapH)
 end
 
 local SEARCH_LIMIT, PAGE_SIZE = 48, 8
@@ -720,6 +762,8 @@ function M.drawBrowser(api, view, browser, choose)
         elseif context:sub(1, #prefix) == prefix then context = context:sub(#prefix + 1) end
       end
       if meta then context = context and meta .. ' · ' .. context or meta end
+      -- (in English the names with no English form in Latin letters: translit.lua)
+      if api.lang() == 'en' then p.title, context = translit.latin(p.title), context and translit.latin(context) end
       p.caption, p.subtitle = fitText(im, p.title, width), context and fitText(im, context, width)
       p.width, p.fontsize = width, fontsize
     end
@@ -821,8 +865,8 @@ local function drawPick(api, view)
     if im.Button(L('Висадитися тут', 'Land here') .. '##wland', im.ImVec2(150, 0)) then api.land(lat, lon) end
   end
   if im.Button(L('Показати', 'Show') .. '##wshow', im.ImVec2(100, 0)) then
-    view.center, view.follow = {lat = lat, lon = lon}, false
-    view.zoom = max(view.zoom, 16)
+    view.follow = false
+    motion.flyTo(view, lat, lon, max(view.zoom, 16), S.mapW, S.mapH)
   end
   im.SameLine()
   if im.Button(L('Скинути вибір', 'Clear selection') .. '##wclear') then S.pick, S.panel = nil, 'places' end
@@ -835,7 +879,8 @@ local function drawPanel(api, view, width, height)
   im.TextColored(theme.accent, L('Атлас Землі', 'Earth atlas'))
   local car = api.car()
   if car and im.Button(L('До авто', 'To the car') .. '##wcar') then
-    view.center, view.zoom, view.follow = {lat = car.lat, lon = car.lon}, 15, false
+    view.follow = false
+    motion.flyTo(view, car.lat, car.lon, 15, S.mapW, S.mapH)
   end
   if car then im.SameLine() end
   if im.Button(L('Весь світ', 'Whole world') .. '##wworld') then
@@ -849,6 +894,13 @@ local function drawPanel(api, view, width, height)
     if active then im.PushStyleColor2(im.Col_Button, theme.selected) end
     if im.Button(label .. '##w' .. id) then S.panel = id end
     if active then im.PopStyleColor() end
+  end
+  local route = api.route and api.route()
+  if route then
+    im.TextColored(theme.green or theme.accent, route[1])
+    if route[2] then im.TextWrapped(route[2]) end
+    if im.Button(L('Скасувати маршрут', 'Cancel the route') .. '##wroute') then api.clearRoute() end
+    im.Separator()
   end
   tab('places', L('Місця', 'Places'))
   if S.pick then
@@ -896,8 +948,24 @@ function M.setPause(on)
   end
 end
 
+-- The atlas covers the whole window, so the world behind it is not rendered while it is open
+-- (the engine's own switch; its editor's views use it): in the centre of Kyiv a frame is 5 ms
+-- instead of 16-35, and that is what makes the map move like a map (24.11). Put back when the
+-- map shuts, the level ends or the mod unloads (world.lua).
+function M.worldRender(on)
+  local set = rawget(_G, 'setRenderWorldMain')
+  if type(set) ~= 'function' then return end
+  if not on and not S.renderOff then
+    if pcall(set, false) then S.renderOff = true end
+  elseif on and S.renderOff then
+    pcall(set, true)
+    S.renderOff = false
+  end
+end
+
 -- the map is shut (world.lua, every frame it is not open): give the game back
 function M.closed()
+  M.worldRender(true)
   if S.shown then
     S.shown = false
     M.setPause(false)
@@ -960,6 +1028,7 @@ function M.draw(api)
     end
     if S.pause then M.setPause(true) end
   end
+  M.worldRender(false)
   if not colours then makeColours(api.col) end
   local io = im.GetIO()
   local w, h = io.DisplaySize.x, io.DisplaySize.y
@@ -977,6 +1046,7 @@ function M.draw(api)
   im.SameLine()
   im.BeginGroup()
   local mapW, mapH = max(1, avail.x - panel - 8), max(1, avail.y)
+  S.mapW, S.mapH = mapW, mapH
   local r0 = im.GetCursorScreenPos()
   local r0x, r0y = r0.x, r0.y
   api.drawMap(mapW, mapH, view)
@@ -994,10 +1064,11 @@ function M.draw(api)
   elseif not typing then
     local car = api.car()
     if car and im.Key_C and im.IsKeyPressed(im.GetKeyIndex(im.Key_C)) then
-      view.center, view.follow = {lat = car.lat, lon = car.lon}, false
+      view.follow = false
+      motion.flyTo(view, car.lat, car.lon, view.zoom, mapW, mapH)
     end
-    if im.Key_PageUp and im.IsKeyPressed(im.GetKeyIndex(im.Key_PageUp)) then view.zoom = min(18, view.zoom + 1) end
-    if im.Key_PageDown and im.IsKeyPressed(im.GetKeyIndex(im.Key_PageDown)) then view.zoom = max(2, view.zoom - 1) end
+    if im.Key_PageUp and im.IsKeyPressed(im.GetKeyIndex(im.Key_PageUp)) then motion.zoomBy(view, 1) end
+    if im.Key_PageDown and im.IsKeyPressed(im.GetKeyIndex(im.Key_PageDown)) then motion.zoomBy(view, -1) end
   end
   im.End()
   api.popTheme()

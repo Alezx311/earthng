@@ -27,11 +27,14 @@ EarthNG 1.0 includes the planet inside **EarthNG.exe**. Try generating a map of 
 place on Earth: your hometown, a favourite road, or somewhere you have always wanted
 to drive. Existing country packs can also be used alongside the installed planet.
 
-The widget searches cities, villages and countries in local, Ukrainian and English
-names. Use Enter or click a result, scroll to zoom and drag to pan. Main-road
-overviews remain visible when zooming out, and BeamNG's stock minimap shows nearby
-generated roads even with traffic off. Village and road overview detail depends on the
-data in the planet and installed packs. See [map controls and data](docs/MAP.md).
+The atlas on **M** and the landing picker search cities, villages, countries and points
+of interest in local, Ukrainian and English names. Use Enter or click a result, scroll to
+zoom smoothly and drag to pan. Roads show at every zoom, points of interest are round
+markers with pictograms, and packs carry Sentinel-2 imagery of their area. While driving
+there is no EarthNG window on the screen: BeamNG's own minimap is widened (three times by
+default) and shows the points of interest round the car. Village, road and imagery detail
+depends on the data in the planet and installed packs. See
+[map controls and data](docs/MAP.md).
 
 **Place your own objects.** In an EarthNG world open the World Editor (F11), place
 stock meshes from the Asset Browser, move, rotate, scale, duplicate or delete them as
@@ -40,7 +43,7 @@ landing and the next game start (`settings/earthng-editor-objects.json` in your 
 folder). Generated streets, buildings and trees are not saved. See
 [World Editor objects](docs/WORLD_EDITOR.md).
 
-**Pedestrians and street props.** In the EarthNG widget, **Pedestrians** (0 to 1000)
+**Pedestrians and street props.** In the pause menu's EarthNG tab, **Pedestrians** (0 to 1000)
 puts people on the sidewalks; a car that hits one meets a physical body in its place.
 **Knockable props** (on by default) lets bins, bollards and benches be knocked over.
 See [crowds](docs/CROWDS_AND_PACKS.md) and [knockdown](docs/KNOCKDOWN.md).

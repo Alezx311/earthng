@@ -11877,6 +11877,31 @@ end
 --   within `band` m (its middle) is the roadside's own layer (`flag`: short trodden grass and weeds,
 --     turf.lua e2rTurfVerge) where it was the common lawn.
 VEG.verge = {reach = 6.5, pad = -.6, ramp = 1.7, band = 2.2, hide = .26, into = .2, flag = 2048}
+-- A lawn square is a square of the grass's hidden terrain (turf.lua), and that collides: one whose
+-- plane stood over the asphalt it reached into was a ledge on the road nobody could see (25.11,
+-- clear_census.py: a verge square 0.69 m over the paving, lawn squares by the junctions' curb
+-- returns, which the strip edges do not know). A corner on the drawn asphalt (onAsphalt: strips,
+-- junction plates, mouths) stays `under` m under the ground there: the square is lowered by its
+-- worst corner, and left out past `drop` m, where lowering would bury its grass. The asphalt's
+-- height there is the strip's own (pavedZ, `crown` m off for a crowned road's edge), or the
+-- ground's where no strip is (the ground under a seated strip lies a few cm under its paving: by
+-- the ground alone 1.2 % of the lawn's squares went, by the strip's 0.1 %).
+VEG.paving = {under = .05, crown = .08, drop = .25, corners = {{-1, -1}, {1, -1}, {-1, 1}, {1, 1}}}
+-- metres the square's worst corner on the asphalt stands over the line it must keep under (0: none)
+function VEG.overPaving(onAsphalt, pavedZ, ground, x, y, z, gx, gy)
+  if not onAsphalt then return 0 end
+  local P, over = VEG.paving, 0
+  for _, c in ipairs(P.corners) do
+    local cx, cy = x + c[1], y + c[2]
+    if onAsphalt(cx, cy) then
+      local zg, zp = ground(cx, cy), pavedZ and pavedZ(cx, cy)
+      if zp and zp - P.crown > zg then zg = zp - P.crown end
+      local e = z + gx * c[1] + gy * c[2] - (zg - P.under)
+      if e > over then over = e end
+    end
+  end
+  return over
+end
 -- The outer edges of a tile's paving by 10 m bin: {ax, ay, az, dx, dy, dz, len2, nx, ny}, the
 -- unit vector (nx, ny) away from the road.
 function VEG.roadEdges(strips, rect, tune, pause)
@@ -19323,6 +19348,12 @@ local function build(cells, i, j, options)
     end
     return false
   end
+  -- the carriageway's own height at a point of a strip at grade (its centre line's, the camber),
+  -- or nil off the strips (a junction's curb return: the ground's, which the plates press)
+  function OFFROAD.pavedZ(x, y)
+    local hit = OFFROAD.nearestOn(x, y, nil, false, nil, .5)
+    return hit and hit.z + lift + tune.cross(x, y) or nil
+  end
   function OFFROAD.nearAsphalt(x, y, pad)
     return OFFROAD.onAsphalt(x, y) or OFFROAD.onAsphalt(x + pad, y) or OFFROAD.onAsphalt(x - pad, y) or OFFROAD.onAsphalt(x, y + pad) or OFFROAD.onAsphalt(x, y - pad)
   end
@@ -20858,10 +20889,15 @@ local function build(cells, i, j, options)
                       end
                       if side < V.band and (flag == 0 or flag == 16) then flag = V.flag end
                     end
-                    if flag == 32 then dryAny = true end
-                    samples[n + 1], samples[n + 2] = sy * 4 + sx + flag, z
-                    samples[n + 3], samples[n + 4] = gx, gy
-                    if not anchor then anchor = {x, y, z} end
+                    -- under the asphalt it reaches into (VEG.paving)
+                    local over = VEG.overPaving(OFFROAD.onAsphalt, OFFROAD.pavedZ, ground, x, y, z, gx, gy)
+                    if over > 0 then z = z - over end
+                    if over <= VEG.paving.drop then
+                      if flag == 32 then dryAny = true end
+                      samples[n + 1], samples[n + 2] = sy * 4 + sx + flag, z
+                      samples[n + 3], samples[n + 4] = gx, gy
+                      if not anchor then anchor = {x, y, z} end
+                    end
                   end
                 end
               end

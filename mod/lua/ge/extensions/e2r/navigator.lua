@@ -304,10 +304,12 @@ function M.active() return nav.state ~= 'none' end
 function M.routePoints() return nav.route and nav.route.points or nil end
 function M.destination() return nav.dest end
 
--- The line on a map at zoom z: merc(lat, lon, z) -> pixels; ox, oy shift them to the screen.
--- Pixels are kept per chunk and zoom, and a point under 6 px from the last drawn one is skipped
+-- The line on a map at the whole zoom level z: merc(lat, lon, z) -> pixels, stretched by f (the
+-- view's zoom is a real number, mapmotion.lua; nil: 1); ox, oy shift them to the screen.
+-- Pixels are kept per chunk and level, and a point under 6 px from the last drawn one is skipped
 -- (every ImVec2 is an engine object).
-function M.draw(im, dl, z, ox, oy, merc, col, north, west, south, east)
+function M.draw(im, dl, z, ox, oy, merc, col, north, west, south, east, f)
+  f = f or 1
   local route = nav.route
   if route then
     local line, rim = col(.2, .45, .95, .95), col(1, 1, 1, .9)
@@ -323,10 +325,10 @@ function M.draw(im, dl, z, ox, oy, merc, col, north, west, south, east)
             for k = 1, #g - 1, 2 do m[k], m[k + 1] = merc(g[k], g[k + 1], z) end
             chunk.merc, chunk.zoom = m, z
           end
-          local px, py = m[1] + ox, m[2] + oy
+          local px, py = m[1] * f + ox, m[2] * f + oy
           local from = im.ImVec2(px, py)
           for k = 3, #m - 1, 2 do
-            local x, y = m[k] + ox, m[k + 1] + oy
+            local x, y = m[k] * f + ox, m[k + 1] * f + oy
             if k == #m - 1 or (x - px) ^ 2 + (y - py) ^ 2 >= 36 then
               local to = im.ImVec2(x, y)
               im.ImDrawList_AddLine(dl, from, to, c, w)
@@ -340,7 +342,7 @@ function M.draw(im, dl, z, ox, oy, merc, col, north, west, south, east)
   local d = nav.dest
   if d and d.lat and nav.state ~= 'arrived' then
     local x, y = merc(d.lat, d.lon, z)
-    x, y = x + ox, y + oy
+    x, y = x * f + ox, y * f + oy
     -- a flag: the pole and a cloth, blue like the line
     im.ImDrawList_AddLine(dl, im.ImVec2(x, y), im.ImVec2(x, y - 22), col(.1, .1, .12), 2.5)
     im.ImDrawList_AddTriangleFilled(dl, im.ImVec2(x, y - 22), im.ImVec2(x + 14, y - 17), im.ImVec2(x, y - 12), col(1, 1, 1))

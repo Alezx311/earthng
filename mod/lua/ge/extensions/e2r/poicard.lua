@@ -10,6 +10,9 @@
 -- and language. draw() takes no input and never has the mouse.
 local M = {}
 local poi = require('ge/extensions/e2r/poi')
+-- names in Latin letters for the English UI (translit.lua); as they are where it cannot load
+local okTranslit, translit = pcall(require, 'ge/extensions/e2r/translit')
+if not okTranslit or type(translit) ~= 'table' then translit = {latin = function(s) return s end} end
 
 M.RANGE = 60          -- m: the nearest described point within this shows its card
 M.KEEP = 80           -- m: a shown card stays until the car is this far
@@ -80,7 +83,7 @@ function M.lines(rec, t, lang, isNew, found, details)
   local function L(uk, e) return en and e or uk end
   local info, out = rec.info, {}
   local kind = L(t.uk, t.en)
-  local name = en and info.en or rec.label
+  local name = en and (info.en or translit.latin(rec.label)) or rec.label
   out[1] = {cut(name or kind, 70), 'title'}
   if name then out[#out + 1] = {kind, 'kind'} end
   for _, line in ipairs(M.wrap(L(t.textUk, t.textEn), M.WRAP)) do out[#out + 1] = {line, 'text'} end
@@ -96,7 +99,7 @@ function M.lines(rec, t, lang, isNew, found, details)
   fact('start_date', L('Рік', 'Year'), info.year)
   local tall = poi.metres(info.tall)
   fact('height', L('Висота споруди', 'Height'), tall and string.format(L('%g м', '%g m'), tall))
-  fact('by', L('Автор', 'By'), info.by)
+  fact('by', L('Автор', 'By'), en and translit.latin(info.by) or info.by)
   for _, kv in ipairs(details or {}) do
     local key, value = kv[1], kv[2]
     if key == 'start_date' then fact(key, L('Рік', 'Year'), poi.year(value) or value)
@@ -105,13 +108,17 @@ function M.lines(rec, t, lang, isNew, found, details)
     elseif key == 'heritage' then fact(key, L('Пам\'ятка спадщини', 'Heritage'), L('так', 'yes'))
     elseif key == 'religion' then fact(key, L('Релігія', 'Religion'), value)
     elseif key == 'wikipedia' and not info.wiki then info.wiki = value
-    elseif key == 'description' and not info.note then info.note = value end
+    elseif key == 'description' and not info.note then info.note = value
+    elseif key == 'description:en' then info.noteEn = value end
   end
   if info.heritage then fact('heritage', L('Пам\'ятка спадщини', 'Heritage'), L('так', 'yes')) end
   fact('wikipedia', L('Вікіпедія', 'Wikipedia'), info.wiki and info.wiki:gsub('^%a%a%a?:', ''))
   for _, line in ipairs(facts) do out[#out + 1] = {line, 'fact'} end
-  if info.note then
-    for _, line in ipairs(M.wrap('«' .. cut(info.note, M.NOTE) .. '»', M.WRAP)) do out[#out + 1] = {line, 'fact'} end
+  -- OSM's own words: in English its English ones, and none in a script an English reader cannot read
+  local note = info.note
+  if en then note = info.noteEn or (note and not note:find('[\208\209\210]') and note) or nil end
+  if note then
+    for _, line in ipairs(M.wrap('«' .. cut(note, M.NOTE) .. '»', M.WRAP)) do out[#out + 1] = {line, 'fact'} end
   end
   if isNew then
     out[#out + 1] = {string.format(L('Нове місце в журналі · знайдено %d', 'New in your journal · %d found'), found), 'new'}

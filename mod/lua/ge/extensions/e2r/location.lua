@@ -4,6 +4,9 @@
 -- offline. M.step runs a few times a second, and text is rebuilt only when a name changes, so a
 -- frame allocates nothing here.
 local M = {}
+-- names in Latin letters for the English UI (translit.lua); as they are where it cannot load
+local okTranslit, translit = pcall(require, 'ge/extensions/e2r/translit')
+if not okTranslit or type(translit) ~= 'table' then translit = {latin = function(s) return s end} end
 
 local REACH = 40         -- m: farther than this from every road the car is on no street
 local STICK = 6          -- m: the street it is on keeps it by this much (a side street at a junction)
@@ -98,6 +101,8 @@ function M.label(names, lang)
   if not names then return nil end
   local name = lang == 'en' and names.e or lang ~= 'en' and names.u or nil
   name = name or names.n
+  -- (a street with no English name, in Latin letters for English)
+  if name and lang == 'en' then name = translit.latin(name) end
   if name then return name, names.r end
   return names.r
 end
@@ -346,7 +351,7 @@ function M.step(t, now, x, y, vx, vy, env)
   end
   if not changed then stepAhead(t, now, x, y, vx, vy, env); return false end
   local en = env.lang == 'en'
-  local function place(p) return p and (en and p[4] or p[5] or p[4]) or nil end
+  local function place(p) return p and (en and translit.latin(p[4] or p[5]) or p[5] or p[4]) or nil end
   local street, ref = M.label(t.names, env.lang)
   local where = {}
   push(where, place(t.part))
@@ -354,8 +359,8 @@ function M.step(t, now, x, y, vx, vy, env)
   if t.near and env.near then push(where, env.near(place(t.near))) end
   -- a spot pack is called after its town: 'London' over 'Лондон'
   local function itself(name) return name and t.town and (name == t.town[4] or name == t.town[5]) end
-  if not itself(t.region) then push(where, t.region) end
-  if not itself(t.country) then push(where, t.country) end
+  if not itself(t.region) then push(where, en and translit.latin(t.region) or t.region) end
+  if not itself(t.country) then push(where, en and translit.latin(t.country) or t.country) end
   if not street then street = table.remove(where, 1) end
   t.ref, t.main, t.rest = ref, street, #where > 0 and table.concat(where, ', ') or nil
   stepAhead(t, now, x, y, vx, vy, env)
@@ -398,7 +403,7 @@ function M.drawAhead(im, dl, v, a, exitBlue)
   im.Dummy(v.size)
   if a.exit then
     local e = a.exit
-    local label = (e.ref and ((en and 'Exit ' or 'Виїзд ') .. e.ref) or (en and 'Exit' or 'Виїзд')) .. (e.to and ('  ' .. e.to) or '')
+    local label = (e.ref and ((en and 'Exit ' or 'Виїзд ') .. e.ref) or (en and 'Exit' or 'Виїзд')) .. (e.to and ('  ' .. (en and translit.latin(e.to) or e.to)) or '')
     local at, tw = im.GetCursorScreenPos(), im.CalcTextSize(label)
     local w = size + 8 + tw.x + 16
     v.rect.x, v.rect.y, v.rect2.x, v.rect2.y = at.x, at.y, at.x + w, at.y + size + 8

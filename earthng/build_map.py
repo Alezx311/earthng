@@ -88,7 +88,9 @@ POI_DETAILS = ('amenity', 'shop', 'tourism', 'leisure', 'historic', 'natural', '
                'addr:street', 'addr:housenumber', 'addr:city', 'addr:postcode', 'description', 'wheelchair',
                'internet_access', 'fee', 'capacity', 'stars', 'rooms', 'ele', 'height', 'start_date', 'heritage',
                'wikipedia', 'wikidata', 'drive_through', 'takeaway', 'delivery', 'outdoor_seating', 'toilets',
-               'fuel:diesel', 'fuel:lpg', 'fuel:octane_95', 'compressed_air', 'car_wash', 'iata', 'icao')
+               'fuel:diesel', 'fuel:lpg', 'fuel:octane_95', 'compressed_air', 'car_wash', 'iata', 'icao',
+               # their English forms, which the English card shows in their place (worldmap.lua)
+               'brand:en', 'operator:en', 'addr:street:en', 'description:en')
 POI_VALUE = 160   # characters of a value kept
 
 

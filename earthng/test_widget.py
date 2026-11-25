@@ -1,4 +1,6 @@
-"""Regression checks for the map widget. Lua checks require lupa (or out/test-tools)."""
+"""Regression checks for the map windows of world.lua: the landing picker, the atlas's map and
+what stands on the screen while driving (the driving widget is gone, 24.11). Lua checks require
+lupa (or out/test-tools)."""
 import sys
 import unittest
 from pathlib import Path
@@ -6,8 +8,9 @@ from pathlib import Path
 from lupa.luajit21 import LuaRuntime
 
 
-UK_LABELS = {'pick': 'Обрати інше місце', 'back': 'Повернутися до їзди', 'hide': 'Приховати', 'show': 'Показати мапу'}
-EN_LABELS = {'pick': 'Pick another place', 'back': 'Back to driving', 'hide': 'Hide', 'show': 'Show map'}
+UK_LABELS = {'back': 'Повернутися до їзди', 'hide': 'Приховати', 'show': 'Показати мапу'}
+EN_LABELS = {'back': 'Back to driving', 'hide': 'Hide', 'show': 'Show map'}
+E2R = Path(__file__).resolve().parents[1] / 'mod/lua/ge/extensions/e2r'
 
 
 def load_world(lua, src):
@@ -184,6 +187,8 @@ class WidgetTests(unittest.TestCase):
         lua.globals().routing_src = (root / 'mod/lua/ge/extensions/e2r/routing.lua').read_text(encoding='utf8')
         lua.globals().winguard_src = (root / 'mod/lua/ge/extensions/e2r/winguard.lua').read_text(encoding='utf8')
         lua.globals().pins_src = (root / 'mod/lua/ge/extensions/e2r/pins.lua').read_text(encoding='utf8')
+        for name in ('mapmotion', 'maproads', 'minimap', 'map_icons'):
+            lua.globals()[name + '_src'] = (root / f'mod/lua/ge/extensions/e2r/{name}.lua').read_text(encoding='utf8')
         lua.execute('''
           ui_imgui = setmetatable({ArrayChar=function(n) return require('ffi').new('char[?]', n) end,
             Button=function(label) return label == clicked end,
@@ -245,6 +250,13 @@ class WidgetTests(unittest.TestCase):
             if name == 'ge/extensions/e2r/routing' then return loadstring(routing_src)() end
             if name == 'ge/extensions/e2r/winguard' then return loadstring(winguard_src)() end
             if name == 'ge/extensions/e2r/pins' then return loadstring(pins_src)() end
+            for _, own in ipairs({'mapmotion', 'maproads', 'minimap', 'map_icons'}) do
+              if name == 'ge/extensions/e2r/' .. own then
+                loaded = loaded or {}
+                loaded[own] = loaded[own] or loadstring(_G[own .. '_src'])()
+                return loaded[own]
+              end
+            end
             if name == 'ge/extensions/e2r/worldmap' and worldmap_src then return loadstring(worldmap_src)() end
             if name == 'ge/extensions/e2r/poiindex' and poiindex_src then return loadstring(poiindex_src)() end
             if name == 'bit' then return realRequire('bit') end
@@ -268,18 +280,22 @@ class WidgetTests(unittest.TestCase):
           S.status=status; S.coverage=status.coverage; S.state='pick'; S.now=10''')
         return lua
 
-    def test_expanding_the_widget_keeps_the_current_place_and_zoom(self):
+    def test_driving_draws_no_map_window_and_the_atlas_opens_at_the_car(self):
         lua = self.native_widget(basemap=False)
         lua.execute('''
-          S.state='driving'
+          S.state='driving'; S.stream={}
           getPlayerVehicle=function() return nil end
-          S.center={lat=0,lon=0}; S.zoom=9
-          S.mini={center={lat=25.78,lon=-80.22},zoom=17,follow=false}
-          clicked='Обрати інше місце'
+          LIMIT=up(draw,'LIMIT')
+          begun={}
+          mod.winguard={begin=function(_, name) begun[#begun+1]=name end, keepInside=function() end}
           draw()
-          assert(S.pickerOpen and S.zoom==17)
-          assert(S.center.lat==25.78 and S.center.lon==-80.22)
-          assert(S.center ~= S.mini.center)
+          assert(#begun==0, 'no window of ours while driving: '..table.concat(begun, ','))
+          -- the atlas starts where the picker's map stood, zoomed to a town
+          S.center={lat=25.78,lon=-80.22}; S.zoom=5
+          local center, zoom = LIMIT.worldApi().start()
+          assert(center.lat==25.78 and zoom==14)
+          S.state='pick'
+          assert(select(2, LIMIT.worldApi().start())==5)
         ''')
 
     def test_streamed_pins_draw_on_small_expanded_and_world_maps(self):
@@ -288,15 +304,23 @@ class WidgetTests(unittest.TestCase):
           S.state='pick'; S.stream={}
           S.tiles={one={manifest={},brandPOIs={{kind='pin',cat='parking',lat=25.78,lon=-80.22}}}}
           local im=ui_imgui
-          pinsDrawn=0
-          im.ImDrawList_AddText1=function(_,_,_,text) if text=='P' then pinsDrawn=pinsDrawn+1 end end
+          -- a pin is a badge with its mark from the atlas of pictograms (map_icons.png)
+          pinsDrawn, marks=0, {}
+          im.ImDrawList_AddImage=function(_,tex,a,b,u0,u1) pinsDrawn=pinsDrawn+1; marks[#marks+1]={u0.x,u0.y,b.x-a.x} end
           for _,size in ipairs({{360,180},{920,580},{1200,800}}) do
             drawMap(size[1],size[2],{center={lat=25.78,lon=-80.22},zoom=17,world=size[1]==1200})
           end
           assert(pinsDrawn==3, 'a pin survives expanding the viewport')
+          local icons=require('ge/extensions/e2r/map_icons')
+          local cell=icons.cells.parking
+          assert(math.abs(marks[1][1]-(cell%icons.per)/icons.per)<1e-9 and math.abs(marks[1][2]-math.floor(cell/icons.per)/icons.rows)<1e-9)
+          assert(marks[1][3]==16, 'the mark fills four fifths of a badge of radius 10')
+          -- between two whole zoom levels the same pin stands on the same place of the map
+          drawMap(920,580,{center={lat=25.78,lon=-80.22},zoom=16.6})
+          assert(pinsDrawn==4)
         ''')
 
-    def test_minimap_click_routes_there_and_draws_the_line(self):
+    def test_the_atlas_routes_to_a_place_and_the_route_is_drawn_and_dropped(self):
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import routing_format
         import test_routing
@@ -319,36 +343,34 @@ class WidgetTests(unittest.TestCase):
             end
             error('missing upvalue ' .. name)
           end
-          set(draw, 'focus', function() return car end)
+          LIMIT = up(draw, 'LIMIT')
+          set(LIMIT.notices, 'focus', function() return car end)
           -- no base map here: the map's own picture is not what this test reads
           local planet = up(drawMap, 'planetMap')
           planet.draw, planet.drawLabels = function() end, function() end
-          texts, lines, frame = {}, 0, 0
-          ui_imgui.TextColored = function(_, t) texts[#texts + 1] = t end
-          ui_imgui.Text = function(t) texts[#texts + 1] = t end
+          lines = 0
           ui_imgui.ImDrawList_AddLine = function() lines = lines + 1 end
-          ui_imgui.IsItemHovered = function() return true end
-          ui_imgui.GetContentRegionAvail = function() return {x = 360, y = 300} end
-          ui_imgui.GetMousePos = function() return {x = 180, y = 90} end   -- the minimap's centre
-          ui_imgui.IsMouseClicked = function() return frame == 1 end
-          ui_imgui.GetMouseDragDelta = function() return {x = 0, y = 0} end
           S.state, S.now, S.stream, S.pickerOpen = 'driving', 10, {tile = 500}, false
-          S.center = {lat = .005, lon = .005}
-          S.mini = nil
-          frame = 1; draw()                  -- the press
-          frame = 2; draw()                  -- the release: a click, not a drag
+          api = LIMIT.worldApi()
+          assert(api.canNavigate())
+          assert(api.navigate(.005, .005))
           for k = 1, 100 do mod.navigator.step(function() return car end, 10 + k * .016, 'uk') end
-          texts, lines = {}, 0
-          frame = 3; draw()''')
-        texts = [lua.eval('texts')[k] for k in range(1, lua.eval('#texts') + 1)]
-        self.assertTrue(any(t.startswith('До цілі') for t in texts), texts)
-        self.assertTrue(any(t.startswith('Через ') for t in texts), texts)
-        self.assertGreater(lua.eval('lines'), 4)
+          route = api.route()
+          -- the atlas's map draws the line, stretched between two whole zoom levels as well
+          drawMap(600, 400, {center = {lat = .0025, lon = .0025}, zoom = 15, world = true})
+          whole = lines
+          drawMap(600, 400, {center = {lat = .0025, lon = .0025}, zoom = 15.3, world = true})''')
+        route = [lua.eval('route')[k] for k in (1, 2)]
+        self.assertTrue(route[0].startswith('До цілі'), route)
+        self.assertTrue(route[1].startswith('Через '), route)
+        self.assertGreater(lua.eval('whole'), 4)
+        self.assertEqual(lua.eval('lines'), 2 * lua.eval('whole'), 'the same line at a zoom on its way')
         dest = lua.eval('mod.navigator.destination()')
         self.assertAlmostEqual(dest.x, 500, delta=1)
         self.assertAlmostEqual(dest.y, 500, delta=1)
-        lua.execute("clicked = 'Скасувати маршрут'; frame = 4; draw()")
+        lua.execute('api.clearRoute()')
         self.assertFalse(lua.eval('mod.navigator.active()'))
+        self.assertIsNone(lua.eval('api.route()'))
 
     def test_landing_zones_do_not_overlap(self):
         lua = self.native_widget(basemap=False)
@@ -492,6 +514,7 @@ class WidgetTests(unittest.TestCase):
     def map_ui_flow(self, lang, labels):
         lua = LuaRuntime()
         lua.globals().winguard_src = WINGUARD.read_text(encoding='utf8')
+        lua.globals().motion_src = (E2R / 'mapmotion.lua').read_text(encoding='utf8')
         lua.execute('''
           ui_imgui = setmetatable({ArrayChar=function() return {} end,
             Button=function(label) return label == clicked end,
@@ -509,7 +532,11 @@ class WidgetTests(unittest.TestCase):
             WindowFlags_NoCollapse=1, WindowFlags_AlwaysAutoResize=2, WindowFlags_NoScrollbar=4,
             WindowFlags_NoScrollWithMouse=8},
             {__index=function() return function() end end})
-          require=function(n) if n=='ge/extensions/e2r/winguard' then return loadstring(winguard_src)() end return {} end
+          require=function(n)
+            if n=='ge/extensions/e2r/winguard' then return loadstring(winguard_src)() end
+            if n=='ge/extensions/e2r/mapmotion' then motion_mod = motion_mod or loadstring(motion_src)(); return motion_mod end
+            return {}
+          end
           FS={fileExists=function() return false end}
           spawnParams={}
           maptileRequests=0
@@ -545,8 +572,11 @@ class WidgetTests(unittest.TestCase):
           up(mod.tick,'writePose',function() poses=poses+1 end)
           up(mod.tick,'updateTiles',function() tiles=tiles+1 end)
           up(mod.tick,'updateCollision',function() collision=collision+1; return true end)
-          up(draw,'focus',function() return nil end)
-          clicked=label_pick; draw()
+          up(up(draw,'LIMIT').notices,'focus',function() return nil end)
+          -- driving: no window; the picker opened over the drive (a landing elsewhere) is a map
+          draw()
+          assert(maptileRequests==0)
+          S.pickerOpen=true; draw()
           assert(S.state=='driving' and S.pickerOpen)
           mod.tick(0.016)
           assert(poses==1 and tiles==1 and collision==1)
@@ -554,6 +584,7 @@ class WidgetTests(unittest.TestCase):
           assert(maptileRequests==1)
           clicked=label_back; draw()
           assert(S.state=='driving' and not S.pickerOpen)
+          S.pickerOpen=true
           clicked=label_hide; draw()
           assert(S.widgetHidden)
           local asked=maptileRequests
@@ -567,27 +598,6 @@ class WidgetTests(unittest.TestCase):
           assert(maptileRequests>asked)  -- shown again: asks again (retry after MAP_RETRY)
         ''')
 
-
-
-class PeopleRowsTests(unittest.TestCase):
-    """The driving window's "Style and traffic" section: the pedestrians switch and 0..1000 slider and
-    the knockable-props checkbox go through the settings registry (test_options.py has the rest)."""
-
-    def test_style_and_traffic_section_draws_the_people_rows(self):
-        from test_options import WidgetSyncTests
-        lua = WidgetSyncTests().world()
-        lua.execute('''
-          S.state = 'driving'; S.now = 10; S.stream = {}
-          up(draw, 'focus', function() return nil end)
-          openHeader = 'Вигляд і трафік'
-          clicked = 'Пішоходи##walkOn'; draw()
-          assert(o.get('walkersOn') and fake.asked == 200, 'switch')
-          clicked = nil; slid = '##walkN'; slideTo = 1000; draw()
-          assert(fake.asked == 1000 and o.get('walkers') == 1000, 'slider')
-          slid = nil; clicked = "Збивані об'єкти##knock"; draw()
-          assert(mod.knockGet() == false and disk.knock == false, 'knock')
-          assert(disk.walkers == 1000 and disk.walkersOn == true, 'saved')
-        ''')
 
 
 if __name__ == '__main__':

@@ -17,10 +17,11 @@ local baseLabels, labelRevision = nil, -1
 local guide
 local tex, texN, frame, loads = {}, 0, 0, 0
 local coast
-local roadTex, roadFrame, roadRevision = {}, 0, -1
 local photoRoot = '/earthng/planet/photos/'
 local sheets, photoTex = nil, {}
 local packSheets, photoSignature = {}, ''
+-- where a photograph was drawn this frame (screen rectangles): the names over it are light
+local photoRects, photoCount = {}, 0
 
 -- --- tiles ---------------------------------------------------------------------------------------
 local function loadIndex()
@@ -62,29 +63,39 @@ local function texture(z, x, y, load)
   return obj
 end
 
--- Tiles of min(view zoom, maxZoom) stretched to the view: past the deepest level one tile covers
--- several screen tiles. A tile still loading shows the part of a loaded ancestor.
+-- Tiles of the whole level nearest the view's zoom (the deepest one past it) stretched to the
+-- view: the zoom is a real number (mapmotion.lua), so a tile is 181 to 362 px on the screen, and
+-- past the deepest level one tile covers several screen tiles. Edges are whole pixels, the same
+-- for both neighbours, so no seam shows between them. A tile still loading shows the part of a
+-- loaded ancestor.
+local tileA, tileB, tileU, tileV
 local function drawTiles(im, dl, r0, width, height, x0, y0, z, white)
-  local zb = math.min(z, index.maxZoom or 7)
+  local zb = math.max(0, math.min(math.floor(z + .5), index.maxZoom or 7))
   local n = 2 ^ zb
   local ts = 256 * 2 ^ (z - zb)
-  for tx = math.floor(x0 / ts), math.floor((x0 + width) / ts) do
-    for ty = math.max(0, math.floor(y0 / ts)), math.min(n - 1, math.floor((y0 + height) / ts)) do
-      local sx, sy = r0.x + tx * ts - x0, r0.y + ty * ts - y0
+  local floor = math.floor
+  tileA, tileB = tileA or im.ImVec2(0, 0), tileB or im.ImVec2(0, 0)
+  tileU, tileV = tileU or im.ImVec2(0, 0), tileV or im.ImVec2(1, 1)
+  local a, b, u, v = tileA, tileB, tileU, tileV
+  for tx = floor(x0 / ts), floor((x0 + width) / ts) do
+    for ty = math.max(0, floor(y0 / ts)), math.min(n - 1, floor((y0 + height) / ts)) do
+      a.x, a.y = floor(r0.x + tx * ts - x0 + .5), floor(r0.y + ty * ts - y0 + .5)
+      b.x, b.y = floor(r0.x + (tx + 1) * ts - x0 + .5), floor(r0.y + (ty + 1) * ts - y0 + .5)
       local x = tx % n
       local t = texture(zb, x, ty, true)
       if t then
-        im.ImDrawList_AddImage(dl, t.texId, im.ImVec2(sx, sy), im.ImVec2(sx + ts, sy + ts), im.ImVec2(0, 0), im.ImVec2(1, 1), white)
+        u.x, u.y, v.x, v.y = 0, 0, 1, 1
+        im.ImDrawList_AddImage(dl, t.texId, a, b, u, v, white)
       elseif t == nil then
         for k = 1, zb do
           local f = 2 ^ k
-          local a = texture(zb - k, math.floor(x / f), math.floor(ty / f), false)
-          if a then
-            local u, v = (x % f) / f, (ty % f) / f
-            im.ImDrawList_AddImage(dl, a.texId, im.ImVec2(sx, sy), im.ImVec2(sx + ts, sy + ts),
-              im.ImVec2(u, v), im.ImVec2(u + 1 / f, v + 1 / f), white)
+          local parent = texture(zb - k, floor(x / f), floor(ty / f), false)
+          if parent then
+            u.x, u.y = (x % f) / f, (ty % f) / f
+            v.x, v.y = u.x + 1 / f, u.y + 1 / f
+            im.ImDrawList_AddImage(dl, parent.texId, a, b, u, v, white)
             break
-          elseif a == false then break end
+          elseif parent == false then break end
         end
       end
     end
@@ -104,9 +115,14 @@ local function drawPhotos(im, dl, r0, width, height, x0, y0, z, col)
   end
   local world, x1, y1 = 256 * 2 ^ z, x0 + width, y0 + height
   local credits, lastCredit, reads = nil, nil, 0
+  photoCount = 0
   for k = 1, #sheets + #packSheets do
     local sheet = k <= #sheets and sheets[k] or packSheets[k - #sheets]
-    if z >= sheet.minZoom and z <= sheet.maxZoom then
+    -- A sheet comes in over half a zoom level and stays a level past its last one, under the
+    -- finer sheets that come in over it there: the picture never drops to the chart between
+    -- two levels of a pyramid (build_area_photos.plan).
+    local shade = math.min(1, z - sheet.minZoom + .5)
+    if shade > 0 and z < sheet.maxZoom + 1.5 then
       local b = sheet.box
       local top, bottom = b[2] * world, b[4] * world
       local cy0, cy1 = math.max(top, y0), math.min(bottom, y1)
@@ -125,7 +141,18 @@ local function drawPhotos(im, dl, r0, width, height, x0, y0, z, col)
             end
             if t then
               t.used = frame
-              local tint = col(1, 1, 1, z == 6 and .52 or .85)
+              -- a sheet stretched far past its pixels is a blur of blocks: from 5 screen pixels
+              -- a texel it gives way to the chart under it, down to a third (a street map with
+              -- the colour of the land), and the names over it are the chart's again
+              local texel = (right - left) / (sheet.px or 512)
+              local soft = texel <= 5 and 1 or math.max(.34, 1 - (texel - 5) / 16)
+              local tint = col(1, 1, 1, .92 * shade * soft)
+              if shade * soft > .6 then
+                photoCount = photoCount + 1
+                local rect = photoRects[photoCount]
+                if not rect then rect = {}; photoRects[photoCount] = rect end
+                rect[1], rect[2], rect[3], rect[4] = r0.x + cx0 - x0, r0.y + cy0 - y0, r0.x + cx1 - x0, r0.y + cy1 - y0
+              end
               im.ImDrawList_AddImage(dl, t.texId,
                 im.ImVec2(r0.x + cx0 - x0, r0.y + cy0 - y0), im.ImVec2(r0.x + cx1 - x0, r0.y + cy1 - y0),
                 im.ImVec2((cx0 - left) / (right - left), (cy0 - top) / (bottom - top)),
@@ -296,8 +323,11 @@ end
 
 -- a country's name in the UI language: the labels know both, a pack has its title
 local countryNames, countryNamesOf
+-- packs titled in English that are no country of the planet's labels (proving_ground.TITLE)
+local OWN_TITLES = {['Proving ground · Point Nemo'] = 'Полігон · точка Немо'}
 function M.countryName(title, lang)
   if lang == 'en' then return title end
+  if OWN_TITLES[title] then return OWN_TITLES[title] end
   local set = loadLabels()
   if countryNamesOf ~= set then
     countryNames, countryNamesOf = {}, set
@@ -385,76 +415,26 @@ function M.search(text, lang, limit, pack, settlements)
   return found
 end
 
--- Road overviews survive zooming out. Decode only two spatial tiles per frame and cap drawing;
--- close-up streets continue to come from native.mapRoads, without reading a whole country.
-function M.drawRoads(im, dl, bounds, zoom, screen, col)
-  if zoom < 5 then return end
-  if roadRevision ~= catalog.revision then roadTex, roadRevision = {}, catalog.revision end
-  roadFrame = roadFrame + 1
-  local loads, white = 0, col(1,1,1)
-  for _, tile in ipairs(catalog.raster(bounds, zoom)) do
-    local t = roadTex[tile.path]
-    if not t and loads < 4 then
-      local ok, obj = pcall(imguiUtils.texObj, tile.path)
-      if ok and obj then roadTex[tile.path], t = obj, obj end
-      loads = loads + 1
-    end
-    if t then
-      t.used = roadFrame
-      local x,y = screen(tile.lat, tile.lon)
-      im.ImDrawList_AddImage(dl, t.texId, im.ImVec2(x,y), im.ImVec2(x+256,y+256), im.ImVec2(0,0), im.ImVec2(1,1), white)
-    end
+local function onPhoto(x, y)
+  for k = 1, photoCount do
+    local r = photoRects[k]
+    if x >= r[1] and x <= r[3] and y >= r[2] and y <= r[4] then return true end
   end
-  local size = 0
-  for _ in pairs(roadTex) do size = size + 1 end
-  if size > 160 then
-    local old = {}
-    for path,t in pairs(roadTex) do old[#old+1] = {path,t.used} end
-    table.sort(old, function(a,b) return a[2]<b[2] end)
-    for k=1,#old-120 do roadTex[old[k][1]] = nil end
+  return false
+end
+M.onPhoto = onPhoto
+
+-- a name's width, measured once (every measure is a call into the engine)
+local nameWidths, nameCount = {}, 0
+local function nameWidth(im, text)
+  local w = nameWidths[text]
+  if not w then
+    nameCount = nameCount + 1
+    if nameCount > 6000 then nameWidths, nameCount = {}, 1 end
+    w = im.CalcTextSize(text).x
+    nameWidths[text] = w
   end
-  local groups = catalog.roads(bounds, zoom)
-  local count, prepared, seen = 0, 0, {}
-  local colors = {col(.80, .48, .15), col(.72, .60, .35), col(.65, .65, .61)}
-  for _, lines in ipairs(groups) do
-    for _, line in ipairs(lines) do
-      local b, g = line.box, line.geo
-      if b[1] <= bounds.n and b[3] >= bounds.s and b[2] <= bounds.e and b[4] >= bounds.w then
-        line.id = line.id or table.concat(g, ',')
-        if not seen[line.id] then
-          seen[line.id] = true
-          local ax, ay = screen(g[1], g[2])
-          local draw = line.draw
-          if (not draw or draw.zoom ~= zoom) and prepared < 700 then
-            local points, offsets, px, py = {im.ImVec2(ax, ay)}, {0, 0}, ax, ay
-            for k = 3, #g - 1, 2 do
-              local x, y = screen(g[k], g[k + 1])
-              if k == #g - 1 or (x - px)^2 + (y - py)^2 >= 9 then
-                points[#points + 1] = im.ImVec2(x, y)
-                offsets[#offsets + 1], offsets[#offsets + 2] = x - ax, y - ay
-                px, py = x, y
-              end
-            end
-            draw = {zoom = zoom, points = points, offsets = offsets, x = ax, y = ay}
-            line.draw, prepared = draw, prepared + #points
-          end
-          if draw and draw.zoom == zoom then
-            -- ImVec2 is an engine object. Reuse it, and the projected shape, until zoom changes.
-            if ax ~= draw.x or ay ~= draw.y then
-              for k, p in ipairs(draw.points) do p.x, p.y = ax + draw.offsets[2*k-1], ay + draw.offsets[2*k] end
-              draw.x, draw.y = ax, ay
-            end
-            local points = draw.points
-            for k = 2, #points do
-              im.ImDrawList_AddLine(dl, points[k - 1], points[k], colors[line.rank] or colors[3], line.rank == 1 and 2.2 or 1.3)
-              count = count + 1
-              if count >= 6000 then return end
-            end
-          end
-        end
-      end
-    end
-  end
+  return w
 end
 
 local placed, labelMin, labelMax = {}
@@ -520,33 +500,39 @@ end
 
 function M.drawLabels(im, dl, r0, width, height, view, merc, unmerc, col, lang, mouse)
   local l = loadLabels()
-  local z = view.zoom
+  -- the names are planned at the whole level nearest the zoom and stretched with the map
+  -- (mapmotion.lua): a zoom on its way does not plan them anew every frame
+  local z = math.floor(view.zoom + .5)
+  local f = 2 ^ (view.zoom - z)
   local cx, cy = merc(view.center.lat, view.center.lon, z)
-  local x0, y0 = cx - width / 2, cy - height / 2
+  local x0, y0 = cx - width / f / 2, cy - height / f / 2
   local name = lang == 'en' and 4 or 5
   local white, ink, inkCountry = col(1, 1, 1, 0.95), col(.10, .17, .20), col(.25, .23, .34)
+  local dark = col(.03, .05, .06, .92)   -- the rim of a name on a photograph
+  if view.photo == false then photoCount = 0 end
   local fontSize = im.GetFontSize() or 13
   local hovered
   if z <= 7 then
     for _, c in ipairs(l.countries) do
       if c[3] <= z + 1.5 then
         local x, y = merc(c[1], c[2], z)
-        x, y = r0.x + x - x0, r0.y + y - y0
+        x, y = r0.x + (x - x0) * f, r0.y + (y - y0) * f
         if x > r0.x - 100 and x < r0.x + width + 100 and y > r0.y and y < r0.y + height then
-          local tw = im.CalcTextSize(c[name]).x
+          local tw = nameWidth(im, c[name])
           if free(x - tw / 2 - 4, y - fontSize / 2 - 2, x + tw / 2 + 4, y + fontSize / 2 + 2) then
-            haloText(im, dl, x - tw / 2, y - fontSize / 2, c[name], inkCountry, white)
+            if onPhoto(x, y) then haloText(im, dl, x - tw / 2, y - fontSize / 2, c[name], white, dark)
+            else haloText(im, dl, x - tw / 2, y - fontSize / 2, c[name], inkCountry, white) end
           end
         end
       end
     end
   end
-  for _, v in ipairs(cityPlan(view, l, z, x0, y0, width, height, merc, unmerc)) do
+  for _, v in ipairs(cityPlan(view, l, z, x0, y0, width / f, height / f, merc, unmerc)) do
     local p = v.p
-    local x, y = r0.x + v.x - x0, r0.y + v.y - y0
+    local x, y = r0.x + (v.x - x0) * f, r0.y + (v.y - y0) * f
     if x >= r0.x and x < r0.x + width and y >= r0.y and y <= r0.y + height then
       local text = p[name]
-      local tw, th = im.CalcTextSize(text).x, fontSize
+      local tw, th = nameWidth(im, text), fontSize
       local r = p.article and 5 or p[6] == 1 and 4 or 2.5
       local lx, ly = x + (p.article and 17 or r + 6), y - th / 2
       local named = lx + tw + 3 <= r0.x + width and ly >= r0.y + 2 and ly + th + 2 <= r0.y + height
@@ -564,6 +550,8 @@ function M.drawLabels(im, dl, r0, width, height, view, merc, unmerc, col, lang, 
         if p.article then
           im.ImDrawList_AddRectFilled(dl, im.ImVec2(lx - 2, ly - 2), im.ImVec2(lx + tw + 3, ly + th + 2), col(.04, .24, .25, .94), 3)
           im.ImDrawList_AddText1(dl, im.ImVec2(lx, ly), white, text)
+        elseif onPhoto(x, y) then
+          haloText(im, dl, lx, ly, text, white, dark)
         else
           haloText(im, dl, lx, ly, text, ink, white)
         end

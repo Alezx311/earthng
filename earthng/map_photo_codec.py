@@ -5,12 +5,15 @@ from PIL import Image
 
 
 def save_photo(image, path):
-    """A GPU-ready DXT5 sheet. Keep its soft alpha border and all mip levels."""
+    """A GPU-ready DXT sheet with all its mip levels: DXT5 where it has a soft alpha border or
+    holes, DXT1 (half the size) where it is opaque all over."""
+    opaque = image.mode != 'RGBA' or image.getchannel('A').getextrema()[0] == 255
+    pixel_format = 'DXT1' if opaque else 'DXT5'
     lod = image
     levels = []
     while True:
         buf = io.BytesIO()
-        lod.save(buf, 'DDS', pixel_format='DXT5')
+        lod.save(buf, 'DDS', pixel_format=pixel_format)
         encoded = buf.getvalue()
         if not levels:
             header = bytearray(encoded[:128])

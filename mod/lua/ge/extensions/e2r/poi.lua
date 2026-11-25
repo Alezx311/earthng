@@ -79,6 +79,7 @@ function M.record(tags)
   if not t or not t.textUk then return nil end
   return {type = key, year = M.year(tags.start_date), tall = tags.height, wiki = tags.wikipedia,
     note = tags.description or tags.inscription, en = tags['name:en'], by = tags.architect or tags.artist_name,
+    noteEn = tags['description:en'] or tags['inscription:en'],
     heritage = tags.heritage}
 end
 

@@ -994,7 +994,7 @@ def street_control(plan, i, j, x0, y0, yc, ave):
     plan.way([(x0 + 360, yc - 12), (x0 + 360, yc + 12)], tags('man_made=gantry'))
     for side in (1, -1):
         plan.way([(x0 + 230, yc + side * 6.5), (x0 + 480, yc + side * 6.5)], tags('barrier=guard_rail'))
-    plan.ways[ave][1].update(tags('destination=Точка_Немо ref=Н-01 maxspeed=90 overtaking=no'))
+    plan.ways[ave][1].update(tags('ref=Н-01 maxspeed=90 overtaking=no', destination='Точка Немо'))
     _on(plan, ave, x0 + 420, yc, tags('highway=traffic_signals traffic_signals:direction=forward'))
     plan.node(x0 + 60, yc + 9, tags('highway=milestone distance=1'))
     plan.node(x0 + 300, yc + 9, tags('highway=emergency_access_point'))

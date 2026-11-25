@@ -269,20 +269,38 @@ class WorldMapTests(unittest.TestCase):
         self.worldmap.draw(api)
         drawn = self.worldmap.drawn
         shown = lambda: sorted(drawn.i[k] for k in range(1, drawn.n + 1))
-        self.assertEqual(shown(), [1, 3], 'the castle and fuel station win their cells over the kiosk, pharmacy and café')
+        # the squares are Mercator pixels of the level: the kiosk 5 px from the castle shares its
+        # square and loses it, the fuel station stands in another
+        self.assertIn(1, shown())
+        self.assertIn(3, shown())
+        self.assertNotIn(2, shown(), 'the castle wins its square over the kiosk beside it')
         self.assertEqual(self.worldmap.state.hoverI, 1, 'the castle under the cursor')
-        self.assertIn('Замок', list(self.lua.eval('texts').values()), 'its name beside the icon and on the card')
+        self.assertIn('Замок', list(self.lua.eval('texts').values()), 'its name beside the badge and on the card')
         # the castle filtered out: the kiosk takes its square; the cafe off too
         self.worldmap.state.off['castle'] = True
         self.worldmap.state.off['food/cafe'] = True
         self.worldmap.state.filterRev += 1
         self.worldmap.draw(api)
-        self.assertEqual(shown(), [2, 3])
-        # afar: dots, one square for the castle and kiosk
+        self.assertIn(2, shown())
+        self.assertNotIn(1, shown())
+        self.assertNotIn(6, shown())
+        # afar the castle is a badge still and a minor point a ringed dot: a shadow, a rim, a fill
+        self.worldmap.state.off['castle'] = None
+        self.worldmap.state.filterRev += 1
         self.lua.execute('calls = {}')
         self.lua.eval('mapView').zoom = 8
         self.worldmap.draw(api)
-        self.assertGreaterEqual(self.lua.eval('calls').circle, 2 * drawn.n)
+        self.assertGreater(drawn.n, 0)
+        self.assertEqual(self.lua.eval('calls').circle, 3 * drawn.n)
+        radii = sorted({drawn.r[k] for k in range(1, drawn.n + 1)})
+        self.assertEqual(radii, [9], 'the castle is a badge from afar: the fuel station shares its square there')
+        self.assertEqual(self.worldmap.badgeLevel(8), 2)
+        self.assertEqual(self.worldmap.badgeLevel(13), self.index.LEVELS, 'close up every kept point is a badge')
+        # between two whole levels the markers are those of the nearer one, placed by the map
+        self.lua.eval('mapView').zoom = 8.3
+        collects = self.worldmap.collects
+        self.worldmap.draw(api)
+        self.assertEqual(self.worldmap.collects, collects, 'a zoom on its way does not collect again')
 
     def crowd(self, count=4000):
         """count points spread over the fake view, one category each of three"""
@@ -295,6 +313,10 @@ class WorldMapTests(unittest.TestCase):
         self.build(5000)
         self.worldmap.MAX_ICONS = 50
         api = self.api()
+        for _ in range(200):
+            self.worldmap.draw(api)
+            if self.worldmap.collects:
+                break
         self.worldmap.draw(api)
         drawn = self.worldmap.drawn
         self.assertEqual(drawn.n, 50, 'never more markers than the cap, however many points the view has')
@@ -319,6 +341,10 @@ class WorldMapTests(unittest.TestCase):
         self.add('Тест', self.crowd(20000))
         self.build(5000)
         api = self.api()
+        for _ in range(200):   # the first collect may take more than one slice on a busy machine
+            self.worldmap.draw(api)
+            if self.worldmap.collects:
+                break
         self.worldmap.draw(api)
         before = self.worldmap.drawn.n
         self.assertGreater(before, 0)
