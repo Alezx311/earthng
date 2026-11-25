@@ -90,6 +90,13 @@ def crossings(pos, seg_of, same, upper, lower, widths, levels):
     return python_crossings(pos, seg_of, same, upper, lower, widths, levels)
 
 
+def _dot2(a, b):
+    """a0*b0 + a1*b1 in plain doubles. numpy hands a dot of two 2-vectors (and norm) to BLAS,
+    whose kernel fuses it into an FMA on some CPUs and not on others (the Linux CI runner and
+    this PC differed in the last bits), and the native kernel is checked against this bit for bit."""
+    return float(a[0]) * float(b[0]) + float(a[1]) * float(b[1])
+
+
 def python_crossings(pos, seg_of, same, upper, lower, widths, levels):
     """crossings in numpy (and the reference for the native one)."""
     e0 = np.flatnonzero(same)
@@ -107,11 +114,11 @@ def python_crossings(pos, seg_of, same, upper, lower, widths, levels):
     reach = float(np.max(widths[bottom])) / 2 + STEP / 2
 
     def ribbon(p, r, half):
-        normal = np.array([-r[1], r[0]]) * (half / max(float(np.linalg.norm(r)), 1e-9))
+        normal = np.array([-r[1], r[0]]) * (half / max(math.sqrt(_dot2(r, r)), 1e-9))
         return [p - normal, p + r - normal, p + r + normal, p + normal]
 
     def clip(poly, q, d, half):
-        length = float(np.linalg.norm(d))
+        length = math.sqrt(_dot2(d, d))
         if length < 1e-9:
             return []
         axis = d / length
@@ -121,9 +128,9 @@ def python_crossings(pos, seg_of, same, upper, lower, widths, levels):
             if not poly:
                 break
             result = []
-            a = poly[-1]; da = float((a - q) @ n) - bound
+            a = poly[-1]; da = _dot2(a - q, n) - bound
             for b in poly:
-                db = float((b - q) @ n) - bound
+                db = _dot2(b - q, n) - bound
                 if (da >= 0) != (db >= 0):
                     result.append(a + (b - a) * (da / (da - db)))
                 if db >= 0:
@@ -152,8 +159,8 @@ def python_crossings(pos, seg_of, same, upper, lower, widths, levels):
         for k in np.flatnonzero(hit).tolist():
             overlap = clip(poly, q[k], d[k], half[k])
             for point in overlap:
-                u = np.clip(float((point - p) @ r) / max(float(r @ r), 1e-9), 0, 1)
-                t = np.clip(float((point - q[k]) @ d[k]) / max(float(d[k] @ d[k]), 1e-9), 0, 1)
+                u = np.clip(_dot2(point - p, r) / max(_dot2(r, r), 1e-9), 0, 1)
+                t = np.clip(_dot2(point - q[k], d[k]) / max(_dot2(d[k], d[k]), 1e-9), 0, 1)
                 out[0].append(a); out[1].append(int(b[k])); out[2].append(u); out[3].append(t)
     return (np.array(out[0], int), np.array(out[1], int), np.array(out[2]), np.array(out[3]))
 
