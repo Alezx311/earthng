@@ -6,15 +6,12 @@ on:
   workflow_dispatch:
   push:
     branches: [master]
+    # the package carries the whole pipeline and runs its whole test suite
     paths:
-      - 'earthng/app_web.py'
-      - 'earthng/app_service.py'
-      - 'earthng/country_fetch.py'
-      - 'earthng/prepare_linux.py'
-      - 'earthng/linux_smoke.py'
+      - 'earthng/**'
       - 'app/ui/**'
       - 'rust/**'
-      - 'requirements-fast.txt'
+      - 'requirements-*.txt'
       - '.github/workflows/linux.yml'
 permissions:
   contents: read
