@@ -117,13 +117,14 @@ Save a frequently driven area as a project. When a major release adds map data,
 reopen the project and build it again. To extend your coverage, build an adjacent
 area or another route. EarthNG loads the installed sections together.
 
-**Updating.** Download the new **EarthNG.exe** from the release and run it in place of the
-old one. Maps you already built, downloaded country files and the mods in BeamNG stay
-where they are: this is not a clean reinstall, and you do not remove the old program
+**Updating.** When EarthNG.exe opens, it asks the newest release whether a newer build is
+published; if one is, choose **Update** in the window. That replaces `EarthNG.exe` and opens
+the window again. Maps you already built, downloaded country files and the mods in BeamNG
+stay where they are: this is not a clean reinstall, and you do not remove the old program
 first. The game mod updates with the next map (or **Update the planet** in Settings) when
-the installed planet is older than the one the new program expects. The window also asks
-the rolling `EarthNG` release for an update when it opens, but that release still holds
-0.9.0 with no `EarthNG.json`, so EarthNG 1.x offers no update there yet.
+the installed planet is older than the one the new program expects. Builds older than
+26 November 2026 (1.0.0 and the 1.1.0 builds of 25 November) ask a release that gets no more
+updates: download the new **EarthNG.exe** from the release by hand once.
 
 Console equivalent (also useful for Linux/macOS with a local Python environment):
 
@@ -207,7 +208,9 @@ Stage player downloads from committed source (excluding local uncommitted work):
 Use an empty output directory. The script copies the native mod and any selected
 country pack, builds EarthNG.exe from the committed source, writes `EarthNG.json`
 (version, size and sha256 of that exe, for the in-app update) and prints SHA-256 sums
-for the release description. Upload `EarthNG.json` with `EarthNG.exe`. The exe's runtime follows local Python imports,
+for the release description. Upload `EarthNG.json` with `EarthNG.exe` to the version's own release,
+tagged `v<version>`: the window reads `EarthNG.json` from the newest published release and then
+downloads `EarthNG.exe` from `v<version>`. The exe's runtime follows local Python imports,
 includes runtime resources and embeds a ready-pack catalog. Developer assets, tests and research notes are not player downloads.
 
 The basemap can regenerate from Natural Earth over the network. Rebuilding art

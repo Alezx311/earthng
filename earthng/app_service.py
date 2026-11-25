@@ -39,10 +39,18 @@ import country_fetch  # noqa: E402
 import looks  # noqa: E402
 import places  # noqa: E402
 
-RELEASE_URL = 'https://github.com/Alezx311/earthng/releases/download/EarthNG'
+RELEASES = 'https://github.com/Alezx311/earthng/releases'
+# The rolling release of 0.9.x. Only the planet comes from it, for a build that carries none (a release
+# exe and the Linux package bundle their own).
+RELEASE_URL = f'{RELEASES}/download/EarthNG'
+# Updates follow the newest published release whatever its tag (GitHub's /latest/ skips drafts and
+# prereleases): its EarthNG.json names the version, and the exe is then taken from that version's own
+# release, v<version>, so a release published between the check and the download changes nothing.
+UPDATE_URL = f'{RELEASES}/latest/download'
 APP_MANIFEST = 'EarthNG.json'   # published beside EarthNG.exe: version, sha256 and size of that file
 APP_EXE = 'EarthNG.exe'
 APP_SCHEMA = 'earthng-app-v1'
+APP_MAX_BYTES = 4_000_000_000   # a sanity bound only: 1.1 is 647 MB (the old 500 MB bound refused it)
 PLANET_STAGE = 'Planet'         # first build stage when the planet is missing or older than the packs
 PLANET_SECONDS = 90             # ~270 MB from GitHub (97 s on 8.11)
 ADDONS_STAGE = 'Add-ons'        # the proving ground and flora packs the player chose (addons.py), after the planet
@@ -123,7 +131,7 @@ def parse_app_manifest(text):
         raise ValueError('bad update sha256')
     if isinstance(size, float) and size.is_integer():
         size = int(size)
-    if not isinstance(size, int) or not 1_000_000 <= size <= 500_000_000:
+    if not isinstance(size, int) or not 1_000_000 <= size <= APP_MAX_BYTES:
         raise ValueError('bad update size')
     parsed = {'version': version, 'sha256': sha, 'size': size}
     planet = info.get('planetVersion')
@@ -139,10 +147,15 @@ def allowed_release_url(url):
     return parts.scheme == 'https' and (host == 'github.com' or host.endswith('.githubusercontent.com'))
 
 
-def release_file_url(name):
-    if name not in (APP_MANIFEST, APP_EXE):
-        raise ValueError(name)
-    return f'{RELEASE_URL}/{name}'
+def release_file_url(name, version=None):
+    """EarthNG.json of the newest release, or EarthNG.exe of the release of `version` (tag v<version>)."""
+    if name == APP_MANIFEST:
+        return f'{UPDATE_URL}/{APP_MANIFEST}'
+    if name == APP_EXE:
+        if version_key(version) is None:
+            raise ValueError('the exe is downloaded for a release version')
+        return f'{RELEASES}/download/v{version}/{APP_EXE}'
+    raise ValueError(name)
 
 
 def fetch_app_manifest(url=None):
@@ -517,7 +530,7 @@ class Service:
             country_fetch.ensure_space(folder, remote['size'] + 2**26, 'Updating EarthNG')
             dest = folder / APP_EXE
             self.log(f"Downloading {APP_EXE} {remote['version']} from GitHub Releases")
-            country_fetch.download(release_file_url(APP_EXE), dest, self.log, cancel)
+            country_fetch.download(release_file_url(APP_EXE, remote['version']), dest, self.log, cancel)
             if dest.stat().st_size != remote['size']:
                 dest.unlink(missing_ok=True)
                 raise ValueError(f"downloaded size does not match the release ({remote['size']} bytes)")

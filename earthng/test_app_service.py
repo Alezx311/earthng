@@ -325,6 +325,26 @@ class ServiceTests(unittest.TestCase):
         parsed = app_service.parse_app_manifest(json.dumps({
             'schema': 'earthng-app-v1', 'version': '0.9.1', 'sha256': 'ab' * 32, 'size': 50_000_000}))
         self.assertEqual(parsed['version'], '0.9.1')
+        # the 1.1 exe is 647 MB: the old 500 MB bound refused its manifest
+        big = app_service.parse_app_manifest(json.dumps({
+            'schema': 'earthng-app-v1', 'version': '1.1.0', 'sha256': 'ab' * 32, 'size': 647_462_166}))
+        self.assertEqual(big['size'], 647_462_166)
+        with self.assertRaisesRegex(ValueError, 'bad update size'):
+            app_service.parse_app_manifest(json.dumps({
+                'schema': 'earthng-app-v1', 'version': '1.1.0', 'sha256': 'ab' * 32, 'size': 5_000_000_000}))
+
+    def test_updates_follow_the_newest_release_and_take_the_exe_of_its_version(self):
+        self.assertEqual(app_service.release_file_url(app_service.APP_MANIFEST),
+                         'https://github.com/Alezx311/earthng/releases/latest/download/EarthNG.json')
+        self.assertEqual(app_service.release_file_url(app_service.APP_EXE, '1.2.0'),
+                         'https://github.com/Alezx311/earthng/releases/download/v1.2.0/EarthNG.exe')
+        for version in (None, '1.2', 'v1.2.0', '1.2.0/../../x'):
+            with self.assertRaises(ValueError):
+                app_service.release_file_url(app_service.APP_EXE, version)
+        with self.assertRaises(ValueError):
+            app_service.release_file_url('earthng_planet.zip')
+        # the planet of a build without one still comes from the rolling release
+        self.assertNotIn('/latest/', app_service.RELEASE_URL)
 
     def test_a_checkout_does_not_offer_an_update(self):
         updates = self.root / 'updates'
@@ -364,7 +384,7 @@ class ServiceTests(unittest.TestCase):
         updates = self.root / 'updates'
 
         def fake_download(url, dest, emit=print, cancel=None):
-            self.assertEqual(url, f'{app_service.RELEASE_URL}/{app_service.APP_EXE}')
+            self.assertEqual(url, 'https://github.com/Alezx311/earthng/releases/download/v0.9.1/EarthNG.exe')
             Path(dest).parent.mkdir(parents=True, exist_ok=True)
             Path(dest).write_bytes(payload)
             return dest
@@ -419,7 +439,7 @@ class ServiceTests(unittest.TestCase):
                 return False
 
         def urlopen(request, timeout, context):
-            self.assertEqual(request.full_url, f'{app_service.RELEASE_URL}/{app_service.APP_MANIFEST}')
+            self.assertEqual(request.full_url, f'{app_service.UPDATE_URL}/{app_service.APP_MANIFEST}')
             self.assertIn('EarthNG.exe', request.get_header('User-agent'))
             return Response(body, 'https://release-assets.githubusercontent.com/earthng')
 
